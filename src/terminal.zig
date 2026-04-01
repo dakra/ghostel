@@ -75,6 +75,7 @@ pub fn init(cols: u16, rows: u16, max_scrollback: usize) !Self {
     if (gt.c.ghostty_mouse_encoder_new(null, &mouse_encoder) != gt.SUCCESS) {
         return error.MouseEncoderCreateFailed;
     }
+    errdefer gt.c.ghostty_mouse_encoder_free(mouse_encoder);
 
     return .{
         .terminal = terminal,
