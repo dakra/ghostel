@@ -784,6 +784,42 @@
       (kill-buffer buf))))
 
 ;; -----------------------------------------------------------------------
+;; Test: theme synchronization
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-sync-theme ()
+  "Test that ghostel-sync-theme applies palette and redraws ghostel buffers."
+  (let ((palette-calls nil)
+        (redraw-calls nil))
+    (cl-letf (((symbol-function 'ghostel--apply-palette)
+               (lambda (term) (push term palette-calls)))
+              ((symbol-function 'ghostel--redraw)
+               (lambda (term) (push term redraw-calls))))
+      (let ((buf (generate-new-buffer " *ghostel-test-theme*"))
+            (other (generate-new-buffer " *ghostel-test-other*")))
+        (unwind-protect
+            (progn
+              ;; Set up a ghostel-mode buffer with a fake terminal
+              (with-current-buffer buf
+                (ghostel-mode)
+                (setq ghostel--term 'fake-term)
+                (setq ghostel--copy-mode-active nil))
+              ;; other buffer is not ghostel-mode
+              (ghostel-sync-theme)
+              (should (memq 'fake-term palette-calls))    ; palette applied to ghostel buffer
+              (should (memq 'fake-term redraw-calls))     ; redraw called for ghostel buffer
+
+              ;; Verify copy-mode skips redraw
+              (setq palette-calls nil redraw-calls nil)
+              (with-current-buffer buf
+                (setq ghostel--copy-mode-active t))
+              (ghostel-sync-theme)
+              (should (memq 'fake-term palette-calls))    ; palette still applied in copy mode
+              (should-not (memq 'fake-term redraw-calls))) ; redraw skipped in copy mode
+          (kill-buffer buf)
+          (kill-buffer other))))))
+
+;; -----------------------------------------------------------------------
 ;; Runner
 ;; -----------------------------------------------------------------------
 
@@ -794,7 +830,8 @@
     ghostel-test-raw-key-modified-specials
     ghostel-test-update-directory
     ghostel-test-filter-soft-wraps
-    ghostel-test-prompt-navigation)
+    ghostel-test-prompt-navigation
+    ghostel-test-sync-theme)
   "Tests that require only Elisp (no native module).")
 
 (defun ghostel-test-run-elisp ()
