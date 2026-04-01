@@ -247,14 +247,21 @@ fn scanHyperlinks(
     }
     defer gt.c.ghostty_formatter_free(formatter);
 
-    // Format into a stack buffer
+    // Format into a stack buffer; fall back to heap if too small
     var html_buf: [262144]u8 = undefined;
     var out_len: usize = 0;
-    if (gt.c.ghostty_formatter_format_buf(formatter, &html_buf, html_buf.len, &out_len) != gt.SUCCESS) {
-        return .{ .count = 0, .uri_used = 0 };
+    if (gt.c.ghostty_formatter_format_buf(formatter, &html_buf, html_buf.len, &out_len) == gt.SUCCESS) {
+        return parseHtmlHyperlinks(html_buf[0..out_len], spans, uri_buf);
     }
 
-    return parseHtmlHyperlinks(html_buf[0..out_len], spans, uri_buf);
+    const heap_buf = std.heap.page_allocator.alloc(u8, 1024 * 1024) catch {
+        return .{ .count = 0, .uri_used = 0 };
+    };
+    defer std.heap.page_allocator.free(heap_buf);
+    if (gt.c.ghostty_formatter_format_buf(formatter, heap_buf.ptr, heap_buf.len, &out_len) != gt.SUCCESS) {
+        return .{ .count = 0, .uri_used = 0 };
+    }
+    return parseHtmlHyperlinks(heap_buf[0..out_len], spans, uri_buf);
 }
 
 /// Parse HTML output to extract hyperlink spans and their URIs.
