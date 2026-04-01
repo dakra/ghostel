@@ -1383,6 +1383,30 @@ Falls back to \"#000000\" if the color cannot be resolved."
             "")))
       (ghostel--set-palette term colors))))
 
+;;; Theme synchronization
+
+(defun ghostel-sync-theme ()
+  "Re-apply terminal color palette in all ghostel buffers.
+Call this after changing the Emacs theme so terminals match."
+  (interactive)
+  (dolist (buf (buffer-list))
+    (with-current-buffer buf
+      (when (and (derived-mode-p 'ghostel-mode) ghostel--term)
+        (ghostel--apply-palette ghostel--term)
+        (when (not ghostel--copy-mode-active)
+          (let ((inhibit-read-only t))
+            (ghostel--redraw ghostel--term)))))))
+
+(defun ghostel--on-theme-change (&rest _args)
+  "Hook function to sync terminal colors after theme change."
+  (ghostel-sync-theme))
+
+(if (boundp 'enable-theme-functions)
+    ;; Emacs 29+
+    (add-hook 'enable-theme-functions #'ghostel--on-theme-change)
+  ;; Emacs < 29 fallback
+  (advice-add 'load-theme :after #'ghostel--on-theme-change))
+
 ;;; Focus events
 
 (defun ghostel--focus-change ()
