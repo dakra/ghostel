@@ -45,6 +45,7 @@ jobs:
       - name: Run pure Elisp tests
         run: |
           emacs --batch -Q -L . \
+            -l ert \
             -l test/ghostel-test.el \
             -f ghostel-test-run-elisp
 

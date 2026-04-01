@@ -14,7 +14,7 @@ check:
 	zig build check
 
 test:
-	$(EMACS) --batch -Q -L . -l test/ghostel-test.el -f ghostel-test-run-elisp
+	$(EMACS) --batch -Q -L . -l ert -l test/ghostel-test.el -f ghostel-test-run-elisp
 
 lint: melpazoid
 
