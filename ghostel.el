@@ -945,7 +945,9 @@ pasted using bracketed paste."
     (ghostel--scroll-bottom ghostel--term)
     (let ((inhibit-read-only t))
       (ghostel--redraw ghostel--term ghostel-full-redraw))
-    (goto-char (point-max))))
+    ;; The native redraw already positions point at the terminal cursor,
+    ;; so no explicit goto-char needed here.
+    ))
 
 (defun ghostel-copy-mode-end-of-line ()
   "Move to the last non-whitespace character on the line."
@@ -1094,6 +1096,8 @@ Press \\`q' or \\[ghostel-copy-mode-exit] to exit without copying."
     (setq buffer-read-only nil)
     (setq mode-name "Ghostel")
     (force-mode-line-update)
+    (when ghostel--term
+      (ghostel--scroll-bottom ghostel--term))
     (ghostel--invalidate)
     (message "Copy mode exited")))
 
