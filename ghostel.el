@@ -311,6 +311,7 @@ These keys pass through to Emacs instead."
 (declare-function ghostel--write-input "ghostel-module")
 (declare-function package-desc-version "package" (pkg-desc))
 (declare-function package-version-join "package" (vlist))
+(declare-function global-hl-line-unhighlight "hl-line")
 
 
 ;;; Automatic download and compilation of native module

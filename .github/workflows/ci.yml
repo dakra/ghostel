@@ -24,6 +24,7 @@ jobs:
       - name: Byte-compile
         run: |
           emacs --batch -Q -L . \
+            --eval "(setq byte-compile-error-on-warn t)" \
             -f batch-byte-compile \
             ghostel.el ghostel-debug.el
 

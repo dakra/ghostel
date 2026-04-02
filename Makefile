@@ -27,7 +27,7 @@ melpazoid:
 		make -C "$(MELPAZOID_DIR)"
 
 byte-compile:
-	$(EMACS) --batch -Q -L . -f batch-byte-compile ghostel.el ghostel-debug.el
+	$(EMACS) --batch -Q -L . --eval "(setq byte-compile-error-on-warn t)" -f batch-byte-compile ghostel.el ghostel-debug.el
 
 bench:
 	bash bench/run-bench.sh
