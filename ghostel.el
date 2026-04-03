@@ -871,22 +871,18 @@ Dropped files insert their path (shell-quoted); dropped text is
 pasted using bracketed paste."
   (interactive "e")
   (when (and ghostel--process (process-live-p ghostel--process))
-    (let ((payload (car (last (nth 1 event)))))
-      (cond
-       ;; File drop — payload is a filename string from the drop event
-       ((and (stringp payload) (file-exists-p payload))
-        (ghostel--send-key (shell-quote-argument payload)))
-       ;; URI list (e.g. from file managers that drop file:// URIs)
-       ((and (stringp payload) (string-prefix-p "file://" payload))
-        (let ((path (url-filename (url-generic-parse-url payload))))
-          (ghostel--send-key (shell-quote-argument path))))
-       ;; Text drop
-       ((stringp payload)
-        (ghostel--paste-text payload))
-       ;; dnd-protocol-alist style: list of files
-       ((and (listp payload) (cl-every #'stringp payload))
-        (ghostel--send-key
-         (mapconcat #'shell-quote-argument payload " ")))))))
+    ;; On macOS (NS port) the event structure is:
+    ;;   (drag-n-drop POSN (TYPE OPERATIONS . OBJECTS))
+    ;; where (nth 2 event) carries the drop data, not the position.
+    (let ((arg (nth 2 event)))
+      (when (and arg (not (eq arg 'lambda)))
+        (let ((type (car arg))
+              (objects (cddr arg)))
+          (if (eq type 'file)
+              (ghostel--send-key
+               (mapconcat #'shell-quote-argument objects " "))
+            (ghostel--paste-text
+             (mapconcat #'identity objects "\n"))))))))
 
 
 ;;; Scrollback / clearing
