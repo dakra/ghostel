@@ -90,6 +90,7 @@ fn fnNew(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*any
         term.setWritePty(&writePtyCallback) catch break :blk false;
         term.setBell(&bellCallback) catch break :blk false;
         term.setTitleChanged(&titleChangedCallback) catch break :blk false;
+        term.setDeviceAttributes(&deviceAttributesCallback) catch break :blk false;
         break :blk true;
     };
     if (!setup_ok) {
@@ -640,7 +641,7 @@ fn fnDebugState(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*
         pos += (std.fmt.bufPrint(buf[pos..], "row{d}=\"", .{row_idx}) catch break).len;
         var col: usize = 0;
         while (gt.c.ghostty_render_state_row_cells_next(term.row_cells)) : (col += 1) {
-            if (col >= 40) break; // first 40 cols
+            if (col >= 80) break;
             var graphemes_len: u32 = 0;
             if (gt.c.ghostty_render_state_row_cells_get(term.row_cells, gt.RS_CELLS_DATA_GRAPHEMES_LEN, @ptrCast(&graphemes_len)) != gt.SUCCESS) continue;
 
@@ -748,6 +749,27 @@ fn bellCallback(_: gt.Terminal, userdata: ?*anyopaque) callconv(.c) void {
     const env = term.env orelse return;
 
     _ = env.call0(emacs.sym.ding);
+}
+
+/// Called when the terminal receives a device attributes query (DA1/DA2/DA3).
+/// Reports as a VT220-compatible terminal with ANSI color support.
+fn deviceAttributesCallback(_: gt.Terminal, _: ?*anyopaque, out: [*c]gt.DeviceAttributes) callconv(.c) bool {
+    const attrs: *allowzero gt.DeviceAttributes = &out[0];
+    attrs.primary = .{
+        .conformance_level = 62, // VT220
+        .features = undefined,
+        .num_features = 1,
+    };
+    attrs.primary.features[0] = 22; // ANSI color
+    attrs.secondary = .{
+        .device_type = 1, // VT220
+        .firmware_version = 1,
+        .rom_cartridge = 0,
+    };
+    attrs.tertiary = .{
+        .unit_id = 0,
+    };
+    return true;
 }
 
 /// Called when the terminal title changes.

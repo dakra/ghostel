@@ -126,6 +126,11 @@ pub fn setTitleChanged(self: *Self, cb: gt.TitleChangedFn) !void {
     try self.terminalSet(gt.OPT_TITLE_CHANGED, @ptrCast(cb));
 }
 
+/// Register the device_attributes callback.
+pub fn setDeviceAttributes(self: *Self, cb: gt.DeviceAttributesFn) !void {
+    try self.terminalSet(gt.OPT_DEVICE_ATTRIBUTES, @ptrCast(cb));
+}
+
 /// Set default foreground color.
 pub fn setColorForeground(self: *Self, color: *const gt.ColorRgb) !void {
     try self.terminalSet(gt.OPT_COLOR_FOREGROUND, color);

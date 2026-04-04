@@ -32,6 +32,8 @@ pub const Result = c.GhosttyResult;
 pub const WritePtyFn = c.GhosttyTerminalWritePtyFn;
 pub const BellFn = c.GhosttyTerminalBellFn;
 pub const TitleChangedFn = c.GhosttyTerminalTitleChangedFn;
+pub const DeviceAttributesFn = c.GhosttyTerminalDeviceAttributesFn;
+pub const DeviceAttributes = c.GhosttyDeviceAttributes;
 
 // Result constants
 pub const SUCCESS = c.GHOSTTY_SUCCESS;

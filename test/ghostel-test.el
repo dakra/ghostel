@@ -482,6 +482,101 @@ cell, so the visual line width must equal the terminal column count."
       (kill-buffer buf))))
 
 ;; -----------------------------------------------------------------------
+;; Test: encode-key with kitty keyboard protocol active
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-encode-key-kitty-backspace ()
+  "Test that backspace is correctly encoded when kitty keyboard mode is active."
+  (let* ((term (ghostel--new 25 80 1000))
+         (sent-bytes nil))
+    ;; Activate kitty keyboard protocol (flags=5: disambiguate + report-alternates)
+    ;; by feeding CSI = 5 u to the terminal
+    (ghostel--write-input term "\e[=5u")
+    ;; Capture what ghostel--flush-output sends
+    (cl-letf (((symbol-function 'ghostel--flush-output)
+               (lambda (data)
+                 (setq sent-bytes data))))
+      ;; Encode backspace — should succeed and send \x7f
+      (should (ghostel--encode-key term "backspace" ""))
+      (should sent-bytes)
+      (should (equal "\x7f" sent-bytes)))))
+
+(ert-deftest ghostel-test-encode-key-legacy-backspace ()
+  "Test that backspace is correctly encoded in legacy mode (no kitty)."
+  (let* ((term (ghostel--new 25 80 1000))
+         (sent-bytes nil))
+    ;; No kitty mode set — legacy encoding
+    (cl-letf (((symbol-function 'ghostel--flush-output)
+               (lambda (data)
+                 (setq sent-bytes data))))
+      (should (ghostel--encode-key term "backspace" ""))
+      (should sent-bytes)
+      (should (equal "\x7f" sent-bytes)))))
+
+(ert-deftest ghostel-test-da-response ()
+  "Test that the terminal responds to DA1 queries."
+  (let* ((term (ghostel--new 25 80 1000))
+         (sent-bytes nil))
+    (cl-letf (((symbol-function 'ghostel--flush-output)
+               (lambda (data)
+                 (setq sent-bytes (concat sent-bytes data)))))
+      ;; Feed DA1 query: CSI c
+      (ghostel--write-input term "\e[c")
+      ;; Should have responded with DA1 (CSI ? 62 ; 22 c)
+      (should sent-bytes)
+      (should (string-match-p "\e\\[\\?62;22c" sent-bytes)))))
+
+(ert-deftest ghostel-test-fish-backspace ()
+  "Test backspace works with fish shell."
+  :tags '(:fish)
+  (skip-unless (executable-find "fish"))
+  (let ((buf (generate-new-buffer " *ghostel-test-fish*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (setq ghostel--term (ghostel--new 25 80 1000))
+          (let* ((process-environment
+                  (append (list "TERM=xterm-256color"
+                                "COLORTERM=truecolor"
+                                "COLUMNS=80" "LINES=25")
+                          process-environment))
+                 (proc (make-process
+                        :name "ghostel-test-fish"
+                        :buffer buf
+                        :command '("/bin/sh" "-c"
+                                   "stty erase '^?' 2>/dev/null; exec fish --no-config")
+                        :connection-type 'pty
+                        :filter #'ghostel--filter)))
+            (setq ghostel--process proc)
+            (set-process-coding-system proc 'binary 'binary)
+            (set-process-window-size proc 25 80)
+            (set-process-query-on-exit-flag proc nil)
+            ;; Wait for fish init (may need longer for DA query handshake)
+            (dotimes (_ 50) (accept-process-output proc 0.2))
+            (should (process-live-p proc))
+
+            ;; Type "abc" then backspace
+            (process-send-string proc "abc")
+            (dotimes (_ 10) (accept-process-output proc 0.2))
+            (let ((state (ghostel--debug-state ghostel--term)))
+              (should (string-match-p "abc" state)))
+
+            ;; Send backspace (\x7f) and verify it works
+            (process-send-string proc "\x7f")
+            (dotimes (_ 10) (accept-process-output proc 0.2))
+            (when ghostel--pending-output
+              (let ((combined (apply #'concat
+                                     (nreverse ghostel--pending-output))))
+                (setq ghostel--pending-output nil)
+                (ghostel--write-input ghostel--term combined)))
+            (let ((state (ghostel--debug-state ghostel--term)))
+              (should (string-match-p "ab" state))
+              (should-not (string-match-p "abc" state)))
+
+            (delete-process proc)))
+      (kill-buffer buf))))
+
+;; -----------------------------------------------------------------------
 ;; Test: update-directory
 ;; -----------------------------------------------------------------------
 
@@ -1268,6 +1363,41 @@ cell, so the visual line width must equal the terminal column count."
         (should (equal sent '("abc")))
         (should-not ghostel--input-buffer)))))
 
+;; -----------------------------------------------------------------------
+;; Test: send-encoded sets last-send-time on encoder success
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-send-encoded-sets-send-time ()
+  "When the native encoder succeeds, last-send-time is updated."
+  (with-temp-buffer
+    (let ((ghostel--term 'fake)
+          (ghostel--last-send-time nil))
+      ;; Stub encode-key to return non-nil (success)
+      (cl-letf (((symbol-function 'ghostel--encode-key)
+                 (lambda (_term _key _mods &optional _utf8) t)))
+        (ghostel--send-encoded "backspace" "")
+        (should ghostel--last-send-time)))))
+
+(ert-deftest ghostel-test-send-encoded-no-send-time-on-fallback ()
+  "When the encoder fails, last-send-time is set by send-key, not send-encoded."
+  (with-temp-buffer
+    (let ((ghostel--term 'fake)
+          (ghostel--process nil)
+          (ghostel--last-send-time nil)
+          (ghostel--input-buffer nil)
+          (ghostel--input-timer nil)
+          (ghostel-input-coalesce-delay 0))
+      ;; Stub encode-key to return nil (failure) — triggers raw fallback
+      (cl-letf (((symbol-function 'ghostel--encode-key)
+                 (lambda (_term _key _mods &optional _utf8) nil))
+                ((symbol-function 'process-live-p) (lambda (_) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_proc _str) nil)))
+        (setq ghostel--process 'fake)
+        (ghostel--send-encoded "backspace" "")
+        ;; send-key sets last-send-time via the fallback path
+        (should ghostel--last-send-time)))))
+
 (defconst ghostel-test--elisp-tests
   '(ghostel-test-raw-key-sequences
     ghostel-test-modifier-number
@@ -1292,7 +1422,9 @@ cell, so the visual line width must equal the terminal column count."
     ghostel-test-immediate-redraw-disabled-when-zero
     ghostel-test-input-coalesce-buffers-single-chars
     ghostel-test-input-coalesce-disabled
-    ghostel-test-input-flush-sends-buffered)
+    ghostel-test-input-flush-sends-buffered
+    ghostel-test-send-encoded-sets-send-time
+    ghostel-test-send-encoded-no-send-time-on-fallback)
   "Tests that require only Elisp (no native module).")
 
 (defun ghostel-test-run-elisp ()
