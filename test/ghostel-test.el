@@ -234,6 +234,35 @@
     (should (equal "HELLO normal" (ghostel-test--row0 term))))) ; styled text content
 
 ;; -----------------------------------------------------------------------
+;; Test: SGR 2 (dim/faint) renders with dimmed foreground color
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-dim-text ()
+  "Test that SGR 2 (faint) produces a dimmed foreground color, not :weight light."
+  (let ((buf (generate-new-buffer " *ghostel-test-dim*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            ;; Set a known palette so we can predict the dimmed color.
+            ;; Default FG=#ffffff, default BG=#000000, red=#ff0000.
+            (let ((rest (apply #'concat (make-list 14 "#000000"))))
+              (ghostel--set-palette term
+                                    (concat "#000000" "#ff0000" rest
+                                            "#ffffff" "#000000")))
+            ;; Dim text with default foreground
+            (ghostel--write-input term "\e[2mDIM\e[0m ok")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should face)                                   ; face property exists
+              (when face
+                ;; Should have a :foreground (dimmed color), not :weight light
+                (should (plist-get face :foreground))         ; dimmed :foreground set
+                (should-not (eq 'light (plist-get face :weight)))))))  ; no :weight light
+      (kill-buffer buf))))
+
+;; -----------------------------------------------------------------------
 ;; Test: multi-byte character rendering (box drawing, Unicode)
 ;; -----------------------------------------------------------------------
 

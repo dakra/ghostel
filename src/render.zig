@@ -63,6 +63,16 @@ fn colorEql(a: ?gt.ColorRgb, b: ?gt.ColorRgb) bool {
     return a.?.r == b.?.r and a.?.g == b.?.g and a.?.b == b.?.b;
 }
 
+/// Blend a foreground color toward a background color to produce a "dim" effect.
+/// Uses ~65% foreground / ~35% background weighting.
+fn dimColor(fg: gt.ColorRgb, bg: gt.ColorRgb) gt.ColorRgb {
+    return .{
+        .r = @intCast((@as(u16, fg.r) * 166 + @as(u16, bg.r) * 90) / 256),
+        .g = @intCast((@as(u16, fg.g) * 166 + @as(u16, bg.g) * 90) / 256),
+        .b = @intCast((@as(u16, fg.b) * 166 + @as(u16, bg.b) * 90) / 256),
+    };
+}
+
 /// Format an RGB color as "#RRGGBB" into a buffer.
 fn formatColor(color: gt.ColorRgb, buf: *[7]u8) []const u8 {
     const hex = "0123456789abcdef";
@@ -123,13 +133,23 @@ fn applyStyle(env: emacs.Env, start: i64, end: i64, style: CellStyle, default_fg
 
     var fg_buf: [7]u8 = undefined;
     var bg_buf: [7]u8 = undefined;
+    var dim_buf: [7]u8 = undefined;
 
     const effective_fg = if (style.inverse) (style.bg orelse default_bg) else (style.fg orelse default_fg);
     const effective_bg = if (style.inverse) (style.fg orelse default_fg) else (style.bg orelse default_bg);
 
     const s = &emacs.sym;
 
-    if (!colorEql(style.fg, null) or style.inverse) {
+    if (style.faint) {
+        // Dim text: blend foreground toward background to reduce intensity.
+        // Always set :foreground since we modify the color itself.
+        const dimmed = dimColor(effective_fg, effective_bg);
+        const dim_str = formatColor(dimmed, &dim_buf);
+        props[prop_count] = s.@":foreground";
+        prop_count += 1;
+        props[prop_count] = env.makeString(dim_str);
+        prop_count += 1;
+    } else if (!colorEql(style.fg, null) or style.inverse) {
         const fg_str = formatColor(effective_fg, &fg_buf);
         props[prop_count] = s.@":foreground";
         prop_count += 1;
@@ -149,13 +169,6 @@ fn applyStyle(env: emacs.Env, start: i64, end: i64, style: CellStyle, default_fg
         props[prop_count] = s.@":weight";
         prop_count += 1;
         props[prop_count] = s.bold;
-        prop_count += 1;
-    }
-
-    if (style.faint) {
-        props[prop_count] = s.@":weight";
-        prop_count += 1;
-        props[prop_count] = s.light;
         prop_count += 1;
     }
 
