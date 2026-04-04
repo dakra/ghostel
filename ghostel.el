@@ -1031,6 +1031,7 @@ pasted using bracketed paste."
 (defun ghostel--mouse-press (event)
   "Handle mouse button press EVENT for terminal mouse tracking."
   (interactive "e")
+  (select-window (posn-window (event-start event)))
   (when (and ghostel--term ghostel--process (process-live-p ghostel--process))
     (let* ((posn (event-start event))
            (col-row (posn-col-row posn))
