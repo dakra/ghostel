@@ -386,6 +386,132 @@ re-sync from libghostty so the buffer reflects the LATE rows."
       (kill-buffer buf))))
 
 ;; -----------------------------------------------------------------------
+;; Test: emacs mode preserves point across a live redraw
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-emacs-mode-preserves-point ()
+  "In emacs mode, point stays put while the terminal keeps running.
+The delayed redraw path always preserves point in emacs mode,
+unlike semi-char mode where it tracks the terminal cursor."
+  (let ((buf (generate-new-buffer " *ghostel-test-emacs-pt*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (setq ghostel--term (ghostel--new 5 80 1000))
+          (setq ghostel--term-rows 5)
+          ;; Write some rows and redraw to populate the buffer.
+          (dotimes (i 10)
+            (ghostel--write-input ghostel--term
+                                  (format "row-%02d\r\n" i)))
+          (let ((inhibit-read-only t))
+            (ghostel--redraw ghostel--term t))
+          ;; Enter emacs mode and navigate to the top.
+          (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                    ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+            (ghostel-emacs-mode))
+          (goto-char (point-min))
+          (let ((mark (point)))
+            ;; More output streams in. Run the delayed redraw
+            ;; synchronously (as the timer would).
+            (dotimes (i 5)
+              (ghostel--write-input ghostel--term
+                                    (format "new-%02d\r\n" i)))
+            (ghostel--delayed-redraw buf)
+            ;; Point still at point-min — emacs mode preserved it.
+            (should (= (point) mark)))
+          ;; New rows are visible in the buffer.
+          (let ((content (buffer-substring-no-properties
+                          (point-min) (point-max))))
+            (should (string-match-p "new-04" content))))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+;; -----------------------------------------------------------------------
+;; Test: copy mode freezes redraws
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-copy-mode-freezes-redraws ()
+  "In copy mode, `ghostel--delayed-redraw' is a no-op."
+  (let ((buf (generate-new-buffer " *ghostel-test-copy-freeze*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (setq ghostel--term (ghostel--new 5 80 1000))
+          (setq ghostel--term-rows 5)
+          (dotimes (i 3)
+            (ghostel--write-input ghostel--term
+                                  (format "initial-%d\r\n" i)))
+          (let ((inhibit-read-only t))
+            (ghostel--redraw ghostel--term t))
+          (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                    ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+            (ghostel-copy-mode))
+          (let ((snapshot (buffer-substring-no-properties
+                           (point-min) (point-max))))
+            ;; Feed more output and attempt a redraw.
+            (dotimes (i 3)
+              (ghostel--write-input ghostel--term
+                                    (format "frozen-%d\r\n" i)))
+            (ghostel--delayed-redraw buf)
+            ;; Buffer is unchanged — copy mode gated the redraw.
+            (should (equal snapshot
+                           (buffer-substring-no-properties
+                            (point-min) (point-max)))))
+          ;; Exiting copy mode lets the redraw catch up.
+          (ghostel-copy-mode-exit)
+          (let ((inhibit-read-only t))
+            (ghostel--redraw ghostel--term t))
+          (let ((content (buffer-substring-no-properties
+                          (point-min) (point-max))))
+            (should (string-match-p "frozen-2" content))))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+;; -----------------------------------------------------------------------
+;; Test: line mode save/restore around redraw
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-line-mode-freezes-redraws ()
+  "Line mode suppresses delayed redraws so in-progress input is not clobbered.
+Output keeps flowing into libghostty internally and catches up
+when the user exits line mode via `ghostel-semi-char-mode' or
+`ghostel-line-mode-send'."
+  (let ((buf (generate-new-buffer " *ghostel-test-line-freeze*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (setq ghostel--term (ghostel--new 5 80 1000))
+          (setq ghostel--term-rows 5)
+          (setq ghostel--process 'fake-proc)
+          ;; Emit an OSC 133 prompt marker so line mode can find its input point.
+          (ghostel--write-input ghostel--term
+                                "\e]133;A\e\\$ \e]133;B\e\\")
+          (let ((inhibit-read-only t))
+            (ghostel--redraw ghostel--term t))
+          (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                    ((symbol-function 'process-send-string) #'ignore)
+                    ((symbol-function 'ghostel--invalidate) #'ignore)
+                    ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+            (ghostel-line-mode)
+            (should (eq ghostel--input-mode 'line))
+            (should (markerp ghostel--line-input-start))
+            ;; Type some input locally.
+            (insert "hello world")
+            (should (equal (ghostel--line-mode-input-text) "hello world"))
+            ;; Feed more output to libghostty and run the delayed-redraw.
+            ;; The redraw should be gated by terminal-live-p and do
+            ;; nothing, leaving our input intact.
+            (ghostel--write-input ghostel--term "background-output\r\n")
+            (ghostel--delayed-redraw buf)
+            (should (equal (ghostel--line-mode-input-text) "hello world"))
+            ;; Exiting line mode forces a fresh redraw that catches up.
+            (ghostel-semi-char-mode)
+            (let ((content (buffer-substring-no-properties
+                            (point-min) (point-max))))
+              (should (string-match-p "background-output" content))
+              ;; The in-progress input was discarded on teardown.
+              (should-not (string-match-p "hello world" content)))))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+;; -----------------------------------------------------------------------
 ;; Test: clear screen (ghostel-clear)
 ;; -----------------------------------------------------------------------
 
@@ -2893,19 +3019,27 @@ rendered by `ghostel--delayed-redraw'.  This is the exact real-world path."
               (with-current-buffer buf
                 (ghostel-mode)
                 (setq ghostel--term 'fake-term)
-                (setq ghostel--copy-mode-active nil))
+                (setq ghostel--input-mode 'semi-char))
               ;; other buffer is not ghostel-mode
               (ghostel-sync-theme)
               (should (memq 'fake-term palette-calls))    ; palette applied to ghostel buffer
               (should (memq 'fake-term redraw-calls))     ; redraw called for ghostel buffer
 
-              ;; Verify copy-mode skips redraw
+              ;; Verify copy mode (frozen) skips redraw
               (setq palette-calls nil redraw-calls nil)
               (with-current-buffer buf
-                (setq ghostel--copy-mode-active t))
+                (setq ghostel--input-mode 'copy))
               (ghostel-sync-theme)
               (should (memq 'fake-term palette-calls))    ; palette still applied in copy mode
-              (should-not (memq 'fake-term redraw-calls))) ; redraw skipped in copy mode
+              (should-not (memq 'fake-term redraw-calls)) ; redraw skipped in copy mode
+
+              ;; Verify emacs mode (unfrozen) still redraws
+              (setq palette-calls nil redraw-calls nil)
+              (with-current-buffer buf
+                (setq ghostel--input-mode 'emacs))
+              (ghostel-sync-theme)
+              (should (memq 'fake-term palette-calls))
+              (should (memq 'fake-term redraw-calls)))    ; redraw runs in emacs mode
           (kill-buffer buf)
           (kill-buffer other))))))
 
@@ -3017,15 +3151,14 @@ buffer and hand nil to the native module."
           (ghostel--set-cursor-style 1 nil)
           (should (null cursor-type))                       ; cursor hidden
           ;; Enter copy mode — cursor should become visible
-          (let ((ghostel--copy-mode-active nil)
-                (ghostel--redraw-timer nil))
+          (let ((ghostel--redraw-timer nil))
             (ghostel-copy-mode)
-            (should ghostel--copy-mode-active)              ; in copy mode
+            (should (eq ghostel--input-mode 'copy))         ; in copy mode
             (should cursor-type)                            ; cursor visible
             (should (equal cursor-type (default-value 'cursor-type))) ; uses user default
             ;; Exit copy mode — cursor should be hidden again
             (ghostel-copy-mode-exit)
-            (should-not ghostel--copy-mode-active)          ; exited copy mode
+            (should (eq ghostel--input-mode 'semi-char))    ; exited copy mode
             (should (null cursor-type))))                   ; cursor hidden again
       (kill-buffer buf))))
 
@@ -3067,8 +3200,7 @@ buffer and hand nil to the native module."
             ;; post-command-hook) from creating overlays in this buffer.
             (should-not global-hl-line-mode))
           ;; Enter copy mode — local hl-line-mode should be enabled
-          (let ((ghostel--copy-mode-active nil)
-                (ghostel--redraw-timer nil))
+          (let ((ghostel--redraw-timer nil))
             (ghostel-copy-mode)
             (should (bound-and-true-p hl-line-mode))
             ;; Exit copy mode — local hl-line-mode disabled again
@@ -3167,7 +3299,7 @@ buffer and hand nil to the native module."
     (unwind-protect
         (with-current-buffer buf
           (ghostel-mode)
-          (let ((ghostel--copy-mode-active t)
+          (let ((ghostel--input-mode 'copy)
                 (ghostel--term 'fake-term)
                 (inhibit-read-only t))
             (insert (mapconcat #'number-to-string (number-sequence 1 20) "\n"))
@@ -3649,7 +3781,7 @@ buffer and hand nil to the native module."
   "Scroll intercept forwards events when mouse tracking is active."
   (let ((ghostel--term 'fake)
         (ghostel--process 'fake)
-        (ghostel--copy-mode-active nil)
+        (ghostel--input-mode 'semi-char)
         (ghostel--scroll-intercept-active t)
         (mouse-event-args nil)
         ;; Fake wheel-up event at row 5, col 10
@@ -3687,7 +3819,7 @@ buffer and hand nil to the native module."
   "Scroll intercept re-dispatches when mouse tracking is off."
   (let ((ghostel--term 'fake)
         (ghostel--process 'fake)
-        (ghostel--copy-mode-active nil)
+        (ghostel--input-mode 'semi-char)
         (ghostel--scroll-intercept-active t)
         (fake-up-event `(wheel-up (,(selected-window) 1 (10 . 5) 0)))
         (fake-down-event `(wheel-down (,(selected-window) 1 (10 . 5) 0))))
@@ -3712,16 +3844,16 @@ buffer and hand nil to the native module."
       (ghostel--reenable-scroll-intercept))))
 
 (ert-deftest ghostel-test-control-key-bindings ()
-  "All non-exception C-<letter> keys should be bound in ghostel-mode-map."
+  "All non-exception C-<letter> keys should be bound in semi-char-mode-map."
   (dolist (c (number-sequence ?a ?z))
     (let* ((key-str (format "C-%c" c))
            (key-vec (kbd key-str))
-           (binding (lookup-key ghostel-mode-map key-vec)))
+           (binding (lookup-key ghostel-semi-char-mode-map key-vec)))
       ;; Skip exceptions (may have sub-keymaps like C-c C-c)
       (unless (member key-str ghostel-keymap-exceptions)
         (should binding))))
   ;; C-@ should also be bound (sends NUL)
-  (should (lookup-key ghostel-mode-map (kbd "C-@"))))
+  (should (lookup-key ghostel-semi-char-mode-map (kbd "C-@"))))
 
 (ert-deftest ghostel-test-c-g-binding ()
   "C-g should be bound to `ghostel-send-C-g' in ghostel-mode-map."
@@ -3744,17 +3876,30 @@ buffer and hand nil to the native module."
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-meta-key-bindings ()
-  "All non-exception M-<letter> keys should be bound in ghostel-mode-map."
+  "All non-exception M-<letter> keys should be bound in semi-char-mode-map."
   (dolist (c (number-sequence ?a ?z))
     (let* ((key-str (format "M-%c" c))
            (key-vec (kbd key-str))
-           (binding (lookup-key ghostel-mode-map key-vec)))
+           (binding (lookup-key ghostel-semi-char-mode-map key-vec)))
       (unless (eq c ?y)  ; M-y is ghostel-yank-pop
         (if (member key-str ghostel-keymap-exceptions)
             (should-not (eq binding #'ghostel--send-event))
           (should (eq binding #'ghostel--send-event))))))
   ;; M-y should be bound to ghostel-yank-pop, not send-event
-  (should (eq (lookup-key ghostel-mode-map (kbd "M-y")) #'ghostel-yank-pop)))
+  (should (eq (lookup-key ghostel-semi-char-mode-map (kbd "M-y")) #'ghostel-yank-pop)))
+
+(ert-deftest ghostel-test-char-mode-key-bindings ()
+  "Char mode map should bind even keys in `ghostel-keymap-exceptions'."
+  ;; Every C-<letter> and M-<letter> is bound in char mode, including
+  ;; ones that semi-char mode reserves for Emacs.
+  (dolist (c (number-sequence ?a ?z))
+    (unless (memq c '(?i ?m))  ; C-i = TAB, C-m = RET handled separately
+      (should (lookup-key ghostel-char-mode-map (kbd (format "C-%c" c))))))
+  (dolist (c (number-sequence ?a ?z))
+    (should (lookup-key ghostel-char-mode-map (kbd (format "M-%c" c)))))
+  ;; The escape hatch is M-RET → semi-char.
+  (should (eq (lookup-key ghostel-char-mode-map (kbd "M-RET"))
+              #'ghostel-semi-char-mode)))
 
 ;; -----------------------------------------------------------------------
 ;; Test: ghostel-yank-pop DWIM
@@ -3803,6 +3948,427 @@ buffer and hand nil to the native module."
                (lambda (&rest _) (setq called t))))
       (ghostel-copy-mode-recenter)
       (should called))))
+
+;; -----------------------------------------------------------------------
+;; Test: input mode state + predicates
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-input-mode-default-is-semi-char ()
+  "A fresh `ghostel-mode' buffer starts in semi-char mode."
+  (let ((buf (generate-new-buffer " *ghostel-test-mode-default*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (should (eq ghostel--input-mode 'semi-char))
+          (should (eq (current-local-map) ghostel-semi-char-mode-map))
+          (should (null mode-line-process))
+          (should (ghostel--buffer-editable-p))
+          (should (ghostel--terminal-live-p))
+          (should-not (ghostel--terminal-frozen-p)))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-input-mode-predicates ()
+  "The ghostel--*-p predicates reflect the current `ghostel--input-mode'."
+  (let ((ghostel--input-mode 'semi-char))
+    (should (ghostel--buffer-editable-p))
+    (should (ghostel--terminal-live-p))
+    (should-not (ghostel--terminal-frozen-p)))
+  (let ((ghostel--input-mode 'char))
+    (should (ghostel--buffer-editable-p))
+    (should (ghostel--terminal-live-p)))
+  (let ((ghostel--input-mode 'emacs))
+    (should-not (ghostel--buffer-editable-p))
+    (should (ghostel--terminal-live-p)))
+  (let ((ghostel--input-mode 'copy))
+    (should-not (ghostel--buffer-editable-p))
+    (should-not (ghostel--terminal-live-p))
+    (should (ghostel--terminal-frozen-p)))
+  ;; Line mode is not frozen in the copy-mode sense, but live redraws
+  ;; are suppressed while the user composes input.
+  (let ((ghostel--input-mode 'line))
+    (should-not (ghostel--buffer-editable-p))
+    (should-not (ghostel--terminal-live-p))
+    (should-not (ghostel--terminal-frozen-p))))
+
+;; -----------------------------------------------------------------------
+;; Test: char mode
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-char-mode-enter-exit ()
+  "ghostel-char-mode swaps the local map, sets mode-line, and M-RET exits."
+  (let ((buf (generate-new-buffer " *ghostel-test-char-mode*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+              (ghostel-char-mode)
+              (should (eq ghostel--input-mode 'char))
+              (should (eq (current-local-map) ghostel-char-mode-map))
+              (should (equal mode-line-process ":Char"))
+              ;; Switch back via the same function that M-RET invokes.
+              (ghostel-semi-char-mode)
+              (should (eq ghostel--input-mode 'semi-char))
+              (should (eq (current-local-map) ghostel-semi-char-mode-map))
+              (should (null mode-line-process)))))
+      (kill-buffer buf))))
+
+;; -----------------------------------------------------------------------
+;; Test: emacs mode
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-emacs-mode-enter-exit ()
+  "ghostel-emacs-mode sets read-only, swaps map, and self-insert exits."
+  (let ((buf (generate-new-buffer " *ghostel-test-emacs-mode*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+              (ghostel-emacs-mode)
+              (should (eq ghostel--input-mode 'emacs))
+              (should (eq (current-local-map) ghostel-emacs-mode-map))
+              (should (equal mode-line-process ":Emacs"))
+              (should buffer-read-only)
+              (ghostel-semi-char-mode)
+              (should (eq ghostel--input-mode 'semi-char))
+              (should-not buffer-read-only)
+              (should (null mode-line-process)))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-emacs-mode-is-unfrozen ()
+  "Emacs mode leaves the terminal live so redraws keep running."
+  (let ((buf (generate-new-buffer " *ghostel-test-emacs-live*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+              (ghostel-emacs-mode)
+              ;; Terminal is live in emacs mode — unlike copy mode.
+              (should (ghostel--terminal-live-p))
+              (should-not (ghostel--terminal-frozen-p)))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-emacs-mode-exit-and-send ()
+  "Self-insert in emacs mode returns to semi-char and forwards the key."
+  (let ((buf (generate-new-buffer " *ghostel-test-emacs-send*"))
+        (self-insert-called nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore)
+                      ((symbol-function 'ghostel--self-insert)
+                       (lambda (&rest _) (setq self-insert-called t))))
+              (ghostel-emacs-mode)
+              (should (eq ghostel--input-mode 'emacs))
+              (ghostel-emacs-mode-exit-and-send)
+              (should (eq ghostel--input-mode 'semi-char))
+              (should self-insert-called))))
+      (kill-buffer buf))))
+
+;; -----------------------------------------------------------------------
+;; Test: copy ↔ emacs transitions preserve read-only state
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-copy-to-emacs-transition ()
+  "copy → emacs unfreezes the terminal without re-toggling read-only."
+  (let ((buf (generate-new-buffer " *ghostel-test-copy-to-emacs*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake)
+                (ghostel--redraw-timer nil))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+              (ghostel-copy-mode)
+              (should (eq ghostel--input-mode 'copy))
+              (should buffer-read-only)
+              (ghostel-emacs-mode)
+              (should (eq ghostel--input-mode 'emacs))
+              (should buffer-read-only)               ; still read-only
+              (should (ghostel--terminal-live-p))     ; but now unfrozen
+              (ghostel-semi-char-mode)
+              (should (eq ghostel--input-mode 'semi-char))
+              (should-not buffer-read-only))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-emacs-to-copy-transition ()
+  "emacs → copy freezes the terminal without re-toggling read-only."
+  (let ((buf (generate-new-buffer " *ghostel-test-emacs-to-copy*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake)
+                (ghostel--redraw-timer (run-at-time 999 nil #'ignore)))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+              (unwind-protect
+                  (progn
+                    (ghostel-emacs-mode)
+                    (should (eq ghostel--input-mode 'emacs))
+                    (should buffer-read-only)
+                    (ghostel-copy-mode)
+                    (should (eq ghostel--input-mode 'copy))
+                    (should buffer-read-only)
+                    (should (ghostel--terminal-frozen-p))
+                    (should (null ghostel--redraw-timer)))
+                (when (and ghostel--redraw-timer
+                           (timerp ghostel--redraw-timer))
+                  (cancel-timer ghostel--redraw-timer))))))
+      (kill-buffer buf))))
+
+;; -----------------------------------------------------------------------
+;; Test: mode switching keybindings live on the base map
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-mode-switch-keybindings ()
+  "C-c C-e/C-j/M-d/C-l are bound to the right mode commands."
+  (should (eq (lookup-key ghostel-mode-map (kbd "C-c C-e"))
+              #'ghostel-emacs-mode))
+  (should (eq (lookup-key ghostel-mode-map (kbd "C-c C-j"))
+              #'ghostel-semi-char-mode))
+  (should (eq (lookup-key ghostel-mode-map (kbd "C-c M-d"))
+              #'ghostel-char-mode))
+  (should (eq (lookup-key ghostel-mode-map (kbd "C-c C-l"))
+              #'ghostel-line-mode))
+  (should (eq (lookup-key ghostel-mode-map (kbd "C-c M-l"))
+              #'ghostel-clear-scrollback))
+  (should (eq (lookup-key ghostel-mode-map (kbd "C-c C-t"))
+              #'ghostel-copy-mode)))
+
+;; -----------------------------------------------------------------------
+;; Test: prompt navigation enters emacs mode (not copy mode)
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-prompt-nav-enters-emacs-mode ()
+  "ghostel-next-prompt auto-enters emacs mode, not copy mode."
+  (let ((buf (generate-new-buffer " *ghostel-test-prompt-nav*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore)
+                      ((symbol-function 'ghostel--navigate-next-prompt)
+                       (lambda (_n) nil))
+                      ((symbol-function 'ghostel--navigate-previous-prompt)
+                       (lambda (_n) nil)))
+              (ghostel-next-prompt 1)
+              (should (eq ghostel--input-mode 'emacs))
+              (ghostel-semi-char-mode)
+              (ghostel-previous-prompt 1)
+              (should (eq ghostel--input-mode 'emacs)))))
+      (kill-buffer buf))))
+
+;; -----------------------------------------------------------------------
+;; Test: mode mutual exclusivity
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-mode-mutual-exclusivity ()
+  "Entering any mode exits the others cleanly."
+  (let ((buf (generate-new-buffer " *ghostel-test-mutex*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+              ;; A round-trip through every mode returns to semi-char.
+              (ghostel-char-mode)  (should (eq ghostel--input-mode 'char))
+              (ghostel-emacs-mode) (should (eq ghostel--input-mode 'emacs))
+              (ghostel-copy-mode)  (should (eq ghostel--input-mode 'copy))
+              (ghostel-char-mode)  (should (eq ghostel--input-mode 'char))
+              (ghostel-semi-char-mode)
+              (should (eq ghostel--input-mode 'semi-char))
+              ;; Read-only flag is consistently off after returning.
+              (should-not buffer-read-only))))
+      (kill-buffer buf))))
+
+;; -----------------------------------------------------------------------
+;; Test: line mode
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-line-mode-find-prompt-end ()
+  "ghostel--line-mode-find-prompt-end returns the position after a prompt."
+  (with-temp-buffer
+    ;; No prompt property anywhere → nil
+    (insert "plain text")
+    (should-not (ghostel--line-mode-find-prompt-end))
+    ;; With prompt property
+    (erase-buffer)
+    (insert (propertize "$ " 'ghostel-prompt t))
+    (insert "")  ; cursor right after prompt
+    (should (= (ghostel--line-mode-find-prompt-end) 3))
+    ;; With prompt property followed by user-typed content
+    (erase-buffer)
+    (insert (propertize "$ " 'ghostel-prompt t))
+    (insert "ls -la")
+    (should (= (ghostel--line-mode-find-prompt-end) 3))))
+
+(ert-deftest ghostel-test-line-mode-requires-prompt ()
+  "ghostel-line-mode refuses to enter without a prompt marker."
+  (let ((buf (generate-new-buffer " *ghostel-test-line-noprompt*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake))
+            (cl-letf (((symbol-function 'ghostel--mode-enabled)
+                       (lambda (&rest _) nil)))
+              (should-error (ghostel-line-mode) :type 'user-error))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-line-mode-refuses-on-alt-screen ()
+  "ghostel-line-mode refuses to enter while a TUI is on the alt screen."
+  (let ((buf (generate-new-buffer " *ghostel-test-line-alt*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (insert (propertize "$ " 'ghostel-prompt t))
+          (let ((ghostel--term 'fake))
+            (cl-letf (((symbol-function 'ghostel--mode-enabled)
+                       (lambda (_term mode) (= mode 1049))))
+              (should-error (ghostel-line-mode) :type 'user-error))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-line-mode-send ()
+  "ghostel-line-mode-send ships the input as one write followed by \\n."
+  (let ((buf (generate-new-buffer " *ghostel-test-line-send*"))
+        (sent nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (insert (propertize "$ " 'ghostel-prompt t))
+          (let ((ghostel--term 'fake)
+                (ghostel--process 'fake-proc))
+            (cl-letf (((symbol-function 'ghostel--mode-enabled)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'process-live-p) (lambda (_p) t))
+                      ((symbol-function 'process-send-string)
+                       (lambda (_p s) (setq sent s)))
+                      ((symbol-function 'ghostel--redraw) #'ignore)
+                      ((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+              (ghostel-line-mode)
+              (should (eq ghostel--input-mode 'line))
+              (should (markerp ghostel--line-input-start))
+              ;; Type some input.
+              (insert "ls -la")
+              (ghostel-line-mode-send)
+              (should (equal sent "ls -la\n"))
+              ;; Send also transitions back to semi-char mode.
+              (should (eq ghostel--input-mode 'semi-char))
+              ;; History retains the sent line even after teardown.
+              (should (member "ls -la" ghostel--line-mode-history)))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-line-mode-history ()
+  "M-p / M-n cycle through the history ring."
+  (let ((buf (generate-new-buffer " *ghostel-test-line-history*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (insert (propertize "$ " 'ghostel-prompt t))
+          (let ((ghostel--term 'fake)
+                (ghostel--process 'fake-proc))
+            (cl-letf (((symbol-function 'ghostel--mode-enabled)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'process-live-p) (lambda (_p) t))
+                      ((symbol-function 'process-send-string) #'ignore)
+                      ((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+              (ghostel-line-mode)
+              (setq ghostel--line-mode-history '("third" "second" "first"))
+              (ghostel-line-mode-history-previous)
+              (should (equal (ghostel--line-mode-input-text) "third"))
+              (ghostel-line-mode-history-previous)
+              (should (equal (ghostel--line-mode-input-text) "second"))
+              (ghostel-line-mode-history-previous)
+              (should (equal (ghostel--line-mode-input-text) "first"))
+              (ghostel-line-mode-history-next)
+              (should (equal (ghostel--line-mode-input-text) "second"))
+              (ghostel-line-mode-history-next)
+              (should (equal (ghostel--line-mode-input-text) "third"))
+              (ghostel-line-mode-history-next)
+              (should (equal (ghostel--line-mode-input-text) "")))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-line-mode-interrupt ()
+  "C-c C-c discards input and sends C-c to the shell."
+  (let ((buf (generate-new-buffer " *ghostel-test-line-interrupt*"))
+        (sent nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (insert (propertize "$ " 'ghostel-prompt t))
+          (let ((ghostel--term 'fake)
+                (ghostel--process 'fake-proc))
+            (cl-letf (((symbol-function 'ghostel--mode-enabled)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'process-live-p) (lambda (_p) t))
+                      ((symbol-function 'process-send-string)
+                       (lambda (_p s) (setq sent s)))
+                      ((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+              (ghostel-line-mode)
+              (goto-char (point-max))
+              (insert "half-typed")
+              (ghostel-line-mode-interrupt)
+              (should (equal sent "\C-c"))
+              (should (equal (ghostel--line-mode-input-text) "")))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-line-mode-eof-on-empty ()
+  "C-d at an empty input sends EOF; otherwise deletes forward."
+  (let ((buf (generate-new-buffer " *ghostel-test-line-eof*"))
+        (sent nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (insert (propertize "$ " 'ghostel-prompt t))
+          (let ((ghostel--term 'fake)
+                (ghostel--process 'fake-proc))
+            (cl-letf (((symbol-function 'ghostel--mode-enabled)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'process-live-p) (lambda (_p) t))
+                      ((symbol-function 'process-send-string)
+                       (lambda (_p s) (setq sent s)))
+                      ((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+              (ghostel-line-mode)
+              ;; Empty input → EOF.
+              (ghostel-line-mode-delete-char-or-eof)
+              (should (equal sent "\C-d")))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-line-mode-teardown-on-exit ()
+  "Exiting line mode cleans up the marker and deletes in-progress input."
+  (let ((buf (generate-new-buffer " *ghostel-test-line-teardown*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (insert (propertize "$ " 'ghostel-prompt t))
+          (let ((ghostel--term 'fake)
+                (ghostel--process 'fake-proc))
+            (cl-letf (((symbol-function 'ghostel--mode-enabled)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'ghostel--redraw) #'ignore)
+                      ((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+              (ghostel-line-mode)
+              (insert "abandoned")
+              (ghostel-semi-char-mode)
+              (should (eq ghostel--input-mode 'semi-char))
+              (should (null ghostel--line-input-start))
+              ;; The abandoned input is gone from the buffer.
+              (should-not (string-match-p "abandoned"
+                                          (buffer-string))))))
+      (kill-buffer buf))))
 
 ;; -----------------------------------------------------------------------
 ;; Test: ghostel-send-next-key
@@ -4262,7 +4828,27 @@ while :; do sleep 0.1; done'\n")
     ghostel-test-meta-key-bindings
     ghostel-test-yank-pop-after-yank
     ghostel-test-yank-pop-no-preceding-yank
+    ghostel-test-char-mode-key-bindings
     ghostel-test-copy-mode-recenter
+    ghostel-test-input-mode-default-is-semi-char
+    ghostel-test-input-mode-predicates
+    ghostel-test-char-mode-enter-exit
+    ghostel-test-emacs-mode-enter-exit
+    ghostel-test-emacs-mode-is-unfrozen
+    ghostel-test-emacs-mode-exit-and-send
+    ghostel-test-copy-to-emacs-transition
+    ghostel-test-emacs-to-copy-transition
+    ghostel-test-mode-switch-keybindings
+    ghostel-test-prompt-nav-enters-emacs-mode
+    ghostel-test-mode-mutual-exclusivity
+    ghostel-test-line-mode-find-prompt-end
+    ghostel-test-line-mode-requires-prompt
+    ghostel-test-line-mode-refuses-on-alt-screen
+    ghostel-test-line-mode-send
+    ghostel-test-line-mode-history
+    ghostel-test-line-mode-interrupt
+    ghostel-test-line-mode-eof-on-empty
+    ghostel-test-line-mode-teardown-on-exit
     ghostel-test-send-next-key-control-x
     ghostel-test-send-next-key-control-h
     ghostel-test-send-next-key-regular-char

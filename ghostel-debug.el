@@ -371,7 +371,7 @@ state, and settings into *ghostel-debug* for pasting into bug reports."
                             :force ghostel--force-next-redraw
                             :pending (length ghostel--pending-output)
                             :timer (and ghostel--redraw-timer t)
-                            :copy ghostel--copy-mode-active
+                            :input-mode ghostel--input-mode
                             :dec2026 (and ghostel--term
                                           (ghostel--mode-enabled ghostel--term 2026))))
                 (let ((win (get-buffer-window ghostel-buf)))

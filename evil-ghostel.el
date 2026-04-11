@@ -36,7 +36,7 @@
   (and evil-ghostel-mode
        ghostel--term
        (not (ghostel--mode-enabled ghostel--term 1049))
-       (not ghostel--copy-mode-active)))
+       (eq ghostel--input-mode 'semi-char)))
 
 ;; ---------------------------------------------------------------------------
 ;; Cursor synchronization

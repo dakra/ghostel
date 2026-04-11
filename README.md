@@ -151,9 +151,39 @@ test "$INSIDE_EMACS" = 'ghostel'; and source "$EMACS_GHOSTEL_PATH/etc/ghostel.fi
 ```
 </details>
 
-## Key Bindings
+## Input modes
 
-### Terminal mode
+Ghostel offers five eat.el-style input modes.  You enter a ghostel
+buffer in **semi-char mode**; switch modes with the key bindings below
+and watch `mode-line-process` for the current mode indicator.
+
+| Mode        | Indicator | Terminal | Buffer      | Purpose                                       |
+|-------------|-----------|----------|-------------|-----------------------------------------------|
+| semi-char   | *(none)*  | live     | editable    | default — type to terminal, `C-c` reserved    |
+| char        | `:Char`   | live     | editable    | TUI apps — *all* keys go to the terminal      |
+| Emacs       | `:Emacs`  | live     | read-only   | search/read while the terminal keeps running  |
+| copy        | `:Copy`   | frozen   | read-only   | precise text selection without scroll churn   |
+| line        | `:Line`   | frozen\* | editable    | compose input with Emacs keys, send on `RET`  |
+
+\*In line mode output still feeds libghostty internally and catches up
+when you exit the mode.
+
+### Mode-switch keybindings (available from every live mode)
+
+| Key       | Action                                    |
+|-----------|-------------------------------------------|
+| `C-c C-j` | Switch to semi-char mode (universal exit) |
+| `C-c M-d` | Switch to char mode                       |
+| `C-c C-e` | Switch to Emacs mode                      |
+| `C-c C-t` | Toggle copy mode                          |
+| `C-c C-l` | Switch to line mode                       |
+| `M-RET`   | Char mode only: return to semi-char       |
+
+### Semi-char mode (default)
+
+Most keys are sent to the terminal.  Keys in
+`ghostel-keymap-exceptions` (default: `C-c`, `C-x`, `C-u`, `C-h`,
+`C-g`, `M-x`, `M-o`, `M-:`, `C-\`) pass through to Emacs.
 
 | Key         | Action                                 |
 |-------------|----------------------------------------|
@@ -162,44 +192,93 @@ test "$INSIDE_EMACS" = 'ghostel'; and source "$EMACS_GHOSTEL_PATH/etc/ghostel.fi
 | `C-c C-z`   | Send suspend (C-z)                     |
 | `C-c C-d`   | Send EOF (C-d)                         |
 | `C-c C-\`   | Send quit (C-\)                        |
-| `C-c C-t`   | Enter copy mode                        |
 | `C-c M-w`   | Copy entire scrollback to kill ring    |
 | `C-y`       | Yank from kill ring (bracketed paste)  |
 | `M-y`       | Yank-pop (cycle through kill ring)     |
 | `C-c C-y`   | Paste from kill ring                   |
-| `C-c C-l`   | Clear scrollback                       |
-| `C-c C-n`   | Jump to next prompt                    |
-| `C-c C-p`   | Jump to previous prompt                |
+| `C-c M-l`   | Clear scrollback                       |
+| `C-c C-n`   | Enter Emacs mode and jump to next prompt |
+| `C-c C-p`   | Enter Emacs mode and jump to previous prompt |
 | `C-c C-q`   | Send next key literally (escape hatch) |
 | Mouse wheel | Scroll through scrollback              |
 
-Keys listed in `ghostel-keymap-exceptions` (default: `C-c`, `C-x`, `C-u`,
-`C-h`, `C-g`, `M-x`, `M-o`, `M-:`, `C-\`) pass through to Emacs.
+### Char mode
+
+Entered with `C-c M-d`.  **All** keys (including
+`ghostel-keymap-exceptions`) are sent to the terminal.  Useful for TUI
+apps that want to bind `C-x`, `M-x`, `C-h`, etc. themselves.  `M-RET`
+(or `C-M-m`) is the sole escape hatch.
+
+### Emacs mode
+
+Entered with `C-c C-e`.  **The terminal keeps running**, the buffer is
+read-only, and standard Emacs bindings fall through to the global map.
+`isearch-forward`, `occur`, `M-x`, `C-SPC` + `M-w`, arrow keys, wheel
+scroll — all work unmodified.  The terminal keeps producing output and
+the buffer keeps growing, but your point stays where you navigated it
+(the delayed-redraw path preserves point in Emacs mode).  Type any
+character or press `q` to return to semi-char mode.
+
+Use this for searching through scrollback while a build is running,
+filtering streaming logs with `M-x occur`, marking and copying across
+the visible history, or running any buffer-based command over the
+terminal's output without having to freeze it.
 
 ### Copy mode
 
-Enter with `C-c C-t`. Standard Emacs navigation works.
-Normal letter keys exit copy mode and send the key to the terminal.
+Entered with `C-c C-t`.  The terminal is **frozen** — no live output
+updates the buffer until you exit.  Use this when you want to select
+text precisely without the terminal scrolling underneath your cursor.
+The aggressive copy-mode keymap exits on self-insert, so typing a
+letter sends it to the terminal and returns to semi-char mode.
 
 | Key           | Action                           |
 |---------------|----------------------------------|
 | `C-SPC`       | Set mark                         |
 | `M-w` / `C-w` | Copy selection and exit          |
-| `C-n` / `C-p` | Move line (scrolls at edges)     |
+| `C-n` / `C-p` | Move line                        |
 | `M-v` / `C-v` | Scroll page up / down            |
 | `M-<` / `M->` | Jump to top / bottom of buffer   |
-| `C-c C-n`     | Jump to next prompt              |
-| `C-c C-p`     | Jump to previous prompt          |
 | `C-l`         | Recenter viewport                |
-| `C-c C-t`     | Exit without copying             |
+| `q`           | Exit without copying             |
 | `a`–`z`       | Exit and send key to terminal    |
 
 Soft-wrapped newlines are automatically stripped from copied text.
 
+### Line mode
+
+Entered with `C-c C-l`.  Line mode buffers the user's input locally in
+Emacs — **no keystrokes are forwarded to the shell** while composing.
+Full Emacs editing (`M-b`, `M-DEL`, `C-y` yank, `transpose-words`,
+etc.) works on the input region.  Pressing `RET` sends the whole line
+to the shell in one write; bash receives it atomically, echoes and
+executes it.
+
+Line mode requires shell integration (OSC 133 prompt markers) so
+ghostel can locate where the input area starts, and refuses to enter
+while a fullscreen TUI is on the alternate screen.
+
+| Key         | Action                                   |
+|-------------|------------------------------------------|
+| *(letters)* | Edit local input (never sent char-by-char) |
+| `RET`       | Send the whole line to the shell         |
+| `C-c C-c`   | Discard input and send SIGINT            |
+| `C-d`       | Delete char, or send EOF at empty input  |
+| `M-p` / `M-n` | History ring: previous / next entry    |
+| `C-a`       | Move to beginning of input area          |
+| `C-c C-j`   | Exit to semi-char mode (discards input)  |
+
+Live redraws are suppressed in line mode so the in-progress input is
+never clobbered by output.  New output still feeds libghostty's
+internal state and shows up the moment you send the line or exit the
+mode.
+
+### Scrollback search outside copy mode
+
 The full scrollback is always rendered into the buffer as styled text,
 so `isearch`, `consult-line`, `occur`, `M-x flush-lines`, `C-x h` to
 select all, and any other buffer-based command work across the full
-history — even outside copy mode.
+history in **any** mode that has a read-only buffer (Emacs or copy).
 
 ## Features
 
@@ -436,7 +515,11 @@ When `evil-ghostel-mode` is active:
 | `M-x ghostel-other`            | Switch to next terminal or create one        |
 | `M-x ghostel-clear`            | Clear screen and scrollback                  |
 | `M-x ghostel-clear-scrollback` | Clear scrollback only                        |
-| `M-x ghostel-copy-mode`        | Enter copy mode                              |
+| `M-x ghostel-semi-char-mode`   | Switch to semi-char input mode (default)     |
+| `M-x ghostel-char-mode`        | Switch to char input mode                    |
+| `M-x ghostel-emacs-mode`       | Switch to Emacs input mode (read-only, live) |
+| `M-x ghostel-copy-mode`        | Enter copy mode (frozen)                     |
+| `M-x ghostel-line-mode`        | Switch to line input mode                    |
 | `M-x ghostel-copy-all`         | Copy entire scrollback to kill ring          |
 | `M-x ghostel-paste`            | Paste from kill ring                         |
 | `M-x ghostel-send-next-key`    | Send next key literally                      |
