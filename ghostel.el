@@ -973,19 +973,36 @@ exits back to semi-char mode (bound to \\`M-RET' /
 (defvar ghostel-emacs-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map ghostel-mode-map)
-    ;; Mouse bindings are intentionally omitted: mouse clicks, wheel
-    ;; scroll, drag-region etc. all fall through to the global map
-    ;; and give the user standard Emacs behavior on the read-only
-    ;; buffer.  Inherits the \\`C-c' prefix from `ghostel-mode-map'.
-    ;; No self-insert remap and no `q' binding: typing in a read-only
-    ;; buffer signals an error the normal Emacs way; the user exits
-    ;; via an explicit mode-switch (\\`C-c C-j' etc.).
+    ;; Typing forwards to the shell even though the buffer itself
+    ;; stays read-only.  `ghostel--self-insert' just sends the char
+    ;; to the PTY without touching the buffer, so it works fine
+    ;; regardless of `buffer-read-only'.  The terminal echoes the
+    ;; char back through the redraw pipeline at the terminal cursor
+    ;; position (bottom of the buffer); the user's point stays
+    ;; wherever they navigated because the delayed-redraw preserves
+    ;; point unconditionally in Emacs mode.
+    (define-key map [remap self-insert-command] #'ghostel--self-insert)
+    ;; Bare RET, TAB, DEL also forward to the shell so the user can
+    ;; submit a command, trigger completion, and delete characters
+    ;; from inside Emacs mode.
+    (define-key map (kbd "RET")       #'ghostel--send-event)
+    (define-key map (kbd "TAB")       #'ghostel--send-event)
+    (define-key map (kbd "DEL")       #'ghostel--send-event)
+    (define-key map (kbd "<backtab>") #'ghostel--send-event)
+    ;; `C-y' forwards to the shell via bracketed paste (same as
+    ;; semi-char mode).  Everything else — `C-n', `C-s', `M-x',
+    ;; arrow keys, wheel scroll, mouse — falls through to the
+    ;; global map so the user has full Emacs navigation.
+    (define-key map (kbd "C-y")       #'ghostel-yank)
+    (when (eq system-type 'darwin)
+      (define-key map (kbd "s-v")     #'ghostel-yank))
     map)
   "Keymap for Emacs mode.
-Read-only buffer on top of the live terminal; standard Emacs keys
-\(`isearch', `M-x', `C-SPC' mark, `M-w' copy, navigation) fall
-through to the global map.  Exit with any of the \\`C-c' prefix
-mode-switch commands (e.g. \\[ghostel-semi-char-mode]).")
+Typed characters are forwarded to the terminal so the user can
+keep driving the shell while navigating the read-only buffer with
+standard Emacs keys (`isearch', `occur', `M-x', `C-SPC' mark,
+arrow keys, wheel scroll — all unmodified).  Exit with any of the
+\\`C-c' prefix mode-switch commands (e.g. \\[ghostel-semi-char-mode]).")
 
 ;; Char mode must override minor-mode keymaps.  Without this, a user
 ;; config that binds, say, \\`C-c' as a prefix in a global minor mode
@@ -1834,6 +1851,28 @@ fullscreen TUI is on the alt screen."
       (use-local-map ghostel-line-mode-map)
       (setq mode-line-process ":Line")
       (force-mode-line-update)
+      ;; Protect everything before the input marker with a read-only
+      ;; text property so commands that would modify the buffer
+      ;; (self-insert, delete-char, yank, …) signal `text-read-only'
+      ;; when point is in the scrollback / previous output region.
+      ;; The redraw path binds `inhibit-read-only' so it is
+      ;; unaffected.
+      ;;
+      ;; Subtle: `rear-nonsticky' must land on ONLY the last char of
+      ;; the read-only region (the char right before the marker),
+      ;; not the whole region.  If rear-nonsticky covers the whole
+      ;; region, Emacs allows insertion at any position inside it
+      ;; because the inherited read-only flag is "non-sticky"
+      ;; everywhere.  Setting it only on the final char makes
+      ;; insertion at the marker (i.e., the first input character)
+      ;; legal while insertions in the middle of the region still
+      ;; signal `text-read-only'.
+      (let ((inhibit-read-only t)
+            (marker-pos (marker-position ghostel--line-input-start)))
+        (put-text-property (point-min) marker-pos 'read-only t)
+        (when (> marker-pos (point-min))
+          (put-text-property (1- marker-pos) marker-pos
+                             'rear-nonsticky '(read-only))))
       (goto-char (marker-position ghostel--line-input-start))
       (message "Line mode: RET sends the whole line; C-c C-j to exit"))))
 
@@ -1875,6 +1914,12 @@ re-materializes the viewport from libghostty."
                (process-live-p ghostel--process))
       (process-send-string ghostel--process input)))
   (ghostel--line-mode-delete-input)
+  ;; Drop the `read-only' and `rear-nonsticky' properties that
+  ;; protected the scrollback region during line mode so the buffer
+  ;; is editable again.
+  (let ((inhibit-read-only t))
+    (remove-text-properties (point-min) (point-max)
+                            '(read-only nil rear-nonsticky nil)))
   (when (markerp ghostel--line-input-start)
     (set-marker ghostel--line-input-start nil))
   (setq ghostel--line-input-start nil)

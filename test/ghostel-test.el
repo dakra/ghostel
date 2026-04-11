@@ -4053,10 +4053,13 @@ buffer and hand nil to the native module."
               (should-not (ghostel--terminal-frozen-p)))))
       (kill-buffer buf))))
 
-(ert-deftest ghostel-test-emacs-mode-no-self-insert-exit ()
-  "Emacs mode does NOT have a self-insert remap — the buffer is read-only.
-Users exit via an explicit mode-switch command."
-  (let ((buf (generate-new-buffer " *ghostel-test-emacs-no-exit*")))
+(ert-deftest ghostel-test-emacs-mode-self-insert-forwards ()
+  "Emacs mode forwards typed chars to the shell without exiting the mode.
+The buffer stays read-only so navigation and search are stable,
+but `self-insert-command' is remapped to `ghostel--self-insert'
+which sends the char to the PTY directly (no buffer modification
+involved).  RET/TAB/DEL also forward to the shell."
+  (let ((buf (generate-new-buffer " *ghostel-test-emacs-forward*")))
     (unwind-protect
         (with-current-buffer buf
           (ghostel-mode)
@@ -4065,12 +4068,19 @@ Users exit via an explicit mode-switch command."
                       ((symbol-function 'ghostel--scroll-bottom) #'ignore))
               (ghostel-emacs-mode)
               (should (eq ghostel--input-mode 'emacs))
-              ;; Typing a regular letter falls through to the global
-              ;; `self-insert-command' (which errors on a read-only
-              ;; buffer); it does NOT exit emacs mode.
-              (should (eq (key-binding "a") 'self-insert-command))
-              ;; `q' also falls through — it is not bound as an exit.
-              (should (eq (key-binding (kbd "q")) 'self-insert-command))
+              ;; Self-insert is remapped to the ghostel version.
+              (should (eq (key-binding "a") #'ghostel--self-insert))
+              ;; RET, TAB, DEL forward to the terminal.
+              (should (eq (lookup-key ghostel-emacs-mode-map (kbd "RET"))
+                          #'ghostel--send-event))
+              (should (eq (lookup-key ghostel-emacs-mode-map (kbd "TAB"))
+                          #'ghostel--send-event))
+              (should (eq (lookup-key ghostel-emacs-mode-map (kbd "DEL"))
+                          #'ghostel--send-event))
+              ;; Navigation keys fall through to the global map —
+              ;; `C-n' etc. are not bound locally.
+              (should-not (lookup-key ghostel-emacs-mode-map (kbd "C-n")))
+              (should-not (lookup-key ghostel-emacs-mode-map (kbd "C-p")))
               ;; Still reachable via C-c C-j.
               (should (eq (lookup-key ghostel-emacs-mode-map (kbd "C-c C-j"))
                           #'ghostel-semi-char-mode)))))
@@ -4433,7 +4443,49 @@ user can continue editing at the shell prompt."
               (should (null ghostel--line-input-start))
               ;; The abandoned input is gone from the buffer.
               (should-not (string-match-p "abandoned"
-                                          (buffer-string))))))
+                                          (buffer-string)))
+              ;; The read-only property is cleared too.
+              (should-not (text-property-any (point-min) (point-max)
+                                             'read-only t)))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-line-mode-scrollback-read-only ()
+  "Line mode makes everything before the input marker read-only.
+Typing in the middle of the scrollback / previous-output region
+signals `text-read-only', while typing after the marker works
+normally."
+  (let ((buf (generate-new-buffer " *ghostel-test-line-ro*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          ;; Buffer: some previous output, then a prompt.
+          (insert "earlier output\n")
+          (insert (propertize "$ " 'ghostel-prompt t))
+          (let ((ghostel--term 'fake)
+                (ghostel--process 'fake-proc))
+            (cl-letf (((symbol-function 'ghostel--mode-enabled)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'ghostel--redraw) #'ignore)
+                      ((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+              (ghostel-line-mode)
+              ;; The scrollback region carries the read-only property.
+              (should (get-text-property (point-min) 'read-only))
+              ;; Attempting to edit in the MIDDLE of the scrollback
+              ;; region errors.  (Emacs allows insertion right at
+              ;; point-min because the new text goes "before" the
+              ;; read-only region, not inside it — that is a known
+              ;; property-read-only quirk and we do not fight it.)
+              (goto-char 5)
+              (should-error (insert "x") :type 'text-read-only)
+              ;; Typing at the marker (inside the input region) works.
+              (goto-char (marker-position ghostel--line-input-start))
+              (insert "ls")
+              (should (equal (ghostel--line-mode-input-text) "ls"))
+              ;; Exit: the read-only property goes away.
+              (ghostel-semi-char-mode)
+              (should-not (text-property-any (point-min) (point-max)
+                                             'read-only t)))))
       (kill-buffer buf))))
 
 ;; -----------------------------------------------------------------------
@@ -4901,7 +4953,8 @@ while :; do sleep 0.1; done'\n")
     ghostel-test-char-mode-enter-exit
     ghostel-test-emacs-mode-enter-exit
     ghostel-test-emacs-mode-is-unfrozen
-    ghostel-test-emacs-mode-no-self-insert-exit
+    ghostel-test-emacs-mode-self-insert-forwards
+    ghostel-test-line-mode-scrollback-read-only
     ghostel-test-copy-mode-restores-previous-mode
     ghostel-test-copy-to-emacs-transition
     ghostel-test-emacs-to-copy-transition
