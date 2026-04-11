@@ -957,31 +957,54 @@ Most keys are sent to the terminal.  Keys in
     (define-key map (kbd "<drag-mouse-1>")  #'ghostel--mouse-drag)
     (define-key map (kbd "<drag-mouse-2>")  #'ghostel--mouse-drag)
     (define-key map (kbd "<drag-mouse-3>")  #'ghostel--mouse-drag)
-    ;; Sole escape hatch: M-RET / C-M-m to exit char mode.
-    (define-key map (kbd "M-RET") #'ghostel-semi-char-mode)
-    (define-key map (kbd "C-M-m") #'ghostel-semi-char-mode)
+    ;; Sole escape hatch: exit char mode.  Graphical Emacs sends
+    ;; M-RET as the `<M-return>' symbol, terminal Emacs as the
+    ;; `\M-\r' character, and C-M-m is a synonym; bind all three
+    ;; so the user doesn't need to care which their setup uses.
+    (define-key map (kbd "M-RET")      #'ghostel-semi-char-mode)
+    (define-key map (kbd "M-<return>") #'ghostel-semi-char-mode)
+    (define-key map (kbd "C-M-m")      #'ghostel-semi-char-mode)
     map)
   "Keymap for char mode.
 All keys are sent to the terminal.  Only \\[ghostel-semi-char-mode]
- (M-RET) exits back to semi-char mode.")
+exits back to semi-char mode (bound to \\`M-RET' /
+\\`<M-return>' / \\`C-M-m').")
 
 (defvar ghostel-emacs-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map ghostel-mode-map)
-    ;; Self-insert exits to semi-char and forwards the typed key.
-    (define-key map [remap self-insert-command]
-                #'ghostel-emacs-mode-exit-and-send)
-    ;; q exits to semi-char without sending anything.
-    (define-key map (kbd "q") #'ghostel-semi-char-mode)
     ;; Mouse bindings are intentionally omitted: mouse clicks, wheel
     ;; scroll, drag-region etc. all fall through to the global map
     ;; and give the user standard Emacs behavior on the read-only
-    ;; buffer.  Inherits the C-c prefix from `ghostel-mode-map'.
+    ;; buffer.  Inherits the \\`C-c' prefix from `ghostel-mode-map'.
+    ;; No self-insert remap and no `q' binding: typing in a read-only
+    ;; buffer signals an error the normal Emacs way; the user exits
+    ;; via an explicit mode-switch (\\`C-c C-j' etc.).
     map)
   "Keymap for Emacs mode.
 Read-only buffer on top of the live terminal; standard Emacs keys
 \(`isearch', `M-x', `C-SPC' mark, `M-w' copy, navigation) fall
-through to the global map.  Self-insert or \\`q' exits.")
+through to the global map.  Exit with any of the \\`C-c' prefix
+mode-switch commands (e.g. \\[ghostel-semi-char-mode]).")
+
+;; Char mode must override minor-mode keymaps.  Without this, a user
+;; config that binds, say, \\`C-c' as a prefix in a global minor mode
+;; steals the key before it reaches `ghostel-char-mode-map'.  Pushing
+;; an entry into `emulation-mode-map-alists' moves char mode's
+;; keymap ahead of `minor-mode-map-alist' in the lookup order, so a
+;; direct binding in `ghostel-char-mode-map' wins against any
+;; minor-mode prefix.
+
+(defvar-local ghostel--char-mode-override-active nil
+  "Non-nil in buffers where char mode is active.
+Drives the `emulation-mode-map-alists' entry that makes
+`ghostel-char-mode-map' override minor-mode keymaps.")
+
+(defvar ghostel--char-mode-override-alist
+  `((ghostel--char-mode-override-active . ,ghostel-char-mode-map))
+  "Alist entry registered in `emulation-mode-map-alists' for char mode.")
+
+(add-to-list 'emulation-mode-map-alists 'ghostel--char-mode-override-alist)
 
 
 ;;; Key sending
@@ -1541,6 +1564,7 @@ Most keys are sent to the terminal; keys in
       ('copy  (ghostel--leave-readonly-state))
       ('emacs (ghostel--leave-readonly-state))
       ('line  (ghostel--line-mode-teardown)))
+    (setq ghostel--char-mode-override-active nil)
     (setq ghostel--input-mode 'semi-char)
     (use-local-map ghostel-semi-char-mode-map)
     (setq mode-line-process nil)
@@ -1554,7 +1578,8 @@ Most keys are sent to the terminal; keys in
   "Switch to char mode — send all keys to the terminal.
 Even keys listed in `ghostel-keymap-exceptions' (\\`C-c', \\`C-x',
 \\`C-h', \\`M-x', …) are sent to the terminal.  The only way to
-exit is \\<ghostel-char-mode-map>\\[ghostel-semi-char-mode]."
+exit is \\<ghostel-char-mode-map>\\[ghostel-semi-char-mode]
+\(bound to \\`M-RET' / \\`<M-return>' / \\`C-M-m')."
   (interactive)
   (unless (eq ghostel--input-mode 'char)
     (pcase ghostel--input-mode
@@ -1562,6 +1587,11 @@ exit is \\<ghostel-char-mode-map>\\[ghostel-semi-char-mode]."
       ('emacs (ghostel--leave-readonly-state))
       ('line  (ghostel--line-mode-teardown)))
     (setq ghostel--input-mode 'char)
+    ;; Route char mode through `emulation-mode-map-alists' so it
+    ;; overrides minor-mode keymaps (without this, a minor mode that
+    ;; binds a prefix like \\`C-c' would steal those keys before
+    ;; `ghostel-char-mode-map' got a chance).
+    (setq ghostel--char-mode-override-active t)
     (use-local-map ghostel-char-mode-map)
     (setq mode-line-process ":Char")
     (force-mode-line-update)
@@ -1577,8 +1607,8 @@ exit is \\<ghostel-char-mode-map>\\[ghostel-semi-char-mode]."
 The terminal keeps running and scrollback keeps growing.  The
 buffer is read-only, so standard Emacs commands like `isearch',
 `occur', `M-x', `C-SPC' / `M-w', and regular navigation all work
-unmodified over the entire materialised scrollback.  Typing any
-character or pressing `q' returns to semi-char mode."
+unmodified over the entire materialised scrollback.  Exit with an
+explicit mode-switch command (`\\[ghostel-semi-char-mode]')."
   (interactive)
   (unless (eq ghostel--input-mode 'emacs)
     (pcase ghostel--input-mode
@@ -1586,6 +1616,7 @@ character or pressing `q' returns to semi-char mode."
       ('line  (ghostel--line-mode-teardown)
               (ghostel--enter-readonly-state))
       (_      (ghostel--enter-readonly-state)))
+    (setq ghostel--char-mode-override-active nil)
     (setq ghostel--input-mode 'emacs)
     (use-local-map ghostel-emacs-mode-map)
     (setq mode-line-process ":Emacs")
@@ -1594,30 +1625,40 @@ character or pressing `q' returns to semi-char mode."
     ;; cancelled; coming from anywhere else it's already scheduled.
     (when ghostel--term
       (ghostel--invalidate))
-    (message "Emacs mode: terminal live, full Emacs keys; q or self-insert to exit")))
+    (message "Emacs mode: terminal live, %s to exit"
+             (substitute-command-keys
+              "\\[ghostel-semi-char-mode]"))))
 
-(defun ghostel-emacs-mode-exit-and-send ()
-  "Exit Emacs mode, return to semi-char, and forward the typed key."
-  (interactive)
-  (ghostel-semi-char-mode)
-  (when ghostel--term
-    (ghostel--self-insert)))
+(defvar-local ghostel--pre-copy-mode nil
+  "Input mode to restore when exiting copy mode.
+Set when entering copy mode, cleared on exit.  Copy mode is the
+one mode with a fast exit that returns the user to wherever they
+came from instead of dumping them in semi-char.")
 
 (defun ghostel-copy-mode ()
   "Enter copy mode for selecting and copying terminal text.
 Freezes the terminal (live output is paused) and makes the buffer
 read-only.  Standard Emacs navigation, search, and marking work
 across the full scrollback.  Press \\`q' or
-\\[ghostel-copy-mode-exit] to exit."
+\\[ghostel-copy-mode-exit] to exit; exiting returns to whichever
+input mode was active before (semi-char, char, or Emacs)."
   (interactive)
   (if (eq ghostel--input-mode 'copy)
       (ghostel-copy-mode-exit)
+    ;; Remember where we came from so copy-mode-exit can restore it.
+    ;; Line mode is stateful and not safely resumable — fall back to
+    ;; semi-char when exiting copy in that case.
+    (setq ghostel--pre-copy-mode
+          (pcase ghostel--input-mode
+            ('line 'semi-char)
+            (m m)))
     (pcase ghostel--input-mode
       ('emacs nil)   ; already read-only; freeze and swap the keymap
       ('line  (ghostel--line-mode-teardown)
               (ghostel--enter-readonly-state))
       (_      (ghostel--enter-readonly-state)))
     (ghostel--freeze-terminal)
+    (setq ghostel--char-mode-override-active nil)
     (setq ghostel--input-mode 'copy)
     (use-local-map ghostel-copy-mode-map)
     (setq mode-line-process ":Copy")
@@ -1625,20 +1666,20 @@ across the full scrollback.  Press \\`q' or
     (message "Copy mode: C-SPC to mark, navigate to select, M-w to copy, q to exit")))
 
 (defun ghostel-copy-mode-exit ()
-  "Exit copy mode and return to semi-char mode."
+  "Exit copy mode and return to the mode that was active before entry."
   (interactive)
   (setq quit-flag nil)
   (when (eq ghostel--input-mode 'copy)
-    (ghostel--leave-readonly-state)
-    (setq ghostel--input-mode 'semi-char)
-    (use-local-map ghostel-semi-char-mode-map)
-    (setq mode-line-process nil)
-    (force-mode-line-update)
-    ;; Jump out of any scrollback position so the redraw is allowed to
-    ;; position point at the terminal cursor (otherwise
-    ;; `ghostel--delayed-redraw' would preserve our scrollback marker).
-    (goto-char (point-max))
-    (ghostel--invalidate)
+    (let ((target (or ghostel--pre-copy-mode 'semi-char)))
+      (setq ghostel--pre-copy-mode nil)
+      ;; Jump out of any scrollback position so the next redraw is
+      ;; free to position point at the terminal cursor.
+      (goto-char (point-max))
+      (pcase target
+        ('semi-char (ghostel-semi-char-mode))
+        ('char      (ghostel-char-mode))
+        ('emacs     (ghostel-emacs-mode))
+        (_          (ghostel-semi-char-mode))))
     (message "Copy mode exited")))
 
 (defun ghostel-copy-mode-exit-and-clear ()
@@ -1648,11 +1689,16 @@ across the full scrollback.  Press \\`q' or
   (ghostel-clear-scrollback))
 
 (defun ghostel-copy-mode-exit-and-send ()
-  "Exit copy mode and send the key that triggered exit to the terminal."
+  "Exit copy mode and send the triggering key to the terminal.
+Only forwards the key when the mode we are returning to actually
+accepts terminal input (semi-char or char).  Returning to Emacs
+mode would have nowhere to put the character since the buffer is
+read-only, so the key is swallowed in that case."
   (interactive)
-  (ghostel-copy-mode-exit)
-  (when ghostel--term
-    (ghostel--self-insert)))
+  (let ((target (or ghostel--pre-copy-mode 'semi-char)))
+    (ghostel-copy-mode-exit)
+    (when (and ghostel--term (memq target '(semi-char char)))
+      (ghostel--self-insert))))
 
 (defun ghostel--filter-soft-wraps (text)
   "Remove newlines from TEXT that were inserted by soft line wrapping.
@@ -1783,6 +1829,7 @@ fullscreen TUI is on the alt screen."
       (setq ghostel--line-input-start (copy-marker prompt-end nil))
       (set-marker-insertion-type ghostel--line-input-start nil)
       (setq ghostel--line-mode-history-index nil)
+      (setq ghostel--char-mode-override-active nil)
       (setq ghostel--input-mode 'line)
       (use-local-map ghostel-line-mode-map)
       (setq mode-line-process ":Line")
@@ -1810,11 +1857,23 @@ fullscreen TUI is on the alt screen."
                      (point-max)))))
 
 (defun ghostel--line-mode-teardown ()
-  "Clean up line-mode state: delete in-progress input, drop the marker.
+  "Clean up line-mode state and hand any pending input back to the shell.
+Any in-progress input is forwarded to the PTY raw (no newline) so
+the user can continue editing it at the shell's own prompt after
+the mode switch instead of losing what they typed.  Callers that
+have already handled the input themselves (like
+`ghostel-line-mode-send' and `ghostel-line-mode-interrupt') delete
+it from the buffer before calling this, so no double-send happens.
+
 Forces a full redraw so the buffer catches up with any output the
 shell produced while line mode was holding redraws back.  Line
 mode truncated the viewport region of the buffer; a full redraw
 re-materializes the viewport from libghostty."
+  (let ((input (ghostel--line-mode-input-text)))
+    (when (and (> (length input) 0)
+               ghostel--process
+               (process-live-p ghostel--process))
+      (process-send-string ghostel--process input)))
   (ghostel--line-mode-delete-input)
   (when (markerp ghostel--line-input-start)
     (set-marker ghostel--line-input-start nil))
@@ -1854,12 +1913,14 @@ the next prompt arrives."
     (ghostel-semi-char-mode)))
 
 (defun ghostel-line-mode-interrupt ()
-  "Discard local input and send SIGINT (\\`C-c') to the shell."
+  "Discard local input and send SIGINT (\\`C-c') to the shell.
+Exits line mode afterwards so the shell's new prompt is visible."
   (interactive)
   (ghostel--line-mode-delete-input)
   (setq ghostel--line-mode-history-index nil)
   (when (and ghostel--process (process-live-p ghostel--process))
-    (process-send-string ghostel--process "\C-c")))
+    (process-send-string ghostel--process "\C-c"))
+  (ghostel-semi-char-mode))
 
 (defun ghostel-line-mode-delete-char-or-eof ()
   "Delete the next char, or send EOF at an empty input."

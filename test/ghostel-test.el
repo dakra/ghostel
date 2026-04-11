@@ -4053,28 +4053,61 @@ buffer and hand nil to the native module."
               (should-not (ghostel--terminal-frozen-p)))))
       (kill-buffer buf))))
 
-(ert-deftest ghostel-test-emacs-mode-exit-and-send ()
-  "Self-insert in emacs mode returns to semi-char and forwards the key."
-  (let ((buf (generate-new-buffer " *ghostel-test-emacs-send*"))
-        (self-insert-called nil))
+(ert-deftest ghostel-test-emacs-mode-no-self-insert-exit ()
+  "Emacs mode does NOT have a self-insert remap — the buffer is read-only.
+Users exit via an explicit mode-switch command."
+  (let ((buf (generate-new-buffer " *ghostel-test-emacs-no-exit*")))
     (unwind-protect
         (with-current-buffer buf
           (ghostel-mode)
           (let ((ghostel--term 'fake))
             (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
-                      ((symbol-function 'ghostel--scroll-bottom) #'ignore)
-                      ((symbol-function 'ghostel--self-insert)
-                       (lambda (&rest _) (setq self-insert-called t))))
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
               (ghostel-emacs-mode)
               (should (eq ghostel--input-mode 'emacs))
-              (ghostel-emacs-mode-exit-and-send)
-              (should (eq ghostel--input-mode 'semi-char))
-              (should self-insert-called))))
+              ;; Typing a regular letter falls through to the global
+              ;; `self-insert-command' (which errors on a read-only
+              ;; buffer); it does NOT exit emacs mode.
+              (should (eq (key-binding "a") 'self-insert-command))
+              ;; `q' also falls through — it is not bound as an exit.
+              (should (eq (key-binding (kbd "q")) 'self-insert-command))
+              ;; Still reachable via C-c C-j.
+              (should (eq (lookup-key ghostel-emacs-mode-map (kbd "C-c C-j"))
+                          #'ghostel-semi-char-mode)))))
       (kill-buffer buf))))
 
 ;; -----------------------------------------------------------------------
 ;; Test: copy ↔ emacs transitions preserve read-only state
 ;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-copy-mode-restores-previous-mode ()
+  "Exiting copy mode returns to whatever mode the user was in beforehand."
+  (let ((buf (generate-new-buffer " *ghostel-test-copy-restore*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake)
+                (ghostel--redraw-timer nil))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+              ;; semi-char → copy → semi-char
+              (ghostel-copy-mode)
+              (should (eq ghostel--input-mode 'copy))
+              (ghostel-copy-mode-exit)
+              (should (eq ghostel--input-mode 'semi-char))
+              ;; char → copy → char
+              (ghostel-char-mode)
+              (ghostel-copy-mode)
+              (should (eq ghostel--input-mode 'copy))
+              (ghostel-copy-mode-exit)
+              (should (eq ghostel--input-mode 'char))
+              ;; emacs → copy → emacs
+              (ghostel-emacs-mode)
+              (ghostel-copy-mode)
+              (should (eq ghostel--input-mode 'copy))
+              (ghostel-copy-mode-exit)
+              (should (eq ghostel--input-mode 'emacs)))))
+      (kill-buffer buf))))
 
 (ert-deftest ghostel-test-copy-to-emacs-transition ()
   "copy → emacs unfreezes the terminal without re-toggling read-only."
@@ -4280,6 +4313,7 @@ buffer and hand nil to the native module."
                        (lambda (&rest _) nil))
                       ((symbol-function 'process-live-p) (lambda (_p) t))
                       ((symbol-function 'process-send-string) #'ignore)
+                      ((symbol-function 'ghostel--redraw) #'ignore)
                       ((symbol-function 'ghostel--invalidate) #'ignore)
                       ((symbol-function 'ghostel--scroll-bottom) #'ignore))
               (ghostel-line-mode)
@@ -4299,7 +4333,7 @@ buffer and hand nil to the native module."
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-line-mode-interrupt ()
-  "C-c C-c discards input and sends C-c to the shell."
+  "C-c C-c discards input, sends C-c, and exits line mode."
   (let ((buf (generate-new-buffer " *ghostel-test-line-interrupt*"))
         (sent nil))
     (unwind-protect
@@ -4313,14 +4347,45 @@ buffer and hand nil to the native module."
                       ((symbol-function 'process-live-p) (lambda (_p) t))
                       ((symbol-function 'process-send-string)
                        (lambda (_p s) (setq sent s)))
+                      ((symbol-function 'ghostel--redraw) #'ignore)
                       ((symbol-function 'ghostel--invalidate) #'ignore)
                       ((symbol-function 'ghostel--scroll-bottom) #'ignore))
               (ghostel-line-mode)
-              (goto-char (point-max))
               (insert "half-typed")
               (ghostel-line-mode-interrupt)
               (should (equal sent "\C-c"))
-              (should (equal (ghostel--line-mode-input-text) "")))))
+              (should (eq ghostel--input-mode 'semi-char))
+              (should (null ghostel--line-input-start)))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-line-mode-exit-sends-pending ()
+  "Exiting line mode via a mode-switch sends the in-progress input raw.
+The user's in-progress characters should not be lost when the
+mode changes — they get forwarded to the shell's readline so the
+user can continue editing at the shell prompt."
+  (let ((buf (generate-new-buffer " *ghostel-test-line-exit*"))
+        (sent-log nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (insert (propertize "$ " 'ghostel-prompt t))
+          (let ((ghostel--term 'fake)
+                (ghostel--process 'fake-proc))
+            (cl-letf (((symbol-function 'ghostel--mode-enabled)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'process-live-p) (lambda (_p) t))
+                      ((symbol-function 'process-send-string)
+                       (lambda (_p s) (push s sent-log)))
+                      ((symbol-function 'ghostel--redraw) #'ignore)
+                      ((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+              (ghostel-line-mode)
+              (insert "ls -la")
+              ;; Exit via a mode switch.  The teardown should ship the
+              ;; partially-typed input to the PTY raw (no newline).
+              (ghostel-semi-char-mode)
+              (should (eq ghostel--input-mode 'semi-char))
+              (should (member "ls -la" sent-log)))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-line-mode-eof-on-empty ()
@@ -4338,6 +4403,7 @@ buffer and hand nil to the native module."
                       ((symbol-function 'process-live-p) (lambda (_p) t))
                       ((symbol-function 'process-send-string)
                        (lambda (_p s) (setq sent s)))
+                      ((symbol-function 'ghostel--redraw) #'ignore)
                       ((symbol-function 'ghostel--invalidate) #'ignore)
                       ((symbol-function 'ghostel--scroll-bottom) #'ignore))
               (ghostel-line-mode)
@@ -4835,7 +4901,8 @@ while :; do sleep 0.1; done'\n")
     ghostel-test-char-mode-enter-exit
     ghostel-test-emacs-mode-enter-exit
     ghostel-test-emacs-mode-is-unfrozen
-    ghostel-test-emacs-mode-exit-and-send
+    ghostel-test-emacs-mode-no-self-insert-exit
+    ghostel-test-copy-mode-restores-previous-mode
     ghostel-test-copy-to-emacs-transition
     ghostel-test-emacs-to-copy-transition
     ghostel-test-mode-switch-keybindings
@@ -4847,6 +4914,7 @@ while :; do sleep 0.1; done'\n")
     ghostel-test-line-mode-send
     ghostel-test-line-mode-history
     ghostel-test-line-mode-interrupt
+    ghostel-test-line-mode-exit-sends-pending
     ghostel-test-line-mode-eof-on-empty
     ghostel-test-line-mode-teardown-on-exit
     ghostel-test-send-next-key-control-x
