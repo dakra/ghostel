@@ -2243,7 +2243,7 @@ PROCESS is the shell process, WINDOWS is the list of windows."
     (when (and size (buffer-live-p buffer))
       (with-current-buffer buffer
         (when ghostel--term
-          (ghostel--set-size ghostel--term height width)
+          (ghostel--set-size ghostel--term (max 1 height) (max 1 width))
           (setq ghostel--term-rows height)
           (setq ghostel--force-next-redraw t)
           (ghostel--invalidate))))
@@ -2261,6 +2261,7 @@ PROCESS is the shell process, WINDOWS is the list of windows."
   (font-lock-mode -1)
   (setq buffer-read-only nil)
   (setq-local scroll-margin 0)
+  (setq-local auto-hscroll-mode nil)
   (setq-local hscroll-margin 0)
   (setq-local truncate-lines t)
   (setq-local scroll-conservatively 101)
