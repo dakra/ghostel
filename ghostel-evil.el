@@ -24,8 +24,22 @@
 
 ;;; Code:
 
-(require 'evil)
 (require 'ghostel)
+
+;; Silence the byte-compiler.  evil is a required runtime dependency but is
+;; not needed at compile time; users must have evil loaded before activating
+;; `ghostel-evil-mode'.
+(declare-function evil-define-key*       "ext:evil-core")
+(declare-function evil-get-register      "ext:evil-common")
+(declare-function evil-insert            "ext:evil-commands")
+(declare-function evil-refresh-cursor    "ext:evil-core")
+(declare-function evil-set-initial-state "ext:evil-core")
+(declare-function evil-set-register      "ext:evil-common")
+(declare-function evil-yank              "ext:evil-commands")
+(defvar evil-insert-state-map)
+(defvar evil-move-cursor-back)
+(defvar evil-state)
+(defvar evil-was-yanked-without-register)
 
 ;; ---------------------------------------------------------------------------
 ;; Guard predicate
@@ -273,15 +287,16 @@ Used for insert-state Ctrl keys that have readline/zle equivalents."
       (when (commandp cmd)
         (call-interactively cmd)))))
 
-(dolist (key ghostel-evil--ctrl-passthrough-keys)
-  (let ((k key))
-    (evil-define-key* 'insert ghostel-evil-mode-map
-      (kbd (concat "C-" k))
-      (defalias (intern (format "ghostel-evil--passthrough-ctrl-%s" k))
-        (lambda ()
-          (interactive)
-          (ghostel-evil--passthrough-ctrl k))
-        (format "Send C-%s to the terminal or fall back to evil." k)))))
+(with-eval-after-load 'evil
+  (dolist (key ghostel-evil--ctrl-passthrough-keys)
+    (let ((k key))
+      (evil-define-key* 'insert ghostel-evil-mode-map
+        (kbd (concat "C-" k))
+        (defalias (intern (format "ghostel-evil--passthrough-ctrl-%s" k))
+          (lambda ()
+            (interactive)
+            (ghostel-evil--passthrough-ctrl k))
+          (format "Send C-%s to the terminal or fall back to evil." k))))))
 
 (defun ghostel-evil--around-undo (orig-fn count)
   "Intercept `evil-undo' in ghostel buffers.
