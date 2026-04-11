@@ -40,6 +40,8 @@
 (defvar evil-move-cursor-back)
 (defvar evil-state)
 (defvar evil-was-yanked-without-register)
+;; Forward declaration: defined by `define-minor-mode' later in this file.
+(defvar ghostel-evil-mode)
 
 ;; ---------------------------------------------------------------------------
 ;; Guard predicate
