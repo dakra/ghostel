@@ -2458,13 +2458,13 @@ buffer and hand nil to the native module."
       (should-not scroll-bottom-called)
       (should-not ghostel--force-next-redraw))))
 
-(ert-deftest ghostel-test-scroll-forwards-mouse-tracking ()
-  "Scroll-up/down forward events when mouse tracking is active."
+(ert-deftest ghostel-test-scroll-intercept-forwards-mouse-tracking ()
+  "Scroll intercept forwards events when mouse tracking is active."
   (let ((ghostel--term 'fake)
         (ghostel--process 'fake)
         (ghostel--copy-mode-active nil)
+        (ghostel--scroll-intercept-active t)
         (mouse-event-args nil)
-        (scroll-called nil)
         ;; Fake wheel-up event at row 5, col 10
         (fake-event `(wheel-up (,(selected-window) 1 (10 . 5) 0))))
     ;; Mouse tracking active: ghostel--mouse-event returns non-nil
@@ -2472,51 +2472,57 @@ buffer and hand nil to the native module."
                (lambda (_term action button row col mods)
                  (setq mouse-event-args (list action button row col mods))
                  t))
-              ((symbol-function 'scroll-down)
-               (lambda (&optional _) (setq scroll-called t)))
               ((symbol-function 'process-live-p) (lambda (_p) t)))
-      (ghostel--scroll-up fake-event)
+      (ghostel--scroll-intercept-up fake-event)
       (should mouse-event-args)
       (should (equal 0 (nth 0 mouse-event-args)))   ; action = press
       (should (equal 4 (nth 1 mouse-event-args)))   ; button 4 = scroll up
       (should (equal 5 (nth 2 mouse-event-args)))   ; row
       (should (equal 10 (nth 3 mouse-event-args)))  ; col
-      (should-not scroll-called))
+      ;; Event should NOT be re-dispatched
+      (should ghostel--scroll-intercept-active)
+      (should-not unread-command-events))
     ;; Reset and test scroll-down with a wheel-down event
-    (setq mouse-event-args nil scroll-called nil)
+    (setq mouse-event-args nil)
     (let ((fake-down-event `(wheel-down (,(selected-window) 1 (10 . 5) 0))))
       (cl-letf (((symbol-function 'ghostel--mouse-event)
                  (lambda (_term action button row col mods)
                    (setq mouse-event-args (list action button row col mods))
                    t))
-                ((symbol-function 'scroll-up)
-                 (lambda (&optional _) (setq scroll-called t)))
                 ((symbol-function 'process-live-p) (lambda (_p) t)))
-        (ghostel--scroll-down fake-down-event)
+        (ghostel--scroll-intercept-down fake-down-event)
         (should mouse-event-args)
         (should (equal 5 (nth 1 mouse-event-args)))   ; button 5 = scroll down
-        (should-not scroll-called)))))
+        (should ghostel--scroll-intercept-active)
+        (should-not unread-command-events)))))
 
-(ert-deftest ghostel-test-scroll-fallback-no-mouse-tracking ()
-  "Scroll-up/down fall back to Emacs window scroll when mouse tracking is off."
+(ert-deftest ghostel-test-scroll-intercept-fallthrough ()
+  "Scroll intercept re-dispatches when mouse tracking is off."
   (let ((ghostel--term 'fake)
         (ghostel--process 'fake)
         (ghostel--copy-mode-active nil)
-        (scroll-down-arg nil)
-        (scroll-up-arg nil)
+        (ghostel--scroll-intercept-active t)
         (fake-up-event `(wheel-up (,(selected-window) 1 (10 . 5) 0)))
         (fake-down-event `(wheel-down (,(selected-window) 1 (10 . 5) 0))))
+    ;; Mouse tracking off: ghostel--mouse-event returns nil
     (cl-letf (((symbol-function 'ghostel--mouse-event)
                (lambda (_term _action _button _row _col _mods) nil))
-              ((symbol-function 'scroll-down)
-               (lambda (&optional n) (setq scroll-down-arg n)))
-              ((symbol-function 'scroll-up)
-               (lambda (&optional n) (setq scroll-up-arg n)))
               ((symbol-function 'process-live-p) (lambda (_p) t)))
-      (ghostel--scroll-up fake-up-event)
-      (should (equal 3 scroll-down-arg))
-      (ghostel--scroll-down fake-down-event)
-      (should (equal 3 scroll-up-arg)))))
+      ;; Test wheel-up re-dispatch
+      (ghostel--scroll-intercept-up fake-up-event)
+      ;; Intercept should be disabled so the event loop skips our map
+      (should-not ghostel--scroll-intercept-active)
+      ;; Event should be pushed back for re-processing
+      (should (equal fake-up-event (car unread-command-events)))
+      ;; Clean up for next assertion
+      (setq unread-command-events nil)
+      (ghostel--reenable-scroll-intercept)
+      ;; Test wheel-down re-dispatch
+      (ghostel--scroll-intercept-down fake-down-event)
+      (should-not ghostel--scroll-intercept-active)
+      (should (equal fake-down-event (car unread-command-events)))
+      (setq unread-command-events nil)
+      (ghostel--reenable-scroll-intercept))))
 
 (ert-deftest ghostel-test-control-key-bindings ()
   "All non-exception C-<letter> keys should be bound in ghostel-mode-map."
@@ -2971,8 +2977,8 @@ while :; do sleep 0.1; done'\n")
     ghostel-test-scroll-on-input-self-insert
     ghostel-test-scroll-on-input-send-event
     ghostel-test-scroll-on-input-disabled
-    ghostel-test-scroll-forwards-mouse-tracking
-    ghostel-test-scroll-fallback-no-mouse-tracking
+    ghostel-test-scroll-intercept-forwards-mouse-tracking
+    ghostel-test-scroll-intercept-fallthrough
     ghostel-test-control-key-bindings
     ghostel-test-meta-key-bindings
     ghostel-test-copy-mode-recenter

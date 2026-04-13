@@ -657,6 +657,74 @@ variable re-enables automatic renaming for the next title update.")
   "List of prompt positions as (buffer-line . exit-status) pairs.
 Used for prompt navigation and optional re-application after full redraws.")
 
+(defvar-local ghostel--scroll-intercept-active nil
+  "Non-nil when ghostel's scroll-event intercept is active.
+Used as the activation key in `emulation-mode-map-alists'.")
+
+
+
+;;; Scroll intercept via emulation-mode-map-alists
+;;
+;; We need highest-priority interception of wheel events so that terminal
+;; mouse tracking (vim, htop, etc.) receives scroll events.  When mouse
+;; tracking is off, we fall through to whatever scroll package the user
+;; has configured (ultra-scroll, pixel-scroll-precision-mode, etc.).
+
+(defun ghostel--scroll-intercept-up (event)
+  "Intercept wheel-up EVENT for terminal mouse tracking.
+If the terminal is tracking mouse events, forward as button 4.
+Otherwise, re-dispatch EVENT through the normal event loop so the
+user's scroll package handles it."
+  (interactive "e")
+  (unless (ghostel--forward-scroll-event event 4)
+    (ghostel--redispatch-scroll-event event)))
+
+(defun ghostel--scroll-intercept-down (event)
+  "Intercept wheel-down EVENT for terminal mouse tracking.
+If the terminal is tracking mouse events, forward as button 5.
+Otherwise, re-dispatch EVENT through the normal event loop so the
+user's scroll package handles it."
+  (interactive "e")
+  (unless (ghostel--forward-scroll-event event 5)
+    (ghostel--redispatch-scroll-event event)))
+
+(defun ghostel--redispatch-scroll-event (event)
+  "Re-dispatch scroll EVENT through the event loop without our intercept.
+Temporarily disables the emulation-map intercept and pushes the event
+back as unread input.  The next key-lookup therefore skips our map and
+finds the user's scroll handler.  A `pre-command-hook' re-enables the
+intercept before that handler runs, so subsequent events are intercepted
+again."
+  (setq ghostel--scroll-intercept-active nil)
+  (push event unread-command-events)
+  ;; pre-command-hook fires *after* key lookup but *before* the command,
+  ;; so the re-dispatched event is looked up with our intercept disabled
+  ;; and the intercept is back on before the next event after that.
+  (add-hook 'pre-command-hook #'ghostel--reenable-scroll-intercept nil t))
+
+(defun ghostel--reenable-scroll-intercept ()
+  "Re-enable the scroll-event intercept after a re-dispatched event."
+  (setq ghostel--scroll-intercept-active t)
+  (remove-hook 'pre-command-hook #'ghostel--reenable-scroll-intercept t))
+
+(defvar ghostel--scroll-intercept-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-4]    #'ghostel--scroll-intercept-up)
+    (define-key map [mouse-5]    #'ghostel--scroll-intercept-down)
+    (define-key map [wheel-up]   #'ghostel--scroll-intercept-up)
+    (define-key map [wheel-down] #'ghostel--scroll-intercept-down)
+    map)
+  "Keymap for `emulation-mode-map-alists' to intercept scroll events.
+Active only in ghostel buffers where `ghostel--scroll-intercept-active'
+is non-nil.")
+
+(defvar ghostel--emulation-alist
+  `((ghostel--scroll-intercept-active . ,ghostel--scroll-intercept-map))
+  "Alist for `emulation-mode-map-alists'.")
+
+(unless (memq 'ghostel--emulation-alist emulation-mode-map-alists)
+  (push 'ghostel--emulation-alist emulation-mode-map-alists))
+
 
 
 ;;; Keymap
@@ -723,11 +791,6 @@ Used for prompt navigation and optional re-application after full redraws.")
     ;; Prompt navigation (OSC 133)
     (define-key map (kbd "C-c C-n")   #'ghostel-next-prompt)
     (define-key map (kbd "C-c C-p")   #'ghostel-previous-prompt)
-    ;; Mouse wheel for scrollback
-    (define-key map (kbd "<mouse-4>")       #'ghostel--scroll-up)
-    (define-key map (kbd "<mouse-5>")       #'ghostel--scroll-down)
-    (define-key map (kbd "<wheel-up>")      #'ghostel--scroll-up)
-    (define-key map (kbd "<wheel-down>")    #'ghostel--scroll-down)
     ;; Mouse click events (for terminal mouse tracking)
     (define-key map (kbd "<down-mouse-1>")  #'ghostel--mouse-press)
     (define-key map (kbd "<mouse-1>")       #'ghostel--mouse-release)
@@ -1111,22 +1174,6 @@ Return non-nil if the event was forwarded (mouse tracking is active)."
                             row col
                             (ghostel--mouse-mods event)))))
 
-(defun ghostel--scroll-up (&optional event)
-  "Scroll the Emacs window up (toward older scrollback).
-When the terminal has mouse tracking enabled, forward EVENT as a
-scroll event to the running application instead."
-  (interactive "e")
-  (unless (ghostel--forward-scroll-event event 4) ; button 4 = scroll up
-    (scroll-down 3)))
-
-(defun ghostel--scroll-down (&optional event)
-  "Scroll the Emacs window down (toward newer content).
-When the terminal has mouse tracking enabled, forward EVENT as a
-scroll event to the running application instead."
-  (interactive "e")
-  (unless (ghostel--forward-scroll-event event 5) ; button 5 = scroll down
-    (scroll-up 3)))
-
 
 (defun ghostel-copy-mode-previous-line ()
   "Move to the previous line in copy mode."
@@ -1240,11 +1287,6 @@ scroll event to the running application instead."
     ;; Prompt navigation works in copy mode too
     (define-key map (kbd "C-c C-n") #'ghostel-next-prompt)
     (define-key map (kbd "C-c C-p") #'ghostel-previous-prompt)
-    ;; Scrollback
-    (define-key map (kbd "<mouse-4>")       #'ghostel--scroll-up)
-    (define-key map (kbd "<mouse-5>")       #'ghostel--scroll-down)
-    (define-key map (kbd "<wheel-up>")      #'ghostel--scroll-up)
-    (define-key map (kbd "<wheel-down>")    #'ghostel--scroll-down)
     (define-key map (kbd "C-n")             #'ghostel-copy-mode-next-line)
     (define-key map (kbd "C-p")             #'ghostel-copy-mode-previous-line)
     (define-key map (kbd "M-<")             #'ghostel-copy-mode-beginning-of-buffer)
@@ -2303,13 +2345,13 @@ PROCESS is the shell process, WINDOWS is the list of windows."
   (setq-local scroll-conservatively 101)
   (setq-local line-spacing 0)
   (add-function :after after-focus-change-function #'ghostel--focus-change)
-  (ghostel--suppress-interfering-modes))
+  (ghostel--suppress-interfering-modes)
+  (setq ghostel--scroll-intercept-active t))
 
 (defun ghostel--suppress-interfering-modes ()
   "Disable global minor modes that interfere with ghostel.
 Suppresses `global-hl-line-mode' (and buffer-local `hl-line-mode') to
-prevent redraw flicker, and `pixel-scroll-precision-mode' so that
-wheel events reach ghostel's own scroll commands."
+prevent redraw flicker."
   ;; global-hl-line-mode: opt this buffer out by setting the variable
   ;; buffer-locally to nil (as documented in the hl-line.el commentary).
   (when (bound-and-true-p global-hl-line-mode)
@@ -2320,12 +2362,7 @@ wheel events reach ghostel's own scroll commands."
   ;; Buffer-local hl-line-mode
   (when (bound-and-true-p hl-line-mode)
     (setq ghostel--saved-hl-line-mode t)
-    (hl-line-mode -1))
-  ;; pixel-scroll-precision-mode: setting the variable buffer-locally to nil
-  ;; makes Emacs skip its minor-mode-map-alist entry for this buffer, so
-  ;; wheel-up/wheel-down reach ghostel-mode-map instead.
-  (when (bound-and-true-p pixel-scroll-precision-mode)
-    (setq-local pixel-scroll-precision-mode nil)))
+    (hl-line-mode -1)))
 
 
 ;;; Entry point
