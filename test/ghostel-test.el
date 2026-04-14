@@ -1596,6 +1596,115 @@ Emacs auto-scrolls to make point visible."
         (set-window-buffer (selected-window) orig-buf))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-redraw-resets-vscroll ()
+  "Redraw resets `window-vscroll' when point is in the viewport.
+Regression for issue #105: with `pixel-scroll-precision-mode',
+a non-zero pixel vscroll left on the window clips the top line
+after a redraw (e.g. `clear').  Anchoring window-start alone is
+not enough; the pixel offset must also be cleared."
+  (let ((buf (generate-new-buffer " *ghostel-test-vscroll*"))
+        (orig-buf (window-buffer (selected-window)))
+        ;; Simulated pixel vscroll state per window.  Batch-mode
+        ;; `window-vscroll' always returns 0, so we track the value
+        ;; ourselves via a mocked `set-window-vscroll'.
+        (vscroll-by-window (make-hash-table :test 'eq)))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let* ((term (ghostel--new 10 40 200))
+                 (ghostel--term term)
+                 (ghostel--term-rows 10)
+                 (inhibit-read-only t))
+            (dotimes (i 30)
+              (ghostel--write-input term (format "scroll-%02d\r\n" i)))
+            (ghostel--write-input term "prompt> ")
+            (ghostel--redraw term t)
+            (set-window-buffer (selected-window) buf)
+            ;; `ghostel--delayed-redraw' checks `(point)' for the
+            ;; scrollback gate — move buffer point too, not just
+            ;; window-point.
+            (goto-char (point-max))
+            (set-window-point (selected-window) (point-max))
+            ;; Seed a non-zero pixel vscroll (simulating what
+            ;; `pixel-scroll-precision-mode' leaves behind).
+            (puthash (selected-window) 7 vscroll-by-window)
+            (cl-letf (((symbol-function 'set-window-vscroll)
+                       (lambda (win vscroll &optional pixels-p)
+                         (should (eq pixels-p t))
+                         (puthash win vscroll vscroll-by-window))))
+              (ghostel--delayed-redraw buf))
+            (should (= 0 (gethash (selected-window) vscroll-by-window)))))
+      (when (buffer-live-p orig-buf)
+        (set-window-buffer (selected-window) orig-buf))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-redraw-resets-vscroll-all-windows ()
+  "Redraw resets `window-vscroll' on every window showing the buffer.
+`ghostel--delayed-redraw' iterates `get-buffer-window-list' so both
+windows must be anchored."
+  (let ((buf (generate-new-buffer " *ghostel-test-vscroll-multi*"))
+        (orig-config (current-window-configuration))
+        (vscroll-by-window (make-hash-table :test 'eq)))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let* ((term (ghostel--new 10 40 200))
+                 (ghostel--term term)
+                 (ghostel--term-rows 10)
+                 (inhibit-read-only t))
+            (dotimes (i 30)
+              (ghostel--write-input term (format "scroll-%02d\r\n" i)))
+            (ghostel--write-input term "prompt> ")
+            (ghostel--redraw term t)
+            (goto-char (point-max))
+            (delete-other-windows)
+            (set-window-buffer (selected-window) buf)
+            (let ((w1 (selected-window))
+                  (w2 (split-window-vertically)))
+              (set-window-buffer w2 buf)
+              (set-window-point w1 (point-max))
+              (set-window-point w2 (point-max))
+              (puthash w1 7 vscroll-by-window)
+              (puthash w2 4 vscroll-by-window)
+              (cl-letf (((symbol-function 'set-window-vscroll)
+                         (lambda (win vscroll &optional pixels-p)
+                           (should (eq pixels-p t))
+                           (puthash win vscroll vscroll-by-window))))
+                (ghostel--delayed-redraw buf))
+              (should (= 0 (gethash w1 vscroll-by-window)))
+              (should (= 0 (gethash w2 vscroll-by-window))))))
+      (set-window-configuration orig-config)
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-redraw-preserves-vscroll-in-scrollback ()
+  "Redraw leaves `window-vscroll' alone when point is in scrollback.
+The vscroll reset is gated on the same condition as `set-window-start':
+a user reading history should not be pulled around by live redraws."
+  (let ((buf (generate-new-buffer " *ghostel-test-vscroll-scrollback*"))
+        (orig-buf (window-buffer (selected-window)))
+        (vscroll-called nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let* ((term (ghostel--new 10 40 200))
+                 (ghostel--term term)
+                 (ghostel--term-rows 10)
+                 (inhibit-read-only t))
+            (dotimes (i 30)
+              (ghostel--write-input term (format "scroll-%02d\r\n" i)))
+            (ghostel--redraw term t)
+            (set-window-buffer (selected-window) buf)
+            ;; Put point above the viewport (in scrollback).
+            (goto-char (point-min))
+            (set-window-point (selected-window) (point-min))
+            (cl-letf (((symbol-function 'set-window-vscroll)
+                       (lambda (&rest _) (setq vscroll-called t))))
+              (ghostel--delayed-redraw buf))
+            (should-not vscroll-called)))
+      (when (buffer-live-p orig-buf)
+        (set-window-buffer (selected-window) orig-buf))
+      (kill-buffer buf))))
+
 ;; -----------------------------------------------------------------------
 ;; Test: resize with real process — verify PTY and buffer content
 ;; -----------------------------------------------------------------------

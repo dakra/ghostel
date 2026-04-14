@@ -2313,7 +2313,11 @@ interrupted by live output updating the terminal cursor."
                          (line-beginning-position)))))
             (dolist (win (get-buffer-window-list buffer nil t))
               (when (and vs (>= pt vs))
-                (set-window-start win vs t))
+                (set-window-start win vs t)
+                ;; Reset any pixel vscroll offset left behind by
+                ;; `pixel-scroll-precision-mode'; otherwise the top
+                ;; line stays partially clipped after a redraw.
+                (set-window-vscroll win 0 t))
               (set-window-point win pt))))))))
 
 (defun ghostel-force-redraw ()
