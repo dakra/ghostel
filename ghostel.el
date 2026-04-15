@@ -188,6 +188,38 @@ Each function is called with two arguments: the buffer and the
 exit event string."
   :type 'hook)
 
+(defcustom ghostel-command-finish-functions nil
+  "Hook run when a shell command finishes (OSC 133 D marker).
+Each function is called with two arguments: the buffer and the
+exit status (an integer, or nil if the shell did not report one).
+
+Requires the shell to emit OSC 133 semantic prompt markers.  Bash,
+zsh, and fish shell integration bundled with ghostel emits these
+markers automatically when `ghostel-shell-integration' is enabled.
+
+The hook fires synchronously from the terminal parser, so consumers
+that need a fully rendered buffer should defer their own work via
+`run-at-time'.  Errors in hook functions are demoted to messages
+via `with-demoted-errors', so a misbehaving hook does not break
+the parser or stop later hooks — except when `debug-on-error' is
+non-nil, in which case the error is re-signalled so the debugger
+can fire (standard `with-demoted-errors' semantics)."
+  :type 'hook)
+
+(defcustom ghostel-command-start-functions nil
+  "Hook run when a shell command starts running (OSC 133 C marker).
+Each function is called with one argument: the buffer.
+
+Requires shell integration; this fires from the shell's
+preexec/DEBUG hook just before the user's command runs.  Useful
+for distinguishing a real command's lifecycle from prompt
+redraws (which emit D markers without a preceding C).
+
+Errors in hook functions are demoted to messages via
+`with-demoted-errors' (re-signalled when `debug-on-error' is
+non-nil so the debugger can fire)."
+  :type 'hook)
+
 (defcustom ghostel-eval-cmds '(("find-file" find-file)
                                ("find-file-other-window" find-file-other-window)
                                ("dired" dired)
@@ -620,6 +652,7 @@ DIR is the module directory."
                        (concat "Native module not found: " mod
                                "\nRun M-x ghostel-download-module or M-x ghostel-module-compile")))))
 
+
 ;;; Internal variables
 
 (defvar-local ghostel--term nil
@@ -1569,11 +1602,31 @@ not here.  This handler only tracks prompt positions and exit status."
      ;; Prompt start — record line number.
      (push (cons (count-lines (point-min) (point-max)) nil)
            ghostel--prompt-positions))
+    ("C"
+     ;; Command output start — notify `ghostel-command-start-functions'.
+     (ghostel--run-hook-safely 'ghostel-command-start-functions
+                               (current-buffer)))
     ("D"
-     ;; Command finished — store exit status on the most recent entry.
-     (when (and ghostel--prompt-positions param)
-       (setcdr (car ghostel--prompt-positions)
-               (string-to-number param))))))
+     ;; Command finished — store exit status on the most recent entry
+     ;; and notify `ghostel-command-finish-functions'.
+     (let ((exit (and param (string-to-number param))))
+       (when (and ghostel--prompt-positions param)
+         (setcdr (car ghostel--prompt-positions) exit))
+       (ghostel--run-hook-safely 'ghostel-command-finish-functions
+                                 (current-buffer) exit)))))
+
+(defun ghostel--run-hook-safely (hook &rest args)
+  "Run HOOK with ARGS, isolating errors per handler.
+Each handler is wrapped in `with-demoted-errors' so a raising
+handler logs and the remaining hooks still run.  As with the rest
+of Emacs, `with-demoted-errors' re-signals when `debug-on-error'
+is non-nil so the debugger fires for hook authors who want it."
+  (run-hook-wrapped
+   hook
+   (lambda (fn)
+     (with-demoted-errors "ghostel: error in hook: %S"
+       (apply fn args))
+     nil)))
 
 (defun ghostel--prompt-input-start ()
   "From the start of a prompt line, move past the prompt marker to user input.

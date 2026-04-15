@@ -19,6 +19,7 @@ process, keymap, and buffer.
   - [TRAMP (Remote Terminals)](#tramp-remote-terminals)
 - [Configuration](#configuration)
 - [Commands](#commands)
+  - [Compilation mode](#compilation-mode)
 - [Running Tests](#running-tests)
 - [Performance](#performance)
 - [Ghostel vs vterm](#ghostel-vs-vterm)
@@ -456,6 +457,110 @@ with a project-prefixed buffer name.  To make it available from
 ```elisp
 (add-to-list 'project-switch-commands '(ghostel-project "Ghostel") t)
 ```
+
+### Compilation mode
+
+`ghostel-compile` runs a shell command in a ghostel buffer and presents
+the result like `M-x compile` — `compilation-mode`-style header,
+footer, error highlighting, and `next-error` navigation — but backed by
+a real TTY so programs that probe `isatty(3)` (coloured output, progress
+bars, curses tools) behave as they do in a normal shell.
+
+```elisp
+(require 'ghostel-compile)
+
+(global-set-key (kbd "C-c c") #'ghostel-compile)
+```
+
+Commands:
+
+| Command                 | Description                                         |
+|-------------------------|-----------------------------------------------------|
+| `M-x ghostel-compile`   | Prompt for a command and run it (uses `compile-command`) |
+| `M-x ghostel-recompile` | Re-run the last command in its original directory   |
+
+What a run looks like — the buffer text matches `M-x compile`:
+
+```
+-*- mode: ghostel-compile -*-
+Compilation started at Wed Apr 15 08:30:11
+
+make -j4 test
+
+...command output (live, with full TTY)...
+
+Compilation finished at Wed Apr 15 08:30:19, duration 8.20 s
+```
+
+When the command finishes, the live shell and ghostel renderer are torn
+down and the buffer's major mode is switched to `ghostel-compile-view-mode`
+(derived from `compilation-mode`).  The buffer becomes a regular,
+read-only Emacs buffer with compile-mode's coloured error / line-number
+faces; the buffer never returns to an interactive ghostel terminal —
+a recompile discards it and starts fresh in the original directory.
+Point stays at the end of the output (where the renderer left it) so
+you see the latest output and the footer rather than jumping to the
+top.  `mode-line-process` shows `:run` while the command is running
+and `:exit [N]` afterwards, using the same faces `M-x compile` uses.
+
+Keybindings (in `ghostel-compile-view-mode`):
+
+| Key             | Action                                                  |
+|-----------------|---------------------------------------------------------|
+| `g`             | Re-run via `ghostel-recompile`                          |
+| `n` / `p`       | Move point to next / previous error (no auto-open)      |
+| `RET` / `mouse-2` | Jump to the source of the error under point           |
+| `M-g n` / `M-g p` | Standard `next-error` / `previous-error`              |
+| `C-c C-c`       | `compile-goto-error` (same as RET)                      |
+
+These standard `compile` options are honoured:
+
+- **`compile-command` / `compile-history`** — shared with `M-x compile`.
+  The prompt defaults to `compile-command`, the chosen command is
+  written back, and the history list is `compile-history`, so recent
+  commands round-trip between the two commands.
+- **`compilation-read-command`** — when nil, `ghostel-compile` runs
+  `compile-command` silently; pass a prefix arg to force the prompt.
+- **`compilation-ask-about-save`** — modified buffers are offered for
+  saving before launching.
+- **`compilation-auto-jump-to-first-error`** — jumps to the first error
+  after parsing.
+- **`compilation-finish-functions`** — runs with `(buffer msg)` just
+  like with `M-x compile`.
+- Output scrolling is always on (terminal behaviour — equivalent to
+  `compilation-scroll-output` non-nil).
+
+`ghostel-recompile` runs in the directory the original `ghostel-compile`
+was invoked from, regardless of which buffer you're in when you press
+`g`.
+
+Ghostel-specific customisation:
+
+| Option                                | Effect                                                                                                          |
+|---------------------------------------|-----------------------------------------------------------------------------------------------------------------|
+| `ghostel-compile-buffer-name`         | Buffer name (default `*ghostel-compile*`)                                                                        |
+| `ghostel-compile-finished-major-mode` | Major mode to switch to after each run (default `ghostel-compile-view-mode`; set to nil to stay in `ghostel-mode`) |
+| `ghostel-compile-hide-prompts`        | Hide surrounding shell prompts (default `t`)                                                                     |
+| `ghostel-compile-clear-buffer`        | Clear the buffer before each run (default `t`)                                                                   |
+| `ghostel-compile-finish-functions`    | Ghostel-specific finish hook (runs alongside `compilation-finish-functions`)                                     |
+| `ghostel-compile-debug`               | Log every OSC 133 C/D event to `*Messages*` (default `nil`)                                                      |
+
+Completion is detected via the OSC 133 `D;<exit>` semantic prompt
+marker, so shell integration (`ghostel-shell-integration`, enabled by
+default) must be active.
+
+#### Hooks for your own integrations
+
+Outside of a compile buffer, two hooks let you react to *any* shell
+command in *any* ghostel buffer:
+
+- `ghostel-command-start-functions` — called with `(BUFFER)` when the
+  shell emits OSC 133 `C` (a command starts running).
+- `ghostel-command-finish-functions` — called with `(BUFFER EXIT-STATUS)`
+  when the shell emits OSC 133 `D` (a command finishes).
+
+Errors raised by individual hook functions are caught and logged so
+one bad consumer can't break the rest.
 
 ## Running Tests
 

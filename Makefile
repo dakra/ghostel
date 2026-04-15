@@ -4,7 +4,7 @@ XDG_CACHE_HOME ?= $(HOME)/.cache
 MELPAZOID_DIR  ?= $(XDG_CACHE_HOME)/melpazoid
 EVIL_DIR       ?= $(XDG_CACHE_HOME)/evil
 
-ELC := ghostel.elc ghostel-debug.elc
+ELC := ghostel.elc ghostel-debug.elc ghostel-compile.elc
 
 .PHONY: all build test test-native test-all test-evil lint melpazoid byte-compile bench bench-quick clean
 
@@ -53,7 +53,7 @@ checkdoc:
 		              (checkdoc-proper-noun-list nil) \
 		              (checkdoc-verb-check-experimental-flag nil) \
 		              (ok t)) \
-		  (dolist (f '(\"ghostel.el\" \"ghostel-debug.el\")) \
+		  (dolist (f '(\"ghostel.el\" \"ghostel-debug.el\" \"ghostel-compile.el\")) \
 		    (ignore-errors (kill-buffer \"*Warnings*\")) \
 		    (let ((inhibit-message t)) \
 		      (checkdoc-file f)) \
@@ -67,7 +67,7 @@ melpazoid:
 	@if [ ! -d "$(MELPAZOID_DIR)" ]; then \
 		git clone https://github.com/riscy/melpazoid.git "$(MELPAZOID_DIR)"; \
 	fi
-	RECIPE='(ghostel :fetcher github :repo "dakra/ghostel" :files ("ghostel.el" "ghostel-debug.el" "ghostel-module.*"))' \
+	RECIPE='(ghostel :fetcher github :repo "dakra/ghostel" :files ("ghostel.el" "ghostel-debug.el" "ghostel-compile.el" "ghostel-module.*"))' \
 		LOCAL_REPO=$(CURDIR) \
 		make -C "$(MELPAZOID_DIR)"
 

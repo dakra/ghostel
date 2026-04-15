@@ -12,6 +12,7 @@
 
 (require 'ert)
 (require 'ghostel)
+(require 'ghostel-compile)
 
 (declare-function ghostel--cleanup-temp-paths "ghostel")
 
@@ -1371,6 +1372,932 @@ the reply waits for the redraw timer."
             (when ghostel--prompt-positions
               (should (equal 0 (cdr (car ghostel--prompt-positions))))))) ; exit status stored
       (kill-buffer buf))))
+
+;; -----------------------------------------------------------------------
+;; Test: ghostel-command-finish-functions hook
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-command-finish-hook ()
+  "Test that OSC 133 D fires `ghostel-command-finish-functions'."
+  (with-temp-buffer
+    (let* ((calls nil)
+           (ghostel-command-finish-functions
+            (list (lambda (buf exit) (push (cons buf exit) calls)))))
+      (ghostel--osc133-marker "A" nil)
+      (ghostel--osc133-marker "D" "0")
+      (should (equal 1 (length calls)))                       ; hook fired once
+      (should (eq (caar calls) (current-buffer)))             ; buffer passed
+      (should (equal 0 (cdar calls)))                         ; exit 0 as integer
+
+      (setq calls nil)
+      (ghostel--osc133-marker "A" nil)
+      (ghostel--osc133-marker "D" "2")
+      (should (equal 2 (cdar calls)))                         ; non-zero exit parsed
+
+      ;; Missing param -> exit is nil, hook still fires
+      (setq calls nil)
+      (ghostel--osc133-marker "A" nil)
+      (ghostel--osc133-marker "D" nil)
+      (should (equal 1 (length calls)))                       ; hook fired with nil param
+      (should (null (cdar calls))))))                         ; exit is nil
+
+(ert-deftest ghostel-test-command-finish-hook-via-vt ()
+  "End-to-end: OSC 133 D bytes through VT parser fires the hook."
+  (let ((buf (generate-new-buffer " *ghostel-test-finish-vt*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (calls nil)
+                 (ghostel-command-finish-functions
+                  (list (lambda (_buf exit) (push exit calls)))))
+            (ghostel--write-input term "\e]133;A\e\\$ \e]133;B\e\\")
+            (ghostel--write-input term "echo hi\r\nhi\r\n")
+            (ghostel--write-input term "\e]133;D;0\e\\")
+            (should (equal '(0) calls))                       ; exit code flows through
+            (ghostel--write-input term "\e]133;A\e\\$ \e]133;B\e\\")
+            (ghostel--write-input term "\e]133;D;127\e\\")
+            (should (equal '(127 0) calls))))                  ; non-zero exit flows through
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-command-finish-hook-error-caught ()
+  "Errors in `ghostel-command-finish-functions' are demoted to messages.
+Bind `debug-on-error' to nil so we test the production code path
+\(under `--batch -Q' Emacs sets `debug-on-error' to t, which
+intentionally makes `with-demoted-errors' re-signal so a hook
+author's debugger can fire)."
+  (with-temp-buffer
+    (let ((inhibit-message t)
+          (debug-on-error nil)
+          (ghostel-command-finish-functions
+           (list (lambda (_buf _exit) (error "boom")))))
+      (ghostel--osc133-marker "A" nil)
+      (should-not (condition-case _ (progn (ghostel--osc133-marker "D" "0") nil)
+                    (error t))))))
+
+(ert-deftest ghostel-test-command-finish-hook-error-isolated ()
+  "A raising hook must not prevent later hooks from running.
+See `ghostel-test-command-finish-hook-error-caught' for why we
+bind `debug-on-error' to nil."
+  (with-temp-buffer
+    (let ((inhibit-message t)
+          (debug-on-error nil)
+          (later-ran nil))
+      (let ((ghostel-command-finish-functions
+             (list (lambda (_buf _exit) (error "first boom"))
+                   (lambda (_buf _exit) (setq later-ran t)))))
+        (ghostel--osc133-marker "A" nil)
+        (ghostel--osc133-marker "D" "0")
+        (should later-ran)))))                                 ; second hook still fired
+
+;; -----------------------------------------------------------------------
+;; Test: ghostel-compile-mode
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-compile-mode-requires-ghostel-buffer ()
+  "`ghostel-compile-mode' must refuse to enable outside a ghostel buffer."
+  (with-temp-buffer
+    (should-error (ghostel-compile-mode 1) :type 'user-error)
+    (should-not ghostel-compile-mode)))                       ; mode stayed off
+
+(ert-deftest ghostel-test-compile-mode-sets-up-finish-hook ()
+  "Enabling `ghostel-compile-mode' adds the finish hook locally."
+  (let ((buf (generate-new-buffer " *ghostel-test-compile-mode*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (ghostel-compile-mode 1)
+          (should ghostel-compile-mode)                       ; mode on
+          (should (memq #'ghostel-compile--on-finish
+                        ghostel-command-finish-functions))    ; hook installed
+          (ghostel-compile-mode -1)
+          (should-not (memq #'ghostel-compile--on-finish
+                            ghostel-command-finish-functions)))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-compile-mode-disable-is-reversible ()
+  "Disabling `ghostel-compile-mode' tears down its side effects."
+  (let ((buf (generate-new-buffer " *ghostel-test-compile-teardown*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (ghostel-compile-mode 1)
+          (should compilation-minor-mode)                      ; compile-minor on
+          (should (eq next-error-function
+                      #'compilation-next-error-function))      ; next-error installed
+          (should (assq 'ghostel-compile-mode
+                        minor-mode-overriding-map-alist))      ; map override in
+          (ghostel-compile-mode -1)
+          (should-not compilation-minor-mode)                  ; compile-minor off
+          (should-not (local-variable-p 'next-error-function)) ; restored
+          (should-not (assq 'ghostel-compile-mode
+                            minor-mode-overriding-map-alist))) ; map override out
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-compile-mode-respects-prior-compilation-minor ()
+  "Disabling our mode must NOT turn off `compilation-minor-mode' (or
+yank its `next-error-function' out from under it) when the user
+enabled `compilation-minor-mode' independently before us."
+  (let ((buf (generate-new-buffer " *ghostel-test-compile-coexist*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          ;; User enables compilation-minor-mode independently first.
+          (compilation-minor-mode 1)
+          (should compilation-minor-mode)
+          (should (eq next-error-function
+                      #'compilation-next-error-function))
+          ;; Now enable, then disable, our mode.
+          (ghostel-compile-mode 1)
+          (ghostel-compile-mode -1)
+          ;; Independent compilation-minor-mode and its next-error
+          ;; wiring must both still be active.
+          (should compilation-minor-mode)                       ; preserved
+          (should (eq next-error-function
+                      #'compilation-next-error-function)))      ; preserved
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-compile-mode-disable-cancels-pending ()
+  "Disabling the mode mid-flight must reset state and cancel any
+pending finalize timer, so a subsequent enable starts clean."
+  (let ((buf (generate-new-buffer " *ghostel-test-compile-cancel*"))
+        (cancelled 0))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (ghostel-compile-mode 1)
+          ;; Pretend a command is in flight with a pending timer.
+          (cl-letf (((symbol-function 'cancel-timer)
+                     (lambda (_t) (setq cancelled (1+ cancelled))))
+                    ((symbol-function 'timerp) (lambda (_t) t)))
+            (setq ghostel-compile--running 'armed
+                  ghostel-compile--finalize-timer :stub-timer)
+            (ghostel-compile-mode -1)
+            (should (= 1 cancelled))                            ; cancelled
+            (should-not ghostel-compile--running)                ; reset
+            (should-not ghostel-compile--finalize-timer)))      ; cleared
+      (kill-buffer buf))))
+
+(defmacro ghostel-test--with-compile-buffer (var &rest body)
+  "Run BODY in a fresh ghostel-mode buffer bound to VAR with compile-mode on."
+  (declare (indent 1))
+  `(let ((,var (generate-new-buffer " *ghostel-test-compile*"))
+         (inhibit-message t))
+     (unwind-protect
+         (with-current-buffer ,var
+           (ghostel-mode)
+           (ghostel-compile-mode 1)
+           ,@body)
+       (kill-buffer ,var))))
+
+(ert-deftest ghostel-test-compile-finalize-scans-errors ()
+  "ghostel-compile--finalize parses errors in the scan region."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t))
+      (insert "pre-existing line\n")
+      (setq ghostel-compile--command "make"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--running 'armed
+            ghostel-compile--scan-marker (copy-marker (point)))
+      (insert "/tmp/foo.c:10:5: error: bad thing\n")
+      (insert "done\n"))
+    (ghostel-compile--finalize buf 1 (current-time))
+    (should (eq 1 ghostel-compile--last-exit))                ; exit recorded
+    ;; The error line acquired `compilation-message' somewhere within it,
+    ;; while the pre-existing (pre-scan-marker) line did not.
+    (cl-flet ((region-has-prop-p (begin end prop)
+                (save-excursion
+                  (goto-char begin)
+                  (let ((found nil))
+                    (while (and (not found) (< (point) end))
+                      (if (get-text-property (point) prop)
+                          (setq found t)
+                        (goto-char
+                         (or (next-single-property-change
+                              (point) prop nil end)
+                             end))))
+                    found))))
+      (save-excursion
+        (goto-char (point-min))
+        (let ((err-bol (progn (search-forward "/tmp/foo.c") (line-beginning-position)))
+              (err-eol (line-end-position)))
+          (should (region-has-prop-p err-bol err-eol 'compilation-message))))
+      (save-excursion
+        (goto-char (point-min))
+        (let ((pre-bol (progn (search-forward "pre-existing line")
+                              (line-beginning-position)))
+              (pre-eol (line-end-position)))
+          (should-not (region-has-prop-p pre-bol pre-eol 'compilation-message)))))
+    (should (eq buf next-error-last-buffer))))                ; next-error target set
+
+(ert-deftest ghostel-test-compile-finalize-inserts-header-and-footer ()
+  "Finalize inserts plain-text header/footer matching `M-x compile' format."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t)
+          (ghostel-compile-finished-major-mode nil))
+      (insert "output line\n")
+      (setq ghostel-compile--command "make -j4 test"
+            ghostel-compile--start-time (time-subtract (current-time) 2)
+            ghostel-compile--running 'armed
+            ghostel-compile--scan-marker (copy-marker (point-min)))
+      (ghostel-compile--finalize buf 0 (current-time))
+      (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+        (should (string-match-p "\\`-\\*- mode: ghostel-compile -\\*-" text))
+        (should (string-match-p "Compilation started at" text))
+        (should (string-match-p "make -j4 test" text))
+        (should (string-match-p "output line" text))
+        (should (string-match-p "Compilation finished at" text))
+        (should (string-match-p "duration " text))))))
+
+(ert-deftest ghostel-test-compile-on-start-snaps-scan-marker ()
+  "OSC 133 C must snap `ghostel-compile--scan-marker' to the current
+`point-max'.  `ghostel-compile' sends `\\f' to refresh the prompt and
+then writes the command to the shell — the shell's response (fresh
+prompt re-echo, possibly A/B markers) arrives asynchronously through
+the process filter AFTER `ghostel-compile' returns.  If we captured
+the marker synchronously in `ghostel-compile' it would sit above
+that noise; snapping on C puts it exactly at the command-output
+boundary."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t))
+      (setq ghostel-compile--running 'pending
+            ghostel-compile--scan-marker nil)
+      ;; Simulate the async echo of the refreshed prompt arriving
+      ;; after `ghostel-compile' already returned but BEFORE C.
+      (insert "$ ")
+      (let ((snap-point (point)))
+        (ghostel-compile--on-start buf)
+        (should (eq 'armed ghostel-compile--running))
+        (should (markerp ghostel-compile--scan-marker))
+        (should (= snap-point
+                   (marker-position ghostel-compile--scan-marker)))))))
+
+(ert-deftest ghostel-test-compile-clear-buffer-isolates-stale-errors ()
+  "With `ghostel-compile-clear-buffer' t, stale error-shaped lines
+that linger in the buffer above the fresh scan-marker must not leak
+into the final error count.  This exercises the realistic flow:
+pre-existing content + \\f echo → C snaps scan-marker → command
+output → D → finalize — only the command's own errors count."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t)
+          (ghostel-compile-finished-major-mode nil))
+      ;; Two leftover error-shaped lines from previous interactive
+      ;; commands that would otherwise be double-counted.
+      (insert "/tmp/old1.c:99:1: error: STALE-ONE\n"
+              "/tmp/old2.c:42:1: error: STALE-TWO\n")
+      ;; Mid-flight state as set by `ghostel-compile'.
+      (setq ghostel-compile--command "make"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--directory default-directory
+            ghostel-compile--last-exit nil
+            ghostel-compile--running 'pending
+            ghostel-compile--scan-marker nil)
+      ;; C arrives: scan-marker snaps here, past the stale content.
+      (ghostel-compile--on-start buf)
+      (should (markerp ghostel-compile--scan-marker))
+      ;; One real error in the run's output.
+      (insert "/tmp/new.c:1:1: error: real\n")
+      (ghostel-compile--finalize buf 1 (current-time))
+      ;; Stale lines are still in the buffer but not in the error count.
+      (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+        (should (string-match-p "STALE-ONE" text))
+        (should (string-match-p "STALE-TWO" text)))
+      ;; Three error-shaped lines in the buffer, but only the one
+      ;; below the scan marker should count.
+      (should (= 1 compilation-num-errors-found)))))
+
+(ert-deftest ghostel-test-compile-finalize-anchors-header-at-scan-marker ()
+  "When pre-existing output is kept (`--clear-buffer nil'), the header
+must be inserted at the start of THIS run's output, not at point-min,
+so it stays attached to the region described.  Also: parsing must
+not pick up errors above the scan marker (would inflate
+`compilation-num-errors-found' with stale matches)."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t)
+          (ghostel-compile-finished-major-mode nil))
+      ;; Pre-existing output that contains an error-shaped line —
+      ;; this is from a previous run that was kept around.
+      (insert "/tmp/old.c:99:1: error: STALE\n")
+      ;; Now start a fresh run from here.
+      (setq ghostel-compile--command "make"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--running 'armed
+            ghostel-compile--scan-marker (copy-marker (point-max)))
+      (insert "/tmp/new.c:1:1: error: real\n")
+      (ghostel-compile--finalize buf 1 (current-time))
+      (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+        ;; Stale line is still present (we didn't clear).
+        (should (string-match-p "STALE" text))
+        ;; Header is anchored ABOVE the new run, BELOW the stale line.
+        (let ((stale-pos (string-match-p "STALE" text))
+              (header-pos (string-match-p "Compilation started at" text)))
+          (should (< stale-pos header-pos))))
+      ;; Only the current run's error is counted, not the stale one.
+      (should (= 1 compilation-num-errors-found)))))
+
+(ert-deftest ghostel-test-compile-finalize-footer-on-failure ()
+  "Non-zero exit produces an \"exited abnormally\" footer in buffer text."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t)
+          (ghostel-compile-finished-major-mode nil))
+      (insert "boom\n")
+      (setq ghostel-compile--command "false"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--running 'armed
+            ghostel-compile--scan-marker (copy-marker (point-min)))
+      (ghostel-compile--finalize buf 2 (current-time))
+      (should (string-match-p
+               "exited abnormally with code 2"
+               (buffer-substring-no-properties (point-min) (point-max)))))))
+
+(ert-deftest ghostel-test-compile-finalize-hides-prompts ()
+  "ghostel-compile--finalize marks ghostel-prompt regions AND the
+echoed command on the same line invisible — users don't want to
+see `$ echo hi' right below the header's already-shown
+`echo hi'."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t)
+          (ghostel-compile-finished-major-mode nil))
+      (setq ghostel-compile--command "echo hi"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--running 'armed
+            ghostel-compile--scan-marker (copy-marker (point-min)))
+      ;; Prompt + echoed command on the same line (only the `$ ' part
+      ;; carries the `ghostel-prompt' property; the command itself is
+      ;; past the OSC 133 B marker).
+      (let ((prompt-start (point)))
+        (insert "$ ")
+        (put-text-property prompt-start (point) 'ghostel-prompt t))
+      (insert "echo hi\n")
+      (insert "hi\n")
+      ;; Trailing prompt (no echoed command follows).
+      (let ((prompt2-start (point)))
+        (insert "$ ")
+        (put-text-property prompt2-start (point) 'ghostel-prompt t))
+      (ghostel-compile--finalize buf 0 (current-time))
+      ;; Prompt markers and the echoed command line should all be invisible.
+      (save-excursion
+        (goto-char (point-min))
+        (re-search-forward "\\$ " nil t)
+        (should (get-text-property (match-beginning 0) 'invisible))
+        ;; The echoed command on the same line must also be hidden.
+        (re-search-forward "echo hi" nil t)
+        (should (get-text-property (match-beginning 0) 'invisible)))
+      ;; The actual output line must still be visible.
+      (save-excursion
+        (goto-char (point-min))
+        (re-search-forward "^hi" nil t)
+        (should-not (get-text-property (match-beginning 0) 'invisible))))))
+
+(ert-deftest ghostel-test-compile-finalize-hides-echoed-command-without-prompt-property ()
+  "Regression: when the native renderer puts `ghostel-prompt' only
+on the prompt glyph itself and NOT on the echoed command that
+follows on the same row, `--hide-prompts' must still hide the
+whole line by matching the line against
+`ghostel-compile--command'."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t)
+          (ghostel-compile-finished-major-mode nil))
+      (setq ghostel-compile--command "make -j4 test"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--running 'armed
+            ghostel-compile--scan-marker (copy-marker (point-min)))
+      ;; Simulate the exact visual from the user report: a prompt +
+      ;; echoed command on one line, but NO `ghostel-prompt' property
+      ;; anywhere on the line.
+      (insert "~/.emacs.d/lib/ghostel λ make -j4 test\n")
+      (insert "output\n")
+      (ghostel-compile--finalize buf 0 (current-time))
+      (save-excursion
+        (goto-char (point-min))
+        ;; The echoed prompt + command line must be hidden.
+        (re-search-forward "~/\\.emacs\\.d/lib/ghostel" nil t)
+        (should (get-text-property (match-beginning 0) 'invisible)))
+      (save-excursion
+        (goto-char (point-min))
+        ;; The real output line must NOT be hidden.
+        (re-search-forward "^output$" nil t)
+        (should-not (get-text-property (match-beginning 0) 'invisible))))))
+
+(ert-deftest ghostel-test-compile-finalize-hide-prompts-nil ()
+  "When `ghostel-compile-hide-prompts' is nil, prompts stay visible."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t)
+          (ghostel-compile-finished-major-mode nil)
+          (ghostel-compile-hide-prompts nil))
+      (setq ghostel-compile--command "echo hi"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--running 'armed
+            ghostel-compile--scan-marker (copy-marker (point-min)))
+      (let ((prompt-start (point)))
+        (insert "$ ")
+        (put-text-property prompt-start (point) 'ghostel-prompt t))
+      (insert "echo hi\nhi\n")
+      (ghostel-compile--finalize buf 0 (current-time))
+      ;; The prompt's `$ ' must NOT have `invisible' set.
+      (goto-char (point-min))
+      (re-search-forward "\\$ " nil t)
+      (should-not (get-text-property (match-beginning 0) 'invisible)))))
+
+(ert-deftest ghostel-test-command-finish-hook-runs-synchronously ()
+  "Regression: `ghostel-command-finish-functions' must fire synchronously
+inside `ghostel--osc133-marker', not be deferred via timers.  Downstream
+consumers (notably `ghostel-compile') depend on it."
+  (let ((ran nil))
+    (let ((ghostel-command-finish-functions
+           (list (lambda (_b _e) (setq ran t)))))
+      (ghostel--osc133-marker "D" "0")
+      (should ran))))                                          ; in-stack call
+
+(ert-deftest ghostel-test-command-start-hook-runs-synchronously ()
+  "Regression: `ghostel-command-start-functions' must fire synchronously."
+  (let ((ran nil))
+    (let ((ghostel-command-start-functions
+           (list (lambda (_b) (setq ran t)))))
+      (ghostel--osc133-marker "C" nil)
+      (should ran))))                                          ; in-stack call
+
+(ert-deftest ghostel-test-compile-finalize-colors-errors ()
+  "After finalize, error lines carry `compilation-line-number' / error faces."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t))
+      (setq ghostel-compile--command "make"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--running 'armed
+            ghostel-compile--scan-marker (copy-marker (point-max)))
+      (insert "/tmp/x.c:42:5: error: bad\n"))
+    (ghostel-compile--finalize buf 1 (current-time))
+    (goto-char (point-min))
+    (search-forward "/tmp/x.c")
+    (let ((props (text-properties-at (1- (point)))))
+      (should (or (memq 'compilation-error props)
+                  (memq 'compilation-error
+                        (ensure-list
+                         (plist-get props 'font-lock-face)))
+                  (plist-member props 'compilation-message))))
+    (goto-char (point-min))
+    (search-forward ":42")
+    (let ((line-face (get-text-property (1- (point)) 'font-lock-face)))
+      (should (or (eq line-face 'compilation-line-number)
+                  (memq 'compilation-line-number
+                        (ensure-list line-face)))))))
+
+(ert-deftest ghostel-test-compile-spurious-d-without-c-is-ignored ()
+  "Regression: a D marker without a preceding C must not finalize.
+
+Some shells (notably zsh's clear-screen widget after we send `\\f'
+in `ghostel-clear-scrollback') redraw the prompt and re-fire precmd,
+which emits OSC 133 D with the *previous* command's exit (typically
+0).  Without C-gating we'd report `:exit [0]' even though the user's
+real command exited non-zero."
+  (let ((scheduled nil))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_when _repeat fn &rest args)
+                 (push (cons fn args) scheduled)
+                 :timer-stub)))
+      (ghostel-test--with-compile-buffer buf
+        (setq ghostel-compile--command "make"
+              ghostel-compile--start-time (current-time)
+              ghostel-compile--running 'pending          ; just sent the cmd
+              ghostel-compile--scan-marker (copy-marker (point-max)))
+        ;; Spurious D from prompt redraw arrives BEFORE any C.
+        (ghostel-compile--on-finish buf 0)
+        (should-not scheduled)                           ; ignored
+        (should (eq 'pending ghostel-compile--running))  ; still pending
+        ;; Now the real command runs: C arrives, then D;2.
+        (ghostel-compile--on-start buf)
+        (should (eq 'armed ghostel-compile--running))    ; armed by C
+        (ghostel-compile--on-finish buf 2)
+        (should (= 1 (length scheduled)))                ; scheduled once
+        (should (equal 2 (nth 2 (car scheduled))))      ; with the real exit
+        (should (eq 'fired ghostel-compile--running))))))
+
+(ert-deftest ghostel-test-compile-on-finish-only-first-d-counts ()
+  "First D after C wins; subsequent Ds before finalize are ignored."
+  (let ((scheduled nil))
+    (cl-letf (((symbol-function 'run-at-time)
+               (lambda (_when _repeat fn &rest args)
+                 (push (cons fn args) scheduled)
+                 :timer-stub)))
+      (ghostel-test--with-compile-buffer buf
+        (setq ghostel-compile--command "make"
+              ghostel-compile--start-time (current-time)
+              ghostel-compile--running 'armed
+              ghostel-compile--scan-marker (copy-marker (point-max)))
+        (ghostel-compile--on-finish buf 2)                     ; real exit
+        (ghostel-compile--on-finish buf 0)                     ; spurious follow-up
+        (should (= 1 (length scheduled)))                      ; scheduled once
+        ;; entry is (FN BUFFER EXIT END-TIME) — exit at index 2
+        (should (equal 2 (nth 2 (car scheduled))))            ; real exit kept
+        (should (eq 'fired ghostel-compile--running))))))
+
+(ert-deftest ghostel-test-compile-finalize-does-not-double-count-errors ()
+  "Regression: parsing must not count each error twice.
+
+Using `compilation-parse-errors' directly does not advance
+`compilation--parsed', so jit-lock would re-scan and double the
+error count.  `compilation--ensure-parse' is the right entry point."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t))
+      (insert "/tmp/a.c:1:1: error: oops\n"
+              "/tmp/b.c:2:2: error: oops\n")
+      (setq ghostel-compile--command "make"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--running 'armed
+            ghostel-compile--scan-marker (copy-marker (point-min))))
+    (ghostel-compile--finalize buf 1 (current-time))
+    (should (= 2 compilation-num-errors-found))))             ; not 4
+
+(ert-deftest ghostel-test-compile-finalize-does-not-kill-buffer ()
+  "Regression: finalize must not let `ghostel--sentinel' kill the buffer.
+
+Previously, teardown called `delete-process' with the ghostel sentinel
+still attached; the sentinel would then invoke `kill-buffer' because
+`ghostel-kill-buffer-on-exit' defaults to t.  The visible symptom is a
+compile buffer that flashes open and disappears."
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let* ((buf (generate-new-buffer " *ghostel-test-compile-live*"))
+         (inhibit-message t)
+         proc)
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (ghostel-compile-mode 1)
+          (setq proc (start-process "gh-compile-dummy" buf
+                                    "/bin/sh" "-c" "sleep 5"))
+          (set-process-query-on-exit-flag proc nil)
+          (set-process-sentinel proc #'ghostel--sentinel)
+          (setq-local ghostel--process proc
+                      ghostel-compile--command "sleep 5"
+                      ghostel-compile--start-time (current-time)
+                      ghostel-compile--running 'armed
+                      ghostel-compile--scan-marker (copy-marker (point-max)))
+          ;; Finalize with a real process attached: must NOT kill the
+          ;; buffer AND must NOT insert the default sentinel's
+          ;; "Process NAME killed: N" line into it.
+          (ghostel-compile--finalize buf 0 (current-time))
+          (should (buffer-live-p buf))                         ; buffer survived
+          (should-not (process-live-p proc))                   ; process was stopped
+          (should-not (string-match-p
+                       "Process .*killed"
+                       (buffer-substring-no-properties
+                        (point-min) (point-max)))))            ; no noise text
+      (when (process-live-p proc) (delete-process proc))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-compile-view-mode-n-p-navigate-without-opening ()
+  "`n'/`p' walk errors in the buffer without opening source files.
+The user wants `n'/`p' to behave like `M-n'/`M-p' in `compilation-mode' —
+move point through compile messages without auto-opening files in
+another window.  RET/`compile-goto-error' is for opening."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t))
+      (insert "/tmp/aa.c:1:1: error: first\n"
+              "blah\n"
+              "/tmp/bb.c:2:2: error: second\n")
+      (setq ghostel-compile--command "make"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--running 'armed
+            ghostel-compile--scan-marker (copy-marker (point-min))))
+    (ghostel-compile--finalize buf 1 (current-time))
+    ;; n/p should map to the navigation-only commands (no file open).
+    (should (eq (lookup-key (current-local-map) "n")
+                #'compilation-next-error))
+    (should (eq (lookup-key (current-local-map) "p")
+                #'compilation-previous-error))
+    ;; Walking n twice must visit BOTH error lines, never opening files.
+    (let ((opened nil))
+      (cl-letf (((symbol-function 'compilation-find-file)
+                 (lambda (&rest _) (setq opened t)
+                   (current-buffer))))
+        (goto-char (point-min))
+        (compilation-next-error 1)
+        (let ((p1 (point)))
+          (should (save-excursion
+                    (beginning-of-line)
+                    (looking-at "/tmp/aa\\.c")))
+          (compilation-next-error 1)
+          (should (/= p1 (point)))                            ; point moved
+          (should (save-excursion
+                    (beginning-of-line)
+                    (looking-at "/tmp/bb\\.c"))))
+        (should-not opened)))))                              ; no file opened
+
+(ert-deftest ghostel-test-compile-finalize-leaves-point-at-end ()
+  "Regression: finalize must put point at `point-max' — past the
+footer — so the \"Compilation finished at ..., duration ...\" line
+is visible when the window recenters to the bottom.  Point at the
+start of the footer (or at the end of output before the footer)
+leaves the footer scrolled below the window."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t))
+      (insert "line A\nline B\nline C\n")
+      (goto-char (point-max))
+      (setq ghostel-compile--command "true"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--running 'armed
+            ghostel-compile--scan-marker (copy-marker (point-min))))
+    (ghostel-compile--finalize buf 0 (current-time))
+    (should (= (point) (point-max)))                           ; past footer
+    ;; And the footer text really is the last thing in the buffer.
+    (should (string-match-p
+             "Compilation finished at.*duration"
+             (buffer-substring-no-properties
+              (max (point-min) (- (point-max) 200))
+              (point-max))))))
+
+(ert-deftest ghostel-test-compile-bash-integration-saves-real-status ()
+  "The bash PROMPT_COMMAND wrapper must capture \\='$?\\=' before any
+bare assignment.  Bare assignments such as `__ghostel_in_prompt_command=1'
+reset $? to 0 in bash, so capturing $? must be the very first thing
+inside the wrapper.  Otherwise OSC 133 D always reports exit 0."
+  (skip-unless (file-executable-p "/bin/bash"))
+  (let* ((script (expand-file-name "etc/ghostel.bash"
+                                   (file-name-directory
+                                    (locate-library "ghostel"))))
+         (cmd (format "source %s; \
+__ghostel_prompt_shown=1; \
+( exit 42 ); \
+output=$( __ghostel_wrapped_prompt_command 2>&1 ); \
+case \"$output\" in *$'\\033]133;D;42'*) echo OK ;; *) echo \"FAIL: $output\" ;; esac"
+                      (shell-quote-argument script))))
+    (with-temp-buffer
+      (let ((status (call-process "/bin/bash" nil t nil "-c" cmd)))
+        (should (zerop status))
+        (should (string-match-p "OK" (buffer-string)))))))
+
+(ert-deftest ghostel-test-compile-finalize-switches-major-mode ()
+  "With the default option, finalize switches to `ghostel-compile-view-mode'."
+  (ghostel-test--with-compile-buffer buf
+    (setq ghostel-compile--command "true"
+          ghostel-compile--start-time (current-time)
+          ghostel-compile--running 'armed
+          ghostel-compile--scan-marker (copy-marker (point-max)))
+    (should (derived-mode-p 'ghostel-mode))                    ; starts as ghostel
+    (ghostel-compile--finalize buf 0 (current-time))
+    (should (derived-mode-p 'ghostel-compile-view-mode))        ; switched
+    (should (derived-mode-p 'compilation-mode))                 ; inherits compile
+    (should-not (derived-mode-p 'ghostel-mode))                 ; not ghostel anymore
+    (should buffer-read-only)                                   ; read-only
+    (should (eq next-error-function #'compilation-next-error-function))
+    (should (equal "true" ghostel-compile--command))))          ; state preserved
+
+(ert-deftest ghostel-test-compile-recompile-key-binding ()
+  "`g' in `ghostel-compile-mode' is bound to `ghostel-recompile'."
+  (should (eq (lookup-key ghostel-compile-mode-map (kbd "g"))
+              #'ghostel-recompile)))                           ; direct map binding
+
+(ert-deftest ghostel-test-compile-recompile-overrides-compile-g ()
+  "Our `g' binding overrides `compilation-minor-mode-map's recompile."
+  (ghostel-test--with-compile-buffer buf
+    (should (eq (key-binding (kbd "g")) #'ghostel-recompile)))) ; shadow active
+
+(ert-deftest ghostel-test-compile-format-duration ()
+  "Duration formatting matches `M-x compile's style."
+  (should (equal "0.50 s"  (ghostel-compile--format-duration 0.5)))
+  (should (equal "5.00 s"  (ghostel-compile--format-duration 5)))
+  (should (equal "30.0 s"  (ghostel-compile--format-duration 30)))
+  (should (equal "0:02:05" (ghostel-compile--format-duration 125)))
+  (should (equal "1:01:05" (ghostel-compile--format-duration 3665))))
+
+(ert-deftest ghostel-test-compile-status-message ()
+  "Status message strings match `M-x compile' conventions."
+  (should (equal "finished\n" (ghostel-compile--status-message 0)))
+  (should (equal "exited abnormally with code 2\n"
+                 (ghostel-compile--status-message 2)))
+  (should (equal "finished\n" (ghostel-compile--status-message nil))))
+
+(ert-deftest ghostel-test-compile-mode-line-running ()
+  "`ghostel-compile--set-mode-line-running' sets `:run' with run face."
+  (with-temp-buffer
+    (ghostel-compile--set-mode-line-running)
+    ;; Expect (:propertize ":run" face compilation-mode-line-run) as head.
+    (let ((head (car mode-line-process)))
+      (should (eq :propertize (car head)))
+      (should (equal ":run" (cadr head)))
+      (should (eq 'compilation-mode-line-run
+                  (plist-get (cddr head) 'face))))))
+
+(ert-deftest ghostel-test-compile-mode-line-exit ()
+  "`ghostel-compile--set-mode-line-exit' uses exit/fail face for 0/non-zero."
+  (with-temp-buffer
+    (ghostel-compile--set-mode-line-exit 0)
+    (let* ((first (car mode-line-process)))
+      (should (string-match-p "exit \\[0\\]" first))
+      (should (eq 'compilation-mode-line-exit
+                  (get-text-property 0 'face first))))
+    (ghostel-compile--set-mode-line-exit 1)
+    (let* ((first (car mode-line-process)))
+      (should (string-match-p "exit \\[1\\]" first))
+      (should (eq 'compilation-mode-line-fail
+                  (get-text-property 0 'face first))))))
+
+(ert-deftest ghostel-test-compile-finish-hooks-fire ()
+  "Both `ghostel-compile-finish-functions' and `compilation-finish-functions' run."
+  (ghostel-test--with-compile-buffer buf
+    (let* ((ghostel-compile-finished-major-mode nil)
+           (g-calls nil)
+           (c-calls nil)
+           (ghostel-compile-finish-functions
+            (list (lambda (b m) (push (cons b m) g-calls))))
+           (compilation-finish-functions
+            (list (lambda (b m) (push (cons b m) c-calls)))))
+      (setq ghostel-compile--command "true"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--running 'armed
+            ghostel-compile--scan-marker (copy-marker (point-max)))
+      (ghostel-compile--finalize buf 0 (current-time))
+      (should (equal 1 (length g-calls)))                     ; ghostel hook
+      (should (eq buf (caar g-calls)))
+      (should (equal "finished\n" (cdar g-calls)))
+      (should (equal 1 (length c-calls)))                     ; compile hook
+      (should (equal "finished\n" (cdar c-calls))))))
+
+(ert-deftest ghostel-test-compile-finalize-ignored-when-not-running ()
+  "Finalize is a no-op when `--running' is nil (manual shell activity)."
+  (ghostel-test--with-compile-buffer buf
+    (let ((ghostel-compile-finished-major-mode nil)
+          (ghostel-compile--running nil))
+      ;; Call the hook dispatcher directly — should not schedule finalize.
+      (setq ghostel-compile--command "true"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--scan-marker (copy-marker (point-max)))
+      (ghostel-compile--on-finish buf 0)
+      ;; Finalize should not have run: last-exit stays nil.
+      (should-not ghostel-compile--last-exit))))
+
+(ert-deftest ghostel-test-compile-auto-jump-to-first-error ()
+  "With `compilation-auto-jump-to-first-error' set, jump after parsing."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t)
+          (ghostel-compile-finished-major-mode nil)
+          (compilation-auto-jump-to-first-error t)
+          (jumped nil))
+      (cl-letf (((symbol-function 'first-error)
+                 (lambda (&rest _) (setq jumped t))))
+        (setq ghostel-compile--command "make"
+              ghostel-compile--start-time (current-time)
+              ghostel-compile--running 'armed
+              ghostel-compile--scan-marker (copy-marker (point-max)))
+        (insert "/tmp/x.c:1:1: error: boom\n")
+        (ghostel-compile--finalize buf 1 (current-time))
+        (should jumped)))))                                    ; first-error called
+
+(ert-deftest ghostel-test-compile-clears-buffer-before-run ()
+  "`ghostel-compile' clears the buffer before sending the command."
+  (ghostel-test--with-compile-buffer buf
+    (let ((cleared nil)
+          (sent nil)
+          (ghostel-compile-buffer-name (buffer-name buf))
+          (ghostel-compile-clear-buffer t))
+      (cl-letf (((symbol-function 'ghostel-clear-scrollback)
+                 (lambda () (setq cleared t)))
+                ((symbol-function 'ghostel--flush-output)
+                 (lambda (data) (setq sent data)))
+                ((symbol-function 'ghostel-compile--get-or-create-buffer)
+                 (lambda () buf))
+                ((symbol-function 'pop-to-buffer)
+                 (lambda (&rest _) nil))
+                ((symbol-function 'save-some-buffers)
+                 (lambda (&rest _) nil)))
+        (ghostel-compile "make test")
+        (should cleared)                                      ; clear was called
+        (should (equal "make test\n" sent))))))               ; then command sent
+
+(ert-deftest ghostel-test-compile-clear-disabled ()
+  "`ghostel-compile-clear-buffer' nil skips the clear."
+  (ghostel-test--with-compile-buffer buf
+    (let ((cleared nil)
+          (ghostel-compile-buffer-name (buffer-name buf))
+          (ghostel-compile-clear-buffer nil))
+      (cl-letf (((symbol-function 'ghostel-clear-scrollback)
+                 (lambda () (setq cleared t)))
+                ((symbol-function 'ghostel--flush-output)
+                 (lambda (_) nil))
+                ((symbol-function 'ghostel-compile--get-or-create-buffer)
+                 (lambda () buf))
+                ((symbol-function 'pop-to-buffer)
+                 (lambda (&rest _) nil))
+                ((symbol-function 'save-some-buffers)
+                 (lambda (&rest _) nil)))
+        (ghostel-compile "make test")
+        (should-not cleared)))))                              ; clear skipped
+
+(ert-deftest ghostel-test-compile-recompile-uses-original-directory ()
+  "`ghostel-recompile' must run in the original `default-directory'.
+
+The user's report: run `ghostel-compile' in /A, switch to a buffer
+in /B, switch back, press `g'.  Without preserving the directory,
+the new compile inherited /B (or whatever buffer was current after
+the kill-buffer in `--get-or-create-buffer')."
+  (let ((dir-at-call nil)
+        (buf (generate-new-buffer " *ghostel-test-recompile-dir*"))
+        (inhibit-message t))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (ghostel-compile-mode 1)
+          ;; Simulate the post-finalize state of a previous run.
+          (setq ghostel-compile--command "make"
+                ghostel-compile--directory "/some/project/")
+          (cl-letf (((symbol-function 'ghostel-compile)
+                     (lambda (_cmd) (setq dir-at-call default-directory)))
+                    ((symbol-function 'get-buffer)
+                     (lambda (name)
+                       (if (equal name ghostel-compile-buffer-name) buf
+                         (funcall (symbol-function 'get-buffer) name)))))
+            ;; Recompile from a buffer whose default-directory is somewhere else.
+            (let ((default-directory "/elsewhere/"))
+              (ghostel-recompile))
+            (should (equal "/some/project/" dir-at-call))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-compile-finalize-pins-default-directory ()
+  "Finalize must pin `default-directory' to the captured value.
+Even if the shell drifted via OSC 7 or the user customized things,
+the resulting view-mode buffer should report its compile directory
+so `ghostel-recompile' (and other tooling) can rely on it."
+  (ghostel-test--with-compile-buffer buf
+    (setq ghostel-compile--command "make"
+          ghostel-compile--directory "/pinned/dir/"
+          ghostel-compile--start-time (current-time)
+          ghostel-compile--running 'armed
+          ghostel-compile--scan-marker (copy-marker (point-max)))
+    (setq default-directory "/drifted/somewhere/")
+    (ghostel-compile--finalize buf 0 (current-time))
+    (should (equal "/pinned/dir/" default-directory))         ; pinned back
+    (should (equal "/pinned/dir/" ghostel-compile--directory))))
+
+(ert-deftest ghostel-test-compile-recompile-without-history ()
+  "`ghostel-recompile' errors cleanly when nothing has been compiled."
+  (let ((compile-command ""))
+    (when-let* ((buf (get-buffer ghostel-compile-buffer-name)))
+      (kill-buffer buf))
+    (should-error (ghostel-recompile) :type 'user-error)))
+
+(ert-deftest ghostel-test-compile-uses-compile-command ()
+  "`ghostel-compile' persists the run command to `compile-command'."
+  (ghostel-test--with-compile-buffer buf
+    (let ((compile-command "make old")
+          (ghostel-compile-buffer-name (buffer-name buf))
+          (ghostel-compile-clear-buffer nil))
+      (cl-letf (((symbol-function 'ghostel--flush-output)
+                 (lambda (_) nil))
+                ((symbol-function 'ghostel-compile--get-or-create-buffer)
+                 (lambda () buf))
+                ((symbol-function 'pop-to-buffer)
+                 (lambda (&rest _) nil))
+                ((symbol-function 'save-some-buffers)
+                 (lambda (&rest _) nil)))
+        (ghostel-compile "make new")
+        (should (equal "make new" compile-command))))))       ; persisted
+
+(ert-deftest ghostel-test-compile-interactive-uses-compile-history ()
+  "`ghostel-compile's prompt uses `compile-history' as the history list."
+  (ghostel-test--with-compile-buffer buf
+    (let ((captured nil)
+          (compile-history '("old-cmd"))
+          (compile-command "make default")
+          (compilation-read-command t)
+          (ghostel-compile-buffer-name (buffer-name buf)))
+      (cl-letf (((symbol-function 'read-shell-command)
+                 (lambda (_prompt _default hist-sym &rest _)
+                   (setq captured hist-sym)
+                   "chosen-cmd"))
+                ((symbol-function 'ghostel--flush-output)
+                 (lambda (_) nil))
+                ((symbol-function 'ghostel-compile--get-or-create-buffer)
+                 (lambda () buf))
+                ((symbol-function 'pop-to-buffer)
+                 (lambda (&rest _) nil))
+                ((symbol-function 'save-some-buffers)
+                 (lambda (&rest _) nil)))
+        (call-interactively #'ghostel-compile)
+        ;; History symbol should be (or directly reference) `compile-history'.
+        (should (or (eq captured 'compile-history)
+                    (and (consp captured)
+                         (eq (car captured) 'compile-history))))))))
+
+(ert-deftest ghostel-test-compile-respects-compilation-read-command ()
+  "When `compilation-read-command' is nil, use `compile-command' silently."
+  (ghostel-test--with-compile-buffer buf
+    (let ((prompted nil)
+          (compile-command "make -C /tmp silent")
+          (compilation-read-command nil)
+          (ghostel-compile-buffer-name (buffer-name buf)))
+      (cl-letf (((symbol-function 'read-shell-command)
+                 (lambda (&rest _) (setq prompted t) "never"))
+                ((symbol-function 'ghostel--flush-output)
+                 (lambda (_) nil))
+                ((symbol-function 'ghostel-compile--get-or-create-buffer)
+                 (lambda () buf))
+                ((symbol-function 'pop-to-buffer)
+                 (lambda (&rest _) nil))
+                ((symbol-function 'save-some-buffers)
+                 (lambda (&rest _) nil)))
+        (call-interactively #'ghostel-compile)
+        (should-not prompted)                                  ; no prompt
+        (should (equal ghostel-compile--command              ; command used as-is
+                       "make -C /tmp silent"))))))
 
 ;; -----------------------------------------------------------------------
 ;; Test: prompt navigation
@@ -3128,7 +4055,52 @@ while :; do sleep 0.1; done'\n")
     ghostel-test-sigwinch-reaches-shell-basic
     ghostel-test-sigwinch-reaches-shell-ghostel-style
     ghostel-test-sigwinch-reaches-child-process
-    ghostel-test-sigwinch-via-ghostel-resize-handler)
+    ghostel-test-sigwinch-via-ghostel-resize-handler
+    ghostel-test-command-finish-hook
+    ghostel-test-command-finish-hook-error-caught
+    ghostel-test-command-finish-hook-error-isolated
+    ghostel-test-compile-mode-requires-ghostel-buffer
+    ghostel-test-compile-mode-sets-up-finish-hook
+    ghostel-test-compile-mode-disable-is-reversible
+    ghostel-test-compile-mode-respects-prior-compilation-minor
+    ghostel-test-compile-mode-disable-cancels-pending
+    ghostel-test-compile-finalize-hide-prompts-nil
+    ghostel-test-command-finish-hook-runs-synchronously
+    ghostel-test-command-start-hook-runs-synchronously
+    ghostel-test-compile-finalize-scans-errors
+    ghostel-test-compile-finalize-inserts-header-and-footer
+    ghostel-test-compile-on-start-snaps-scan-marker
+    ghostel-test-compile-clear-buffer-isolates-stale-errors
+    ghostel-test-compile-finalize-anchors-header-at-scan-marker
+    ghostel-test-compile-finalize-footer-on-failure
+    ghostel-test-compile-finalize-hides-prompts
+    ghostel-test-compile-finalize-hides-echoed-command-without-prompt-property
+    ghostel-test-compile-finalize-colors-errors
+    ghostel-test-compile-spurious-d-without-c-is-ignored
+    ghostel-test-compile-on-finish-only-first-d-counts
+    ghostel-test-compile-finalize-does-not-double-count-errors
+    ghostel-test-compile-finalize-does-not-kill-buffer
+    ghostel-test-compile-view-mode-n-p-navigate-without-opening
+    ghostel-test-compile-finalize-leaves-point-at-end
+    ghostel-test-compile-bash-integration-saves-real-status
+    ghostel-test-compile-finalize-pins-default-directory
+    ghostel-test-compile-recompile-uses-original-directory
+    ghostel-test-compile-finalize-switches-major-mode
+    ghostel-test-compile-recompile-key-binding
+    ghostel-test-compile-recompile-overrides-compile-g
+    ghostel-test-compile-format-duration
+    ghostel-test-compile-status-message
+    ghostel-test-compile-mode-line-running
+    ghostel-test-compile-mode-line-exit
+    ghostel-test-compile-finish-hooks-fire
+    ghostel-test-compile-finalize-ignored-when-not-running
+    ghostel-test-compile-auto-jump-to-first-error
+    ghostel-test-compile-clears-buffer-before-run
+    ghostel-test-compile-clear-disabled
+    ghostel-test-compile-recompile-without-history
+    ghostel-test-compile-uses-compile-command
+    ghostel-test-compile-interactive-uses-compile-history
+    ghostel-test-compile-respects-compilation-read-command)
   "Tests that require only Elisp (no native module).")
 
 (defun ghostel-test-run-elisp ()

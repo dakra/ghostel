@@ -17,11 +17,6 @@ __ghostel_osc7() {
 
 # --- Semantic prompt markers (OSC 133) ---
 
-# Save exit status before PROMPT_COMMAND overwrites $?.
-__ghostel_save_status() {
-    __ghostel_last_status="$?"
-}
-
 # Emit "command finished" (D) for the previous command, then "prompt start" (A).
 # D is skipped on the very first prompt (no previous command).
 __ghostel_prompt_start() {
@@ -46,8 +41,15 @@ __ghostel_preexec() {
 }
 
 __ghostel_wrapped_prompt_command() {
+    # Capture $? FIRST.  A bare assignment such as
+    # `__ghostel_in_prompt_command=1' on its own line counts as a
+    # successful command and resets $? to 0 in bash, so any later
+    # `$?' read here would always see 0 and we'd report `:exit [0]'
+    # for every command.  `local' with `=$?' evaluates `$?' before
+    # invoking the local builtin, preserving the real exit status.
+    local __ghostel_status=$?
     __ghostel_in_prompt_command=1
-    __ghostel_save_status
+    __ghostel_last_status=$__ghostel_status
     __ghostel_prompt_start
     __ghostel_osc7
     eval "${__ghostel_original_prompt_command:-}"
