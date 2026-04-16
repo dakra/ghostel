@@ -14,17 +14,25 @@ jobs:
           - os: ubuntu-latest
             platform: x86_64-linux
             suffix: .so
-          - os: macos-latest
-            platform: aarch64-macos
-            suffix: .dylib
-          - os: macos-latest
-            platform: x86_64-macos
-            suffix: .dylib
-            target: x86_64-macos
           - os: ubuntu-latest
             platform: aarch64-linux
             suffix: .so
             target: aarch64-linux-gnu
+          - os: windows-latest
+            platform: x86_64-windows
+            suffix: .dll
+            target: x86_64-windows-gnu
+          - os: windows-latest
+            platform: aarch64-windows
+            suffix: .dll
+            target: aarch64-windows-gnu
+          - os: macos-latest
+            platform: x86_64-macos
+            suffix: .dylib
+            target: x86_64-macos
+          - os: macos-latest
+            platform: aarch64-macos
+            suffix: .dylib
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -35,6 +43,7 @@ jobs:
           version: 0.15.2
 
       - name: Build native module
+        shell: bash
         run: |
           if [ -n "${{ matrix.target }}" ]; then
             zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast -Dcpu=baseline
@@ -42,20 +51,29 @@ jobs:
             zig build -Doptimize=ReleaseFast -Dcpu=baseline
           fi
 
-      - name: Strip non-exported symbols (macOS)
-        if: runner.os == 'macOS'
-        run: strip -x ghostel-module${{ matrix.suffix }}
-
-      - name: Rename artifact for release
+      - name: Strip non-exported symbols
+        shell: bash
         run: |
-          mv ghostel-module${{ matrix.suffix }} \
-             ghostel-module-${{ matrix.platform }}${{ matrix.suffix }}
+          for f in zig-out/bin/*-module${{ matrix.suffix }}; do
+            strip -x "$f" 2>/dev/null || strip "$f" 2>/dev/null || true
+          done
+
+      - name: Package release artifact
+        shell: bash
+        run: |
+          files=(
+            ghostel-module${{ matrix.suffix }}
+          )
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            files+=(conpty-module${{ matrix.suffix }})
+          fi
+          tar -C zig-out/bin -cJf ghostel-module-${{ matrix.platform }}.tar.xz "${files[@]}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ghostel-module-${{ matrix.platform }}
-          path: ghostel-module-${{ matrix.platform }}${{ matrix.suffix }}
+          path: ghostel-module-${{ matrix.platform }}.tar.xz
 
   release:
     needs: build

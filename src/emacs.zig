@@ -155,6 +155,10 @@ pub const Env = struct {
         self.raw.non_local_exit_signal.?(self.raw, symbol, data);
     }
 
+    pub fn openChannel(self: Env, process: Value) i32 {
+        return self.raw.open_channel.?(self.raw, process);
+    }
+
     // --- Function registration ---
 
     pub fn makeFunction(

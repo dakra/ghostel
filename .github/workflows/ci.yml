@@ -94,6 +94,10 @@ jobs:
             platform: aarch64-linux
             suffix: .so
             target: aarch64-linux-gnu
+          - os: windows-latest
+            platform: x86_64-windows
+            suffix: .dll
+            target: x86_64-windows-gnu
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -104,6 +108,7 @@ jobs:
           version: 0.15.2
 
       - name: Build native module
+        shell: bash
         run: |
           if [ -n "${{ matrix.target }}" ]; then
             zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast -Dcpu=baseline
@@ -111,7 +116,17 @@ jobs:
             zig build -Doptimize=ReleaseFast -Dcpu=baseline
           fi
 
+      - name: Upload Windows module artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghostel-module-${{ matrix.platform }}
+          path: |
+            zig-out/bin/ghostel-module${{ matrix.suffix }}
+            zig-out/bin/conpty-module${{ matrix.suffix }}
+
       - name: Upload module artifact
+        if: runner.os != 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: ghostel-module-${{ matrix.platform }}
@@ -139,10 +154,19 @@ jobs:
             platform: aarch64-macos
             suffix: .dylib
             emacs_version: 'snapshot'
+          - os: windows-latest
+            platform: x86_64-windows
+            suffix: .dll
+            emacs_version: 'snapshot'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: purcell/setup-emacs@master
+        if: runner.os != 'Windows'
+        with:
+          version: ${{ matrix.emacs_version }}
+      - uses: jcs090218/setup-emacs@master
+        if: runner.os == 'Windows'
         with:
           version: ${{ matrix.emacs_version }}
 
@@ -156,6 +180,7 @@ jobs:
           name: ghostel-module-${{ matrix.platform }}
 
       - name: Run native module tests
+        shell: bash
         run: |
           emacs --batch -Q -L . \
             -l ert \

@@ -6,7 +6,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const is_release = optimize != .Debug;
-    const target_os = target.result.os.tag;
+    const resolved_target = target.result;
+    const target_os = resolved_target.os.tag;
     const emacs_module_dir = resolveEmacsModuleDir(b);
     const ghostty_dep = b.dependency("ghostty", .{
         .target = target,
@@ -42,6 +43,9 @@ pub fn build(b: *std.Build) void {
             lib.setVersionScript(b.path("symbols.map"));
         }
     }
+    if (target_os == .windows) {
+        addWindowsRuntimeLibraries(b, lib, resolved_target);
+    }
 
     b.installArtifact(lib);
 
@@ -51,7 +55,49 @@ pub fn build(b: *std.Build) void {
     );
     b.getInstallStep().dependOn(&copy_step.step);
 
+    // ConPTY module — Windows-only pseudoconsole backend.
+    if (target_os == .windows) {
+        const emacs_mod = b.createModule(.{
+            .root_source_file = b.path("src/emacs.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        emacs_mod.addSystemIncludePath(emacs_module_dir);
 
+        const dyn_loader_abi_mod = b.createModule(.{
+            .root_source_file = dynLoaderAbiSourcePath(b),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        dyn_loader_abi_mod.addImport("emacs", emacs_mod);
+
+        const conpty_mod = b.createModule(.{
+            .root_source_file = conptyModuleSourcePath(b),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .strip = if (is_release) true else null,
+        });
+        conpty_mod.addSystemIncludePath(emacs_module_dir);
+        conpty_mod.addImport("emacs", emacs_mod);
+        conpty_mod.addImport("dyn_loader_abi", dyn_loader_abi_mod);
+
+        const conpty_lib = b.addLibrary(.{
+            .name = "conpty-module",
+            .linkage = .dynamic,
+            .root_module = conpty_mod,
+        });
+        addWindowsRuntimeLibraries(b, conpty_lib, resolved_target);
+        b.installArtifact(conpty_lib);
+
+        const copy_conpty = b.addInstallFile(
+            conpty_lib.getEmittedBin(),
+            "bin/conpty-module.dll",
+        );
+        b.getInstallStep().dependOn(&copy_conpty.step);
+    }
 }
 
 fn addModuleIncludes(
@@ -126,6 +172,53 @@ fn dirHasEmacsModuleHeader(allocator: std.mem.Allocator, dir: []const u8) bool {
 fn moduleOutputName(target_os: std.Target.Os.Tag) []const u8 {
     return switch (target_os) {
         .macos => "../ghostel-module.dylib",
+        .windows => "bin/ghostel-module.dll",
         else => "../ghostel-module.so",
     };
+}
+
+fn conptyModuleSourcePath(b: *std.Build) std.Build.LazyPath {
+    const dep = b.dependency("emacs_util_mods", .{});
+    return dep.path("src/conpty/module.zig");
+}
+
+fn dynLoaderAbiSourcePath(b: *std.Build) std.Build.LazyPath {
+    const dep = b.dependency("emacs_util_mods", .{});
+    return dep.path("src/dyn-loader/abi.zig");
+}
+
+fn addWindowsRuntimeLibraries(
+    b: *std.Build,
+    lib: *std.Build.Step.Compile,
+    rt: std.Target,
+) void {
+    lib.linkSystemLibrary("kernel32");
+    // Future-proofing for MSVC toolchain builds (CI currently uses gnu ABI).
+    if (rt.abi != .msvc) return;
+
+    lib.linkSystemLibrary("libvcruntime");
+
+    const arch = rt.cpu.arch;
+    const sdk = std.zig.WindowsSdk.find(b.allocator, arch) catch null;
+    if (sdk) |s| {
+        if (s.windows10sdk) |w10| {
+            const arch_str: []const u8 = switch (arch) {
+                .x86_64 => "x64",
+                .x86 => "x86",
+                .aarch64 => "arm64",
+                else => "x64",
+            };
+            const ucrt_lib_path = std.fmt.allocPrint(
+                b.allocator,
+                "{s}\\Lib\\{s}\\ucrt\\{s}",
+                .{ w10.path, w10.version, arch_str },
+            ) catch null;
+
+            if (ucrt_lib_path) |path| {
+                lib.addLibraryPath(.{ .cwd_relative = path });
+            }
+        }
+    }
+
+    lib.linkSystemLibrary("libucrt");
 }
