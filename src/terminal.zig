@@ -68,6 +68,15 @@ last_input_was_cr: bool = false,
 /// scrollback" or "not yet sampled".
 first_scrollback_row_hash: u64 = 0,
 
+/// True from `resize()` until ghostel.el's resize-settle timer fires
+/// `resyncScrollback()`.  While set, `redraw()` skips the rotation
+/// check and the scrollback delta-sync — the expensive
+/// `insertScrollbackRange()` re-materialization is deferred so that a
+/// resize drag pays the cost once at the end instead of once per
+/// intermediate size.  The viewport is still repainted at the new
+/// dimensions.
+scrollback_resync_deferred: bool = false,
+
 /// Cached Emacs env pointer — only valid during a callback from Emacs.
 env: ?emacs.Env = null,
 
@@ -238,7 +247,20 @@ pub fn resize(self: *Self, cols: u16, rows: u16) !void {
     self.scrollback_in_buffer = 0;
     self.first_scrollback_row_hash = 0;
     self.resize_pending = true;
+    self.scrollback_resync_deferred = true;
     self.last_input_was_cr = false;
+}
+
+/// Schedule a one-shot full scrollback re-materialization on the next
+/// `redraw()`.  Called from ghostel.el after the resize-debounce
+/// settles.  Clears `scrollback_in_buffer` and sets `resize_pending` so
+/// the next redraw erases the buffer and re-fetches all scrollback rows
+/// from libghostty's reflowed state.
+pub fn resyncScrollback(self: *Self) void {
+    self.scrollback_in_buffer = 0;
+    self.first_scrollback_row_hash = 0;
+    self.resize_pending = true;
+    self.scrollback_resync_deferred = false;
 }
 
 /// Scroll the viewport.

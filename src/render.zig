@@ -924,7 +924,9 @@ pub fn redraw(env: emacs.Env, term: *Terminal, force_full_arg: bool) void {
     // row 0, so the start-of-redraw hash is still valid. Trim and
     // rotation-erase invalidate the cache.
     var cached_row0_hash: ?u64 = null;
-    if (term.wrote_since_redraw and term.scrollback_in_buffer > 0 and term.first_scrollback_row_hash != 0) {
+    if (!term.scrollback_resync_deferred and
+        term.wrote_since_redraw and term.scrollback_in_buffer > 0 and term.first_scrollback_row_hash != 0)
+    {
         const new_hash = computeFirstScrollbackRowHash(term);
         // computeFirstScrollbackRowHash scrolled libghostty's viewport to
         // sample row 0 and the defer restored the offset, but the render
@@ -962,7 +964,14 @@ pub fn redraw(env: emacs.Env, term: *Terminal, force_full_arg: bool) void {
     }
     var viewport_start_int = env.extractInteger(env.point());
 
-    if (libghostty_sb > term.scrollback_in_buffer) {
+    if (term.scrollback_resync_deferred) {
+        // Drag-resize fast path: viewport-only repaint, no scrollback
+        // delta-sync.  scrollback_in_buffer is the (possibly-stale) count
+        // of rows still in the Emacs buffer above the viewport — leave it
+        // alone so viewport_start_int above is correct.  The deferred
+        // resync (resyncScrollback() from elisp) will eventually do the
+        // full re-fetch in one pass.
+    } else if (libghostty_sb > term.scrollback_in_buffer) {
         // New rows scrolled off in libghostty. Strategy:
         //
         // 1. Promote as many existing buffer rows as possible. The rows

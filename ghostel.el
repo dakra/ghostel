@@ -163,6 +163,14 @@ and sent as a single write to the PTY.  This reduces per-key
 syscall overhead during fast typing.  Set to 0 to disable."
   :type 'number)
 
+(defcustom ghostel-resize-settle-delay 0.15
+  "Seconds to wait after the last resize event before re-syncing scrollback.
+During a drag-resize the viewport is still repainted on every size
+change, but the expensive re-materialization of scrollback into the
+Emacs buffer is deferred until the drag settles — so a drag pays the
+cost once instead of once per intermediate size."
+  :type 'number)
+
 (defcustom ghostel-full-redraw nil
   "When non-nil, always perform full redraws instead of incremental updates.
 Full redraws are more robust with TUI apps like Claude Code that do
@@ -473,6 +481,7 @@ Bump this only when the Elisp code requires a newer native module
 (declare-function ghostel--mouse-event "ghostel-module")
 (declare-function ghostel--new "ghostel-module")
 (declare-function ghostel--redraw "ghostel-module" (term &optional full))
+(declare-function ghostel--resync-scrollback "ghostel-module")
 (declare-function ghostel--scroll-bottom "ghostel-module")
 (declare-function ghostel--set-default-colors "ghostel-module")
 (declare-function ghostel--set-palette "ghostel-module")
@@ -807,6 +816,11 @@ Used for prompt navigation and optional re-application after full redraws.")
 (defvar-local ghostel--scroll-intercept-active nil
   "Non-nil when ghostel's scroll-event intercept is active.
 Used as the activation key in `emulation-mode-map-alists'.")
+
+(defvar-local ghostel--resize-settle-timer nil
+  "Timer scheduling scrollback resync after a resize drag settles.
+Reset on every resize event; when it finally fires, a one-shot full
+re-materialization of scrollback runs via `ghostel--resync-scrollback'.")
 
 
 
@@ -2755,6 +2769,20 @@ following the viewport."
 
 ;;; Window resize
 
+(defun ghostel--resize-settle (buffer)
+  "Re-materialize scrollback after a resize drag has settled in BUFFER.
+The Zig side defers the expensive scrollback re-fetch while
+`ghostel--resize-settle-timer' is pending; this callback finally
+triggers it and schedules a redraw so the buffer picks up the
+newly-materialized rows."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq ghostel--resize-settle-timer nil)
+      (when (and ghostel--term (not ghostel--copy-mode-active))
+        (ghostel--resync-scrollback ghostel--term)
+        (setq ghostel--force-next-redraw t)
+        (ghostel--delayed-redraw buffer)))))
+
 (defun ghostel--window-adjust-process-window-size (process windows)
   "Resize the terminal to match the new Emacs window dimensions.
 PROCESS is the shell process, WINDOWS is the list of windows."
@@ -2779,7 +2807,14 @@ PROCESS is the shell process, WINDOWS is the list of windows."
           (when ghostel--redraw-timer
             (cancel-timer ghostel--redraw-timer)
             (setq ghostel--redraw-timer nil))
-          (ghostel--delayed-redraw buffer))))
+          (ghostel--delayed-redraw buffer)
+          ;; Re-arm the settle timer so a drag pays the scrollback
+          ;; re-materialization cost once when it ends, not per step.
+          (when (timerp ghostel--resize-settle-timer)
+            (cancel-timer ghostel--resize-settle-timer))
+          (setq ghostel--resize-settle-timer
+                (run-with-timer ghostel-resize-settle-delay nil
+                                #'ghostel--resize-settle buffer)))))
     ;; Return size — Emacs calls set-process-window-size (SIGWINCH)
     ;; after this function returns, matching eat/vterm timing.
     size))
