@@ -462,10 +462,13 @@ local machine happens to have)."
          (process-environment
           (append compilation-environment
                   (list (format "INSIDE_EMACS=%s,compile" emacs-version)
-                        "TERM=xterm-256color"
+                        (format "TERM=%s" ghostel--term-type)
                         "COLORTERM=truecolor"
+                        "TERM_PROGRAM=ghostty"
                         ;; Defeat pagers (git grep, etc.).
                         "PAGER=")
+                  (when ghostel--terminfo-dir
+                    (list (format "TERMINFO=%s" ghostel--terminfo-dir)))
                   (copy-sequence process-environment)))
          ;; See `ghostel--spawn-pty' for why these are set.
          (process-adaptive-read-buffering nil)

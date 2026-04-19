@@ -464,6 +464,26 @@ Customize this when downloading pre-built modules from a fork or mirror."
 Bump this only when the Elisp code requires a newer native module
 \(e.g. new Zig-exported function or changed calling convention).")
 
+(defconst ghostel--terminfo-dir
+  (let ((dir (expand-file-name
+              "terminfo"
+              (file-name-directory (or load-file-name buffer-file-name)))))
+    (when (file-directory-p dir) dir))
+  "Directory of ghostel's bundled ghostty terminfo, or nil.
+Exported as TERMINFO for child processes so ncurses-based apps
+resolve \"xterm-ghostty\" without the user installing it
+system-wide.")
+
+(defconst ghostel--term-type
+  (if ghostel--terminfo-dir "xterm-ghostty" "xterm-256color")
+  "TERM value exported to child processes.
+\"xterm-ghostty\" when the bundled terminfo ships (the normal
+case), so TUIs that sniff $TERM for ghostty-family renderers
+(e.g. Claude Code gating DEC 2026 synchronized output) recognise
+ghostel as the full-featured renderer it is.  Falls back to
+\"xterm-256color\" only when `ghostel--terminfo-dir' is nil,
+so a broken install still leaves ncurses apps working.")
+
 
 ;; Declare native module functions for the byte compiler
 
@@ -2412,8 +2432,11 @@ matches the PTY window size, and stores the process in
           (append
            (list
             "INSIDE_EMACS=ghostel"
-            "TERM=xterm-256color"
-            "COLORTERM=truecolor")
+            (format "TERM=%s" ghostel--term-type)
+            "COLORTERM=truecolor"
+            "TERM_PROGRAM=ghostty")
+           (when ghostel--terminfo-dir
+             (list (format "TERMINFO=%s" ghostel--terminfo-dir)))
            extra-env
            process-environment))
          ;; Large TUI redraws (Claude Code, pi on resize) can emit
