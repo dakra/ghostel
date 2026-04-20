@@ -3052,26 +3052,27 @@ No-op when `ghostel--snap-requested' (user input overrides)."
 Also resets pixel vscroll (pixel-scroll-precision-mode may leave a
 partial offset that would clip the top line after a redraw).
 
-When the TUI cursor is in pending-wrap state on the last visible row,
-PT equals `point-max' (one past the last character).  Emacs redisplay
-then classifies it as off-screen, and `scroll-conservatively' shifts
-`window-start' up by one row to make it visible — which fights the
-viewport pin and makes the block cursor disappear.  Clamp
+When PT equals `point-max' and Emacs considers that position
+off-screen given the just-pinned `window-start', redisplay would
+scroll `window-start' to bring PT into view — fighting the viewport
+pin and making the block cursor disappear (issue #138).  Clamp
 `window-point' back by one only in that case so it sits inside the
-viewport; buffer-point is unaffected and subsequent redraws recapture
-the real cursor.  We must NOT clamp for a plain shell prompt where the
-cursor is legitimately at `point-max' after typing — doing so would
-draw the block cursor on the last character instead of after it
-\(issue #146)."
+viewport; buffer-point is unaffected and subsequent redraws
+recapture the real cursor.  When PT is already visible (e.g. a shell
+prompt mid-window where the user just typed up to `point-max'),
+leave WP alone so the block cursor renders after the last character
+\(issue #146).
+
+This catches both pending-wrap (#138) and CUP placements that land
+the cursor at `point-max' on the last viewport row, e.g. TUIs that
+park the cursor at the bottom on focus-out."
   (set-window-start win vs t)
   (set-window-vscroll win 0 t)
-  (set-window-point win (if (and (= pt (point-max))
-                                 (> pt (point-min))
-                                 ghostel--term
-                                 (ghostel--cursor-pending-wrap-p
-                                  ghostel--term))
-                            (1- pt)
-                          pt)))
+  (set-window-point win pt)
+  (when (and (= pt (point-max))
+             (> pt (point-min))
+             (not (pos-visible-in-window-p pt win)))
+    (set-window-point win (1- pt))))
 
 (defun ghostel--restore-scrollback-window (win state)
   "Restore WIN to ws/wp recorded in STATE and push STATE to scroll-positions.
