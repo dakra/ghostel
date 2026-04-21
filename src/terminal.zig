@@ -61,13 +61,6 @@ resize_pending: bool = false,
 /// new.
 last_input_was_cr: bool = false,
 
-/// Hash of the first scrollback row's content, sampled at the end of
-/// each redraw that touched scrollback. Used to detect rotation
-/// (libghostty evicting the oldest row in lockstep with new ones being
-/// pushed) when `total_rows` is plateaued at the cap. Zero means "no
-/// scrollback" or "not yet sampled".
-first_scrollback_row_hash: u64 = 0,
-
 /// Cached Emacs env pointer — only valid during a callback from Emacs.
 env: ?emacs.Env = null,
 
@@ -236,7 +229,6 @@ pub fn resize(self: *Self, cols: u16, rows: u16) !void {
     self.cols = cols;
     self.rows = rows;
     self.scrollback_in_buffer = 0;
-    self.first_scrollback_row_hash = 0;
     self.resize_pending = true;
     self.last_input_was_cr = false;
 }

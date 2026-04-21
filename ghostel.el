@@ -3194,6 +3194,14 @@ PROCESS is the shell process, WINDOWS is the list of windows."
             (setq size nil))
            ;; Real resize — update the terminal model and redraw.
            (t
+            ;; Flush any pending PTY output BEFORE resizing so it is
+            ;; processed at the old terminal width.  The subsequent
+            ;; ghostty_terminal_resize will reflow the content to the
+            ;; new width.  Without this, the pending output (written
+            ;; by the app at the old width) would be fed into the
+            ;; already-resized terminal, producing rows with line
+            ;; breaks at the wrong column.
+            (ghostel--flush-pending-output)
             (ghostel--set-size ghostel--term (max 1 height) (max 1 width))
             (setq ghostel--term-rows height)
             (setq ghostel--term-cols width)
