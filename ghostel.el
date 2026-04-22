@@ -887,6 +887,12 @@ pixel-based trailing-space compensation is needed.")
 Nil means title tracking has not claimed the buffer yet.  Clearing this
 variable re-enables automatic renaming for the next title update.")
 
+(defvar-local ghostel--pinned-buffer-name nil
+  "When non-nil, title tracking will not rename this buffer.")
+
+(defvar ghostel--pin-buffer-name nil
+  "Dynamic binding used by `ghostel-project' to pin the buffer name.")
+
 (defvar-local ghostel--prompt-positions nil
   "List of prompt positions as (buffer-line . exit-status) pairs.
 Used for prompt navigation and optional re-application after full redraws.")
@@ -2172,9 +2178,11 @@ This ensures terminal text is visible regardless of the Emacs theme."
 
 (defun ghostel--set-title-default (title)
   "Update the buffer name with TITLE from the terminal.
-Only acts when the buffer has not been manually renamed by the user."
-  (when (or (null ghostel--managed-buffer-name)
-            (equal (buffer-name) ghostel--managed-buffer-name))
+Only acts when the buffer has not been manually renamed by the user.
+Does nothing when `ghostel--pin-buffer-name' is non-nil (e.g. project buffers)."
+  (when (and (not ghostel--pinned-buffer-name)
+             (or (null ghostel--managed-buffer-name)
+                 (equal (buffer-name) ghostel--managed-buffer-name)))
     (let ((new-name (format "*ghostel: %s*" title)))
       (rename-buffer new-name t)
       ;; Keep the actual name because `rename-buffer' may uniquify it.
@@ -3321,6 +3329,8 @@ displayed, so a mismatch at creation time self-corrects."
     (unless (derived-mode-p 'ghostel-mode)
       (ghostel-mode)
       (setq ghostel--managed-buffer-name (buffer-name))
+      (when ghostel--pin-buffer-name
+        (setq-local ghostel--pinned-buffer-name t))
       (let* ((w (or (get-buffer-window buffer t) (selected-window)))
              (height (if (window-live-p w) (window-body-height w) 24))
              (width  (if (window-live-p w) (window-max-chars-per-line w) 80)))
@@ -3397,7 +3407,8 @@ To add this to `project-switch-commands':
   (interactive "P")
   (let ((default-directory (project-root (project-current t)))
         (ghostel-buffer-name (project-prefixed-buffer-name
-                              (string-trim ghostel-buffer-name "*" "*"))))
+                              (string-trim ghostel-buffer-name "*" "*")))
+        (ghostel--pin-buffer-name t))
     (ghostel arg)))
 
 (defun ghostel-other ()
