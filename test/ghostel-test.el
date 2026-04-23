@@ -501,6 +501,58 @@ scrolling libghostty's viewport."
               (should-not (string-match-p "line [0-9]" content)))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-scrollback-csi3j-then-refill ()
+  "CSI 3 J must not leave stale pre-clear rows in the buffer.
+
+Scenario (5-row terminal, 10 before-* rows, CSI 3J, 5 after-* rows,
+single redraw):
+  - After the first redraw: before-00..before-05 are in scrollback (6
+    rows scrolled off), before-06..before-09 fill the viewport.
+  - CSI 3J clears libghostty's scrollback; the viewport is unchanged.
+  - Five new after-* rows scroll before-06..before-09 and after-00 into
+    libghostty's freshly-cleared scrollback (5 rows); after-01..after-04
+    are left in the viewport.
+  - At the next redraw, libghostty_sb (5) < scrollback_in_buffer (6),
+    so count-based detection triggers a full rebuild.  The rebuild_pending
+    flag (set by the CSI 3J scanner in vtWrite) also fires, ensuring the
+    erase happens even in scenarios where counts happen to match."
+  (let ((buf (generate-new-buffer " *ghostel-test-csi3j-refill*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 80 1000))
+                 (inhibit-read-only t))
+            ;; Phase 1: fill scrollback with 10 "before" rows and redraw.
+            (dotimes (i 10)
+              (ghostel--write-input term (format "before-%02d\r\n" i)))
+            (ghostel--redraw term t)
+            ;; Confirm before-00..before-05 are now in the buffer's scrollback
+            ;; and before-06..before-09 are in the viewport.
+            (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p "before-00" content))
+              (should (string-match-p "before-05" content))
+              (should (string-match-p "before-09" content)))
+            ;; Phase 2: CSI 3 J (erase scrollback only) then immediately
+            ;; write 5 "after" rows — no redraw in between.  before-06..before-09
+            ;; scroll off into libghostty's freshly-cleared scrollback as the
+            ;; after-* rows push through the viewport.
+            (ghostel--write-input term "\e[3J")
+            (dotimes (i 5)
+              (ghostel--write-input term (format "after-%02d\r\n" i)))
+            ;; Phase 3: single redraw — must rebuild from libghostty.
+            (ghostel--redraw term t)
+            (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+              ;; Rows that were in scrollback when CSI 3J fired are gone.
+              (should-not (string-match-p "before-00" content))
+              (should-not (string-match-p "before-05" content))
+              ;; Rows that were in the viewport during CSI 3J are now in
+              ;; libghostty's new scrollback and must be present.
+              (should (string-match-p "before-06" content))
+              (should (string-match-p "before-09" content))
+              ;; after-00 scrolled into scrollback; after-01..after-04 in viewport.
+              (should (string-match-p "after-00" content))
+              (should (string-match-p "after-04" content)))))
+      (kill-buffer buf))))
+
 ;; -----------------------------------------------------------------------
 ;; Test: SGR styling (bold, color, etc.)
 ;; -----------------------------------------------------------------------

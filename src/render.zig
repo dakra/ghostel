@@ -819,7 +819,6 @@ fn insertScrollbackRange(
     return inserted;
 }
 
-
 /// Convert a terminal column to an Emacs character offset by iterating
 /// the row's cells.  Returns `true` and positions point on success;
 /// `false` if the cell data is unavailable (caller should fall back to
@@ -891,8 +890,8 @@ fn positionCursorByCell(env: emacs.Env, term: *Terminal, cx: u16, cy: u16) bool 
 /// On each call we:
 ///   1. Force libghostty's viewport to the bottom (active screen).
 ///   2. Poll `getTotalRows()` against `term.scrollback_in_buffer` to
-///      detect rows that scrolled off the top (append to buffer) or
-///      rows evicted by libghostty's scrollback cap (trim from buffer).
+///      detect rows that scrolled off the top of the viewport and promoted them
+///      to the scrollback part of the buffer
 ///   3. Render the viewport into the tail of the buffer, anchored at
 ///      the line that follows the last scrollback row.
 ///
@@ -936,17 +935,6 @@ pub fn redraw(env: emacs.Env, term: *Terminal, force_full_arg: bool) void {
         return;
     }
 
-    // ---- Deferred resize buffer reset ----------------------------------------
-    // terminal.resize() sets resize_pending instead of immediately erasing the
-    // buffer, so the old frame stays visible until this redraw replaces it
-    // (the caller binds inhibit-redisplay around us).  Erase now and force a
-    // full rebuild of scrollback + viewport.
-    if (term.resize_pending) {
-        env.eraseBuffer();
-        term.resize_pending = false;
-        force_full = true;
-    }
-
     // Resolve default colors once — used for both the scrollback append
     // path and the viewport render path.  These always succeed (the
     // render state always has resolved default colors), so batching is safe.
@@ -964,43 +952,60 @@ pub fn redraw(env: emacs.Env, term: *Terminal, force_full_arg: bool) void {
         _ = gt.c.ghostty_render_state_get_multi(term.render_state, color_keys.len, &color_keys, @ptrCast(&color_values), null);
     }
 
-    // ---- Scrollback rotation detection ------------------------------------
-    // When libghostty's scrollback is at its byte cap, sustained writes
-    // evict the oldest rows and push new ones, so the row at scrollback
-    // index 0 changes underneath us. The normal delta-sync below tracks
-    // `total_rows` deltas, but those don't capture content rotation —
-    // if the count is unchanged (or even shrinking) the trim path would
-    // remove our top rows under the *assumption* they match the rows
-    // libghostty just evicted, which isn't true after rotation.
+    // ---- Scrollback validity ------------------------------------------------
+    // Two signals can invalidate buffered scrollback and are collected here;
+    // a third (rotation) is checked below.
     //
-    // Detect rotation by hashing the first scrollback row whenever
-    // writes have happened since the last redraw and we have scrollback.
-    // A change means the top row is no longer the row we materialized
-    // → wipe the buffer and let the delta-sync below re-fetch everything
-    // fresh from libghostty.
+    //   rebuild_pending: set by terminal.resize() and by the CSI 3 J scanner
+    //                    in vtWrite. Defers the Emacs-buffer erase into the
+    //                    redraw pass where inhibit-redisplay prevents a
+    //                    visible blank frame.
     //
-    // When the hash matches (no rotation), stash it in `cached_row0_hash`
-    // and reuse at end-of-redraw. Promotion / insert-at-tail don't shift
-    // row 0, so the start-of-redraw hash is still valid. Trim and
-    // rotation-erase invalidate the cache.
+    //   rotation:        checked below via a row-0 hash; only computed when
+    //                    rebuild_pending hasn't already fired.
+    var scrollback_stale = term.rebuild_pending;
+    term.rebuild_pending = false;
+
+    // ---- Rotation detection ------------------------------------------------
+    // When libghostty's scrollback cap is saturated, sustained writes evict
+    // the oldest rows. total_rows doesn't change, so the delta-sync below
+    // would see nothing to do — detect the churn by hashing the first
+    // scrollback row and comparing to the value sampled at the last redraw.
+    //
+    // Skip when scrollback is already known to be stale: the viewport scroll
+    // that sampling requires is wasted work if we are about to erase anyway.
+    // On a hash match, stash the value for reuse at end-of-redraw (promotion
+    // and insert-at-tail don't shift row 0, so it stays valid).
     var cached_row0_hash: ?u64 = null;
-    if (term.wrote_since_redraw and term.scrollback_in_buffer > 0 and term.first_scrollback_row_hash != 0) {
+    if (!scrollback_stale and
+        term.wrote_since_redraw and
+        term.scrollback_in_buffer > 0 and
+        term.first_scrollback_row_hash != 0)
+    {
         const new_hash = computeFirstScrollbackRowHash(term);
         // computeFirstScrollbackRowHash scrolled libghostty's viewport to
-        // sample row 0 and the defer restored the offset, but the render
-        // state may now be stale — refresh it before continuing.
+        // sample row 0; the render state is now stale — refresh it.
         if (gt.c.ghostty_render_state_update(term.render_state, term.terminal) != gt.SUCCESS) return;
         if (new_hash != term.first_scrollback_row_hash) {
-            // Rotation detected — erase the buffer entirely and force a
-            // full viewport render. The delta-sync below will then see
-            // libghostty_sb - 0 = libghostty_sb and refetch everything.
-            env.eraseBuffer();
-            term.scrollback_in_buffer = 0;
-            term.first_scrollback_row_hash = 0;
-            force_full = true;
+            scrollback_stale = true;
         } else {
             cached_row0_hash = new_hash;
         }
+    }
+
+    // Compare counts: scrollback shrinking means the buffered rows are no
+    // longer valid (CSI 3 J or resize would have set rebuild_pending, but
+    // this catches any other unexpected reduction).
+    const total_rows = term.getTotalRows();
+    const libghostty_sb: usize = if (total_rows > term.rows) total_rows - term.rows else 0;
+    if (libghostty_sb < term.scrollback_in_buffer) scrollback_stale = true;
+
+    // If scrollback is stale for any reason, erase it completely.
+    if (scrollback_stale) {
+        env.eraseBuffer();
+        term.scrollback_in_buffer = 0;
+        term.first_scrollback_row_hash = 0;
+        force_full = true;
     }
 
     // ---- Scrollback sync ---------------------------------------------------
@@ -1012,8 +1017,6 @@ pub fn redraw(env: emacs.Env, term: *Terminal, force_full_arg: bool) void {
     // by walking from point-min and reusing point() after any insert/trim
     // touches it. forwardLine is O(scrollback) so doing it twice would
     // double the per-redraw cost in long-running sessions.
-    const total_rows = term.getTotalRows();
-    const libghostty_sb: usize = if (total_rows > term.rows) total_rows - term.rows else 0;
 
     // Walk to the current viewport start (line scrollback_in_buffer + 1).
     env.gotoCharN(1);
@@ -1102,31 +1105,6 @@ pub fn redraw(env: emacs.Env, term: *Terminal, force_full_arg: bool) void {
             term.scrollViewport(gt.SCROLL_BOTTOM, 0);
             if (gt.c.ghostty_render_state_update(term.render_state, term.terminal) != gt.SUCCESS) return;
         }
-    } else if (libghostty_sb < term.scrollback_in_buffer) {
-        // libghostty's scrollback cap evicted the oldest rows — trim the
-        // same number of lines from the top of the buffer. Trim shifts
-        // row 0 so the start-of-redraw hash is stale.
-        cached_row0_hash = null;
-        const delta = term.scrollback_in_buffer - libghostty_sb;
-        env.gotoCharN(1);
-        if (env.forwardLine(@as(i64, @intCast(delta))) == 0) {
-            env.deleteRegion(env.makeInteger(1), env.point());
-            term.scrollback_in_buffer -= delta;
-            // After the delete, the new viewport start has shifted down.
-            // forwardLine is already at the right line (point-min + delta
-            // lines was the next surviving row, now line 1+scrollback_in_buffer).
-            // Recompute by walking the remaining scrollback rows.
-        } else {
-            // Ran off the end — buffer is out of sync; rebuild from scratch.
-            env.eraseBuffer();
-            term.scrollback_in_buffer = 0;
-            force_full = true;
-        }
-        env.gotoCharN(1);
-        if (term.scrollback_in_buffer > 0) {
-            _ = env.forwardLine(@as(i64, @intCast(term.scrollback_in_buffer)));
-        }
-        viewport_start_int = env.extractInteger(env.point());
     }
 
     // Check dirty state — cells are only redrawn when dirty, but cursor
