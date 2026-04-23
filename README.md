@@ -56,8 +56,19 @@ If you prefer to build from source or need a different platform, you'll also nee
 
 ```elisp
 (use-package ghostel
-  :vc (:url "https://github.com/dakra/ghostel" :rev :newest))
+  :vc (:url "https://github.com/dakra/ghostel"
+       :lisp-dir "lisp"
+       :rev :newest))
 ```
+
+`:lisp-dir "lisp"` is required on Emacs 30.x — its `package-vc-install`
+doesn't propagate the auto-detected Lisp subdirectory through to the
+byte-compile / autoloads / main-file steps, so omitting the hint
+surfaces as a `(wrong-type-argument stringp nil)` error and
+byte-compile failures for secondary Lisp files.  Emacs 31 fixes both
+paths; the hint is harmless there (and in the evil-ghostel snippet
+below it's redundant because `:lisp-dir` already points at the
+extension's own subdir).
 
 ### use-package with load-path
 
