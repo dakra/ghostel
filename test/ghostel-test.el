@@ -1182,6 +1182,84 @@ that collided with a fish-internal local variable, leaking
       (should (equal old ghostel--last-directory)))))       ; dedup
 
 ;; -----------------------------------------------------------------------
+;; Test: shell integration wraps OSC in tmux DCS-passthrough when $TMUX
+;; -----------------------------------------------------------------------
+
+(defun ghostel-test--shell-osc-bytes (shell rel-script tmux-value)
+  "Source REL-SCRIPT in SHELL and capture bytes from `__ghostel_emit_osc'.
+TMUX-VALUE is what to set $TMUX to (nil means unset).  REL-SCRIPT is
+relative to the package root.  Returns raw stdout (after a sentinel) as
+a unibyte string.
+
+Bash installs a DEBUG trap during sourcing that emits OSC 133;C before
+the next simple command — including commands inside the script's own
+body after the trap is installed.  That contaminates stdout with one or
+more 133;C OSCs we can't suppress before the trap fires.  Workaround:
+emit a sentinel via the same helper after sourcing, and return only the
+bytes that follow the sentinel."
+  (let* ((root (file-name-directory (directory-file-name
+                                     (file-name-directory
+                                      (locate-library "ghostel")))))
+         (script (expand-file-name rel-script root))
+         (qscript (shell-quote-argument script))
+         (qtmux (and tmux-value (shell-quote-argument tmux-value)))
+         (sentinel "===GHOSTEL-OSC-CAPTURE===")
+         (cmd (pcase shell
+                ((or "bash" "zsh")
+                 (concat (if tmux-value
+                             (format "export TMUX=%s; " qtmux)
+                           "unset TMUX; ")
+                         (format "source %s; " qscript)
+                         ;; Set the integration's own DEBUG-trap escape
+                         ;; hatch so the trap stops emitting 133;C, and
+                         ;; emit a sentinel so the caller can slice off
+                         ;; any 133;C bytes already emitted before this.
+                         "__ghostel_in_prompt_command=1; "
+                         (format "printf '%%s' %s; " (shell-quote-argument sentinel))
+                         "HOST=h HOSTNAME=h PWD=/p "
+                         "__ghostel_emit_osc '7;file://h/p'"))
+                ("fish"
+                 (concat (if tmux-value
+                             (format "set -x TMUX %s; " qtmux)
+                           "set -e TMUX; ")
+                         (format "source %s; " qscript)
+                         (format "printf '%%s' %s; " (shell-quote-argument sentinel))
+                         "__ghostel_emit_osc '7;file://h/p'"))))
+         (flag (pcase shell
+                 ("bash" "--norc")
+                 ("zsh"  "-f")
+                 ("fish" "--no-config"))))
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (let ((coding-system-for-read 'binary)
+            (coding-system-for-write 'binary))
+        (let ((status (call-process shell nil (current-buffer) nil
+                                    flag "-c" cmd)))
+          (unless (zerop status)
+            (error "%s exited %d: %s" shell status (buffer-string)))))
+      (let* ((out (buffer-string))
+             (idx (string-match (regexp-quote sentinel) out)))
+        (unless idx
+          (error "Sentinel %s not found in output: %S" sentinel out))
+        (substring out (+ idx (length sentinel)))))))
+
+(ert-deftest ghostel-test-shell-osc-tmux-wrapping ()
+  "Shell integration wraps OSCs in tmux DCS-passthrough when $TMUX is set.
+Without $TMUX, emits a bare `\\e]…\\e\\\\' OSC.  With $TMUX, wraps it as
+`\\ePtmux;\\e\\e]…\\e\\e\\\\\\e\\\\' (inner ESCs doubled, outer DCS+ST)."
+  (let ((bare    "\e]7;file://h/p\e\\")
+        (wrapped "\ePtmux;\e\e]7;file://h/p\e\e\\\e\\"))
+    (dolist (c '(("bash" "etc/shell/ghostel.bash")
+                 ("zsh"  "etc/shell/ghostel.zsh")
+                 ("fish" "etc/shell/ghostel.fish")))
+      (cl-destructuring-bind (shell script) c
+        (when (executable-find shell)
+          (should (equal bare
+                         (ghostel-test--shell-osc-bytes shell script nil)))
+          (should (equal wrapped
+                         (ghostel-test--shell-osc-bytes shell script "fake-tmux"))))))))
+
+;; -----------------------------------------------------------------------
 ;; Test: cwd exposed via list-buffers-directory
 ;; -----------------------------------------------------------------------
 
@@ -7791,6 +7869,7 @@ while :; do sleep 0.1; done'\n")
     ghostel-test-send-event
     ghostel-test-raw-key-modified-specials
     ghostel-test-update-directory
+    ghostel-test-shell-osc-tmux-wrapping
     ghostel-test-list-buffers-directory
     ghostel-test-compile-view-list-buffers-directory
     ghostel-test-filter-soft-wraps

@@ -14,9 +14,23 @@
 # Idempotency guard — skip if already loaded (e.g. auto-injected).
 functions -q __ghostel_osc7; and return
 
+# Emit an OSC sequence with the given body (the part between `\e]' and
+# the ST `\e\\').  Inside tmux, wrap the OSC in DCS-passthrough so tmux
+# forwards the body to the outer terminal — requires `set -g
+# allow-passthrough on' in tmux.conf (tmux 3.3+).
+function __ghostel_emit_osc
+    if set -q TMUX
+        # Fish single-quote eats `\\' (escape) so printf-format `\\' must
+        # be written `\\\\' here.  `\e' passes through to printf as-is.
+        printf '\ePtmux;\e\e]%s\e\e\\\\\e\\\\' "$argv[1]"
+    else
+        printf '\e]%s\e\\\\' "$argv[1]"
+    end
+end
+
 # Report working directory to the terminal via OSC 7
 function __ghostel_osc7 --on-event fish_prompt
-    printf '\e]7;file://%s%s\e\\' (hostname) "$PWD"
+    __ghostel_emit_osc "7;file://"(hostname)"$PWD"
 end
 
 # --- Semantic prompt markers (OSC 133) ---
@@ -30,20 +44,20 @@ end
 # Emit "command finished" (D) + "prompt start" (A) before the prompt.
 function __ghostel_prompt_start --on-event fish_prompt
     if test "$__ghostel_prompt_shown" = 1
-        printf '\e]133;D;%s\e\\' "$__ghostel_last_status"
+        __ghostel_emit_osc "133;D;$__ghostel_last_status"
     end
-    printf '\e]133;A\e\\'
+    __ghostel_emit_osc "133;A"
 end
 
 # Emit "prompt end / command start" (B) after the prompt.
 function __ghostel_prompt_end --on-event fish_prompt
-    printf '\e]133;B\e\\'
+    __ghostel_emit_osc "133;B"
     set -g __ghostel_prompt_shown 1
 end
 
 # Emit "command output start" (C) before command runs.
 function __ghostel_preexec --on-event fish_preexec
-    printf '\e]133;C\e\\'
+    __ghostel_emit_osc "133;C"
 end
 
 # Outbound `ssh' wrapper.  See etc/ghostel.bash for the full design
@@ -152,5 +166,5 @@ function ghostel_cmd
         set arg (string replace -a '"' '\\"' -- $arg)
         set payload "$payload\"$arg\" "
     end
-    printf '\e]51;E%s\e\\' "$payload"
+    __ghostel_emit_osc "51;E$payload"
 end
