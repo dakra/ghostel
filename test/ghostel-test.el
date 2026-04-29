@@ -4083,6 +4083,101 @@ Emacs auto-scrolls to make point visible."
         (set-window-buffer (selected-window) orig-buf))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-191-deferred-crop-commit-prevents-anchor-latch ()
+  "Committing a deferred minibuffer-crop on output keeps anchor (issue #191).
+Auto-following windows survive Emacs redisplay drift across the
+crop because the commit runs a resize-aware redraw.
+
+The CROP branch of `ghostel--window-adjust-process-window-size'
+records the pending size in `ghostel--deferred-crop-size' instead of
+discarding it.  When output arrives, `ghostel--commit-deferred-crop'
+brings the PTY in sync with the cropped window via a resize-aware
+redraw.  The redraw sees `ghostel--redraw-resize-active' = t, so a
+`window-start' that has drifted below the anchor (Emacs redisplay
+during the crop) is treated as drift, not user scrollback — the
+window stays anchored and never enters `ghostel--scroll-positions'.
+
+Without the fix, `term-rows' lies about the geometry for the
+duration of the crop, the regrow on minibuffer-close hits the
+no-change branch and skips the resize-aware redraw, and the
+auto-follow predicate latches off."
+  (let ((buf (generate-new-buffer " *ghostel-test-191*"))
+        (orig-buf (window-buffer (selected-window))))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let* ((term (ghostel--new 12 40 200))
+                 (ghostel--term term)
+                 (ghostel--term-rows 12)
+                 (ghostel--term-cols 40)
+                 (ghostel--process 'fake-process)
+                 (sigwinch-calls nil)
+                 (ghostel--force-next-redraw nil)
+                 (inhibit-read-only t))
+            (dotimes (i 30)
+              (ghostel--write-input term (format "out-%02d\r\n" i)))
+            (ghostel--write-input term "prompt> ")
+            (ghostel--redraw term t)
+            (set-window-buffer (selected-window) buf)
+            (let ((vp (ghostel--viewport-start)))
+              (set-window-start (selected-window) vp t)
+              (setq ghostel--last-anchor-position vp))
+            (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+                      ((symbol-function 'set-process-window-size)
+                       (lambda (&rest args) (push args sigwinch-calls) nil)))
+              (setq ghostel--deferred-crop-size (cons 6 40))
+              ;; Simulate `keep-point-visible' having drifted window-start
+              ;; below the anchor during the cropped phase.
+              (set-window-start (selected-window) (point-min) t)
+              (ghostel--commit-deferred-crop))
+            (should (eql 6 ghostel--term-rows))
+            (should (eql 40 ghostel--term-cols))
+            (should (null ghostel--deferred-crop-size))
+            (should (eql 1 (length sigwinch-calls)))
+            ;; The drift was treated as drift: window stayed anchored, no
+            ;; entry in `scroll-positions', `window-start' pinned to the
+            ;; new viewport-start.
+            (should (null ghostel--scroll-positions))
+            (let ((vp (ghostel--viewport-start))
+                  (ws (window-start (selected-window))))
+              (should vp)
+              (should (= ws vp)))))
+      (when (buffer-live-p orig-buf)
+        (set-window-buffer (selected-window) orig-buf))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-191-no-output-clears-deferred-crop-on-regrow ()
+  "Regrow without output clears the deferred crop (issue #191).
+Path: CROP defers a smaller size → no output during the cropped phase
+→ `ghostel--window-adjust-process-window-size' is called again with
+the original size as the window grows back → height matches
+`term-rows' → no-change branch fires → deferred-crop flag cleared,
+no SIGWINCH issued."
+  (let ((buf (generate-new-buffer " *ghostel-test-191-noop-regrow*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let* ((term (ghostel--new 12 40 200))
+                 (ghostel--term term)
+                 (ghostel--term-rows 12)
+                 (ghostel--term-cols 40)
+                 (ghostel--process 'fake-process)
+                 (sigwinch-calls nil)
+                 (window-adjust-process-window-size-function
+                  (lambda (&rest _) (cons 40 12))))
+            (cl-letf (((symbol-function 'process-buffer) (lambda (_) buf))
+                      ((symbol-function 'process-live-p) (lambda (_) t))
+                      ((symbol-function 'set-process-window-size)
+                       (lambda (&rest args) (push args sigwinch-calls) nil)))
+              (setq ghostel--deferred-crop-size (cons 6 40))
+              (let ((ret (ghostel--window-adjust-process-window-size
+                          'fake-process nil)))
+                (should (null ret)))
+              (should (null ghostel--deferred-crop-size))
+              (should (eql 12 ghostel--term-rows))
+              (should (null sigwinch-calls)))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-redraw-resets-vscroll ()
   "Redraw resets `window-vscroll' when point is in the viewport.
 Regression for issue #105: with `pixel-scroll-precision-mode',

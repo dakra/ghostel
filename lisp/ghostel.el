@@ -920,6 +920,25 @@ Updated whenever the terminal is created or resized.")
   "Column count of the native terminal.
 Updated whenever the terminal is created or resized.")
 
+(defvar-local ghostel--deferred-crop-size nil
+  "Pending (HEIGHT . WIDTH) from a deferred minibuffer-shrink crop.
+Set by the CROP branch of `ghostel--window-adjust-process-window-size'
+when the minibuffer shrinks the ghostel window — we suppress SIGWINCH
+for transient minibuffer flashes with a quiet terminal but record the
+size so it can be committed if anything would render at the wrong
+geometry.  Committed by `ghostel--commit-deferred-crop' when output
+arrives, and cleared without committing when the window grows back to
+or beyond `ghostel--term-rows' before output arrives.
+
+Without this, `ghostel--term-rows' stays at the original (pre-crop)
+size for the duration of the minibuffer.  When the minibuffer closes
+and the window grows back, `ghostel--window-adjust-process-window-size'
+sees `eql height ghostel--term-rows' and hits the \"no change\" branch,
+skipping the resize-aware redraw — `ghostel--window-anchored-p' then
+runs without `ghostel--redraw-resize-active', `keep-point-visible'
+drift can be misclassified as user scrollback, and the auto-follow
+predicate latches off (issue #191).")
+
 (defvar-local ghostel--copy-mode-active nil
   "Non-nil when copy mode is active.")
 
@@ -2990,6 +3009,11 @@ the redraw is performed immediately to minimize typing latency."
   (when (buffer-live-p (process-buffer process))
     (with-current-buffer (process-buffer process)
       (when ghostel--term
+        ;; If a minibuffer-triggered crop is still pending, commit it
+        ;; before this output renders.  Keeps `ghostel--term-rows' in
+        ;; sync with reality so a later minibuffer-close doesn't hit
+        ;; the no-change branch and skip the resize-aware redraw.
+        (ghostel--commit-deferred-crop)
         ;; Accumulate output for batched write-input at redraw time.
         (push output ghostel--pending-output)
         ;; Respond to OSC 4/10/11 color queries immediately: programs like
@@ -3924,9 +3948,11 @@ PROCESS is the shell process, WINDOWS is the list of windows."
       (with-current-buffer buffer
         (when ghostel--term
           (cond
-           ;; No change — skip entirely.
+           ;; No change — skip entirely.  Window has grown back to (or never
+           ;; left) `ghostel--term-rows', so any deferred crop is moot.
            ((and (eql height ghostel--term-rows)
                  (eql width ghostel--term-cols))
+            (setq ghostel--deferred-crop-size nil)
             (setq size nil))
            ;; Crop: minibuffer is active, only height shrank, width unchanged, and the
            ;; terminal is on the primary screen.  Defer the resize so no SIGWINCH is sent
@@ -3934,14 +3960,19 @@ PROCESS is the shell process, WINDOWS is the list of windows."
            ;; buffer.  Alt-screen apps (vim, htop) own the full viewport and must be told
            ;; the real size to re-layout, so they take the normal-resize path.  If the
            ;; user switches focus into the ghostel window while the minibuffer is still
-           ;; open, `ghostel--commit-cropped-size' commits the smaller size then.
+           ;; open, `ghostel--commit-cropped-size' commits the smaller size then.  If
+           ;; output arrives, `ghostel--commit-deferred-crop' commits before the next
+           ;; render so geometry matches reality.
            ((and (> (minibuffer-depth) 0)
                  (eql width ghostel--term-cols)
                  (< height ghostel--term-rows)
                  (not (ghostel--alt-screen-p ghostel--term)))
+            (setq ghostel--deferred-crop-size (cons height width))
             (setq size nil))
-           ;; Real resize — update the terminal model and redraw.
+           ;; Real resize — update the terminal model and redraw.  Any deferred
+           ;; crop is superseded by this size.
            (t
+            (setq ghostel--deferred-crop-size nil)
             (ghostel--set-size-with-cell-dims
              ghostel--term (max 1 height) (max 1 width))
             (setq ghostel--term-rows height)
@@ -3961,6 +3992,31 @@ PROCESS is the shell process, WINDOWS is the list of windows."
     ;; Return size — Emacs calls set-process-window-size (SIGWINCH)
     ;; after this function returns.  nil suppresses the call.
     size))
+
+(defun ghostel--commit-deferred-crop ()
+  "Commit a pending `ghostel--deferred-crop-size', if any.
+Sends SIGWINCH to bring the PTY in sync with the cropped Emacs window
+and runs a synchronous resize-aware redraw so `window-anchored-p'
+treats any `keep-point-visible' drift across the size change as drift,
+not user scrollback (issue #191).  No-op when nothing is pending."
+  (when (and ghostel--deferred-crop-size
+             ghostel--term ghostel--process
+             (process-live-p ghostel--process))
+    (let ((height (car ghostel--deferred-crop-size))
+          (width (cdr ghostel--deferred-crop-size)))
+      (setq ghostel--deferred-crop-size nil)
+      (ghostel--set-size-with-cell-dims
+       ghostel--term (max 1 height) (max 1 width))
+      (setq ghostel--term-rows height
+            ghostel--term-cols width
+            ghostel--force-next-redraw t)
+      (set-process-window-size ghostel--process
+                               (max 1 height) (max 1 width))
+      (when ghostel--redraw-timer
+        (cancel-timer ghostel--redraw-timer)
+        (setq ghostel--redraw-timer nil))
+      (let ((ghostel--redraw-resize-active t))
+        (ghostel--delayed-redraw (current-buffer))))))
 
 (defun ghostel--reshow-snap (window)
   "Mark WINDOW for viewport-snap on the next redraw.
@@ -4007,6 +4063,7 @@ window (not when it has just been deselected)."
           (buf (current-buffer)))
       (unless (and (eql height ghostel--term-rows)
                    (eql width ghostel--term-cols))
+        (setq ghostel--deferred-crop-size nil)
         (ghostel--set-size-with-cell-dims
          ghostel--term (max 1 height) (max 1 width))
         (setq ghostel--term-rows height
