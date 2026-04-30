@@ -17,9 +17,21 @@
 # Idempotency guard — skip if already loaded (e.g. auto-injected).
 (( $+functions[__ghostel_osc7] )) && return
 
+# Emit an OSC sequence with the given body (the part between `\e]' and
+# the ST `\e\\').  Inside tmux, wrap the OSC in DCS-passthrough so tmux
+# forwards the body to the outer terminal — requires `set -g
+# allow-passthrough on' in tmux.conf (tmux 3.3+).
+__ghostel_emit_osc() {
+    if [[ -n "$TMUX" ]]; then
+        printf '\ePtmux;\e\e]%s\e\e\\\e\\' "$1"
+    else
+        printf '\e]%s\e\\' "$1"
+    fi
+}
+
 # Report working directory to the terminal via OSC 7
 __ghostel_osc7() {
-    printf '\e]7;file://%s%s\e\\' "$HOST" "$PWD"
+    __ghostel_emit_osc "7;file://$HOST$PWD"
 }
 
 # --- Semantic prompt markers (OSC 133) ---
@@ -31,20 +43,20 @@ __ghostel_save_status() {
 # Emit "command finished" (D) + "prompt start" (A).
 __ghostel_prompt_start() {
     if [[ -n "$__ghostel_prompt_shown" ]]; then
-        printf '\e]133;D;%s\e\\' "$__ghostel_last_status"
+        __ghostel_emit_osc "133;D;$__ghostel_last_status"
     fi
-    printf '\e]133;A\e\\'
+    __ghostel_emit_osc "133;A"
 }
 
 # Emit "prompt end / command start" (B).
 __ghostel_prompt_end() {
-    printf '\e]133;B\e\\'
+    __ghostel_emit_osc "133;B"
     __ghostel_prompt_shown=1
 }
 
 # Emit "command output start" (C).
 __ghostel_preexec() {
-    printf '\e]133;C\e\\'
+    __ghostel_emit_osc "133;C"
 }
 
 precmd_functions=(__ghostel_save_status __ghostel_prompt_start __ghostel_osc7 "${precmd_functions[@]}" __ghostel_prompt_end)
@@ -152,5 +164,5 @@ ghostel_cmd() {
         payload="$payload\"$arg\" "
         shift
     done
-    printf '\e]51;E%s\e\\' "$payload"
+    __ghostel_emit_osc "51;E$payload"
 }

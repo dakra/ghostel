@@ -163,6 +163,31 @@ string match -qr '^ghostel(,|$)' -- "$INSIDE_EMACS"; and source "$EMACS_GHOSTEL_
 ```
 </details>
 
+### Inside tmux
+
+When `$TMUX` is set, the shell integration wraps every OSC sequence
+(directory reports, prompt markers, `ghostel_cmd`) in tmux's
+DCS-passthrough envelope so tmux forwards the body to ghostel rather
+than swallowing it.  Two things have to be true for this to work:
+
+**1. Enable passthrough in tmux** (tmux 3.3+):
+
+```tmux
+set -g allow-passthrough on
+```
+
+Restart the tmux server (`tmux kill-server`) for the change to take
+effect on existing sessions.
+
+**2. Source the integration manually from your shell rc.**
+ghostel's auto-injection sets per-shell env vars (`ENV`, `ZDOTDIR`,
+`XDG_DATA_DIRS`) that tmux does not propagate to pane shells, so the
+integration silently fails to load inside a pane.  The manual `source`
+line from the [Manual shell integration](#shell-integration) section
+above does work — `$INSIDE_EMACS` is propagated, so the gate fires
+correctly inside tmux panes.  Add the line for whichever shell tmux
+launches in panes (often bash even if your outer shell is zsh).
+
 ## Key Bindings
 
 ### Terminal mode
