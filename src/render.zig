@@ -9,6 +9,8 @@ const emacs = @import("emacs.zig");
 const gt = @import("ghostty.zig");
 const Terminal = @import("terminal.zig");
 
+const FixedArrayList = @import("fixed_array_list.zig").FixedArrayList;
+
 /// Style attributes for a run of text.
 const CellStyle = struct {
     fg: ?gt.ColorRgb = null,
@@ -115,11 +117,10 @@ fn readCellStyle(cells: gt.RenderStateRowCells, raw: gt.c.GhosttyCell) !?CellSty
 
 /// Apply face properties to a region of the buffer.
 /// Uses (put-text-property START END 'face PLIST).
-fn applyStyle(env: emacs.Env, start: i64, end: i64, style: CellStyle, default_colors: *const BgFg) void {
+fn applyStyle(env: emacs.Env, start: i64, end: i64, style: CellStyle, default_colors: *const BgFg) !void {
     if (start >= end) return;
 
-    var face_props: [24]emacs.Value = undefined;
-    var face_prop_count: usize = 0;
+    var face_props: FixedArrayList(emacs.Value, 32) = .{};
     const start_val = env.makeInteger(start);
     const end_val = env.makeInteger(end);
 
@@ -139,82 +140,63 @@ fn applyStyle(env: emacs.Env, start: i64, end: i64, style: CellStyle, default_co
         // Always set :foreground since we modify the color itself.
         const dimmed = dimColor(effective_fg, effective_bg);
         const dim_str = formatColor(dimmed, &dim_buf);
-        face_props[face_prop_count] = s.@":foreground";
-        face_prop_count += 1;
-        face_props[face_prop_count] = env.makeString(dim_str);
-        face_prop_count += 1;
+        try face_props.append(s.@":foreground");
+        try face_props.append(env.makeString(dim_str));
     } else if (!colorEql(style.fg, null) or style.inverse) {
         const fg_str = formatColor(effective_fg, &fg_buf);
-        face_props[face_prop_count] = s.@":foreground";
-        face_prop_count += 1;
-        face_props[face_prop_count] = env.makeString(fg_str);
-        face_prop_count += 1;
+        try face_props.append(s.@":foreground");
+        try face_props.append(env.makeString(fg_str));
     }
 
     if (!colorEql(style.bg, null) or style.inverse) {
         const bg_str = formatColor(effective_bg, &bg_buf);
-        face_props[face_prop_count] = s.@":background";
-        face_prop_count += 1;
-        face_props[face_prop_count] = env.makeString(bg_str);
-        face_prop_count += 1;
+        try face_props.append(s.@":background");
+        try face_props.append(env.makeString(bg_str));
     }
 
     if (style.bold) {
-        face_props[face_prop_count] = s.@":weight";
-        face_prop_count += 1;
-        face_props[face_prop_count] = s.bold;
-        face_prop_count += 1;
+        try face_props.append(s.@":weight");
+        try face_props.append(s.bold);
     }
 
     if (style.italic) {
-        face_props[face_prop_count] = s.@":slant";
-        face_prop_count += 1;
-        face_props[face_prop_count] = s.italic;
-        face_prop_count += 1;
+        try face_props.append(s.@":slant");
+        try face_props.append(s.italic);
     }
 
     if (style.underline != 0) {
-        face_props[face_prop_count] = s.@":underline";
-        face_prop_count += 1;
+        try face_props.append(s.@":underline");
         if (style.underline == 1 and style.underline_color == null) {
-            face_props[face_prop_count] = env.t();
+            try face_props.append(env.t());
         } else {
-            var ul_props: [4]emacs.Value = undefined;
-            var ul_count: usize = 0;
+            var ul_props: FixedArrayList(emacs.Value, 4) = .{};
 
-            ul_props[ul_count] = s.@":style";
-            ul_count += 1;
-            ul_props[ul_count] = switch (style.underline) {
+            try ul_props.append(s.@":style");
+            try ul_props.append(switch (style.underline) {
                 3 => s.wave,
                 2 => s.@"double-line",
                 4 => s.dot,
                 5 => s.dash,
                 else => s.line,
-            };
-            ul_count += 1;
+            });
 
             if (style.underline_color) |uc| {
                 var uc_buf: [7]u8 = undefined;
-                ul_props[ul_count] = s.@":color";
-                ul_count += 1;
-                ul_props[ul_count] = env.makeString(formatColor(uc, &uc_buf));
-                ul_count += 1;
+                try ul_props.append(s.@":color");
+                try ul_props.append(env.makeString(formatColor(uc, &uc_buf)));
             }
 
-            face_props[face_prop_count] = env.funcall(s.list, ul_props[0..ul_count]);
+            try face_props.append(env.funcall(s.list, ul_props.items()));
         }
-        face_prop_count += 1;
     }
 
     if (style.strikethrough) {
-        face_props[face_prop_count] = s.@":strike-through";
-        face_prop_count += 1;
-        face_props[face_prop_count] = env.t();
-        face_prop_count += 1;
+        try face_props.append(s.@":strike-through");
+        try face_props.append(env.t());
     }
 
-    if (face_prop_count > 0) {
-        const face = env.funcall(s.list, face_props[0..face_prop_count]);
+    if (face_props.len > 0) {
+        const face = env.funcall(s.list, face_props.items());
         env.putTextProperty(start_val, end_val, s.face, face);
     }
 
@@ -239,17 +221,42 @@ fn isRowPrompt(term: *Terminal) !bool {
 
 /// Result from buildRowContent: byte length for make_string, char count for properties.
 const RowContent = struct {
-    byte_len: usize,
-    char_len: usize,
+    /// The text content of the row
+    text: FixedArrayList(u8, 16384) = .{},
+
+    /// The number of Emacs characters (as opposed to bytes) in the text. Emacs
+    /// treats each codepoint as a separate character for buffer positions, even
+    /// if it doesn't necessarily render as such.
+    emacs_char_len: usize = 0,
+
+    /// A list of continuous property runs
+    runs: FixedArrayList(RunInfo, 512) = .{},
+
     /// Number of leading characters that are semantic prompt content.
     /// Zero if the row has no prompt cells.
-    prompt_char_len: usize,
+    prompt_char_len: usize = 0,
+
     /// Character range covering semantic-input cells (OSC 133 B..C).
     /// `input_end_char == input_start_char` means no input cells on the row.
-    input_start_char: usize,
-    input_end_char: usize,
+    input_start_char: usize = 0,
+    input_end_char: usize = 0,
+
     /// True when the row contains at least one wide (2-cell) character.
-    has_wide: bool,
+    has_wide: bool = false,
+
+    pub fn appendAsciiChar(self: *RowContent, c: u8) !void {
+        try self.text.append(c);
+        self.emacs_char_len += 1;
+    }
+
+    pub fn appendGraphemeCluster(self: *RowContent, cluster: []const u32) !void {
+        for (cluster) |cp| {
+            const codepoint: u21 = @intCast(cp);
+            const encoded_len = try std.unicode.utf8Encode(codepoint, self.text.unusedCapacitySlice());
+            try self.text.addMany(encoded_len);
+            self.emacs_char_len += 1; // one codepoint = one Emacs character
+        }
+    }
 };
 
 fn getStyleKey(cell: gt.c.GhosttyCell) !CellStyleKey {
@@ -267,34 +274,16 @@ fn getStyleKey(cell: gt.c.GhosttyCell) !CellStyleKey {
 /// libghostty's full-width viewport padding. A cell is NOT blank if
 /// its character is non-space, or if its style has any non-default
 /// attribute (e.g. a colored background, underline, etc.), so visibly-
-/// styled blanks are preserved. Style runs extending past the trim
-/// point are clipped to the new length by `insertAndStyle'.
-fn buildRowContent(
-    term: *Terminal,
-    text_buf: []u8,
-    runs: []RunInfo,
-    run_count: *usize,
-) !RowContent {
-    var text_len: usize = 0; // byte offset
-    var char_len: usize = 0; // character (codepoint) offset
+/// styled blanks are preserved.
+fn buildRowContent(term: *Terminal, content: *RowContent) !void {
     // Position at the end of the last non-blank cell; final row length
     // is trimmed back to this. Any run of blank cells past the end is
     // discarded along with their default-style trailing padding.
     var trim_text_len: usize = 0;
     var trim_char_len: usize = 0;
-    var prompt_char_len: usize = 0; // chars that are semantic prompt
     var in_prompt: bool = true; // track contiguous leading prompt cells
-    // Track the smallest [start, end) char range covering input cells (OSC 133
-    // B..C). Set lazily on the first INPUT cell; subsequent INPUT cells extend
-    // `input_end_char`. Cells with other semantics between two input runs are
-    // included in the range — in practice INPUT cells are contiguous within a
-    // prompt line, so this never grows beyond the actual input span.
-    var input_start_char: usize = 0;
-    var input_end_char: usize = 0;
     var saw_input: bool = false;
-    var has_wide: bool = false;
     var current_style_key: ?CellStyleKey = null;
-    run_count.* = 0;
 
     try gt.rs_row.read(term.row_iterator, gt.RS_ROW_DATA_CELLS, &term.row_cells);
     while (gt.rs_row_cells_next(term.row_cells)) {
@@ -308,9 +297,9 @@ fn buildRowContent(
             in_prompt = false;
         }
 
-        const cell_start_char = char_len;
+        const cell_start_char = content.emacs_char_len;
         if (semantic == gt.c.GHOSTTY_CELL_SEMANTIC_INPUT and !saw_input) {
-            input_start_char = cell_start_char;
+            content.input_start_char = cell_start_char;
             saw_input = true;
         }
 
@@ -319,16 +308,15 @@ fn buildRowContent(
         // break do we read the cell style, which is a more expensive operation
         // in such a tight loop.
         const style_key: CellStyleKey = try getStyleKey(raw_cell);
-        if (!std.meta.eql(@as(?CellStyleKey, style_key), current_style_key) and run_count.* < runs.len) {
-            runs[run_count.*] = .{
-                .start_char = char_len,
-                .end_char = char_len + 1,
+        if (!std.meta.eql(@as(?CellStyleKey, style_key), current_style_key)) {
+            try content.runs.append(.{
+                .start_char = content.emacs_char_len,
+                .end_char = content.emacs_char_len + 1,
                 .style = try readCellStyle(term.row_cells, raw_cell),
-            };
-            run_count.* += 1;
+            });
             current_style_key = style_key;
         } else {
-            runs[run_count.* - 1].end_char += 1;
+            content.runs.lastPtr().end_char += 1;
         }
 
         if (graphemes_len == 0) {
@@ -337,67 +325,50 @@ fn buildRowContent(
             // for 2 visual columns in Emacs.
             const wide = try gt.cell.get(c_int, raw_cell, gt.c.GHOSTTY_CELL_DATA_WIDE);
             if (wide == gt.c.GHOSTTY_CELL_WIDE_SPACER_TAIL) {
-                runs[run_count.* - 1].end_char -= 1;
-                has_wide = true;
+                content.runs.lastPtr().end_char -= 1;
+                content.has_wide = true;
                 continue;
             }
-            if (text_len < text_buf.len) {
-                text_buf[text_len] = ' ';
-                text_len += 1;
-                char_len += 1;
+            try content.appendAsciiChar(' ');
+            if (in_prompt) content.prompt_char_len = content.emacs_char_len;
+            if (saw_input and semantic == gt.c.GHOSTTY_CELL_SEMANTIC_INPUT) {
+                content.input_end_char = content.emacs_char_len;
             }
-            if (in_prompt) prompt_char_len = char_len;
-            if (saw_input and semantic == gt.c.GHOSTTY_CELL_SEMANTIC_INPUT) input_end_char = char_len;
             // Empty cells are blank for trim purposes unless their
             // style has a visible attribute (e.g. colored background).
-            if (runs[run_count.* - 1].style != null) {
-                trim_text_len = text_len;
-                trim_char_len = char_len;
+            if (content.runs.lastPtr().style != null) {
+                trim_text_len = content.text.len;
+                trim_char_len = content.emacs_char_len;
             }
             continue;
         }
 
         const codepoints = try gt.rs_row_cells.get([16]u32, term.row_cells, gt.RS_CELLS_DATA_GRAPHEMES_BUF);
         const cp_count = @min(graphemes_len, 16);
-
-        for (0..cp_count) |i| {
-            const cp: u21 = @intCast(codepoints[i]);
-            const remaining = text_buf[text_len..];
-            if (remaining.len < 4) break;
-            const encoded_len = std.unicode.utf8Encode(cp, remaining) catch continue;
-            text_len += encoded_len;
-            char_len += 1; // one codepoint = one Emacs character
+        try content.appendGraphemeCluster(codepoints[0..cp_count]);
+        if (in_prompt) content.prompt_char_len = content.emacs_char_len;
+        if (saw_input and semantic == gt.c.GHOSTTY_CELL_SEMANTIC_INPUT) {
+            content.input_end_char = content.emacs_char_len;
         }
-        if (in_prompt) prompt_char_len = char_len;
-        if (saw_input and semantic == gt.c.GHOSTTY_CELL_SEMANTIC_INPUT) input_end_char = char_len;
         // Any cell that libghostty stored a grapheme for was written
         // explicitly by the terminal, so it anchors the trim point —
         // even if the grapheme happens to be a space (e.g. the space
         // in a \"$ \" prompt, or a space the shell intentionally
         // emitted as part of a layout). Only unwritten padding cells
         // (the `graphemes_len == 0' branch above) are considered blank.
-        trim_text_len = text_len;
-        trim_char_len = char_len;
+        trim_text_len = content.text.len;
+        trim_char_len = content.emacs_char_len;
     }
 
     // Trim trailing blank cells. Cap `prompt_char_len' / input range at the
     // new `char_len' so neither region extends past the trimmed text. Style
     // runs extending past the trim point are clipped by `insertAndStyle' via
     // its `content.char_len' cap.
-    text_len = trim_text_len;
-    char_len = trim_char_len;
-    if (prompt_char_len > char_len) prompt_char_len = char_len;
-    if (input_end_char > char_len) input_end_char = char_len;
-    if (input_start_char > input_end_char) input_start_char = input_end_char;
-
-    return .{
-        .byte_len = text_len,
-        .char_len = char_len,
-        .prompt_char_len = prompt_char_len,
-        .input_start_char = input_start_char,
-        .input_end_char = input_end_char,
-        .has_wide = has_wide,
-    };
+    content.text.resize(trim_text_len);
+    content.emacs_char_len = trim_char_len;
+    if (content.prompt_char_len > content.emacs_char_len) content.prompt_char_len = content.emacs_char_len;
+    if (content.input_end_char > content.emacs_char_len) content.input_end_char = content.emacs_char_len;
+    if (content.input_start_char > content.input_end_char) content.input_start_char = content.input_end_char;
 }
 
 /// Insert row text and apply style runs.
@@ -405,11 +376,9 @@ fn insertAndStyle(
     env: emacs.Env,
     term: *Terminal,
     default_colors: *const BgFg,
-) !RowContent {
-    var runs: [512]RunInfo = undefined;
-    var text_buf: [16384]u8 = undefined;
-    var run_count: usize = 0;
-    var content = try buildRowContent(term, &text_buf, &runs, &run_count);
+) !void {
+    var content: RowContent = .{};
+    try buildRowContent(term, &content);
 
     // Append the trailing newline to the row buffer so the row
     // text + newline insert through a single env.insert call
@@ -421,25 +390,24 @@ fn insertAndStyle(
     // env.insert("\n") so the "one row per line" invariant
     // (relied on by the `after_insert - 1` property math below)
     // always holds.
-    const newline_in_buf = content.byte_len < text_buf.len;
-    if (newline_in_buf) {
-        text_buf[content.byte_len] = '\n';
-        content.byte_len += 1;
-        content.char_len += 1;
-    }
+    const newline_in_buf = if (content.appendAsciiChar('\n')) true else |_| false;
 
     const row_start = env.extractInteger(env.point());
-    env.insert(text_buf[0..content.byte_len]);
+    env.insert(content.text.constItems());
 
-    for (runs[0..run_count]) |run| {
-        if (run.start_char >= content.char_len) break;
-        const run_end = @min(run.end_char, content.char_len);
+    if (content.has_wide) {
+        _ = env.call2(env.intern("set"), emacs.sym.@"ghostel--has-wide-chars", env.t());
+    }
+
+    for (content.runs.constItems()) |*run| {
+        if (run.start_char >= content.emacs_char_len) break;
+        const run_end = @min(run.end_char, content.emacs_char_len);
         if (run_end <= run.start_char) continue;
 
         const prop_start = row_start + @as(i64, @intCast(run.start_char));
         const prop_end = row_start + @as(i64, @intCast(run_end));
         if (run.style) |style| {
-            applyStyle(env, prop_start, prop_end, style, default_colors);
+            try applyStyle(env, prop_start, prop_end, style, default_colors);
         }
     }
 
@@ -489,8 +457,6 @@ fn insertAndStyle(
             env.t(),
         );
     }
-
-    return content;
 }
 
 /// Convert a terminal column to an Emacs character offset by iterating
@@ -566,7 +532,6 @@ fn getDefaultColors(term: *Terminal) !BgFg {
 pub fn render(env: emacs.Env, term: *Terminal, skip: usize, force_full: bool) !void {
     try gt.renderStateUpdate(term.render_state, term.terminal);
     const default_colors = try getDefaultColors(term);
-    var has_wide_chars: bool = false;
 
     // Check dirty state.
     // force_full overrides: the buffer may have been erased by scrollback
@@ -602,8 +567,7 @@ pub fn render(env: emacs.Env, term: *Terminal, skip: usize, force_full: bool) !v
             const dirty_row = dirty_full or try gt.rs_row.get(bool, term.row_iterator, gt.RS_ROW_DATA_DIRTY);
             if (dirty_row) {
                 env.deleteRegion(env.point(), env.lineBeginningPosition2());
-                const content = try insertAndStyle(env, term, &default_colors);
-                has_wide_chars |= content.has_wide;
+                try insertAndStyle(env, term, &default_colors);
             } else {
                 _ = env.forwardLine(1);
             }
@@ -614,10 +578,6 @@ pub fn render(env: emacs.Env, term: *Terminal, skip: usize, force_full: bool) !v
 
         // Reset dirty state
         try gt.rs.set(term.render_state, gt.RS_OPT_DIRTY, gt.DIRTY_FALSE);
-    }
-
-    if (dirty != gt.DIRTY_FALSE and has_wide_chars) {
-        _ = env.call2(env.intern("set"), emacs.sym.@"ghostel--has-wide-chars", env.t());
     }
 }
 
