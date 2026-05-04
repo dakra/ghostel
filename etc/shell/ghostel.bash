@@ -21,24 +21,41 @@ builtin command stty echo 2>/dev/null
 
 # Report working directory to the terminal via OSC 7
 __ghostel_osc7() {
-    printf '\e]7;file://%s%s\e\\' "$HOSTNAME" "$PWD"
+    printf '\e]7;file://%s%s\a' "$HOSTNAME" "$PWD"
 }
 
 # --- Semantic prompt markers (OSC 133) ---
+#
+# Marker layout mirrors ghostty's bash integration:
+#   - 133;A emitted via printf at end of PROMPT_COMMAND (once per
+#     cycle, with redraw=last;cl=line;aid=$BASHPID).
+#   - PS1 wrapped with 133;P;k=i (initial-prompt) at start and 133;B
+#     (input boundary) at end.
+#   - PS1 newlines (the bash `\n' escape) get 133;P;k=s injected.
+#   - PS2 wrapped with 133;P;k=s at start and 133;B at end.
+#
+# Why not embed 133;A inline in PS1?  133;A has fresh-line behavior
+# (CR+LF when cursor is not at column 0).  bash readline redraws PS1
+# on every keystroke that changes display state — embedding 133;A
+# would CR+LF on every redraw, eating the prompt.  133;P is the
+# side-effect-free equivalent.
+#
+# `\[ \]' mark the OSC sequence as zero-width for readline's line-wrap
+# math; `\a' is BEL — used everywhere here because `${var//pat/repl}'
+# eats backslashes in the replacement, which would break ST (`\e\\').
 
 # Emit "command finished" (D) for the previous command.
 # D is skipped on the very first prompt (no previous command).
 __ghostel_prompt_start() {
     if [[ -n "$__ghostel_prompt_shown" ]]; then
-        printf '\e]133;D;%s\e\\' "$__ghostel_last_status"
+        printf '\e]133;D;%s\a' "$__ghostel_last_status"
     fi
     __ghostel_prompt_shown=1
 }
 
 # Emit "command output start" (C) via the DEBUG trap, and restore the
 # unmarked PS1/PS2 so the user's command (and any other DEBUG-trap
-# observers) doesn't see our markers.  Mirror of the restore-on-precmd
-# logic in `__ghostel_wrapped_prompt_command'.
+# observers) doesn't see our markers.
 # Guard: skip when running inside PROMPT_COMMAND itself.
 __ghostel_in_prompt_command=0
 __ghostel_preexec() {
@@ -47,36 +64,16 @@ __ghostel_preexec() {
         PS1=$__ghostel_saved_ps1
         PS2=$__ghostel_saved_ps2
     fi
-    printf '\e]133;C\e\\'
+    printf '\e]133;C\a'
 }
 
-# Wrap PS1/PS2 with 133;A at the start and 133;B at the end.  We inject
-# 133;A after every line break in PS1 too: bash 5.x readline redraws
-# only the last visual line of the prompt (CR + reprint, no preceding
-# 133;A).  Without a 133;A on every line, the redrawn cells fall outside
-# the PROMPT scope and become INPUT-tagged.  We inject after both
-# literal newlines and the bash `\n' PS1 escape.
-#
-# `\[ \]' mark the OSC sequence as zero-width for readline's line-wrap
-# math; `\a' is BEL — a valid OSC terminator.  We use BEL rather than
-# ST (ESC \) because `${var//pat/repl}' eats backslashes in the
-# replacement, which would break a multi-line ST-terminated marker.
-#
-# Re-wrap from PROMPT_COMMAND each cycle: `.bashrc' or a prompt theme
+# Wrap PS1/PS2 with the inline markers and emit 133;A separately.
+# Re-wrap each PROMPT_COMMAND cycle: a prompt theme or `.bashrc'
 # loaded after this file commonly reassigns PS1, stripping our wrap.
-# Each cycle:
-#   1. Restore the unmarked PS1/PS2 if nobody touched them since our
-#      last wrap — keeps user PROMPT_COMMAND additions and themes that
-#      pattern-match $PS1 from seeing markers.
-#   2. Run the user's captured PROMPT_COMMAND (may rewrite $PS1).
-#   3. Re-wrap.  Skip if PS1 already has our marker (defensive).
 __ghostel_wrapped_prompt_command() {
-    # Capture $? FIRST.  A bare assignment such as
-    # `__ghostel_in_prompt_command=1' on its own line counts as a
-    # successful command and resets $? to 0 in bash, so any later
-    # `$?' read here would always see 0 and we'd report `:exit [0]'
-    # for every command.  `local' with `=$?' evaluates `$?' before
-    # invoking the local builtin, preserving the real exit status.
+    # Capture $? FIRST.  A bare assignment counts as a successful
+    # command and resets $? to 0; `local' with `=$?' evaluates `$?'
+    # before invoking the local builtin, preserving the exit status.
     local __ghostel_status=$?
     __ghostel_in_prompt_command=1
     __ghostel_last_status=$__ghostel_status
@@ -91,21 +88,31 @@ __ghostel_wrapped_prompt_command() {
 
     eval "${__ghostel_original_prompt_command:-}"
 
-    local __ghostel_marker='\[\e]133;A\a\]'
-    if [[ "$PS1" != *"$__ghostel_marker"* ]]; then
+    local __ghostel_p_initial='\[\e]133;P;k=i\a\]'
+    if [[ "$PS1" != *"$__ghostel_p_initial"* ]]; then
         __ghostel_saved_ps1=$PS1
         __ghostel_saved_ps2=$PS2
-        local __ghostel_ps1_a='\[\e]133;A\a\]'
-        local __ghostel_ps1_b='\[\e]133;B\a\]'
-        PS1="${PS1//$'\n'/$'\n'${__ghostel_ps1_a}}"
-        PS1="${PS1//\\n/\\n${__ghostel_ps1_a}}"
-        PS1="${__ghostel_ps1_a}${PS1}${__ghostel_ps1_b}"
-        # PS2 (continuation): wrap with the same A/B markers so multi-line
-        # input still has a known prompt-prefix → input boundary.
-        PS2="${__ghostel_ps1_a}${PS2}${__ghostel_ps1_b}"
+        local __ghostel_p_secondary='\[\e]133;P;k=s\a\]'
+        local __ghostel_b='\[\e]133;B\a\]'
+        PS1="${__ghostel_p_initial}${PS1}${__ghostel_b}"
+        # Inject 133;P;k=s after the bash `\n' PS1 escape so each
+        # continuation row of a multiline prompt is tagged.  Skip
+        # literal newlines ($'\n') — they may live inside $(...)
+        # command substitutions where escape sequences would break
+        # syntax.
+        if [[ "$PS1" == *"\n"* ]]; then
+            PS1="${PS1//\\n/\\n${__ghostel_p_secondary}}"
+        fi
+        # PS2 (continuation): k=s + B.
+        PS2="${__ghostel_p_secondary}${PS2}${__ghostel_b}"
         __ghostel_marked_ps1=$PS1
         __ghostel_marked_ps2=$PS2
     fi
+
+    # Emit 133;A once per cycle (with cl=line for click-events and
+    # redraw=last so libghostty knows the prompt-redraw boundary).
+    # `aid=$BASHPID' tags this prompt with the current shell PID.
+    printf '\e]133;A;redraw=last;cl=line;aid=%s\a' "$BASHPID"
 
     __ghostel_in_prompt_command=0
 }

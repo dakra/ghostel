@@ -16,61 +16,63 @@ functions -q __ghostel_osc7; and return
 
 # Report working directory to the terminal via OSC 7
 function __ghostel_osc7 --on-event fish_prompt
-    printf '\e]7;file://%s%s\e\\' (hostname) "$PWD"
+    printf '\e]7;file://%s%s\a' (hostname) "$PWD"
 end
 
 # --- Semantic prompt markers (OSC 133) ---
+#
+# Mirrors ghostty's fish integration:
+#   - 133;A on `fish_prompt' (start of prompt).
+#   - 133;C on `fish_preexec' (start of command output).
+#   - 133;D on `fish_postexec' (end of command).
+#
+# Note: ghostty does NOT emit 133;B in fish — fish has no "after
+# fish_prompt" event, and ghostty does without it.  Cells from 133;A
+# to 133;C carry the `prompt' semantic state in libghostty, which the
+# link-skip logic treats the same as `input' for skip purposes.
 
-set -g __ghostel_prompt_shown 0
-
-function __ghostel_postexec --on-event fish_postexec
-    set -g __ghostel_last_status $status
+# Detect fish version for the 133;A `click_events' parameter (fish
+# 4.1+ supports it).
+set -l __ghostel_fish_major 0
+set -l __ghostel_fish_minor 0
+if set -q version[1]
+    set -l __ghostel_v (string match -r '(\d+)\.(\d+)' -- $version[1])
+    if set -q __ghostel_v[2]; and test -n "$__ghostel_v[2]"
+        set __ghostel_fish_major "$__ghostel_v[2]"
+    end
+    if set -q __ghostel_v[3]; and test -n "$__ghostel_v[3]"
+        set __ghostel_fish_minor "$__ghostel_v[3]"
+    end
+end
+set -g __ghostel_prompt_start_mark "\e]133;A\a"
+if test "$__ghostel_fish_major" -gt 4; or test "$__ghostel_fish_major" -eq 4 -a "$__ghostel_fish_minor" -ge 1
+    set -g __ghostel_prompt_start_mark "\e]133;A;click_events=1\a"
 end
 
+set -g __ghostel_prompt_state ""
+
 # Emit "command finished" (D) for the previous command, then "prompt
-# start" (A) for the new prompt.  Both fire from a fish_prompt event
-# handler so they're independent of the fish_prompt function body —
-# survives mid-session `function fish_prompt' redefinitions that would
-# otherwise drop our wrap.
-function __ghostel_prompt_start --on-event fish_prompt
-    if test "$__ghostel_prompt_shown" = 1
-        printf '\e]133;D;%s\e\\' "$__ghostel_last_status"
+# start" (A) for the new prompt.
+function __ghostel_mark_prompt_start --on-event fish_prompt --on-event fish_posterror
+    # If we never got the fish_postexec event (e.g. fish_posterror
+    # without postexec), close the prior section now.
+    if test "$__ghostel_prompt_state" != "prompt-start"
+        printf '\e]133;D\a'
     end
-    set -g __ghostel_prompt_shown 1
-    printf '\e]133;A\e\\'
+    set -g __ghostel_prompt_state prompt-start
+    printf "$__ghostel_prompt_start_mark"
 end
 
 # Emit "command output start" (C) before command runs.
-function __ghostel_preexec --on-event fish_preexec
-    printf '\e]133;C\e\\'
+function __ghostel_mark_output_start --on-event fish_preexec
+    set -g __ghostel_prompt_state pre-exec
+    printf '\e]133;C\a'
 end
 
-# Wrap fish_prompt to emit 133;B (input boundary) at the end of every
-# prompt render.  Fish has no "after fish_prompt" event, so we wrap the
-# function itself.
-#
-# Deferred to fire-time via `--on-event fish_prompt' so themes/plugins
-# loaded after ghostel.fish (later in config.fish or in conf.d/) have
-# already defined fish_prompt before we wrap it.  Re-checks each fire
-# and re-wraps if our wrap was removed (e.g. user redefined fish_prompt
-# mid-session).  One-prompt warmup is the trade-off: if a theme's own
-# `--on-event fish_prompt' handler runs after ours and redefines
-# fish_prompt, this fire is unwrapped but the next is wrapped.
-function __ghostel_ensure_fish_prompt_wrap --on-event fish_prompt
-    functions -q fish_prompt; or return
-    # Skip if already wrapped — detect via a sentinel comment in the
-    # wrapped body.  Cheaper and more robust than comparing function
-    # bodies, since fish preserves comments in `functions <name>' output.
-    if functions fish_prompt | string match -q '*__ghostel_wrapped*'
-        return
-    end
-    functions -e __ghostel_orig_fish_prompt 2>/dev/null
-    functions -c fish_prompt __ghostel_orig_fish_prompt
-    function fish_prompt
-        # __ghostel_wrapped — sentinel for the idempotency check above.
-        __ghostel_orig_fish_prompt
-        printf '\e]133;B\e\\'
-    end
+# Emit "command finished" (D) with exit status after command runs.
+function __ghostel_mark_output_end --on-event fish_postexec
+    set -g __ghostel_prompt_state post-exec
+    printf '\e]133;D;%s\a' $status
 end
 
 # Outbound `ssh' wrapper.  See etc/ghostel.bash for the full design

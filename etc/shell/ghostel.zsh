@@ -20,97 +20,133 @@
 # Report working directory to the terminal via OSC 7
 __ghostel_osc7() {
     builtin emulate -L zsh -o no_warn_create_global -o no_aliases
-    builtin printf '\e]7;file://%s%s\e\\' "$HOST" "$PWD"
+    builtin printf '\e]7;file://%s%s\a' "$HOST" "$PWD"
 }
 
 # --- Semantic prompt markers (OSC 133) ---
+#
+# Marker layout mirrors ghostty's zsh integration:
+#   - mark1 = `%{\e]133;A;cl=line\a%}'  — primary prompt start
+#   - mark2 = `%{\e]133;P;k=s\a%}'      — continuation (multi-line, PS2)
+#   - markB = `%{\e]133;B\a%}'          — input boundary
+# `%{...%}' marks the OSC sequence as zero-width to zsh's prompt
+# expansion.  BEL terminates the OSC.
 
-# Capture $? from the just-finished command.  Must run before any other
-# precmd that resets $?, hence prepended at the head of `precmd_functions'.
 __ghostel_save_status() {
-    # Capture $? FIRST: `emulate -L' below resets it to 0.
-    # `$status' is a read-only zsh special parameter (synonym for $?), so
-    # use a different name for the local copy.
     builtin local cmd_status=$?
     builtin emulate -L zsh -o no_warn_create_global -o no_aliases
     __ghostel_last_status=$cmd_status
 }
 
-# Emit "command finished" (D) for the previous command.
-# 133;A and 133;B are embedded in PROMPT itself (see `__ghostel_ensure_prompt_wrap'
-# below) so they fire in lockstep with prompt rendering, including
-# readline-style redraws — emitting them from precmd here would only
-# fire once and leave any subsequent redraw outside the PROMPT scope.
+# Emit "command finished" (D) for the previous command.  Marks A/B/P
+# are embedded in PROMPT itself by `__ghostel_ensure_prompt_wrap' so
+# they fire in lockstep with prompt rendering (including
+# `zle reset-prompt', SIGWINCH, etc).
 __ghostel_prompt_start() {
     builtin emulate -L zsh -o no_warn_create_global -o no_aliases
     if [[ -n "$__ghostel_prompt_shown" ]]; then
-        builtin printf '\e]133;D;%s\e\\' "$__ghostel_last_status"
+        builtin printf '\e]133;D;%s\a' "$__ghostel_last_status"
     fi
     __ghostel_prompt_shown=1
 }
 
-# Restore the unmarked PROMPT (mirror of the restore-on-precmd logic in
-# `__ghostel_ensure_prompt_wrap') and emit "command output start" (C).
-# Restoring before later preexec hooks run keeps themes that pattern-match
-# `$PROMPT' (e.g. Pure) from seeing our OSC sequences.
+# Restore the unmarked PROMPT/PROMPT2 if nothing else has modified them
+# since our precmd added marks.  This ensures other preexec hooks see
+# a clean PROMPT without our marks; if PROMPT was modified (e.g. by an
+# async theme update), leave it alone.  Then emit "command output
+# start" (C).
 __ghostel_preexec() {
     builtin emulate -L zsh -o no_warn_create_global -o no_aliases
     if [[ -n ${__ghostel_marked_prompt+x} && "$PROMPT" == "$__ghostel_marked_prompt" ]]; then
         PROMPT=$__ghostel_saved_prompt
+        PROMPT2=$__ghostel_saved_prompt2
     fi
-    builtin printf '\e]133;C\e\\'
+    builtin printf '\e]133;C\a'
 }
 
-# Wrap PROMPT with 133;A at the start and 133;B at the end so they fire
-# in lockstep with prompt rendering, including any redraws. %{ %} mark
-# the OSC sequence as zero-width for line-wrap. $'...' is ANSI-C quoting:
-# \e is ESC, \\ is a single backslash — so \e\\ is ESC \ (ST).
-#
-# Re-wrap from precmd: a `.zshrc' or prompt theme loaded after this file
-# (oh-my-zsh, powerlevel10k, starship, prompt_*) commonly reassigns
-# PROMPT and strips our wrap.  Each cycle:
-#   1. If $PROMPT matches our last marked snapshot, nobody touched it —
-#      restore to the saved unmarked version before re-marking.  Avoids
-#      exposing markers to other hooks (themes like Pure pattern-match
-#      $PROMPT to strip/rebuild and break if they see our markers).
-#   2. Otherwise treat $PROMPT as a new clean baseline (theme rebuild,
-#      async update).  Skip wrapping if it already contains our marker
-#      (defensive: theme copied a marked PROMPT somewhere).
-#   3. Reposition to the end of `precmd_functions' so we run after any
-#      precmd added later (themes that rebuild PROMPT each prompt, e.g.
-#      p10k's `_p9k_precmd').  One-prompt warmup is the trade-off.
+# Wrap PROMPT/PROMPT2 with semantic prompt markers.  Mirrors ghostty's
+# `_ghostty_precmd' wrap logic: only wrap when we're already last in
+# `precmd_functions' (so our marks aren't immediately overwritten by a
+# later hook).  Otherwise self-reorder for next cycle and emit mark1
+# directly via printf as a one-shot fallback.
 __ghostel_ensure_prompt_wrap() {
     builtin emulate -L zsh -o no_warn_create_global -o no_aliases
-    if [[ -n ${__ghostel_marked_prompt+x} && "$PROMPT" == "$__ghostel_marked_prompt" ]]; then
-        PROMPT=$__ghostel_saved_prompt
-    fi
-    if [[ "$PROMPT" != *$'%{\e]133;A'* ]]; then
-        __ghostel_saved_prompt=$PROMPT
-        # If $PROMPT ends with an unpaired `%', appending our `%{...%}'
-        # markers turns the user's `%' + our `%{' into a single `%{'
-        # prompt escape, swallowing the marker.  Double the trailing `%'
-        # to make it a literal percent.
-        [[ $PROMPT == *[^%]% || $PROMPT == % ]] && PROMPT=$PROMPT%
-        PROMPT=$'%{\e]133;A\e\\%}'"$PROMPT"$'%{\e]133;B\e\\%}'
-        __ghostel_marked_prompt=$PROMPT
-    fi
-    if [[ ${precmd_functions[-1]} != __ghostel_ensure_prompt_wrap ]]; then
-        precmd_functions=(${precmd_functions:#__ghostel_ensure_prompt_wrap})
-        precmd_functions+=(__ghostel_ensure_prompt_wrap)
+
+    builtin local mark1=$'%{\e]133;A;cl=line\a%}'
+    if [[ -o prompt_percent ]]; then
+        builtin typeset -g precmd_functions
+        if [[ ${precmd_functions[-1]} == __ghostel_ensure_prompt_wrap ]]; then
+            # Restore PROMPT/PROMPT2 to their pre-mark state if nothing
+            # else has modified them since we last added marks.  Avoids
+            # exposing PROMPT with our marks to other hooks (themes
+            # like Pure pattern-match $PROMPT to strip/rebuild and
+            # break if they see our markers).  If PROMPT was modified
+            # (theme, async update), keep the modified version.
+            builtin local ps1_changed=0
+            if [[ -n ${__ghostel_saved_prompt+x} ]]; then
+                if [[ $PROMPT == $__ghostel_marked_prompt ]]; then
+                    PROMPT=$__ghostel_saved_prompt
+                    PROMPT2=$__ghostel_saved_prompt2
+                elif [[ $PROMPT != $__ghostel_saved_prompt ]]; then
+                    ps1_changed=1
+                fi
+            fi
+
+            # Save the clean PROMPT/PROMPT2 before adding marks.
+            __ghostel_saved_prompt=$PROMPT
+            __ghostel_saved_prompt2=$PROMPT2
+
+            builtin local mark2=$'%{\e]133;P;k=s\a%}'
+            builtin local markB=$'%{\e]133;B\a%}'
+
+            # Trailing bare `%' would combine with `{' in markB to form
+            # a `%{' prompt escape and swallow the marker.  Double it.
+            [[ $PROMPT == *[^%]% || $PROMPT == % ]] && PROMPT=$PROMPT%
+            PROMPT=${mark1}${PROMPT}${markB}
+
+            # Multiline prompt: inject mark2 (k=s) after each newline so
+            # libghostty distinguishes primary vs continuation rows.
+            # Skip if PROMPT changed in this cycle — injecting marks
+            # into newlines breaks pattern matching in themes that
+            # strip/rebuild the prompt (e.g. Pure).
+            if (( ! ps1_changed )) && [[ $PROMPT == *$'\n'* ]]; then
+                PROMPT=${PROMPT//$'\n'/$'\n'${mark2}}
+            fi
+
+            [[ $PROMPT2 == *[^%]% || $PROMPT2 == % ]] && PROMPT2=$PROMPT2%
+            PROMPT2=${mark2}${PROMPT2}${markB}
+
+            __ghostel_marked_prompt=$PROMPT
+        else
+            # Not last in precmd_functions — a later hook will overwrite
+            # PROMPT after we wrap it.  Move ourselves to the end for
+            # next cycle, and emit mark1 once via printf so the upcoming
+            # prompt is still tagged.  `$mark1[3,-3]' strips the leading
+            # `%{' and trailing `%}' to print just the OSC bytes.
+            precmd_functions=(${precmd_functions:#__ghostel_ensure_prompt_wrap} __ghostel_ensure_prompt_wrap)
+            if ! builtin zle; then
+                builtin printf '%s' $mark1[3,-3]
+            fi
+        fi
+    elif ! builtin zle; then
+        # Without prompt_percent we cannot patch PROMPT.  Emit mark1
+        # directly when not invoked from zle.
+        builtin printf '%s' $mark1[3,-3]
     fi
 }
 
-# ZLE line-init fallback: if $PROMPT lost its markers between precmd and
-# this redraw (e.g. an async theme update via `zle -F' reassigned
-# $PROMPT then triggered `zle reset-prompt' without re-firing precmd),
-# emit 133;A + 133;B directly so libghostty still tags the input span —
-# the link-skip logic in the renderer relies on `ghostel-input' cells.
-# Side-effect: this can create duplicate `ghostel--prompt-positions'
-# entries during heavy async updates; navigation steps may be no-ops on
-# those cycles.  Acceptable trade-off vs. the link-skip false positive.
+# ZLE line-init fallback: emit prompt markers directly if PROMPT lost
+# them between precmd and this redraw (e.g. another plugin regenerated
+# PROMPT after our precmd ran).  Use 133;P, NOT 133;A: the fallback
+# fires from `zle-line-init' AFTER the prompt has been drawn, so the
+# cursor is past column 0 — libghostty CR+LFs on 133;A when cursor !=
+# col 0, pushing the input cursor onto a blank line below the prompt
+# char.  133;P is the side-effect-free prompt-start marker.  Also
+# emit 133;B to mark the input area.
 __ghostel_zle_line_init_hook() {
+    builtin emulate -L zsh -o no_warn_create_global -o no_aliases
     [[ "$PROMPT" != *$'%{\e]133;A'* ]] && \
-        printf '\e]133;A\e\\\e]133;B\e\\'
+        builtin printf '\e]133;P;k=i\a\e]133;B\a'
 }
 
 # One-shot installer: registered as a precmd, runs once on the first

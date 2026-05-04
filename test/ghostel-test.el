@@ -3129,7 +3129,20 @@ native URI lookup when Emacs invokes it for tooltip display or clicking."
       (setq markers nil)
       (ghostel--write-input term "hello\e]133;A\e\\world\e]133;B\e\\")
       (should (assoc "A" markers))                         ; 133;A in mixed stream
-      (should (assoc "B" markers)))))                      ; 133;B in mixed stream
+      (should (assoc "B" markers))                         ; 133;B in mixed stream
+
+      ;; 133;P (explicit prompt start, no fresh-line side effect) — used
+      ;; by the zsh `zle-line-init' fallback and forwarded to elisp the
+      ;; same way as A so prompt navigation keeps working when the
+      ;; PROMPT-wrap was clobbered by a theme.
+      (setq markers nil)
+      (ghostel--write-input term "\e]133;P\e\\")
+      (should (assoc "P" markers))                         ; 133;P bare detected
+      (setq markers nil)
+      (ghostel--write-input term "\e]133;P;k=i\e\\")
+      (let ((p-entry (assoc "P" markers)))
+        (should p-entry)                                   ; 133;P with k=i detected
+        (should (equal "k=i" (cdr p-entry)))))))           ; param payload preserved
 
 ;; -----------------------------------------------------------------------
 ;; Test: OSC 133 prompt text properties
@@ -3196,6 +3209,205 @@ scanner skips them."
               (should (null (get-text-property
                              (point-min) 'ghostel-input))))))
       (kill-buffer buf))))
+
+;; -----------------------------------------------------------------------
+;; Test: zsh `zle-line-init' fallback uses 133;P (no fresh-line)
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-zsh-line-init-fallback-no-fresh-line ()
+  "Use 133;P (not 133;A) in the `zle-line-init' fallback emit.
+When ghostel's PROMPT-wrap is bypassed (e.g. a theme like
+powerlevel10k overrides PROMPT after our precmd), the
+`zle-line-init' fallback in `etc/shell/ghostel.zsh' fires
+post-prompt-draw to emit OSC 133 markers directly.  It must use
+133;P, NOT 133;A — libghostty's fresh-line behavior on 133;A would
+CR+LF the cursor onto a blank row below the prompt char (#230).
+
+The test sources ghostel.zsh in a real zsh subprocess, removes the
+PROMPT-wrap function from `precmd_functions' to simulate the wrap
+being overwritten, sets a multi-line PROMPT, and verifies the
+cursor lands at the end of the prompt char rather than one row
+below it."
+  (skip-unless (executable-find "zsh"))
+  (let* ((root (or (ghostel--resource-root)
+                   (file-name-directory (locate-library "ghostel"))))
+         (shell-zsh (expand-file-name "etc/shell/ghostel.zsh" root)))
+    (skip-unless (file-exists-p shell-zsh))
+    (let ((buf (generate-new-buffer " *ghostel-test-line-init-fallback*")))
+      (unwind-protect
+          (with-current-buffer buf
+            (ghostel-mode)
+            (setq ghostel--term (ghostel--new 8 80 200))
+            (let* ((process-environment
+                    (append (list "TERM=xterm-ghostty"
+                                  "INSIDE_EMACS=ghostel"
+                                  "COLUMNS=80" "LINES=8")
+                            process-environment))
+                   (proc (make-process
+                          :name "ghostel-test-line-init-fallback"
+                          :buffer buf
+                          :command '("/bin/zsh" "-fi")
+                          :connection-type 'pty
+                          :filter #'ghostel--filter)))
+              (setq ghostel--process proc)
+              (set-process-coding-system proc 'binary 'binary)
+              (set-process-window-size proc 8 80)
+              (set-process-query-on-exit-flag proc nil)
+              (unwind-protect
+                  (progn
+                    ;; Wait for the initial default prompt to land.
+                    (ghostel-test--wait-for
+                     proc (lambda () ghostel--pending-output) 10)
+                    ;; Source ghostel.zsh (registers precmd hooks + the
+                    ;; zle-line-init widget).  Then strip the wrap function
+                    ;; from `precmd_functions' so PROMPT is left untouched
+                    ;; — this exercises the fallback path the same way
+                    ;; powerlevel10k's `_p9k_precmd' override does in the
+                    ;; wild.  Set a multi-line PROMPT so the regression is
+                    ;; visible: cursor must land beside `final-> ', not on
+                    ;; the row below it.
+                    (process-send-string
+                     proc
+                     (concat
+                      "source " shell-zsh "\n"
+                      "precmd_functions=(${precmd_functions:#__ghostel_ensure_prompt_wrap})\n"
+                      "PROMPT=$'top-line\\nfinal-> '\n"
+                      "\n"))
+                    ;; Wait for the multi-line prompt to render.
+                    (ghostel-test--wait-for
+                     proc
+                     (lambda ()
+                       (cl-some (lambda (s) (string-match-p "final-> " s))
+                                ghostel--pending-output))
+                     15)
+                    ;; Give zle a beat to enter line-init and emit the OSC.
+                    (sleep-for 0.2)
+                    (ghostel--flush-pending-output)
+                    (let ((inhibit-read-only t))
+                      (ghostel--redraw ghostel--term t))
+                    (let* ((pos (ghostel--cursor-position ghostel--term))
+                           (col (car pos))
+                           (row (cdr pos)))
+                      ;; Cursor sits right after `final-> ' (8 chars).
+                      (should (= 8 col))
+                      ;; ...and on the same row as `final-> ', not below it.
+                      (save-excursion
+                        (goto-char (point-min))
+                        (forward-line row)
+                        (should
+                         (string-prefix-p
+                          "final-> "
+                          (buffer-substring-no-properties
+                           (line-beginning-position)
+                           (line-end-position)))))))
+                (delete-process proc))))
+        (kill-buffer buf)))))
+
+;; -----------------------------------------------------------------------
+;; Test: prompt cells get tagged even when a theme overrides PROMPT
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-zsh-prompt-cells-tagged-with-self-reorder-theme ()
+  "Tag prompt cells when a self-reordering theme overrides PROMPT.
+Prompt themes that re-assert their position at the END of
+`precmd_functions' on every run (powerlevel10k's `_p9k_precmd',
+and similar) win the snapshot-iteration race and overwrite PROMPT
+after `__ghostel_ensure_prompt_wrap' has wrapped it.  Net: rendered
+PROMPT lacks our inline markers each cycle.
+
+Mirroring ghostty's zsh integration, when our wrap detects it isn't
+last in `precmd_functions' it self-reorders for next cycle AND
+emits 133;A via `printf' once per cycle as a fallback.  That printf
+fires BEFORE the theme overwrites PROMPT and BEFORE zsh draws it,
+so libghostty's cursor enters `.prompt' state before any prompt
+cell is written — and prompt cells get `ghostel-prompt' tagged even
+though our PROMPT wrap didn't stick.
+
+This test registers a fake-p10k precmd that self-reorders to end
+and overrides PROMPT each cycle, runs a few prompt cycles, and
+checks that the most recent prompt's `top-line' row carries the
+`ghostel-prompt' text property."
+  (skip-unless (executable-find "zsh"))
+  (let* ((root (or (ghostel--resource-root)
+                   (file-name-directory (locate-library "ghostel"))))
+         (shell-zsh (expand-file-name "etc/shell/ghostel.zsh" root)))
+    (skip-unless (file-exists-p shell-zsh))
+    (let ((buf (generate-new-buffer " *ghostel-test-rearrange*")))
+      (unwind-protect
+          (with-current-buffer buf
+            (ghostel-mode)
+            (setq ghostel--term (ghostel--new 8 80 200))
+            (let* ((process-environment
+                    (append (list "TERM=xterm-ghostty"
+                                  "INSIDE_EMACS=ghostel"
+                                  "COLUMNS=80" "LINES=8")
+                            process-environment))
+                   (proc (make-process
+                          :name "ghostel-test-rearrange"
+                          :buffer buf
+                          :command '("/bin/zsh" "-fi")
+                          :connection-type 'pty
+                          :filter #'ghostel--filter)))
+              (setq ghostel--process proc)
+              (set-process-coding-system proc 'binary 'binary)
+              (set-process-window-size proc 8 80)
+              (set-process-query-on-exit-flag proc nil)
+              (unwind-protect
+                  (progn
+                    (ghostel-test--wait-for
+                     proc (lambda () ghostel--pending-output) 10)
+                    ;; Source ghostel.zsh + register a fake p10k that
+                    ;; both overrides PROMPT AND self-reorders to end
+                    ;; each cycle (this is what `_p9k_precmd' does).
+                    ;; Then trigger several cycles and probe PROMPT.
+                    (process-send-string
+                     proc
+                     (concat
+                      "source " shell-zsh "\n"
+                      "fake_theme() {\n"
+                      "  PROMPT=$'top-line\\nfinal-> '\n"
+                      "  precmd_functions=(${precmd_functions:#fake_theme})\n"
+                      "  precmd_functions+=(fake_theme)\n"
+                      "}\n"
+                      "precmd_functions+=(fake_theme)\n"
+                      ;; Trigger several prompt cycles so the rearrange
+                      ;; settles.  Cycle 1 has the bug; cycle 2+ should
+                      ;; have the wrap inline in PROMPT.
+                      "true\n"
+                      "true\n"
+                      "true\n"
+                      ;; Print a sentinel after the last prompt cycle
+                      ;; so the test can find a stable anchor in the
+                      ;; rendered buffer to look back from.
+                      "print -r -- 'PROBE_DONE'\n"))
+                    (ghostel-test--wait-for
+                     proc
+                     (lambda ()
+                       (cl-some (lambda (s)
+                                  (string-match-p "PROBE_DONE" s))
+                                ghostel--pending-output))
+                     15)
+                    (sleep-for 0.2)
+                    (ghostel--flush-pending-output)
+                    (let ((inhibit-read-only t))
+                      (ghostel--redraw ghostel--term t))
+                    ;; After the rearrange settles, the WRAP fires INLINE
+                    ;; with PROMPT expansion (cycle 2+) — so 133;A fires
+                    ;; before the prompt content is drawn.  libghostty
+                    ;; sets `.prompt' semantic on subsequent cells, and
+                    ;; the renderer maps that to `ghostel-prompt' text
+                    ;; property.  The most recent prompt's `top-line'
+                    ;; row must carry that property.
+                    ;;
+                    ;; Without the rearrange the fallback fires AFTER
+                    ;; the prompt is drawn, so prompt cells are written
+                    ;; before the marker — they DON'T get tagged.
+                    (save-excursion
+                      (goto-char (point-max))
+                      (should (search-backward "top-line" nil t))
+                      (should (get-text-property (point) 'ghostel-prompt))))
+                (delete-process proc))))
+        (kill-buffer buf)))))
 
 (ert-deftest ghostel-test-osc133-prompt-stops-at-input ()
   "`ghostel-prompt' must end where `ghostel-input' begins on the row.
