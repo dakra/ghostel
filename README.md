@@ -163,9 +163,36 @@ string match -qr '^ghostel(,|$)' -- "$INSIDE_EMACS"; and source "$EMACS_GHOSTEL_
 ```
 </details>
 
-## Key Bindings
+## Input modes
 
-### Terminal mode
+Ghostel offers five eat.el-style input modes.  You enter a ghostel
+buffer in **semi-char mode**; switch modes with the key bindings below
+and watch `mode-line-process` for the current mode indicator.
+
+| Mode        | Indicator | Terminal | Buffer      | Purpose                                       |
+|-------------|-----------|----------|-------------|-----------------------------------------------|
+| semi-char   | *(none)*  | live     | editable    | default — type to terminal, `C-c` reserved    |
+| char        | `:Char`   | live     | editable    | TUI apps — *all* keys go to the terminal      |
+| Emacs       | `:Emacs`  | live     | read-only   | search/read while the terminal keeps running  |
+| copy        | `:Copy`   | frozen   | read-only   | precise text selection without scroll churn   |
+| line        | `:Line`   | live     | editable    | compose input with Emacs keys, send on `RET`  |
+
+### Mode-switch keybindings (available from every live mode)
+
+| Key       | Action                                    |
+|-----------|-------------------------------------------|
+| `C-c C-j` | Switch to semi-char mode (universal exit) |
+| `C-c M-d` | Switch to char mode                       |
+| `C-c C-e` | Switch to Emacs mode                      |
+| `C-c C-t` | Toggle copy mode                          |
+| `C-c C-l` | Switch to line mode                       |
+| `M-RET`   | Char mode only: return to semi-char       |
+
+### Semi-char mode (default)
+
+Most keys are sent to the terminal.  Keys in
+`ghostel-keymap-exceptions` (default: `C-c`, `C-x`, `C-u`, `C-h`,
+`C-g`, `M-x`, `M-o`, `M-:`, `C-\`) pass through to Emacs.
 
 | Key         | Action                                 |
 |-------------|----------------------------------------|
@@ -174,32 +201,60 @@ string match -qr '^ghostel(,|$)' -- "$INSIDE_EMACS"; and source "$EMACS_GHOSTEL_
 | `C-c C-z`   | Send suspend (C-z)                     |
 | `C-c C-d`   | Send EOF (C-d)                         |
 | `C-c C-\`   | Send quit (C-\)                        |
-| `C-c C-t`   | Enter copy mode                        |
 | `C-c M-w`   | Copy entire scrollback to kill ring    |
 | `C-y`       | Yank from kill ring (bracketed paste)  |
 | `M-y`       | Yank-pop (cycle through kill ring)     |
 | `C-c C-y`   | Paste from kill ring                   |
-| `C-c C-l`   | Clear scrollback                       |
+| `C-c M-l`   | Clear scrollback                       |
 | `C-c C-n`   | Jump to next hyperlink                 |
 | `C-c C-p`   | Jump to previous hyperlink             |
-| `C-c M-n`   | Jump to next prompt                    |
-| `C-c M-p`   | Jump to previous prompt                |
+| `C-c M-n`   | Enter Emacs mode and jump to next prompt |
+| `C-c M-p`   | Enter Emacs mode and jump to previous prompt |
 | `C-c C-q`   | Send next key literally (escape hatch) |
 | Mouse wheel | Scroll through scrollback              |
 
-Keys listed in `ghostel-keymap-exceptions` (default: `C-c`, `C-x`, `C-u`,
-`C-h`, `C-g`, `M-x`, `M-o`, `M-:`, `C-\`) pass through to Emacs.
+### Char mode
+
+Entered with `C-c M-d`.  **All** keys (including
+`ghostel-keymap-exceptions`) are sent to the terminal.  Useful for TUI
+apps that want to bind `C-x`, `M-x`, `C-h`, etc. themselves.  `M-RET`
+(or `C-M-m`) is the sole escape hatch.
+
+### Emacs mode
+
+Entered with `C-c C-e`.  **The terminal keeps running**, the buffer is
+read-only, and standard Emacs bindings fall through to the global map.
+`isearch-forward`, `occur`, `M-x`, `C-SPC` + `M-w`, arrow keys, wheel
+scroll — all work unmodified.  The terminal keeps producing output and
+the buffer keeps growing, but your point stays where you navigated it
+(the delayed-redraw path preserves point in Emacs mode).
+
+**Typed keys do not reach the shell** — Emacs mode is a "look but
+don't touch" view.  Self-insert, `RET`, `TAB`, `DEL` fall through to
+the read-only buffer and trigger `text-read-only`, so a stray
+keystroke can't accidentally land at the prompt.  Switch to semi-char
+mode (`C-c C-j`) when you want to type to the shell.  `C-y` is the
+exception: it pastes via bracketed paste as a deliberate action and
+snaps point back to the live cursor.
+
+Use this for searching through scrollback while a build is running,
+filtering streaming logs with `M-x occur`, marking and copying across
+the visible history, or running any buffer-based command over the
+terminal's output without having to freeze it.
 
 ### Copy mode
 
-Enter with `C-c C-t`. Standard Emacs navigation works.
-Normal letter keys exit copy mode and send the key to the terminal.
+Entered with `C-c C-t`.  The terminal is **frozen** — no live output
+updates the buffer until you exit.  Use this when you want to select
+text precisely without the terminal scrolling underneath your cursor.
+The aggressive copy-mode keymap exits on self-insert, so typing a
+letter sends it to the terminal and returns to semi-char mode.
 
 | Key           | Action                           |
 |---------------|----------------------------------|
 | `C-SPC`       | Set mark                         |
 | `M-w` / `C-w` | Copy selection and exit          |
-| `C-n` / `C-p` | Move line (scrolls at edges)     |
+| `C-n` / `C-p` | Move line                        |
 | `M-v` / `C-v` | Scroll page up / down            |
 | `M-<` / `M->` | Jump to top / bottom of buffer   |
 | `C-c C-n`     | Jump to next hyperlink           |
@@ -207,15 +262,61 @@ Normal letter keys exit copy mode and send the key to the terminal.
 | `C-c M-n`     | Jump to next prompt              |
 | `C-c M-p`     | Jump to previous prompt          |
 | `C-l`         | Recenter viewport                |
-| `C-c C-t`     | Exit without copying             |
+| `q`           | Exit without copying             |
 | `a`–`z`       | Exit and send key to terminal    |
 
 Soft-wrapped newlines are automatically stripped from copied text.
 
+### Line mode
+
+Entered with `C-c C-l`.  Line mode buffers the user's input locally in
+Emacs — **no keystrokes are forwarded to the shell** while composing.
+Full Emacs editing (`M-b`, `M-DEL`, `C-y` yank, `transpose-words`,
+etc.) works on the input region.  Pressing `RET` sends the whole line
+to the shell in one write; bash receives it atomically, echoes and
+executes it.
+
+The terminal stays live: output keeps streaming and the buffer keeps
+re-rendering while you compose.  A snapshot/restore step in the
+delayed-redraw path captures the in-progress input before each redraw
+and re-inserts it at the new prompt-end afterwards, so async output
+or a fresh prompt arriving mid-edit does not clobber what you typed.
+After `RET`, line mode stays active — the next prompt is found on the
+following redraw cycle and the input marker moves there.
+
+Line mode uses the terminal cursor as the input-area boundary, so
+REPLs without shell integration (python3, irb, sqlite3, …) work too.
+When OSC 133 prompt markers are present on the cursor's row, the
+prompt prefix is recognised and the input boundary lands right after
+it.
+
+Line mode and fullscreen TUIs (vim, less, htop, …) cannot share the
+same keystroke stream — the TUI needs every key forwarded raw, while
+line mode buffers them locally.  Ghostel handles this transparently:
+when an alt-screen TUI starts, line mode pauses (any in-progress
+input is stashed) and the buffer drops to semi-char so the TUI gets
+its keys.  When the TUI exits, line mode resumes at the new prompt
+and the stashed input is reinstated.  Pressing `C-c C-l` while a TUI
+is already running arms the same auto-resume so line mode activates
+when the TUI exits.  An explicit mode switch (`C-c C-j`,
+`ghostel-char-mode`, etc.) cancels the armed auto-resume.
+
+| Key         | Action                                   |
+|-------------|------------------------------------------|
+| *(letters)* | Edit local input (never sent char-by-char) |
+| `RET`       | Send the whole line to the shell, stay in line mode |
+| `C-c C-c`   | Discard input and send SIGINT, stay in line mode    |
+| `C-d`       | Delete char, or send EOF at empty input  |
+| `M-p` / `M-n` | History ring: previous / next entry    |
+| `C-a`       | Beginning of input on the prompt row, else `beginning-of-line` |
+| `C-c C-j`   | Exit to semi-char mode (discards input)  |
+
+### Scrollback search outside copy mode
+
 The full scrollback is always rendered into the buffer as styled text,
 so `isearch`, `consult-line`, `occur`, `M-x flush-lines`, `C-x h` to
 select all, and any other buffer-based command work across the full
-history — even outside copy mode.
+history in **any** mode that has a read-only buffer (Emacs or copy).
 
 ## Features
 
@@ -755,7 +856,11 @@ When `evil-ghostel-mode` is active:
 | `M-x ghostel-other`            | Switch to next terminal or create one        |
 | `M-x ghostel-clear`            | Clear screen and scrollback                  |
 | `M-x ghostel-clear-scrollback` | Clear scrollback only                        |
-| `M-x ghostel-copy-mode`        | Enter copy mode                              |
+| `M-x ghostel-semi-char-mode`   | Switch to semi-char input mode (default)     |
+| `M-x ghostel-char-mode`        | Switch to char input mode                    |
+| `M-x ghostel-emacs-mode`       | Switch to Emacs input mode (read-only, live) |
+| `M-x ghostel-copy-mode`        | Enter copy mode (frozen)                     |
+| `M-x ghostel-line-mode`        | Switch to line input mode                    |
 | `M-x ghostel-copy-all`         | Copy entire scrollback to kill ring          |
 | `M-x ghostel-paste`            | Paste from kill ring                         |
 | `M-x ghostel-send-next-key`    | Send next key literally                      |
@@ -1133,6 +1238,9 @@ powering Neovim's built-in terminal.
 | TRAMP remote terminals        | Yes       | Yes     |
 | OSC 52 clipboard              | Yes       | Yes     |
 | Copy mode                     | Yes       | Yes     |
+| Char mode (runtime toggle)    | Yes       | No      |
+| Line mode (local editing)     | Yes       | No      |
+| Emacs mode (read-only, live)  | Yes       | No      |
 | Drag-and-drop                 | Yes       | No      |
 | Auto module download          | Yes       | No      |
 | Scrollback default            | ~5,000    | 1,000   |
@@ -1151,6 +1259,24 @@ in protocol support.
 passes them through to the terminal via SGR mouse protocol.  TUI apps like
 htop or lazygit receive full mouse input.  vterm intercepts mouse clicks for
 Emacs point movement and does not forward them to the terminal.
+
+**Input modes.**  Ghostel offers five eat.el-style input modes (semi-char,
+char, Emacs, copy, line) selected from a single base keymap; see the
+[Input modes](#input-modes) section above.  vterm's default mode is
+roughly equivalent to ghostel's semi-char (a similar set of reserved
+prefixes via `vterm-keymap-exceptions`), and `vterm-copy-mode` lines up
+with our copy mode — both freeze incoming output (vterm via XOFF flow
+control, ghostel by cancelling the redraw timer).  Three of ghostel's
+modes have no vterm equivalent: **line mode** buffers input locally so
+full Emacs editing (`M-b`, `M-DEL`, yank, `transpose-words`, history
+ring) works on the in-progress line and `RET` sends it atomically;
+**Emacs mode** keeps the terminal streaming live but locks the buffer
+read-only, so `isearch`, `occur`, `M-x flush-lines`, and the rest of
+Emacs's vocabulary work over the live log without freezing it; **char
+mode** is a runtime toggle that bypasses the keymap exceptions and
+forwards every key (including `C-c`, `C-x`, `M-x`) to the terminal — vterm
+requires editing `vterm-keymap-exceptions` and reloading the buffer to
+get the same effect.
 
 **Rendering.**  Both use text properties (not overlays) and batch consecutive
 cells with identical styles.  Ghostel's engine provides three-level dirty

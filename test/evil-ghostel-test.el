@@ -752,6 +752,125 @@ Prevents up/down arrows being sent as history navigation."
        (should-not (member "down" keys-sent))))))
 
 ;; -----------------------------------------------------------------------
+;; Test: line mode + evil interaction
+;; -----------------------------------------------------------------------
+
+(defmacro evil-ghostel-test--with-line-mode (input-text input-start input-end &rest body)
+  "Set up a line-mode buffer for evil tests.
+INPUT-TEXT is inserted; INPUT-START / INPUT-END (1-indexed positions)
+become `ghostel--line-input-start' / `--line-input-end'."
+  (declare (indent 3) (debug t))
+  `(evil-ghostel-test--with-evil-buffer
+    (setq-local ghostel--term t)
+    (setq-local ghostel--input-mode 'line)
+    (insert ,input-text)
+    (setq-local ghostel--line-input-start (copy-marker ,input-start nil))
+    (setq-local ghostel--line-input-end (copy-marker ,input-end t))
+    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+      ,@body)))
+
+(ert-deftest evil-ghostel-test-line-mode-active-p ()
+  "`evil-ghostel--line-mode-active-p' is true with markers in line mode."
+  (evil-ghostel-test--with-line-mode "$ echo hello" 3 13
+    (should (evil-ghostel--line-mode-active-p))
+    (should-not (evil-ghostel--active-p))))
+
+(ert-deftest evil-ghostel-test-line-mode-active-p-needs-markers ()
+  "Predicate returns nil in line mode if the input markers are unset."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--input-mode 'line)
+   (setq-local ghostel--line-input-start nil)
+   (setq-local ghostel--line-input-end nil)
+   (should-not (evil-ghostel--line-mode-active-p))))
+
+(ert-deftest evil-ghostel-test-insert-entry-skips-sync-in-line-mode ()
+  "Insert-state entry hook does not touch cursor sync in line mode.
+Point and the terminal cursor are intentionally decoupled there."
+  (evil-ghostel-test--with-line-mode "$ echo hi" 3 10
+    (cl-letf (((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 0))))
+      (evil-normal-state)
+      (let ((sync-called nil))
+        (cl-letf (((symbol-function 'evil-ghostel--cursor-to-point)
+                   (lambda () (setq sync-called t)))
+                  ((symbol-function 'evil-ghostel--reset-cursor-point)
+                   (lambda () (setq sync-called t))))
+          (evil-insert-state))
+        (should-not sync-called)))))
+
+(ert-deftest evil-ghostel-test-insert-entry-skips-sync-in-copy-mode ()
+  "Insert-state entry hook does not sync the cursor in copy mode."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   (setq-local ghostel--input-mode 'copy)
+   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 0))))
+     (evil-normal-state)
+     (let ((sync-called nil))
+       (cl-letf (((symbol-function 'evil-ghostel--cursor-to-point)
+                  (lambda () (setq sync-called t)))
+                 ((symbol-function 'evil-ghostel--reset-cursor-point)
+                  (lambda () (setq sync-called t))))
+         (evil-insert-state))
+       (should-not sync-called)))))
+
+(ert-deftest evil-ghostel-test-insert-line-jumps-to-input-start-in-line-mode ()
+  "I in line mode lands at `ghostel--line-input-start' and sends no PTY C-a."
+  (evil-ghostel-test--with-line-mode "$ echo hello" 3 13
+    (evil-normal-state)
+    (goto-char (point-max))
+    (let ((keys-sent '()))
+      (cl-letf (((symbol-function 'ghostel--send-encoded)
+                 (lambda (key _mods &rest _) (push key keys-sent))))
+        (evil-insert-line 1))
+      (should (= (point) 3))
+      (should (evil-insert-state-p))
+      (should-not (member "a" keys-sent)))))
+
+(ert-deftest evil-ghostel-test-append-line-jumps-to-input-end-in-line-mode ()
+  "A in line mode lands at `ghostel--line-input-end' and sends no PTY C-e."
+  (evil-ghostel-test--with-line-mode "$ echo hello" 3 13
+    (evil-normal-state)
+    (goto-char (point-min))
+    (let ((keys-sent '()))
+      (cl-letf (((symbol-function 'ghostel--send-encoded)
+                 (lambda (key _mods &rest _) (push key keys-sent))))
+        (evil-append-line 1))
+      (should (= (point) 13))
+      (should (evil-insert-state-p))
+      (should-not (member "e" keys-sent)))))
+
+(ert-deftest evil-ghostel-test-passthrough-ctrl-prefers-local-map-outside-semi-char ()
+  "Outside semi-char, the local map's binding wins over `evil-insert-state-map'.
+Without this, a passthrough handler in the minor-mode aux map would
+shadow line mode's own C-a (`ghostel-beginning-of-input-or-line') and
+C-d (`ghostel-line-mode-delete-char-or-eof')."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   (setq-local ghostel--input-mode 'line)
+   (let* ((called nil)
+          (sentinel (lambda () (interactive) (setq called t)))
+          (map (make-sparse-keymap)))
+     (define-key map (kbd "C-a") sentinel)
+     (use-local-map map)
+     (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+       (evil-insert-state)
+       (evil-ghostel--passthrough-ctrl "a")
+       (should called)))))
+
+(ert-deftest evil-ghostel-test-delete-falls-through-in-line-mode ()
+  "evil-delete in line mode does not route to the PTY — runs evil's default."
+  (evil-ghostel-test--with-line-mode "hello world" 1 12
+    (goto-char (point-min))
+    (let ((bs-count 0))
+      (cl-letf (((symbol-function 'ghostel--send-encoded)
+                 (lambda (key _mods &rest _)
+                   (when (equal key "backspace") (cl-incf bs-count)))))
+        (evil-normal-state)
+        (evil-delete (point-min) (+ (point-min) 5) 'inclusive nil nil))
+      (should (= bs-count 0))
+      (should (equal " world" (buffer-string))))))
+
+;; -----------------------------------------------------------------------
 ;; Test: evil-undo advice
 ;; -----------------------------------------------------------------------
 

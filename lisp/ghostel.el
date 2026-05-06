@@ -82,10 +82,14 @@
 (require 'ansi-color)
 (require 'cl-lib)
 (require 'project)
+(require 'shell)
 (require 'text-property-search)
 (require 'tramp)
 (require 'url-parse)
 (require 'face-remap)
+
+(declare-function bash-completion-capf-nonexclusive "bash-completion")
+(declare-function bash-completion-require-process "bash-completion")
 
 
 ;;; Customization
@@ -569,11 +573,93 @@ terminal-driven cursor changes.  Copy mode restores `cursor-type' to its
 default value."
   :type 'boolean)
 
+;; Forward declaration for the `ghostel-readonly-fast-exit' :set function.
+(defvar ghostel--input-mode)
+
+(defcustom ghostel-readonly-fast-exit t
+  "When non-nil, copy and Emacs modes exit on `q', `C-g', or any self-insert key.
+The triggering character is forwarded to the terminal when exiting
+returns to a mode that accepts terminal input (semi-char or char).
+
+When nil, exit only via an explicit input-mode switch
+\(`ghostel-semi-char-mode', `ghostel-char-mode', etc.).  Standard
+self-inserting keys still hit the read-only barrier and produce
+the usual \"Buffer is read-only\" signal.
+
+Toggling this through `customize-variable' or `setopt' rebinds
+the local map in every buffer currently in copy or Emacs mode, so
+the change takes effect immediately.  Plain `setq' bypasses the custom setter
+and affected buffers will pick up the new value on the next mode transition."
+  :type 'boolean
+  :initialize #'custom-initialize-default
+  :set (lambda (sym newval)
+         (set-default sym newval)
+         (dolist (buf (buffer-list))
+           (with-current-buffer buf
+             (when (memq ghostel--input-mode '(copy emacs))
+               (use-local-map (ghostel--readonly-keymap)))))))
+
 (defcustom ghostel-scroll-on-input t
   "Automatically scroll to the bottom when typing in the terminal.
 When non-nil, any character typed while the viewport is scrolled
 into the scrollback will first jump to the bottom of the terminal
 before sending the input."
+  :type 'boolean)
+
+(defcustom ghostel-github-release-url
+  "https://github.com/dakra/ghostel/releases"
+  "Base URL for Ghostel GitHub releases.
+Customize this when downloading pre-built modules from a fork or mirror."
+  :type 'string)
+
+(defcustom ghostel-line-mode-history-size 200
+  "Maximum number of lines kept in `ghostel--line-mode-history'."
+  :type 'integer)
+
+(defcustom ghostel-line-mode-completion-at-point-functions
+  '(comint-completion-at-point)
+  "Capfs activated for \\=`TAB\\=' in `ghostel-line-mode'.
+Each function is called inside a `save-restriction' narrowed to the
+editable input region, so it sees only the user's typed text — not
+the prompt or the surrounding scrollback.
+
+The default `comint-completion-at-point' dispatches through
+`comint-dynamic-complete-functions' (set up via
+`shell-completion-vars'), which gives filename completion, env-var
+completion, command completion from \\=`PATH\\=', `pcomplete'
+integration, and history expansion."
+  :type '(repeat function))
+
+(defcustom ghostel-line-mode-use-bash-completion 'auto
+  "Whether to layer bash programmable completion onto line-mode \\=`TAB\\='.
+When non-nil, `bash-completion-capf-nonexclusive' is prepended to
+`ghostel-line-mode-completion-at-point-functions' at completion
+time.  The capf is non-exclusive, so when bash returns no
+candidates the standard comint stack still runs.
+
+- `auto' (default): enable when the `bash-completion' package
+  loads cleanly; do nothing when it isn't installed.
+- t: require it; signal an error if it is missing.
+- nil: never use it.
+
+The bash-completion package spawns a hidden bash subprocess that
+sources the user's startup files, so registrations like
+\"complete -F _git git\" become available — TAB after \"git
+checkout \" lists branch names, etc."
+  :type '(choice (const :tag "Auto-detect" auto)
+                 (const :tag "Always (require)" t)
+                 (const :tag "Never" nil)))
+
+(defcustom ghostel-line-mode-bash-completion-prespawn nil
+  "When non-nil, eagerly start the bash-completion subprocess on line-mode entry.
+Off by default — the first \\=`TAB\\=' inside line mode pays the
+~500ms-1s cost of spawning the hidden bash process and sourcing
+the user's startup files; subsequent completions are fast.  Set
+this to t to amortise that cost at line-mode entry time so the
+first completion feels instant.
+
+Has no effect when `ghostel-line-mode-use-bash-completion' is nil
+or when the `bash-completion' package is not installed."
   :type 'boolean)
 
 
@@ -662,21 +748,11 @@ before sending the input."
    ghostel-color-bright-white]
   "Color palette for the terminal (vector of 16 face names).")
 
-(defcustom ghostel-github-release-url
-  "https://github.com/dakra/ghostel/releases"
-  "Base URL for Ghostel GitHub releases.
-Customize this when downloading pre-built modules from a fork or mirror."
-  :type 'string)
-
-(defconst ghostel--minimum-module-version "0.22.1"
-  "Minimum native module version required by this Elisp version.
-Bump this only when the Elisp code requires a newer native module
-\(e.g. new Zig-exported function or changed calling convention).")
-
 
 ;; Declare native module functions for the byte compiler
 
 (declare-function ghostel--cursor-position "ghostel-module")
+(declare-function ghostel--cursor-row-char-offset "ghostel-module")
 (declare-function ghostel--encode-key "ghostel-module")
 (declare-function ghostel--focus-event "ghostel-module")
 (declare-function ghostel--mode-enabled "ghostel-module")
@@ -698,6 +774,11 @@ Bump this only when the Elisp code requires a newer native module
 
 
 ;;; Automatic download and compilation of native module
+
+(defconst ghostel--minimum-module-version "0.22.1"
+  "Minimum native module version required by this Elisp version.
+Bump this only when the Elisp code requires a newer native module
+\(e.g. new Zig-exported function or changed calling convention).")
 
 (defun ghostel--module-platform-tag ()
   "Return platform tag for the current system, e.g. \"x86_64-linux\".
@@ -973,8 +1054,11 @@ Updated whenever the terminal is created or resized.")
   "Column count of the native terminal.
 Updated whenever the terminal is created or resized.")
 
-(defvar-local ghostel--copy-mode-active nil
-  "Non-nil when copy mode is active.")
+(defvar-local ghostel--input-mode 'semi-char
+  "Current input mode.
+One of `semi-char', `char', `copy', `emacs', or `line'.  See
+`ghostel-semi-char-mode', `ghostel-char-mode', `ghostel-copy-mode',
+`ghostel-emacs-mode', and `ghostel-line-mode'.")
 
 (defvar-local ghostel--process nil
   "The shell process.")
@@ -1096,6 +1180,12 @@ Used for prompt navigation and optional re-application after full redraws.")
   "Non-nil when ghostel's scroll-event intercept is active.
 Used as the activation key in `emulation-mode-map-alists'.")
 
+(defvar-local ghostel--spinner-active nil
+  "Non-nil when this buffer has a spinner started by `ghostel-spinner-progress'.
+The spinner object itself lives in spinner.el's buffer-local
+`spinner-current'; this flag is what ghostel inspects to keep
+`ghostel-spinner-progress' idempotent and to give the sentinel
+something to gate teardown on.")
 
 
 ;;; Scroll intercept via emulation-mode-map-alists
@@ -1169,76 +1259,109 @@ is non-nil.")
 
 
 
+;;; Input mode predicates
+
+(defsubst ghostel--buffer-editable-p ()
+  "Non-nil when typed keys are forwarded to the terminal.
+True in semi-char and char modes.  In Emacs, copy, and line modes
+the buffer is either read-only or consumes keys locally."
+  (memq ghostel--input-mode '(semi-char char)))
+
+(defsubst ghostel--terminal-live-p ()
+  "Non-nil when live output is propagated into the Emacs buffer.
+False only in copy mode, which freezes the terminal entirely.
+Line mode keeps redrawing — the snapshot/restore path in
+`ghostel--delayed-redraw' preserves the user's in-progress input
+across the rewrite."
+  (not (eq ghostel--input-mode 'copy)))
+
+(defsubst ghostel--terminal-frozen-p ()
+  "Non-nil when the terminal is frozen (copy mode)."
+  (eq ghostel--input-mode 'copy))
+
+
 ;;; Keymap
+
+(defun ghostel--define-terminal-keys (map &optional no-exceptions)
+  "Populate MAP with terminal key-sending bindings.
+When NO-EXCEPTIONS is non-nil, also bind the keys in
+`ghostel-keymap-exceptions' (used by char mode)."
+  ;; Self-insert characters
+  (define-key map [remap self-insert-command] #'ghostel--self-insert)
+  ;; Special keys — routed through the ghostty key encoder which
+  ;; respects terminal modes and handles all modifier combinations.
+  ;; Use angle-bracket forms so modifier prefixes compose correctly.
+  ;; Skip keys in `ghostel-keymap-exceptions' unless NO-EXCEPTIONS is
+  ;; non-nil (char mode binds everything).
+  (dolist (key '("<return>" "<tab>" "<backspace>" "<escape>"
+                 "<up>" "<down>" "<right>" "<left>"
+                 "<home>" "<end>" "<prior>" "<next>"
+                 "<deletechar>" "<insert>"
+                 "<f1>" "<f2>" "<f3>" "<f4>" "<f5>" "<f6>"
+                 "<f7>" "<f8>" "<f9>" "<f10>" "<f11>" "<f12>"))
+    (when (or no-exceptions (not (member key ghostel-keymap-exceptions)))
+      (define-key map (kbd key) #'ghostel--send-event))
+    (dolist (mod '("S-" "C-" "M-" "C-S-" "M-S-" "C-M-"))
+      (let ((key-str (concat mod key)))
+        (when (or no-exceptions
+                  (not (member key-str ghostel-keymap-exceptions)))
+          (ignore-errors
+            (define-key map (kbd key-str) #'ghostel--send-event))))))
+  ;; Bare aliases for unmodified keys (RET=\r, TAB=\t, DEL=\x7f)
+  (define-key map (kbd "RET") #'ghostel--send-event)
+  (define-key map (kbd "TAB") #'ghostel--send-event)
+  (define-key map (kbd "DEL") #'ghostel--send-event)
+  ;; Emacs reports S-TAB as <backtab>
+  (define-key map (kbd "<backtab>") #'ghostel--send-event)
+  ;; Control keys — bind all C-<letter> to send ASCII control codes.
+  ;; C-i = TAB and C-m = RET are equivalent to <tab>/<return> (bound above).
+  ;; C-y is reserved for ghostel-yank in semi-char mode.
+  (let ((skip (if no-exceptions '(?i ?m) '(?i ?m ?y))))
+    (dolist (c (number-sequence ?a ?z))
+      (let ((key-str (format "C-%c" c)))
+        (unless (or (memq c skip)
+                    (and (not no-exceptions)
+                         (member key-str ghostel-keymap-exceptions)))
+          (define-key map (kbd key-str)
+                      (let ((code (- c 96)))
+                        (lambda () (interactive)
+                          (ghostel--send-string (string code)))))))))
+  ;; Meta and Control-Meta keys - bind all (C-)M-<letter> so they reach
+  ;; the terminal instead of running Emacs commands like forward-word.
+  (dolist (c (number-sequence ?a ?z))
+    (let ((key-str (format "M-%c" c)))
+      (when (or no-exceptions
+                (not (member key-str ghostel-keymap-exceptions)))
+        (define-key map (kbd key-str) #'ghostel--send-event)))
+    (let ((key-str (format "C-M-%c" c)))
+      (when (or no-exceptions
+                (not (member key-str ghostel-keymap-exceptions)))
+        (define-key map (kbd key-str) #'ghostel--send-event))))
+  ;; M-DEL: TTY Emacs delivers Alt-Backspace as ESC + 0x7f, which
+  ;; resolves to ?\M-\d.  The `M-<backspace>' form above only covers
+  ;; the `[M-backspace]' symbol path; without this binding, TTY
+  ;; Alt-Backspace falls through to global `backward-kill-word'.
+  (define-key map (kbd "M-DEL") #'ghostel--send-event)
+  ;; C-@ (NUL, same as C-SPC) — used by programs like Emacs-in-terminal
+  (define-key map (kbd "C-@")
+              (lambda () (interactive) (ghostel--send-string "\x00")))
+  ;; Char mode extras: also bind non-letter exception keys so nothing
+  ;; gets stolen by Emacs while a TUI app runs.
+  (when no-exceptions
+    (define-key map (kbd "C-\\")
+                (lambda () (interactive) (ghostel--send-string "\x1c")))
+    (define-key map (kbd "M-:") #'ghostel--send-event)))
 
 (defvar ghostel-mode-map
   (let ((map (make-sparse-keymap)))
-    ;; Self-insert characters
-    (define-key map [remap self-insert-command] #'ghostel--self-insert)
-    ;; Special keys — routed through the ghostty key encoder which
-    ;; respects terminal modes and handles all modifier combinations.
-    ;; Use angle-bracket forms so modifier prefixes compose correctly.
-    (dolist (key '("<return>" "<tab>" "<backspace>" "<escape>"
-                   "<up>" "<down>" "<right>" "<left>"
-                   "<home>" "<end>" "<prior>" "<next>"
-                   "<deletechar>" "<insert>"
-                   "<f1>" "<f2>" "<f3>" "<f4>" "<f5>" "<f6>"
-                   "<f7>" "<f8>" "<f9>" "<f10>" "<f11>" "<f12>"))
-      (unless (member key ghostel-keymap-exceptions)
-        (define-key map (kbd key) #'ghostel--send-event))
-      (dolist (mod '("S-" "C-" "M-" "C-S-" "M-S-" "C-M-"))
-        (let ((key-str (concat mod key)))
-          (unless (member key-str ghostel-keymap-exceptions)
-            (ignore-errors
-              (define-key map (kbd key-str) #'ghostel--send-event))))))
-    ;; Bare aliases for unmodified keys (RET=\r, TAB=\t, DEL=\x7f)
-    (define-key map (kbd "RET") #'ghostel--send-event)
-    (define-key map (kbd "TAB") #'ghostel--send-event)
-    (define-key map (kbd "DEL") #'ghostel--send-event)
-    ;; Emacs reports S-TAB as <backtab>
-    (define-key map (kbd "<backtab>") #'ghostel--send-event)
-    ;; Control keys — bind all C-<letter> to send ASCII control codes,
-    ;; except keys in ghostel-keymap-exceptions and special cases.
-    ;; C-i = TAB and C-m = RET are equivalent to <tab>/<return> (bound above).
-    (let ((skip '(?i ?m ?y)))  ; i=TAB, m=RET already bound; y=ghostel-yank below
-      (dolist (c (number-sequence ?a ?z))
-        (let ((key-str (format "C-%c" c)))
-          (unless (or (member key-str ghostel-keymap-exceptions)
-                      (memq c skip))
-            (define-key map (kbd key-str)
-                        (let ((code (- c 96)))
-                          (lambda () (interactive)
-                            (ghostel--send-string (string code)))))))))
-    ;; Meta and Control-Meta keys - bind all (C-)M-<letter> so they reach
-    ;; the terminal instead of running Emacs commands like forward-word.
-    (dolist (c (number-sequence ?a ?z))
-      (let ((key-str (format "M-%c" c)))
-        (unless (member key-str ghostel-keymap-exceptions)
-          (define-key map (kbd key-str) #'ghostel--send-event)))
-      (let ((key-str (format "C-M-%c" c)))
-        (unless (member key-str ghostel-keymap-exceptions)
-          (define-key map (kbd key-str) #'ghostel--send-event))))
-    ;; M-DEL: TTY Emacs delivers Alt-Backspace as ESC + 0x7f, which
-    ;; resolves to ?\M-\d.  The `M-<backspace>' form above only covers
-    ;; the `[M-backspace]' symbol path; without this binding, TTY
-    ;; Alt-Backspace falls through to global `backward-kill-word'.
-    (define-key map (kbd "M-DEL") #'ghostel--send-event)
-    ;; C-@ (NUL, same as C-SPC) — used by programs like Emacs-in-terminal
-    (define-key map (kbd "C-@")
-                (lambda () (interactive) (ghostel--send-string "\x00")))
-    ;; C-y: yank from Emacs kill ring into the terminal
-    (define-key map (kbd "C-y")       #'ghostel-yank)
-    (when (eq system-type 'darwin)
-      (define-key map (kbd "s-v")     #'ghostel-yank))
-    ;; Clipboard media keys
+    ;; Clipboard media keys — useful in any mode.
     (define-key map (kbd "<XF86Paste>") #'ghostel-yank)
     (define-key map (kbd "<XF86Copy>")  #'kill-ring-save)
-    (define-key map (kbd "M-y")       #'ghostel-yank-pop)
     ;; Bracketed paste from the host terminal (TTY Emacs): forward the
     ;; paste payload to the subprocess instead of letting the default
     ;; `xterm-paste' insert it into the (renderer-owned) buffer.
     (define-key map [xterm-paste]     #'ghostel-xterm-paste)
-    ;; Terminal control via C-c prefix (pass through to Emacs, then handled here)
+    ;; Terminal control via C-c prefix
     (define-key map (kbd "C-c C-c")   #'ghostel-send-C-c)
     (define-key map (kbd "C-c C-z")   #'ghostel-send-C-z)
     (define-key map (kbd "C-c C-\\")  #'ghostel-send-C-backslash)
@@ -1247,14 +1370,21 @@ is non-nil.")
     (define-key map (kbd "C-c C-t")   #'ghostel-copy-mode)
     (define-key map (kbd "C-c M-w")   #'ghostel-copy-all)
     (define-key map (kbd "C-c C-y")   #'ghostel-paste)
-    (define-key map (kbd "C-c C-l")   #'ghostel-clear-scrollback)
+    (define-key map (kbd "C-c M-l")   #'ghostel-clear-scrollback)
     (define-key map (kbd "C-c C-q")   #'ghostel-send-next-key)
     ;; Hyperlink navigation (OSC 8, auto-detected URLs, file:line refs)
     (define-key map (kbd "C-c C-n")   #'ghostel-next-hyperlink)
     (define-key map (kbd "C-c C-p")   #'ghostel-previous-hyperlink)
-    ;; Prompt navigation (OSC 133)
+    ;; Prompt navigation (OSC 133) — `ghostel-next-prompt' and
+    ;; `ghostel-previous-prompt' switch to Emacs mode so the terminal
+    ;; keeps running while the user jumps between prompts.
     (define-key map (kbd "C-c M-n")   #'ghostel-next-prompt)
     (define-key map (kbd "C-c M-p")   #'ghostel-previous-prompt)
+    ;; Input mode switching (eat.el conventions)
+    (define-key map (kbd "C-c C-e")   #'ghostel-emacs-mode)
+    (define-key map (kbd "C-c C-j")   #'ghostel-semi-char-mode)
+    (define-key map (kbd "C-c M-d")   #'ghostel-char-mode)
+    (define-key map (kbd "C-c C-l")   #'ghostel-line-mode)
     ;; Mouse click events (for terminal mouse tracking)
     (define-key map (kbd "<down-mouse-1>")  #'ghostel--mouse-press)
     (define-key map (kbd "<mouse-1>")       #'ghostel--mouse-release)
@@ -1266,9 +1396,132 @@ is non-nil.")
     (define-key map (kbd "<drag-mouse-2>")  #'ghostel--mouse-drag)
     (define-key map (kbd "<drag-mouse-3>")  #'ghostel--mouse-drag)
     ;; Drag and drop
-    (define-key map [drag-n-drop]           #'ghostel--drop)
+    (define-key map [drag-n-drop]     #'ghostel--drop)
     map)
-  "Keymap for `ghostel-mode'.")
+  "Base keymap for `ghostel-mode'.
+Contains the \\`C-c' prefix commands available in every input mode.
+Input modes (`ghostel-semi-char-mode-map', `ghostel-char-mode-map',
+`ghostel-readonly-mode-map', `ghostel-readonly-fast-exit-mode-map',
+`ghostel-line-mode-map') inherit or extend this map.")
+
+(defvar ghostel-semi-char-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map ghostel-mode-map)
+    (ghostel--define-terminal-keys map)
+    ;; C-y: yank from Emacs kill ring into the terminal
+    (define-key map (kbd "C-y")       #'ghostel-yank)
+    (when (eq system-type 'darwin)
+      (define-key map (kbd "s-v")     #'ghostel-yank))
+    (define-key map (kbd "M-y")       #'ghostel-yank-pop)
+    map)
+  "Keymap for semi-char mode (the default input mode).
+Most keys are sent to the terminal.  Keys in
+`ghostel-keymap-exceptions' pass through to Emacs.  Inherits the
+\\`C-c' prefix from `ghostel-mode-map'.")
+
+(defvar ghostel-char-mode-map
+  (let ((map (make-sparse-keymap)))
+    ;; No parent — char mode captures everything, including C-c.
+    (ghostel--define-terminal-keys map 'no-exceptions)
+    ;; Mouse click/drag for terminal mouse tracking (no parent to
+    ;; inherit from; scroll wheel is handled by the emulation alist).
+    (define-key map (kbd "<down-mouse-1>")  #'ghostel--mouse-press)
+    (define-key map (kbd "<mouse-1>")       #'ghostel--mouse-release)
+    (define-key map (kbd "<down-mouse-2>")  #'ghostel--mouse-press)
+    (define-key map (kbd "<mouse-2>")       #'ghostel--mouse-release)
+    (define-key map (kbd "<down-mouse-3>")  #'ghostel--mouse-press)
+    (define-key map (kbd "<mouse-3>")       #'ghostel--mouse-release)
+    (define-key map (kbd "<drag-mouse-1>")  #'ghostel--mouse-drag)
+    (define-key map (kbd "<drag-mouse-2>")  #'ghostel--mouse-drag)
+    (define-key map (kbd "<drag-mouse-3>")  #'ghostel--mouse-drag)
+    ;; Sole escape hatch: exit char mode.  Graphical Emacs sends
+    ;; M-RET as the `<M-return>' symbol, terminal Emacs as the
+    ;; `\M-\r' character, and C-M-m is a synonym; bind all three
+    ;; so the user doesn't need to care which their setup uses.
+    (define-key map (kbd "M-RET")      #'ghostel-semi-char-mode)
+    (define-key map (kbd "M-<return>") #'ghostel-semi-char-mode)
+    (define-key map (kbd "C-M-m")      #'ghostel-semi-char-mode)
+    map)
+  "Keymap for char mode.
+All keys are sent to the terminal.
+\\<ghostel-char-mode-map>Only \\[ghostel-semi-char-mode] exits
+back to semi-char mode.")
+
+(defvar ghostel-readonly-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map ghostel-mode-map)
+    ;; Smart `C-a': on a line with a `ghostel-prompt' prefix, jump
+    ;; to the start of the input area; on any other line (scrollback,
+    ;; output) fall through to `move-beginning-of-line' so the user
+    ;; gets the standard column-0 behaviour they expect.
+    (define-key map (kbd "C-a")       #'ghostel-beginning-of-input-or-line)
+    ;; `C-y' pastes from the kill ring into the terminal via
+    ;; bracketed paste — an explicit, deliberate action, distinct
+    ;; from typing characters one by one (which read-only mode does
+    ;; not allow).
+    (define-key map (kbd "C-y")       #'ghostel-yank)
+    (when (eq system-type 'darwin)
+      (define-key map (kbd "s-v")     #'ghostel-yank))
+    ;; Selection helpers shared by both copy and Emacs modes.
+    (define-key map (kbd "M-w")       #'ghostel-readonly-copy)
+    (define-key map (kbd "C-w")       #'ghostel-readonly-copy)
+    (define-key map (kbd "M->")       #'ghostel-readonly-end-of-buffer)
+    (define-key map (kbd "C-e")       #'ghostel-readonly-end-of-line)
+    (define-key map (kbd "C-l")       #'ghostel-readonly-recenter)
+    ;; RET / <return> follows the link at point.  Bound here rather
+    ;; than on the text-property link map so a misdetected link inside
+    ;; a typed command in semi-char/char mode never hijacks the key
+    ;; away from the PTY.  When point is not on a link this is a no-op.
+    (define-key map (kbd "RET")       #'ghostel-open-link-at-point)
+    (define-key map (kbd "<return>")  #'ghostel-open-link-at-point)
+    map)
+  "Keymap shared by `ghostel-copy-mode' and `ghostel-emacs-mode'.
+The buffer is read-only in both modes; the only difference between
+them is whether live terminal output keeps streaming (Emacs mode)
+or is paused (copy mode).  Self-insert, RET, TAB, DEL and friends
+are NOT bound here — Emacs's standard `text-read-only' barrier
+keeps stray keystrokes from reaching the shell.  Pasting via
+\\[ghostel-yank] is allowed as an explicit input action; it
+forwards via bracketed paste and snaps point back to the live
+cursor.
+
+When `ghostel-readonly-fast-exit' is non-nil, the additional
+bindings in `ghostel-readonly-fast-exit-mode-map' are layered on
+top so that \\`q', \\`C-g', or any self-insert key exits.")
+
+(defvar ghostel-readonly-fast-exit-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map ghostel-readonly-mode-map)
+    ;; Normal letter keys exit and send the key to the terminal.
+    (define-key map [remap self-insert-command] #'ghostel-readonly-exit-and-send)
+    (define-key map (kbd "q")       #'ghostel-readonly-exit)
+    (define-key map (kbd "C-c C-t") #'ghostel-readonly-exit)
+    (define-key map (kbd "C-g")     #'ghostel-readonly-exit)
+    ;; C-c C-l overrides the parent's `ghostel-line-mode' binding so
+    ;; clearing scrollback from inside read-only mode also exits cleanly.
+    (define-key map (kbd "C-c C-l") #'ghostel-readonly-exit-and-clear)
+    map)
+  "Keymap layered on `ghostel-readonly-mode-map' when fast exit is on.
+See `ghostel-readonly-fast-exit'.")
+
+;; Char mode must override minor-mode keymaps.  Without this, a user
+;; config that binds, say, \\`C-c' as a prefix in a global minor mode
+;; steals the key before it reaches `ghostel-char-mode-map'.  Pushing
+;; an entry into `emulation-mode-map-alists' moves char mode's
+;; keymap ahead of `minor-mode-map-alist' in the lookup order, so a
+;; direct binding in `ghostel-char-mode-map' wins against any
+;; minor-mode prefix.
+
+(defvar-local ghostel--char-mode-override-active nil
+  "Non-nil in buffers where char mode is active.
+Drives the `emulation-mode-map-alists' entry that makes
+`ghostel-char-mode-map' override minor-mode keymaps.")
+
+(defvar ghostel--char-mode-override-alist
+  `((ghostel--char-mode-override-active . ,ghostel-char-mode-map))
+  "Alist entry registered in `emulation-mode-map-alists' for char mode.")
+
+(add-to-list 'emulation-mode-map-alists 'ghostel--char-mode-override-alist)
 
 
 ;;; Key sending
@@ -1455,7 +1708,14 @@ Resets the terminal engine's viewport out of scrollback and sets
 by `pixel-scroll-precision-mode' or similar scrollers).  No-op
 when `ghostel-scroll-on-input' is nil.  Call from any path where
 the user's action implies \"show me the prompt\" — typed input,
-paste, yank, drop."
+paste, yank, drop.
+
+Fires regardless of input mode: in semi-char/char/line modes
+each typed key calls this before forwarding; in Emacs mode
+typing is disabled but explicit paste (`\\`C-y'') still routes
+through `ghostel--paste-text' which calls this before sending.
+Pure-navigation commands do not call this, so reading scrollback
+without sending anything to the shell preserves point."
   (when (and ghostel-scroll-on-input ghostel--term)
     (setq ghostel--snap-requested t)
     (setq ghostel--force-next-redraw t)))
@@ -1660,8 +1920,8 @@ parity with `xterm-paste'."
   (interactive "e")
   (unless (eq (car-safe event) 'xterm-paste)
     (error "This command must be bound to an xterm-paste event"))
-  (when ghostel--copy-mode-active
-    (ghostel-copy-mode-exit))
+  (when (eq ghostel--input-mode 'copy)
+    (ghostel-readonly-exit))
   (when-let* ((text (nth 1 event)))
     (when (bound-and-true-p xterm-store-paste-on-kill-ring)
       (kill-new text))
@@ -1708,7 +1968,7 @@ pasted using bracketed paste."
     ;; `ghostel--snap-requested' here: nilling
     ;; `--last-anchor-position' makes `ghostel--window-anchored-p'
     ;; treat every window as anchored on the next redraw via its
-    ;; bootstrap branch.  (`ghostel-copy-mode-exit' uses the snap
+    ;; bootstrap branch.  (`ghostel-readonly-exit' uses the snap
     ;; flag instead because it preserves `--last-anchor-position'.)
     (setq ghostel--scroll-positions nil)
     (setq ghostel--last-anchor-position nil)
@@ -1735,7 +1995,7 @@ pasted using bracketed paste."
 Return non-nil if the event was forwarded (mouse tracking is active)."
   (when (and event ghostel--term ghostel--process
              (process-live-p ghostel--process)
-             (not ghostel--copy-mode-active))
+             (ghostel--buffer-editable-p))
     (let* ((posn (event-start event))
            (col-row (posn-col-row posn))
            (col (car col-row))
@@ -1746,19 +2006,19 @@ Return non-nil if the event was forwarded (mouse tracking is active)."
                             row col
                             (ghostel--mouse-mods event)))))
 
-(defun ghostel-copy-mode-end-of-buffer ()
-  "Move to the bottom of the buffer (current viewport) in copy mode."
+(defun ghostel-readonly-end-of-buffer ()
+  "Move to the bottom of the buffer (current viewport) in read-only mode."
   (interactive)
   (goto-char (point-max))
   (skip-chars-backward " \t\n"))
 
-(defun ghostel-copy-mode-end-of-line ()
+(defun ghostel-readonly-end-of-line ()
   "Move to the last non-whitespace character on the line."
   (interactive)
   (end-of-line)
   (skip-chars-backward " \t"))
 
-(defun ghostel-copy-mode-recenter ()
+(defun ghostel-readonly-recenter ()
   "Recenter the current line in the window."
   (interactive)
   (recenter))
@@ -1827,108 +2087,275 @@ Return non-nil if the event was forwarded (mouse tracking is active)."
                             (ghostel--mouse-mods event)))))
 
 
-;;; Copy mode
-
-(defvar ghostel-copy-mode-map
-  (let ((map (make-sparse-keymap)))
-    ;; Normal letter keys exit copy mode and send the key to the terminal
-    (define-key map [remap self-insert-command] #'ghostel-copy-mode-exit-and-send)
-    (define-key map (kbd "C-c C-t") #'ghostel-copy-mode-exit)
-    (define-key map (kbd "C-g") #'ghostel-copy-mode-exit)
-    (define-key map (kbd "M-w") #'ghostel-copy-mode-copy)
-    (define-key map (kbd "C-w") #'ghostel-copy-mode-copy)
-    ;; Hyperlink navigation works in copy mode too
-    (define-key map (kbd "C-c C-n") #'ghostel-next-hyperlink)
-    (define-key map (kbd "C-c C-p") #'ghostel-previous-hyperlink)
-    (define-key map (kbd "RET")      #'ghostel-open-link-at-point)
-    (define-key map (kbd "<return>") #'ghostel-open-link-at-point)
-    ;; Prompt navigation works in copy mode too
-    (define-key map (kbd "C-c M-n") #'ghostel-next-prompt)
-    (define-key map (kbd "C-c M-p") #'ghostel-previous-prompt)
-    (define-key map (kbd "M->")     #'ghostel-copy-mode-end-of-buffer)
-    (define-key map (kbd "C-e")     #'ghostel-copy-mode-end-of-line)
-    (define-key map (kbd "C-l")     #'ghostel-copy-mode-recenter)
-    (define-key map (kbd "C-c C-l") #'ghostel-copy-mode-exit-and-clear)
-    (define-key map [xterm-paste]   #'ghostel-xterm-paste)
-    map)
-  "Keymap for `ghostel-copy-mode'.
-Standard Emacs navigation works.
-Set mark, navigate to select, then \\[ghostel-copy-mode-copy] to copy.")
-
-(defvar-local ghostel--saved-local-map nil
-  "Saved keymap before entering copy mode.")
+;;; Input modes — state helpers
 
 (defvar-local ghostel--saved-cursor-type nil
-  "Saved `cursor-type' before entering copy mode.")
+  "Saved `cursor-type' before entering a read-only mode.")
 
 (defvar-local ghostel--saved-hl-line-mode nil
   "Non-nil if line highlighting was active when `ghostel-mode' suppressed it.
 Covers both `global-hl-line-mode' and buffer-local `hl-line-mode'.")
 
+(defvar-local ghostel--line-mode-paused nil
+  "Snapshot plist captured when alt-screen forced line mode to pause.
+Nil when not paused.  Set by `ghostel--line-mode-pause' (auto-pause
+when an alt-screen TUI starts) and by `ghostel--line-mode-defer-entry'
+\(when the user invokes `ghostel-line-mode' while a TUI is already
+running); consumed by `ghostel--line-mode-try-resume' once alt-screen
+has gone off and a prompt is locatable.  Cleared when the user
+manually switches input modes so a later alt-screen exit does not
+surprise them by force-resuming line mode.")
+
+(defvar-local ghostel--mode-line-tag nil
+  "Current input-mode label rendered in `mode-line-process'.
+String like \":Char\" / \":Line\" / \":Copy\" / \":Emacs\", or
+nil for semi-char.  Composed with `ghostel--mode-line-progress'
+\(and the spinner construct, when active) by
+`ghostel--mode-line-refresh' so OSC 9;4 progress updates do not
+clobber the input-mode label.")
+
+(defvar-local ghostel--mode-line-progress nil
+  "Current OSC 9;4 progress indicator for `mode-line-process'.
+Set by `ghostel-default-progress' / `ghostel-spinner-progress'.
+Composed with `ghostel--mode-line-tag' (and the spinner
+construct, when active) by `ghostel--mode-line-refresh'.")
+
+(defun ghostel--mode-line-refresh ()
+  "Recompute `mode-line-process' from tag + spinner + progress.
+Composes `ghostel--mode-line-tag', the spinner construct (when
+`ghostel--spinner-active' is non-nil), and
+`ghostel--mode-line-progress' so the input-mode label stays
+visible while a progress indicator or spinner is active.  When
+only one component is active the value is that component
+directly (so callers and tests that expect a plain string keep
+working); otherwise it is a list mode-line construct.
+
+Skips `setq' and `force-mode-line-update' when the composed value
+is unchanged — `ghostel-default-progress' calls this once per
+OSC 9;4 packet, and same-value packets must not fire FMLU."
+  (let* ((parts (delq nil
+                      (list ghostel--mode-line-tag
+                            (and ghostel--spinner-active
+                                 'spinner--mode-line-construct)
+                            ghostel--mode-line-progress)))
+         (new-val (pcase parts
+                    ('() nil)
+                    (`(,only) only)
+                    (_ parts))))
+    (unless (equal new-val mode-line-process)
+      (setq mode-line-process new-val)
+      (force-mode-line-update))))
+
+(defun ghostel--enter-readonly-state ()
+  "Common setup when entering a read-only mode (copy or Emacs).
+Saves the cursor style, re-enables `hl-line-mode' if it was
+suppressed, and sets the buffer read-only.  Does NOT cancel the
+redraw timer — that is the caller's job when freezing."
+  (setq ghostel--saved-cursor-type cursor-type)
+  (setq cursor-type (default-value 'cursor-type))
+  (when ghostel--saved-hl-line-mode
+    (hl-line-mode 1))
+  (setq buffer-read-only t))
+
+(defun ghostel--leave-readonly-state ()
+  "Common teardown when leaving a read-only mode.
+Restores the cursor style, deactivates the mark, disables
+`hl-line-mode' again, and clears `buffer-read-only'."
+  (setq cursor-type ghostel--saved-cursor-type)
+  (deactivate-mark)
+  (when ghostel--saved-hl-line-mode
+    (hl-line-mode -1))
+  (setq buffer-read-only nil))
+
+(defun ghostel--freeze-terminal ()
+  "Cancel the redraw timer so new output stops updating the buffer."
+  (when ghostel--redraw-timer
+    (cancel-timer ghostel--redraw-timer)
+    (setq ghostel--redraw-timer nil)))
+
+
+;;; Input mode switching commands
+
+(defun ghostel-semi-char-mode ()
+  "Switch to semi-char mode — the default terminal input mode.
+Most keys are sent to the terminal; keys in
+`ghostel-keymap-exceptions' pass through to Emacs."
+  (interactive)
+  (setq ghostel--line-mode-paused nil)
+  (unless (eq ghostel--input-mode 'semi-char)
+    (pcase ghostel--input-mode
+      ('copy  (ghostel--leave-readonly-state))
+      ('emacs (ghostel--leave-readonly-state))
+      ('line  (ghostel--line-mode-teardown)))
+    (setq ghostel--char-mode-override-active nil)
+    (setq ghostel--input-mode 'semi-char)
+    (use-local-map ghostel-semi-char-mode-map)
+    (setq ghostel--mode-line-tag nil)
+    (ghostel--mode-line-refresh)
+    (when ghostel--term
+      ;; Snap the next redraw to the live viewport so the user lands
+      ;; back at the prompt after exiting copy/emacs/line.  The render
+      ;; pipeline parks libghostty at `max_offset' on each pass, so
+      ;; setting these flags is the equivalent of the old
+      ;; `ghostel--scroll-bottom' call.
+      (setq ghostel--snap-requested t)
+      (setq ghostel--force-next-redraw t)
+      (goto-char (point-max))
+      (ghostel--invalidate))))
+
+(defun ghostel-char-mode ()
+  "Switch to char mode — send all keys to the terminal.
+Even keys listed in `ghostel-keymap-exceptions' (\\`C-c', \\`C-x',
+\\`C-h', \\`M-x', …) are sent to the terminal.
+\\<ghostel-char-mode-map>The only way to exit is
+\\[ghostel-semi-char-mode]."
+  (interactive)
+  ;; Manual mode switch — see `ghostel-semi-char-mode' for why.
+  (setq ghostel--line-mode-paused nil)
+  (unless (eq ghostel--input-mode 'char)
+    (pcase ghostel--input-mode
+      ('copy  (ghostel--leave-readonly-state))
+      ('emacs (ghostel--leave-readonly-state))
+      ('line  (ghostel--line-mode-teardown)))
+    (setq ghostel--input-mode 'char)
+    ;; Route char mode through `emulation-mode-map-alists' so it
+    ;; overrides minor-mode keymaps (without this, a minor mode that
+    ;; binds a prefix like \\`C-c' would steal those keys before
+    ;; `ghostel-char-mode-map' got a chance).
+    (setq ghostel--char-mode-override-active t)
+    (use-local-map ghostel-char-mode-map)
+    (setq ghostel--mode-line-tag ":Char")
+    (ghostel--mode-line-refresh)
+    (when ghostel--term
+      (setq ghostel--snap-requested t)
+      (setq ghostel--force-next-redraw t)
+      (goto-char (point-max))
+      (ghostel--invalidate))
+    (message "Char mode (%s to exit)"
+             (substitute-command-keys
+              "\\<ghostel-char-mode-map>\\[ghostel-semi-char-mode]"))))
+
+(defvar-local ghostel--pre-readonly-mode nil
+  "Input mode to restore when exiting a read-only mode.
+Set on every entry to copy or Emacs mode and cleared on exit.
+Tracks the mode the user was in immediately before the most
+recent read-only entry, so Emacs → copy → exit returns to Emacs
+mode and copy → Emacs → exit returns to copy.")
+
+(defun ghostel--readonly-keymap ()
+  "Return the keymap to use for the current read-only mode."
+  (if ghostel-readonly-fast-exit
+      ghostel-readonly-fast-exit-mode-map
+    ghostel-readonly-mode-map))
+
+(defun ghostel--enter-readonly (mode freeze label entry-message)
+  "Enter or transition between read-only modes.
+MODE is `copy' or `emacs'.  FREEZE non-nil pauses live terminal
+output (copy mode); nil keeps it streaming (Emacs mode).  LABEL is
+the `mode-line-process' tag.  ENTRY-MESSAGE is shown on entry from
+a non-read-only mode."
+  ;; Manual mode switch — see `ghostel-semi-char-mode' for why.
+  (setq ghostel--line-mode-paused nil)
+  (let ((from ghostel--input-mode))
+    ;; Track the mode we just left so a later exit returns to it.
+    ;; Line mode is stateful and not safely resumable — fall back
+    ;; to semi-char when exiting copy or Emacs in that case.
+    (setq ghostel--pre-readonly-mode
+          (pcase from
+            ('line 'semi-char)
+            (m m)))
+    (cond
+     ;; Toggle between the two read-only modes — buffer is already
+     ;; read-only, just adjust the freeze state, mode-line, and keymap.
+     ((memq from '(copy emacs)) nil)
+     ;; First entry from a non-read-only mode.
+     (t
+      (pcase from
+        ('line (ghostel--line-mode-teardown)
+               (ghostel--enter-readonly-state))
+        (_     (ghostel--enter-readonly-state)))
+      (setq ghostel--char-mode-override-active nil)
+      (message "%s" entry-message)))
+    (if freeze
+        (ghostel--freeze-terminal)
+      ;; Live mode: the redraw timer must be running so output keeps
+      ;; flowing.  `--invalidate' restarts it if a previous freeze
+      ;; cancelled it.
+      (when ghostel--term
+        (ghostel--invalidate)))
+    (setq ghostel--input-mode mode)
+    (use-local-map (ghostel--readonly-keymap))
+    (setq ghostel--mode-line-tag label)
+    (ghostel--mode-line-refresh)))
+
+(defun ghostel-emacs-mode ()
+  "Switch to Emacs mode — read-only buffer with the terminal still running.
+The terminal keeps running and scrollback keeps growing.  The
+buffer is read-only, so standard Emacs commands like `isearch',
+`occur', `M-x', `C-SPC' / `M-w', and regular navigation all work
+unmodified over the entire materialised scrollback.  Exit with an
+explicit mode-switch command (`\\[ghostel-semi-char-mode]'), or
+\\`q'/\\`C-g'/any self-insert key when `ghostel-readonly-fast-exit'
+is non-nil."
+  (interactive)
+  (unless (eq ghostel--input-mode 'emacs)
+    (ghostel--enter-readonly
+     'emacs nil ":Emacs"
+     (format "Emacs mode: terminal live, %s to exit"
+             (substitute-command-keys "\\[ghostel-semi-char-mode]")))))
+
 (defun ghostel-copy-mode ()
   "Enter copy mode for selecting and copying terminal text.
-Live terminal output is paused; standard Emacs navigation, search,
-and marking work across the full scrollback that is already rendered
-in the buffer."
+Freezes the terminal (live output is paused) and makes the buffer
+read-only.  Standard Emacs navigation, search, and marking work
+across the full scrollback.  When `ghostel-readonly-fast-exit' is
+non-nil press \\`q' or \\[ghostel-readonly-exit] to exit; exiting
+returns to whichever input mode was active before."
   (interactive)
-  (if ghostel--copy-mode-active
-      (ghostel-copy-mode-exit)
-    (setq ghostel--copy-mode-active t)
-    (when ghostel--redraw-timer
-      (cancel-timer ghostel--redraw-timer)
-      (setq ghostel--redraw-timer nil))
-    ;; Ensure cursor is visible for navigation
-    (setq ghostel--saved-cursor-type cursor-type)
-    (setq cursor-type (default-value 'cursor-type))
-    (setq ghostel--saved-local-map (current-local-map))
-    (use-local-map ghostel-copy-mode-map)
-    (when ghostel--saved-hl-line-mode
-      (hl-line-mode 1))
-    (setq buffer-read-only t)
-    (setq mode-line-process ":Copy")
-    (force-mode-line-update)
-    (message "Copy mode: Press any key to exit")))
+  (if (eq ghostel--input-mode 'copy)
+      (ghostel-readonly-exit)
+    (ghostel--enter-readonly 'copy t ":Copy"
+                             "Copy mode: Press any key to exit")))
 
-(defun ghostel-copy-mode-exit ()
-  "Exit copy mode and return to terminal mode."
+(defun ghostel-readonly-exit ()
+  "Exit copy or Emacs mode and return to the mode active before entry."
   (interactive)
   (setq quit-flag nil)
-  (when ghostel--copy-mode-active
-    (setq ghostel--copy-mode-active nil)
-    (setq cursor-type ghostel--saved-cursor-type)
-    (deactivate-mark)
-    (use-local-map ghostel--saved-local-map)
-    (when ghostel--saved-hl-line-mode
-      (hl-line-mode -1))
-    (setq buffer-read-only nil)
-    (setq mode-line-process nil)
-    (force-mode-line-update)
-    ;; Jump out of any scrollback position so the redraw is allowed to
-    ;; position point at the terminal cursor (otherwise
-    ;; `ghostel--delayed-redraw' would preserve our scrollback marker).
-    (goto-char (point-max))
-    ;; Drop stale scroll-state that was frozen while delayed-redraw was
-    ;; short-circuited during copy mode, and let the next redraw snap
-    ;; fresh to the viewport.  `force-next-redraw' is required so the
-    ;; snap fires even when DEC 2026 synchronized output is active.
-    (setq ghostel--scroll-positions nil)
-    (setq ghostel--snap-requested t)
-    (setq ghostel--force-next-redraw t)
-    (ghostel--invalidate)
-    (message "Copy mode exited")))
+  (when (memq ghostel--input-mode '(copy emacs))
+    (let ((target (or ghostel--pre-readonly-mode 'semi-char)))
+      (setq ghostel--pre-readonly-mode nil)
+      ;; Jump out of any scrollback position so the next redraw is
+      ;; free to position point at the terminal cursor.
+      (goto-char (point-max))
+      ;; Drop stale scroll-state that was frozen while delayed-redraw
+      ;; was short-circuited during copy mode, and let the next redraw
+      ;; snap fresh to the viewport.  `force-next-redraw' is required
+      ;; so the snap fires even when DEC 2026 synchronized output is
+      ;; active.
+      (setq ghostel--scroll-positions nil)
+      (setq ghostel--snap-requested t)
+      (setq ghostel--force-next-redraw t)
+      (pcase target
+        ('char  (ghostel-char-mode))
+        ('emacs (ghostel-emacs-mode))
+        (_      (ghostel-semi-char-mode))))
+    (message "Read-only mode exited")))
 
-(defun ghostel-copy-mode-exit-and-clear ()
-  "Exit copy mode and clear the scrollback."
+(defun ghostel-readonly-exit-and-clear ()
+  "Exit read-only mode and clear the scrollback."
   (interactive)
-  (ghostel-copy-mode-exit)
+  (ghostel-readonly-exit)
   (ghostel-clear-scrollback))
 
-(defun ghostel-copy-mode-exit-and-send ()
-  "Exit copy mode and send the key that triggered exit to the terminal."
+(defun ghostel-readonly-exit-and-send ()
+  "Exit read-only mode and send the triggering key to the terminal.
+Only forwards the key when the mode we are returning to actually
+accepts terminal input (semi-char or char)."
   (interactive)
-  (ghostel-copy-mode-exit)
-  (when ghostel--term
-    (ghostel--self-insert)))
+  (let ((target (or ghostel--pre-readonly-mode 'semi-char)))
+    (ghostel-readonly-exit)
+    (when (and ghostel--term (memq target '(semi-char char)))
+      (ghostel--self-insert))))
 
 (defun ghostel--filter-soft-wraps (text)
   "Remove newlines from TEXT that were inserted by soft line wrapping.
@@ -1951,8 +2378,8 @@ These are newlines with the `ghostel-wrap' text property."
          (trimmed (mapcar (lambda (line) (string-trim-right line)) lines)))
     (mapconcat #'identity trimmed "\n")))
 
-(defun ghostel-copy-mode-copy ()
-  "Copy the selected region and exit copy mode.
+(defun ghostel-readonly-copy ()
+  "Copy the selected region and exit read-only mode.
 Soft-wrapped newlines are removed and trailing whitespace is
 stripped so the copied text matches the original terminal content."
   (interactive)
@@ -1961,7 +2388,846 @@ stripped so the copied text matches the original terminal content."
                  (buffer-substring (region-beginning) (region-end)))))
       (kill-new text)
       (message "Copied to kill ring")))
-  (ghostel-copy-mode-exit))
+  (ghostel-readonly-exit))
+
+
+;;; Line mode
+
+(defvar-local ghostel--line-input-start nil
+  "Marker pointing at the start of the user's in-progress input line.
+Nil when line mode is not active.  Text between this marker and
+`ghostel--line-input-end' is the editable input line.")
+
+(defvar-local ghostel--line-input-end nil
+  "Marker pointing right after the last character of the in-progress input.
+Has insertion-type t so a self-insert at this position causes the
+marker to advance with the new character.  Bounding the input by an
+explicit marker (rather than `point-max') keeps content past the
+prompt — e.g. a status bar drawn below the prompt row — out of the
+snapshot read and out of the renderer's clobber path.")
+
+(defvar-local ghostel--line-mode-history nil
+  "History ring of inputs submitted via `ghostel-line-mode-send'.
+Most recent first.")
+
+(defvar-local ghostel--line-mode-history-index nil
+  "Current index into `ghostel--line-mode-history' while browsing history.
+Nil when not browsing.")
+
+(defvar-local ghostel--line-mode-saved-full-redraw nil
+  "Saved `ghostel-full-redraw' state from before line mode entry.
+Cons (BUFFER-LOCAL-P . VALUE).  Restored by
+`ghostel--line-mode-teardown' so toggling the mode does not
+permanently override the user's setting.")
+
+(defvar-local ghostel--line-mode-saved-cursor-type nil
+  "Saved `cursor-type' from before line mode entry, as a singleton list.
+A list (VALUE) when saved, nil when not — distinguishes \"not
+saved\" from \"saved nil\" (the value the terminal asks for after
+a CSI ?25l).  Line mode forces `cursor-type' to the editor's
+default so point stays visible while the user navigates and
+edits, and `ghostel--line-mode-teardown' restores VALUE so any
+terminal-driven cursor visibility resumes on exit.")
+
+(defvar-local ghostel--line-mode-adopted-count nil
+  "Characters of pre-existing input the shell's readline still holds.
+Set on line-mode entry to the length of input adopted from the
+renderer (chars typed via the PTY in a previous mode).  Cleared to
+0 by `ghostel--line-mode-clear-shell-readline' after sending that
+many backspaces to erase them — keeps a subsequent send from
+duplicating the prefix when the shell echoes our line back.")
+
+(defun ghostel--line-mode-cursor-buffer-pos ()
+  "Return the buffer position of the terminal cursor, or nil.
+Maps libghostty's viewport (COL . ROW) to a buffer position: walks
+ROW lines down from `ghostel--viewport-start' (the renderer
+guarantees one buffer line per viewport row), then advances by
+the cursor's char offset within its row.  The offset comes from
+`ghostel--cursor-row-char-offset' — it counts cells, not display
+columns, so it stays correct on pgtk where Emacs `char-width'
+disagrees with libghostty's grid width for box-drawing glyphs.
+Returns nil when the cursor has no value or the native module is
+not loaded — the caller falls back accordingly."
+  (when (and ghostel--term
+             (fboundp 'ghostel--cursor-position)
+             (fboundp 'ghostel--cursor-row-char-offset))
+    ;; `ignore-errors' protects line-mode entry on a non-user-ptr
+    ;; `ghostel--term' (which the unit-test fixtures pass via 'fake).
+    ;; A real getScrollbar failure deep in libghostty would also be
+    ;; swallowed here — accepted because the fallback path
+    ;; (OSC 133 walk-back, then the entry user-error) is harmless,
+    ;; whereas surfacing a Zig signal during line-mode entry would
+    ;; just abort the mode toggle with a confusing trace.
+    (let ((cursor (ignore-errors (ghostel--cursor-position ghostel--term)))
+          (offset (ignore-errors (ghostel--cursor-row-char-offset ghostel--term)))
+          (vp-start (ghostel--viewport-start)))
+      (when (and cursor offset vp-start)
+        (save-excursion
+          (goto-char vp-start)
+          (forward-line (cdr cursor))
+          (let ((row-end (line-end-position)))
+            (min (+ (point) offset) row-end)))))))
+
+(defun ghostel--line-mode-find-prompt-end ()
+  "Return the buffer position where line-mode input begins.
+The cursor's buffer position is the source of truth — whatever the
+terminal has written sits before it, and user input goes after.
+When the terminal cursor is unavailable (no `ghostel--term', tests),
+fall back to the rightmost `ghostel-prompt' text-property
+character.  When the cursor IS available and the cursor's row
+carries `ghostel-prompt' characters (OSC 133 shell integration),
+return the position right after the last contiguous
+`ghostel-prompt' char on that row; otherwise return the cursor
+position itself.  Returns nil when neither path can locate a
+position (no cursor and no prompt prop)."
+  (let ((cursor-pos (ghostel--line-mode-cursor-buffer-pos)))
+    (cond
+     (cursor-pos
+      (let* ((row-start (save-excursion
+                          (goto-char cursor-pos)
+                          (line-beginning-position)))
+             (pos cursor-pos))
+        ;; Walk back from the cursor on its row, looking for the
+        ;; rightmost `ghostel-prompt' character.  The first prompt
+        ;; char we hit (scanning right-to-left) is the end of the
+        ;; prompt prefix — so its position+1, which is the current
+        ;; `pos' when we stop, is the input boundary.
+        (while (and (> pos row-start)
+                    (not (get-text-property (1- pos) 'ghostel-prompt)))
+          (setq pos (1- pos)))
+        (if (and (> pos row-start)
+                 (get-text-property (1- pos) 'ghostel-prompt))
+            pos
+          ;; No prompt prop on the cursor's row — REPL with no shell
+          ;; integration, or a non-shell program that printed a
+          ;; prompt.  Cursor itself is the boundary.
+          cursor-pos)))
+     (t
+      ;; No live terminal — fall back to the OSC 133 walk-back so
+      ;; the helper stays useful in unit tests that exercise prompt
+      ;; markers in isolation.
+      (let ((pos (point-max))
+            (pmin (point-min)))
+        (while (and (> pos pmin)
+                    (not (get-text-property (1- pos) 'ghostel-prompt)))
+          (setq pos (1- pos)))
+        (when (and (> pos pmin)
+                   (get-text-property (1- pos) 'ghostel-prompt))
+          pos))))))
+
+(defvar ghostel-line-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map ghostel-mode-map)
+    (define-key map (kbd "RET") #'ghostel-line-mode-send-or-open-link)
+    (define-key map (kbd "<return>") #'ghostel-line-mode-send-or-open-link)
+    ;; Shift-Enter inserts a literal newline in the input
+    (define-key map (kbd "S-RET") #'ghostel-line-mode-newline)
+    (define-key map (kbd "<S-return>") #'ghostel-line-mode-newline)
+    (define-key map (kbd "C-c C-c") #'ghostel-line-mode-interrupt)
+    (define-key map (kbd "C-d") #'ghostel-line-mode-delete-char-or-eof)
+    (define-key map (kbd "M-p") #'ghostel-line-mode-history-previous)
+    (define-key map (kbd "M-n") #'ghostel-line-mode-history-next)
+    (define-key map (kbd "C-a") #'ghostel-beginning-of-input-or-line)
+    (define-key map (kbd "TAB") #'ghostel-line-mode-complete-at-point)
+    (define-key map (kbd "<tab>") #'ghostel-line-mode-complete-at-point)
+    (define-key map [remap self-insert-command] #'ghostel-line-mode-self-insert)
+    map)
+  "Keymap for `ghostel-line-mode'.
+Editing commands work on the input region;
+\\<ghostel-line-mode-map>\\[ghostel-line-mode-send-or-open-link]
+sends the whole line to the shell at once, or follows the link at
+point when one is there.  \\[ghostel-line-mode-newline] inserts a
+literal newline in the input for multi-line prompts.")
+
+(defun ghostel-line-mode-send-or-open-link ()
+  "Open the hyperlink at point, or send the input line if there is none."
+  (interactive)
+  (let ((url (ghostel--uri-at-pos (point))))
+    (if url
+        (ghostel--open-link url)
+      (ghostel-line-mode-send))))
+
+(defun ghostel-line-mode-self-insert (&optional n)
+  "Self-insert N times, snapping point back to the input region first.
+When point sits in the read-only scrollback portion of a line-mode
+buffer, jump to the end of the in-progress input
+\(`ghostel--line-input-end') and self-insert there.  When point is
+already inside `[ghostel--line-input-start, ghostel--line-input-end]'
+this is just `self-insert-command'.
+
+The prefix argument N is forwarded to `self-insert-command' so
+\\[universal-argument] still works as expected."
+  (interactive "p")
+  (let ((start (and (markerp ghostel--line-input-start)
+                    (marker-position ghostel--line-input-start)))
+        (end   (and (markerp ghostel--line-input-end)
+                    (marker-position ghostel--line-input-end))))
+    (when (and start end (or (< (point) start) (> (point) end)))
+      (deactivate-mark)
+      (goto-char end)))
+  (self-insert-command (or n 1)))
+
+(defun ghostel-line-mode-newline ()
+  "Insert a literal newline in the line-mode input region.
+Discoverable shortcut for `\\[quoted-insert]' followed by a newline: lets
+you compose multi-line prompts in apps that distinguish submit (Enter)
+from newline (Shift-Enter).  The newline goes through to the running app
+verbatim when `ghostel-line-mode-send' ships the input.
+
+Snaps point to the end of the input region first when point is in the
+read-only scrollback portion, mirroring `ghostel-line-mode-self-insert'."
+  (interactive)
+  (let ((start (and (markerp ghostel--line-input-start)
+                    (marker-position ghostel--line-input-start)))
+        (end   (and (markerp ghostel--line-input-end)
+                    (marker-position ghostel--line-input-end))))
+    (when (and start end (or (< (point) start) (> (point) end)))
+      (deactivate-mark)
+      (goto-char end)))
+  (insert "\n"))
+
+(defun ghostel--line-mode-alt-screen-p ()
+  "Return non-nil if libghostty is on its alternate screen.
+Checks DEC private modes 1049 and 1047 (the modern alt-screen
+modes used by less, htop, vim, etc.)."
+  (and ghostel--term
+       (or (ghostel--mode-enabled ghostel--term 1049)
+           (ghostel--mode-enabled ghostel--term 1047))))
+
+(defun ghostel--line-mode-apply-readonly (marker-pos)
+  "Mark `[point-min, MARKER-POS)' read-only with the rear-nonsticky trick.
+The non-sticky flag lands on the last protected character so
+insertion at MARKER-POS itself stays legal while edits inside the
+region still signal `text-read-only'.  Setting `rear-nonsticky' to
+t also stops typed input from inheriting the prompt char's `face'
+\(and any other rendered-style properties libghostty painted on
+it) — without this, text typed after a colored prompt picks up
+the prompt's color until RET."
+  (let ((inhibit-read-only t))
+    (put-text-property (point-min) marker-pos 'read-only t)
+    (when (> marker-pos (point-min))
+      (put-text-property (1- marker-pos) marker-pos
+                         'rear-nonsticky t))))
+
+(defun ghostel--line-mode-input-end-pos (start)
+  "Return the position right after the contiguous `ghostel-input' span at START.
+Returns START itself when there is no `ghostel-input' span there —
+the common case at a fresh prompt where libghostty has not seen
+any input bytes yet, so the renderer hasn't painted the property."
+  (if (get-text-property start 'ghostel-input)
+      (or (next-single-property-change start 'ghostel-input nil (point-max))
+          (point-max))
+    start))
+
+(defun ghostel--line-mode-trim-trailing-blank (start)
+  "Delete `[START, point-max)' if the region is pure whitespace.
+Used in line-mode entry/restore to scrub the renderer's trailing
+blank rows past the input region while leaving any non-blank
+content (a status bar drawn below the prompt, a multi-line UI from
+the shell, etc.) intact."
+  (when (string-match-p "\\`[[:space:]]*\\'"
+                        (buffer-substring-no-properties start (point-max)))
+    (let ((inhibit-read-only t))
+      (delete-region start (point-max)))))
+
+(defun ghostel--line-mode-snapshot ()
+  "Capture in-progress input plus point/mark offsets and clear the input region.
+Returns a plist (:input STR :point-offset N-or-nil :mark-offset N-or-nil)
+suitable for `ghostel--line-mode-restore', or nil when there is no
+live input marker.  The input region is bounded by
+`ghostel--line-input-start' and `ghostel--line-input-end' (not
+`point-max') so any content drawn past the input — e.g. a status
+bar below the prompt — stays untouched."
+  (let ((start-pos (and (markerp ghostel--line-input-start)
+                        (marker-position ghostel--line-input-start)))
+        (end-pos (and (markerp ghostel--line-input-end)
+                      (marker-position ghostel--line-input-end))))
+    (when (and start-pos end-pos)
+      (let* ((point-offset (and (>= (point) start-pos)
+                                (<= (point) end-pos)
+                                (- (point) start-pos)))
+             (mark-pos (and mark-active (mark)))
+             (mark-offset (and mark-pos
+                               (>= mark-pos start-pos)
+                               (<= mark-pos end-pos)
+                               (- mark-pos start-pos)))
+             (input (buffer-substring-no-properties start-pos end-pos)))
+        (let ((inhibit-read-only t))
+          (delete-region start-pos end-pos))
+        (list :input input
+              :point-offset point-offset
+              :mark-offset mark-offset)))))
+
+(defun ghostel--line-mode-restore (snapshot)
+  "Re-insert SNAPSHOT'd input after the new prompt and restore point/mark.
+Returns non-nil on success.  Returns nil when the prompt cannot be
+located (shell integration dropped out, or the prompt scrolled off
+because of async output during composition); callers fall back to
+forwarding the pending input raw.
+
+Trims pure-whitespace tails past the input but preserves any
+non-blank content the renderer wrote past the prompt row (e.g. a
+status bar)."
+  (when snapshot
+    (let ((prompt-end (ghostel--line-mode-find-prompt-end)))
+      (when prompt-end
+        (let ((inhibit-read-only t)
+              (input (plist-get snapshot :input)))
+          (ghostel--line-mode-trim-trailing-blank prompt-end)
+          (when (markerp ghostel--line-input-start)
+            (set-marker ghostel--line-input-start nil))
+          (when (markerp ghostel--line-input-end)
+            (set-marker ghostel--line-input-end nil))
+          (setq ghostel--line-input-start (copy-marker prompt-end nil))
+          (set-marker-insertion-type ghostel--line-input-start nil)
+          (setq ghostel--line-input-end (copy-marker prompt-end t))
+          (set-marker-insertion-type ghostel--line-input-end t)
+          (when (and input (> (length input) 0))
+            (goto-char (marker-position ghostel--line-input-start))
+            ;; Insertion advances `ghostel--line-input-end' (insertion
+            ;; type t) so end-marker tracks the tail of the input.
+            (insert input))
+          (let ((start-pos (marker-position ghostel--line-input-start))
+                (end-pos (marker-position ghostel--line-input-end)))
+            (ghostel--line-mode-apply-readonly start-pos)
+            ;; Mark the line-mode input region with `ghostel-input' so
+            ;; `ghostel--detect-urls-skip-p' skips it on the cursor's
+            ;; line — without this, a path the user typed locally
+            ;; (e.g. `cd src/main.rs') would get linkified and RET
+            ;; would open the file instead of running
+            ;; `ghostel-line-mode-send'.
+            (when (< start-pos end-pos)
+              (put-text-property start-pos end-pos 'ghostel-input t))
+            (let ((po (plist-get snapshot :point-offset))
+                  (mo (plist-get snapshot :mark-offset)))
+              (when po
+                (goto-char (+ start-pos po)))
+              (when mo
+                (set-mark (+ start-pos mo))))))
+        t))))
+
+(defun ghostel--line-mode-enter ()
+  "Set up line mode in the current buffer.
+Internal helper used by the interactive `ghostel-line-mode' entry
+path and the auto-resume path in
+`ghostel--line-mode-try-resume'.  Returns t on success, nil when
+the prompt cannot be located (no cursor and no OSC 133 marker —
+e.g. the prompt has not been redrawn yet after an alt-screen
+exit).  Caller decides whether \"no prompt\" is a user-error or a
+deferred retry.
+
+Assumes `ghostel--term' is non-nil and the buffer is not already
+in line mode (the interactive entry validates these)."
+  (let ((prompt-end (ghostel--line-mode-find-prompt-end))
+        (was-frozen (eq ghostel--input-mode 'copy)))
+    (when prompt-end
+      (pcase ghostel--input-mode
+        ('copy  (ghostel--leave-readonly-state))
+        ('emacs (ghostel--leave-readonly-state)))
+      ;; Copy mode froze the redraw timer; line mode is live, so the
+      ;; timer must be running again before we exit this function or
+      ;; the prompt sits there with no scheduled redraw until the next
+      ;; PTY byte arrives.  `ghostel--invalidate' is idempotent, so the
+      ;; emacs/semi-char paths (timer already live) are unaffected.
+      (when (and was-frozen ghostel--term)
+        (ghostel--invalidate))
+      ;; Save `cursor-type' and force the editor's default for the
+      ;; duration of line mode.  The user moves point freely here, so
+      ;; the cursor must be visible regardless of any CSI ?25l the
+      ;; running terminal app issued in semi-char/char mode.
+      ;; `ghostel--set-cursor-style' is a no-op in line mode, so
+      ;; further terminal requests are ignored until teardown.
+      (setq ghostel--line-mode-saved-cursor-type (list cursor-type))
+      (setq cursor-type (default-value 'cursor-type))
+      ;; Force full redraws while line mode is active so the
+      ;; snapshot/restore path always rebuilds the prompt row
+      ;; (otherwise dirty-row diff could skip it and the input would
+      ;; be re-inserted at a stale marker position).  Restore the
+      ;; previous setting on teardown.
+      (setq ghostel--line-mode-saved-full-redraw
+            (cons (local-variable-p 'ghostel-full-redraw)
+                  ghostel-full-redraw))
+      (setq-local ghostel-full-redraw t)
+      ;; If the user already typed something at this prompt via the
+      ;; PTY (e.g. before switching from semi-char to line mode), the
+      ;; renderer painted those cells with `ghostel-input'.  Adopt
+      ;; the span as the initial line-mode input so the user does not
+      ;; lose their typing.
+      (let ((input-end (ghostel--line-mode-input-end-pos prompt-end)))
+        ;; Trim only PURE-whitespace tails past the input.  Status
+        ;; bars / multi-line UI drawn below the prompt row stay put.
+        (ghostel--line-mode-trim-trailing-blank input-end)
+        (setq ghostel--line-input-start (copy-marker prompt-end nil))
+        (set-marker-insertion-type ghostel--line-input-start nil)
+        (setq ghostel--line-input-end (copy-marker input-end t))
+        (set-marker-insertion-type ghostel--line-input-end t)
+        ;; Remember how many chars the shell's readline currently
+        ;; holds for us — we'll erase them via backspaces before the
+        ;; next PTY write so the shell doesn't append our line to its
+        ;; existing input and echo a duplicated prefix.
+        (setq ghostel--line-mode-adopted-count (- input-end prompt-end)))
+      (setq ghostel--line-mode-history-index nil)
+      (setq ghostel--char-mode-override-active nil)
+      (setq ghostel--input-mode 'line)
+      (use-local-map ghostel-line-mode-map)
+      (setq ghostel--mode-line-tag ":Line")
+      (ghostel--mode-line-refresh)
+      ;; Protect everything before the input marker with a read-only
+      ;; text property so commands that would modify the buffer
+      ;; (self-insert, delete-char, yank, …) signal `text-read-only'
+      ;; when point is in the scrollback / previous output region.
+      ;; The redraw path binds `inhibit-read-only' so it is
+      ;; unaffected.
+      (ghostel--line-mode-apply-readonly
+       (marker-position ghostel--line-input-start))
+      ;; Make sure the adopted input carries `ghostel-input' (the
+      ;; renderer should have applied it for PTY-typed cells; reapply
+      ;; for consistency, and so URL detection skips the region even
+      ;; if the property was missed for some cells).
+      (let ((start-pos (marker-position ghostel--line-input-start))
+            (end-pos (marker-position ghostel--line-input-end)))
+        (when (< start-pos end-pos)
+          (let ((inhibit-read-only t))
+            (put-text-property start-pos end-pos 'ghostel-input t))))
+      ;; Place point at end of (any adopted) input so the user
+      ;; continues typing where the shell left them.
+      (goto-char (marker-position ghostel--line-input-end))
+      (ghostel--line-mode-maybe-prespawn-bash-completion)
+      t)))
+
+(defun ghostel-line-mode ()
+  "Switch to line mode — edit input locally, send to shell on RET.
+The user types into an editable region between the last prompt
+and `point-max'.  Full Emacs editing (yank, `kill-word',
+transpose, etc.) works.  Pressing \\[ghostel-line-mode-send]
+sends the entire line to the shell in one write; bash echoes and
+executes it normally.
+
+The terminal stays live: output streaming in around the prompt
+keeps rendering, and the snapshot/restore path in
+`ghostel--delayed-redraw' preserves the user's in-progress input
+across each redraw cycle.  After RET, line mode stays active so
+the user just keeps editing at the next prompt.
+
+\\<ghostel-line-mode-map>\\[ghostel-line-mode-complete-at-point]
+runs `completion-at-point' against the input region — filenames,
+env vars, executables on \\=`PATH\\=', and whatever \\=`pcomplete\\='
+extensions are loaded.  Install the `bash-completion' package and
+set `ghostel-line-mode-use-bash-completion' to layer real bash
+programmable completion (git subcommands, ssh hosts, …) on top.
+
+Uses the terminal cursor as the input-area boundary, so REPLs
+without OSC 133 (python3, irb, sqlite3, …) work too.  When OSC
+133 markers are present on the cursor's row, the prompt prefix is
+recognised and the input boundary lands right after it.
+
+While a fullscreen TUI is on the alt screen, line mode cannot
+edit (the TUI needs every keystroke raw); calling this command
+during an alt-screen session arms a deferred-activation sentinel
+instead, and line mode resumes automatically when the TUI exits."
+  (interactive)
+  (unless ghostel--term
+    (user-error "No terminal in this buffer"))
+  (cond
+   ((eq ghostel--input-mode 'line))
+   ((ghostel--line-mode-alt-screen-p)
+    (ghostel--line-mode-defer-entry))
+   ((ghostel--line-mode-enter)
+    (message "Line mode: RET sends the whole line; C-c C-j to exit"))
+   (t
+    (user-error "Line mode could not locate the cursor or a prompt"))))
+
+(defun ghostel--line-mode-input-text ()
+  "Return the current in-progress input text, or an empty string.
+Bounded by the start and end markers, not `point-max', so content
+past the input region (status bar, etc.) is never read."
+  (let ((start (and (markerp ghostel--line-input-start)
+                    (marker-position ghostel--line-input-start)))
+        (end (and (markerp ghostel--line-input-end)
+                  (marker-position ghostel--line-input-end))))
+    (if (and start end (< start end))
+        (buffer-substring-no-properties start end)
+      "")))
+
+(defun ghostel--line-mode-delete-input ()
+  "Delete the current in-progress input from the buffer.
+Removes only the region between the start and end markers; content
+past the end marker (status bar, etc.) stays put."
+  (let ((start (and (markerp ghostel--line-input-start)
+                    (marker-position ghostel--line-input-start)))
+        (end (and (markerp ghostel--line-input-end)
+                  (marker-position ghostel--line-input-end))))
+    (when (and start end (< start end))
+      (let ((inhibit-read-only t))
+        (delete-region start end)))))
+
+(defun ghostel--line-mode-clear-shell-readline ()
+  "Erase the adopted prefix from the shell's readline buffer.
+On line-mode entry we adopt any pre-existing input (chars the user
+already typed via the PTY) into the editable buffer, but the shell
+still holds those bytes in its own line-discipline / readline
+buffer.  Before our next write to the PTY, send that many
+backspaces so the upcoming line lands on an empty prompt — without
+this the shell concatenates and echoes a duplicated line.
+
+Backspaces work under any cooked-mode line discipline (bash, fish,
+zsh, vi-mode readline, python REPL); a readline-only kill like
+`C-u' would not.  Resets `ghostel--line-mode-adopted-count' to 0."
+  (when (and ghostel--line-mode-adopted-count
+             (> ghostel--line-mode-adopted-count 0)
+             ghostel--term
+             ghostel--process
+             (process-live-p ghostel--process))
+    (dotimes (_ ghostel--line-mode-adopted-count)
+      (ghostel--send-encoded "backspace" "")))
+  (setq ghostel--line-mode-adopted-count 0))
+
+(defun ghostel--line-mode-teardown (&optional pause)
+  "Clean up line-mode state and hand any pending input back to the shell.
+Any in-progress input is forwarded to the PTY raw (no newline) so
+the user can continue editing it at the shell's own prompt after
+the mode switch instead of losing what they typed.  Callers that
+have already handled the input themselves (like
+`ghostel-line-mode-send' and `ghostel-line-mode-interrupt') delete
+it from the buffer before calling this, so no double-send happens.
+
+Restores `ghostel-full-redraw' to the value captured on entry, and
+forces a final redraw so the buffer truncation done at entry is
+re-materialized from libghostty.
+
+When PAUSE is non-nil, skip forwarding pending input to the PTY,
+skip the readline-clearing backspaces (the alt-screen TUI would
+receive them), and skip the trailing redraw — used by
+`ghostel--line-mode-pause' which has already snapshotted the input
+and is running inside `ghostel--delayed-redraw'."
+  (unless pause
+    (let ((input (ghostel--line-mode-input-text)))
+      ;; Erase the adopted prefix from the shell's readline before
+      ;; handing back our (possibly edited) version, so the shell ends
+      ;; up holding exactly INPUT instead of "<adopted>INPUT".
+      (ghostel--line-mode-clear-shell-readline)
+      (when (and (> (length input) 0)
+                 ghostel--process
+                 (process-live-p ghostel--process))
+        (process-send-string ghostel--process input))))
+  (ghostel--line-mode-delete-input)
+  ;; Drop the `read-only' and `rear-nonsticky' properties that
+  ;; protected the scrollback region during line mode so the buffer
+  ;; is editable again.
+  (let ((inhibit-read-only t))
+    (remove-text-properties (point-min) (point-max)
+                            '(read-only nil rear-nonsticky nil)))
+  (when (markerp ghostel--line-input-start)
+    (set-marker ghostel--line-input-start nil))
+  (when (markerp ghostel--line-input-end)
+    (set-marker ghostel--line-input-end nil))
+  (setq ghostel--line-input-start nil)
+  (setq ghostel--line-input-end nil)
+  (setq ghostel--line-mode-history-index nil)
+  (setq ghostel--line-mode-adopted-count nil)
+  (when ghostel--line-mode-saved-full-redraw
+    (if (car ghostel--line-mode-saved-full-redraw)
+        (setq-local ghostel-full-redraw
+                    (cdr ghostel--line-mode-saved-full-redraw))
+      (kill-local-variable 'ghostel-full-redraw))
+    (setq ghostel--line-mode-saved-full-redraw nil))
+  (when ghostel--line-mode-saved-cursor-type
+    (setq cursor-type (car ghostel--line-mode-saved-cursor-type))
+    (setq ghostel--line-mode-saved-cursor-type nil))
+  (unless pause
+    (when ghostel--term
+      (let ((inhibit-read-only t))
+        (ghostel--redraw ghostel--term t)))))
+
+(defun ghostel--line-mode-pause ()
+  "Snapshot in-progress input, tear down line mode, switch to semi-char.
+Called by `ghostel--line-mode-pre-redraw' on a 1049/1047 transition
+into the alt screen.  Stashes the snapshot in
+`ghostel--line-mode-paused' so a later alt-screen-off cycle can
+re-enter line mode at the new prompt with the user's typing
+restored."
+  (let ((snapshot (or (ghostel--line-mode-snapshot)
+                      (list :input "" :point-offset nil :mark-offset nil))))
+    (ghostel--line-mode-teardown 'pause)
+    (setq ghostel--char-mode-override-active nil)
+    (setq ghostel--input-mode 'semi-char)
+    (use-local-map ghostel-semi-char-mode-map)
+    (setq ghostel--mode-line-tag nil)
+    (ghostel--mode-line-refresh)
+    (setq ghostel--line-mode-paused snapshot)))
+
+(defun ghostel--line-mode-try-resume ()
+  "Re-enter line mode and restore the paused snapshot, if possible.
+Called by `ghostel--line-mode-post-redraw' on a 1049/1047 exit.
+If `ghostel--line-mode-find-prompt-end' cannot locate a prompt
+yet (the renderer has not painted the post-TUI buffer yet), the
+paused snapshot is left in place so the next redraw can retry."
+  (when (ghostel--line-mode-find-prompt-end)
+    (let ((snapshot ghostel--line-mode-paused))
+      (setq ghostel--line-mode-paused nil)
+      (when (ghostel--line-mode-enter)
+        (ghostel--line-mode-restore snapshot)
+        t))))
+
+(defun ghostel--line-mode-defer-entry ()
+  "Arm auto-pause so line mode activates when the alt-screen TUI exits.
+Called by interactive `ghostel-line-mode' when an alt-screen TUI is
+already running.  Stashes an empty snapshot so the alt-screen-off
+transition picks it up and enters line mode for real.  Preserves
+any existing paused snapshot (the user re-arming should not clobber
+input captured by an earlier auto-pause)."
+  (unless ghostel--line-mode-paused
+    (setq ghostel--line-mode-paused
+          (list :input "" :point-offset nil :mark-offset nil)))
+  (message "Line mode armed — will activate when the TUI exits"))
+
+(defun ghostel--line-mode-pre-redraw ()
+  "Pause line mode if alt-screen is on while in line mode.
+Runs at the top of `ghostel--delayed-redraw' (after PTY flush, but
+before the renderer paints).  Pausing here lets us snapshot the
+in-progress input before libghostty's grid (which does not contain
+it) drives the renderer over the buffer.  After pausing,
+`ghostel--input-mode' is no longer `line', so subsequent calls
+fall through — there is no need for an explicit transition cache."
+  (when (and (eq ghostel--input-mode 'line)
+             (ghostel--line-mode-alt-screen-p))
+    (ghostel--line-mode-pause)))
+
+(defun ghostel--line-mode-post-redraw ()
+  "Resume line mode if alt-screen is off and a paused snapshot is armed.
+Runs at the bottom of `ghostel--delayed-redraw' (after the renderer
+paints) so `ghostel--line-mode-find-prompt-end' sees the
+post-TUI buffer state.  Re-attempts every redraw cycle until a
+prompt is locatable — covers the case where the shell prints its
+new prompt one or more redraws after libghostty leaves the alt
+screen."
+  (when (and ghostel--line-mode-paused
+             (not (ghostel--line-mode-alt-screen-p)))
+    (ghostel--line-mode-try-resume)))
+
+(defun ghostel-line-mode-send ()
+  "Send the current in-progress input line to the shell.
+Reads the text between the line-input marker and `point-max',
+deletes it locally, sends the input to the PTY as a single write,
+then submits via an encoded `return' keypress so the running app
+sees Enter the same way semi-char mode would have produced it.
+
+The encoded Return matters for TUI apps that distinguish a
+literal newline (Shift-Enter) from a submit (e.g. claude-code,
+pi).  They expect CR or a kitty-keyboard-protocol-encoded Enter,
+not a raw \\n; bash readline accepts CR as `accept-line' too, so
+the same code path works for shells.
+
+Stays in line mode: the next redraw cycle picks up the shell's
+echo and command output, and the snapshot/restore path moves the
+input marker to wherever the new prompt lands."
+  (interactive)
+  (unless (eq ghostel--input-mode 'line)
+    (user-error "Not in line mode"))
+  (let ((input (ghostel--line-mode-input-text)))
+    (ghostel--line-mode-delete-input)
+    (when (and (> (length input) 0)
+               (or (null ghostel--line-mode-history)
+                   (not (string= input (car ghostel--line-mode-history)))))
+      (push input ghostel--line-mode-history)
+      (when (> (length ghostel--line-mode-history)
+               ghostel-line-mode-history-size)
+        (setcdr (nthcdr (1- ghostel-line-mode-history-size)
+                        ghostel--line-mode-history)
+                nil)))
+    (setq ghostel--line-mode-history-index nil)
+    ;; Erase any prefix the shell already had in its readline buffer
+    ;; (adopted on line-mode entry) before sending — otherwise the
+    ;; shell would concatenate ours after that prefix and echo a
+    ;; duplicated line.
+    (ghostel--line-mode-clear-shell-readline)
+    (when (and ghostel--process (process-live-p ghostel--process))
+      (when (> (length input) 0)
+        (process-send-string ghostel--process input))
+      (ghostel--send-encoded "return" ""))))
+
+(defun ghostel-line-mode-interrupt ()
+  "Discard local input and send SIGINT (\\`C-c') to the shell.
+Stays in line mode; the next redraw cycle picks up the shell's
+new prompt and the snapshot/restore path repositions the input
+marker."
+  (interactive)
+  (ghostel--line-mode-delete-input)
+  (setq ghostel--line-mode-history-index nil)
+  ;; C-c discards readline's input buffer shell-side, so any adopted
+  ;; prefix is gone — just zero our count, no backspaces needed.
+  (setq ghostel--line-mode-adopted-count 0)
+  (when (and ghostel--process (process-live-p ghostel--process))
+    (process-send-string ghostel--process "\C-c")))
+
+(defun ghostel-line-mode-delete-char-or-eof ()
+  "Delete the next char, or send EOF at an empty input."
+  (interactive)
+  (let ((start (and (markerp ghostel--line-input-start)
+                    (marker-position ghostel--line-input-start)))
+        (end (and (markerp ghostel--line-input-end)
+                  (marker-position ghostel--line-input-end))))
+    (if (and start end (= start end) (= (point) start))
+        (when (and ghostel--process (process-live-p ghostel--process))
+          (process-send-string ghostel--process "\C-d"))
+      (delete-char 1))))
+
+(defun ghostel-beginning-of-input-or-line ()
+  "Move point to the start of input on a prompt row, else `beginning-of-line'.
+On a line that carries the `ghostel-prompt' text property over its
+leading characters, point moves to the position right after the
+last contiguous prompt character — i.e. where the user's input
+begins on that prompt row.  In line mode the active input marker
+\(`ghostel--line-input-start') wins over the property scan so an
+empty fresh prompt still goes to the marker position.
+
+On any other line — scrollback, output, a prompt-continuation row
+that has no content past the prefix — falls through to
+`move-beginning-of-line', so navigating up into history and
+pressing \\`C-a' gives the standard column-0 behaviour."
+  (interactive "^")
+  (let* ((bol (line-beginning-position))
+         (eol (line-end-position))
+         ;; Line-mode marker target — only meaningful when the
+         ;; marker is on the current line.
+         (line-mode-target
+          (and (eq ghostel--input-mode 'line)
+               (markerp ghostel--line-input-start)
+               (let ((m (marker-position ghostel--line-input-start)))
+                 (and m (>= m bol) (<= m eol) m))))
+         ;; Text-property fallback: walk forward from BOL while
+         ;; chars carry `ghostel-prompt'.  Only treat as input-start
+         ;; when there is real content past the prefix; an
+         ;; all-prompt line (multi-line prompt continuation) goes to
+         ;; BOL instead of jumping to EOL.
+         (prop-target
+          (unless line-mode-target
+            (save-excursion
+              (goto-char bol)
+              (let ((pos bol))
+                (while (and (< pos eol)
+                            (get-text-property pos 'ghostel-prompt))
+                  (setq pos (1+ pos)))
+                (and (> pos bol) (< pos eol) pos))))))
+    (cond
+     (line-mode-target (goto-char line-mode-target))
+     (prop-target      (goto-char prop-target))
+     (t                (move-beginning-of-line 1)))))
+
+(defun ghostel--line-mode-replace-input (text)
+  "Replace the current in-progress input with TEXT."
+  (ghostel--line-mode-delete-input)
+  (when (and ghostel--line-input-start
+             (marker-position ghostel--line-input-start))
+    (goto-char (marker-position ghostel--line-input-start))
+    ;; Insertion advances `ghostel--line-input-end' (insertion type
+    ;; t), so the end marker tracks the new input's tail.
+    (insert text)
+    (when (markerp ghostel--line-input-end)
+      (goto-char (marker-position ghostel--line-input-end)))))
+
+(defun ghostel-line-mode-history-previous ()
+  "Replace the input with the previous entry from history."
+  (interactive)
+  (when ghostel--line-mode-history
+    (let* ((len (length ghostel--line-mode-history))
+           (idx (if ghostel--line-mode-history-index
+                    (min (1- len) (1+ ghostel--line-mode-history-index))
+                  0)))
+      (setq ghostel--line-mode-history-index idx)
+      (ghostel--line-mode-replace-input
+       (nth idx ghostel--line-mode-history)))))
+
+(defun ghostel-line-mode-history-next ()
+  "Replace the input with the next entry from history."
+  (interactive)
+  (cond
+   ((null ghostel--line-mode-history-index)
+    (ghostel--line-mode-replace-input ""))
+   ((zerop ghostel--line-mode-history-index)
+    (setq ghostel--line-mode-history-index nil)
+    (ghostel--line-mode-replace-input ""))
+   (t
+    (setq ghostel--line-mode-history-index
+          (1- ghostel--line-mode-history-index))
+    (ghostel--line-mode-replace-input
+     (nth ghostel--line-mode-history-index ghostel--line-mode-history)))))
+
+(defun ghostel--line-mode-bash-completion-available-p ()
+  "Return non-nil when bash-completion should be used for line-mode TAB.
+Honours `ghostel-line-mode-use-bash-completion': loads the package
+when set to t, attempts a soft load when set to `auto', returns nil
+otherwise."
+  (pcase ghostel-line-mode-use-bash-completion
+    ('nil nil)
+    ('auto (require 'bash-completion nil 'noerror))
+    (_ (require 'bash-completion))))
+
+(defun ghostel--line-mode-effective-capfs ()
+  "Return the capf list used by `ghostel-line-mode-complete-at-point'.
+Starts from `ghostel-line-mode-completion-at-point-functions' and
+prepends `bash-completion-capf-nonexclusive' when bash-completion
+integration is enabled and available."
+  (let ((funs (copy-sequence
+               ghostel-line-mode-completion-at-point-functions)))
+    (when (and (ghostel--line-mode-bash-completion-available-p)
+               (not (memq #'bash-completion-capf-nonexclusive funs)))
+      (push #'bash-completion-capf-nonexclusive funs))
+    funs))
+
+(defun ghostel--line-mode-maybe-prespawn-bash-completion ()
+  "Spawn the bash-completion subprocess eagerly when configured.
+Honours `ghostel-line-mode-bash-completion-prespawn'.  No-op when
+the option is nil, when bash-completion is unavailable, or when
+the subprocess is already running (the bash-completion entry
+point is idempotent)."
+  (when (and ghostel-line-mode-bash-completion-prespawn
+             (ghostel--line-mode-bash-completion-available-p)
+             (fboundp 'bash-completion-require-process))
+    (ignore-errors (bash-completion-require-process))))
+
+(defun ghostel-line-mode-complete-at-point ()
+  "Complete the input at point against the line-mode capf stack.
+Narrows to `[ghostel--line-input-start, ghostel--line-input-end)'
+before delegating to `completion-at-point' so that comint/shell
+completion functions parse only the user's typed input — the
+prompt and surrounding scrollback are invisible to them.
+
+When point sits in the read-only scrollback, snaps to the input
+end first (mirrors `ghostel-line-mode-self-insert').
+
+Refreshes `comint-file-name-prefix' from `default-directory' on
+each call so completions follow OSC 7 / TRAMP directory tracking
+when it flips between local and remote.
+
+The capf list comes from `ghostel--line-mode-effective-capfs',
+which combines `ghostel-line-mode-completion-at-point-functions'
+with optional `bash-completion' integration controlled by
+`ghostel-line-mode-use-bash-completion'."
+  (interactive)
+  (let ((start (and (markerp ghostel--line-input-start)
+                    (marker-position ghostel--line-input-start)))
+        (end   (and (markerp ghostel--line-input-end)
+                    (marker-position ghostel--line-input-end))))
+    (cond
+     ((not (and start end))
+      ;; No live input markers — nothing to complete against.
+      (user-error "Line mode: no input region to complete"))
+     ((or (< (point) start) (> (point) end))
+      (deactivate-mark)
+      (goto-char end)
+      (ghostel-line-mode-complete-at-point))
+     (t
+      ;; Refresh in case directory tracking flipped between
+      ;; local/remote since `shell-completion-vars' first ran.
+      (setq-local comint-file-name-prefix
+                  (or (file-remote-p default-directory) ""))
+      (save-restriction
+        (narrow-to-region start end)
+        (let ((completion-at-point-functions
+               (ghostel--line-mode-effective-capfs)))
+          (completion-at-point)))))))
+
 
 (defun ghostel-copy-all ()
   "Copy the entire scrollback buffer to the kill ring."
@@ -2084,7 +3350,7 @@ A hyperlink is any OSC 8 link, auto-detected URL, or `file:line'
 reference in the buffer.  Wraps to `point-min' when no link is found
 after point.  Press RET to follow the link at point."
   (interactive "p")
-  (unless ghostel--copy-mode-active
+  (unless (eq ghostel--input-mode 'copy)
     (ghostel-copy-mode))
   (dotimes (_ (or n 1))
     (ghostel--goto-hyperlink 'next)))
@@ -2093,7 +3359,7 @@ after point.  Press RET to follow the link at point."
   "Enter copy mode and move point to the Nth previous hyperlink.
 Wraps to `point-max' when no link is found before point."
   (interactive "p")
-  (unless ghostel--copy-mode-active
+  (unless (eq ghostel--input-mode 'copy)
     (ghostel-copy-mode))
   (dotimes (_ (or n 1))
     (ghostel--goto-hyperlink 'previous)))
@@ -2208,7 +3474,6 @@ when called from the deferred-detection timer outside the redraw scope."
                               #'ghostel--run-queued-plain-link-detection
                               (current-buffer)))))))
 
-
 (defun ghostel--compensate-wide-chars ()
   "Shrink trailing spaces on lines where wide-char glyphs cause pixel overflow.
 Emoji glyphs often render wider than `char-width' times `frame-char-width'
@@ -2710,17 +3975,21 @@ the last non-whitespace+whitespace boundary (e.g. after `$ ' or `# ')."
       (ghostel--prompt-input-start))))
 
 (defun ghostel-next-prompt (&optional n)
-  "Enter copy mode and move to the Nth next prompt."
+  "Enter Emacs mode and move to the Nth next prompt.
+Emacs mode keeps the terminal running, so you can navigate between
+prompts while output continues streaming in."
   (interactive "p")
-  (unless ghostel--copy-mode-active
-    (ghostel-copy-mode))
+  (unless (memq ghostel--input-mode '(emacs copy))
+    (ghostel-emacs-mode))
   (ghostel--navigate-next-prompt n))
 
 (defun ghostel-previous-prompt (&optional n)
-  "Enter copy mode and move to the Nth previous prompt."
+  "Enter Emacs mode and move to the Nth previous prompt.
+Emacs mode keeps the terminal running, so you can navigate between
+prompts while output continues streaming in."
   (interactive "p")
-  (unless ghostel--copy-mode-active
-    (ghostel-copy-mode))
+  (unless (memq ghostel--input-mode '(emacs copy))
+    (ghostel-emacs-mode))
   (ghostel--navigate-previous-prompt n))
 
 
@@ -2781,9 +4050,12 @@ current, so `buffer-name' here gives the terminal buffer's name."
 
 (defun ghostel-default-progress (state progress)
   "Default handler for OSC 9;4 ConEmu progress reports.
-Updates `mode-line-process' to show the current STATE and
-PROGRESS (an integer 0-100 or nil).  STATE is one of the symbols
-`remove', `set', `error', `indeterminate', `pause'."
+Updates `ghostel--mode-line-progress' (and refreshes
+`mode-line-process') to show the current STATE and PROGRESS (an
+integer 0-100 or nil).  STATE is one of the symbols `remove',
+`set', `error', `indeterminate', `pause'.  The input-mode tag in
+`ghostel--mode-line-tag' is composed alongside, so progress
+updates do not clobber labels like \":Char\" or \":Line\"."
   (let ((new-val
          (pcase state
            ('remove        nil)
@@ -2796,29 +4068,24 @@ PROGRESS (an integer 0-100 or nil).  STATE is one of the symbols
            ('pause         (if progress
                                (format " [paused %d%%]" progress)
                              " [paused]"))
-           ;; Unknown state: keep the current mode-line value rather
+           ;; Unknown state: keep the current progress value rather
            ;; than silently clearing it, so a future Zig-side state is
            ;; visible-but-stale instead of disappearing.
-           (_              mode-line-process))))
-    (unless (equal new-val mode-line-process)
-      (setq mode-line-process new-val)
-      (force-mode-line-update))))
-
-(defvar-local ghostel--spinner-active nil
-  "Non-nil when this buffer has a spinner started by `ghostel-spinner-progress'.
-The spinner object itself lives in spinner.el's buffer-local
-`spinner-current'; this flag is what ghostel inspects to keep
-`ghostel-spinner-progress' idempotent and to give the sentinel
-something to gate teardown on.")
+           (_              ghostel--mode-line-progress))))
+    (unless (equal new-val ghostel--mode-line-progress)
+      (setq ghostel--mode-line-progress new-val)
+      (ghostel--mode-line-refresh))))
 
 (defun ghostel--spinner-stop ()
   "Stop this buffer's progress spinner, if any.
 Safe to call when no spinner is running.  Errors from spinner.el
 \(e.g. on a half-torn-down buffer) are swallowed — this is
-teardown.  Does not touch `mode-line-process'."
+teardown.  Refreshes `mode-line-process' so the spinner construct
+no longer renders alongside the input-mode tag."
   (when ghostel--spinner-active
     (ignore-errors (spinner-stop))
-    (setq ghostel--spinner-active nil)))
+    (setq ghostel--spinner-active nil)
+    (ghostel--mode-line-refresh)))
 
 (defun ghostel-spinner-progress (state progress)
   "Spinner-driven handler for OSC 9;4 ConEmu progress reports.
@@ -2829,25 +4096,30 @@ STATE is one of those symbols; PROGRESS is an integer 0-100 or nil.
 
 Requires spinner.el to be available; signals a `user-error' on
 the first call if it is not.  The spinner style is controlled by
-`ghostel-spinner-type'."
+`ghostel-spinner-type'.  The input-mode tag (`:Char', `:Line',
+…) is preserved across spinner transitions via
+`ghostel--mode-line-refresh'."
   (unless (require 'spinner nil t)
     (user-error
      "Cannot run `ghostel-spinner-progress' without spinner.el — install it \
 from MELPA or set `ghostel-progress-function' to #'ghostel-default-progress"))
   (if (eq state 'indeterminate)
       ;; Indeterminate: install spinner.el's mode-line construct.
-      ;; Clear any prior determinate text first so the spinner shows alone,
-      ;; not appended to a stale \" [50%]\".
+      ;; Clear any prior determinate text first so the spinner shows
+      ;; alone, not appended to a stale " [50%]".
       (unless ghostel--spinner-active
-        (setq mode-line-process nil)
+        (setq ghostel--mode-line-progress nil
+              ghostel--spinner-active t)
+        ;; spinner-start mutates `mode-line-process' directly; the
+        ;; refresh below overwrites it with the composed value so the
+        ;; input-mode tag stays visible alongside the spinner.
         (spinner-start ghostel-spinner-type)
-        (setq ghostel--spinner-active t))
-    ;; Any other state: stop the spinner and clear the (now-inert)
-    ;; mode-line construct it left behind, then defer to the text indicator.
-    (when ghostel--spinner-active
-      (spinner-stop)
-      (setq mode-line-process nil
-            ghostel--spinner-active nil))
+        (ghostel--mode-line-refresh))
+    ;; Any other state: stop the spinner and let the text indicator
+    ;; take over.  `ghostel--spinner-stop' refreshes the mode-line so
+    ;; the spinner construct disappears even if the new progress text
+    ;; happens to equal the old one.
+    (ghostel--spinner-stop)
     (ghostel-default-progress state progress)))
 
 (defun ghostel--handle-notification (title body)
@@ -2941,10 +4213,11 @@ Only acts when the buffer has not been manually renamed by the user."
   "Set the cursor style based on terminal state.
 STYLE is one of: 0=bar, 1=block, 2=underline, 3=hollow-block.
 VISIBLE is t or nil.
-Skipped when copy mode is active because copy mode manages its own
-cursor, or when `ghostel-ignore-cursor-change' is non-nil."
-  (unless (or ghostel--copy-mode-active
-              ghostel-ignore-cursor-change)
+Skipped in read-only input modes (copy, Emacs, line) where the
+user-facing cursor is managed by Emacs for navigation, or when
+`ghostel-ignore-cursor-change' is non-nil."
+  (when (and (ghostel--buffer-editable-p)
+             (not ghostel-ignore-cursor-change))
     (setq cursor-type
           (if visible
               (pcase style
@@ -3041,9 +4314,13 @@ Call this after changing the Emacs theme so terminals match."
     (with-current-buffer buf
       (when (and (derived-mode-p 'ghostel-mode) ghostel--term)
         (ghostel--apply-palette ghostel--term)
-        (when (not ghostel--copy-mode-active)
-          (let ((inhibit-read-only t))
+        (when (ghostel--terminal-live-p)
+          (let ((inhibit-read-only t)
+                (snap (and (eq ghostel--input-mode 'line)
+                           (ghostel--line-mode-snapshot))))
             (ghostel--redraw ghostel--term)
+            (when snap
+              (ghostel--line-mode-restore snap))
             (ghostel--schedule-link-detection)))))))
 
 (defun ghostel--on-theme-change (&rest _args)
@@ -3900,12 +5177,19 @@ left it following the viewport, so a drifted `window-start' below the
 anchor is Emacs redisplay (e.g. `keep-point-visible' when the
 minibuffer shrinks the window), not a user scroll."
   (let ((anchor ghostel--last-anchor-position))
+    ;; Snap-requested (the user just typed) overrides Emacs mode's
+    ;; usual no-anchor behaviour so typing forwards the keystroke
+    ;; AND brings the window back to the live cursor.  Emacs mode
+    ;; otherwise decouples buffer-point from the terminal cursor —
+    ;; treat every window as non-anchored so the scrollback restore
+    ;; preserves the user's window-point/window-start.
     (or ghostel--snap-requested
         (memq win ghostel--windows-needing-snap)
-        (null anchor)
-        (>= (window-start win) anchor)
-        (and ghostel--redraw-resize-active
-             (not (assq win ghostel--scroll-positions))))))
+        (and (not (eq ghostel--input-mode 'emacs))
+             (or (null anchor)
+                 (>= (window-start win) anchor)
+                 (and ghostel--redraw-resize-active
+                      (not (assq win ghostel--scroll-positions))))))))
 
 (defun ghostel--capture-window-state (win)
   "Return (WIN WS-KEY WP-KEY WP-COL) for WIN.
@@ -3995,15 +5279,24 @@ following the viewport.
 
 When a GUI input method is composing preedit text in BUFFER, leaves
 buffer point on the preedit anchor instead of the terminal cursor so
-the candidate window does not jump while text is streaming in."
+the candidate window does not jump while text is streaming in.
+
+In Emacs mode, the read-only buffer is decoupled from the terminal
+cursor — point is captured per-window via the standard scroll-state
+restore path so the user's navigation point is not yanked back when
+new output arrives."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (setq ghostel--redraw-timer nil)
-      (when (and ghostel--term (not ghostel--copy-mode-active))
+      (when (and ghostel--term (ghostel--terminal-live-p))
         (ghostel--flush-pending-output)
         ;; Skip during synchronized output unless forced by scroll/resize.
         (unless (and (not ghostel--force-next-redraw)
                      (ghostel--mode-enabled ghostel--term 2026))
+          ;; Pause line mode if alt-screen just turned on — must run
+          ;; before the line-snapshot block so that snapshot sees the
+          ;; post-pause input mode and skips its own capture.
+          (ghostel--line-mode-pre-redraw)
           (setq ghostel--force-next-redraw nil)
           (setq ghostel--has-wide-chars nil)
           (ghostel--correct-mangled-scroll-positions buffer)
@@ -4016,35 +5309,77 @@ the candidate window does not jump while text is streaming in."
                   (mapcar #'ghostel--capture-window-state
                           (cl-remove-if #'ghostel--window-anchored-p
                                         all-windows)))
+                 ;; In Emacs mode the buffer-point is normally
+                 ;; decoupled from the terminal cursor.  Stash a
+                 ;; marker so we can restore it after the renderer
+                 ;; rewrites the buffer (which moves point to the
+                 ;; live cursor).  Skip the stash when snap-requested
+                 ;; — the user just typed and wants point to land at
+                 ;; the live cursor where their input went, not
+                 ;; wherever they had navigated to.
+                 (emacs-saved-marker
+                  (and (eq ghostel--input-mode 'emacs)
+                       (not ghostel--snap-requested)
+                       (copy-marker (point) t)))
+                 ;; In line mode the user's in-progress input lives
+                 ;; in the buffer past the prompt and is not in
+                 ;; libghostty's grid; the renderer would otherwise
+                 ;; clobber it.  Snapshot the input region (and clear
+                 ;; it from the buffer) before the redraw, then
+                 ;; restore it after.
+                 (line-snapshot
+                  (and (eq ghostel--input-mode 'line)
+                       (ghostel--line-mode-snapshot)))
                  (inhibit-read-only t)
                  (inhibit-redisplay t)
                  (inhibit-modification-hooks t))
             (ghostel--redraw ghostel--term ghostel-full-redraw)
             (when ghostel--has-wide-chars
               (ghostel--compensate-wide-chars))
-            (let* ((pt (point))
-                   (vs (ghostel--viewport-start))
-                   (preedit-point
-                    (and preedit-state
-                         (ghostel--restore-preedit-state
-                          preedit-state vs))))
-              (setq ghostel--scroll-positions nil)
-              (dolist (win all-windows)
-                (if (and vs (memq win anchored))
-                    (let ((preedit-win-p
-                           (and preedit-point
-                                preedit-window
-                                (eq win preedit-window))))
-                      (ghostel--anchor-window
-                       win vs
-                       (if preedit-win-p preedit-point pt)))
-                  (ghostel--restore-scrollback-window
-                   win (assq win non-anchored-states))))
-              (when preedit-point
-                (goto-char preedit-point))
-              (when vs
-                (setq ghostel--last-anchor-position vs))
-              (ghostel--schedule-link-detection vs (point-max))))
+            (let ((line-restored
+                   (and line-snapshot
+                        (ghostel--line-mode-restore line-snapshot))))
+              (let* ((pt (point))
+                     (vs (ghostel--viewport-start))
+                     (preedit-point
+                      (and preedit-state
+                           (ghostel--restore-preedit-state
+                            preedit-state vs))))
+                (setq ghostel--scroll-positions nil)
+                (dolist (win all-windows)
+                  (if (and vs (memq win anchored))
+                      (let ((preedit-win-p
+                             (and preedit-point
+                                  preedit-window
+                                  (eq win preedit-window))))
+                        (ghostel--anchor-window
+                         win vs
+                         (if preedit-win-p preedit-point pt)))
+                    (ghostel--restore-scrollback-window
+                     win (assq win non-anchored-states))))
+                (cond
+                 (preedit-point      (goto-char preedit-point))
+                 (line-restored      nil) ; restore already moved point
+                 (emacs-saved-marker (goto-char emacs-saved-marker)))
+                (when emacs-saved-marker
+                  (set-marker emacs-saved-marker nil))
+                (when vs
+                  (setq ghostel--last-anchor-position vs))
+                (ghostel--schedule-link-detection vs (point-max)))
+              ;; Restore failed (prompt scrolled off / shell
+              ;; integration dropped out): the input was already
+              ;; deleted from the buffer in snapshot — forward it raw
+              ;; so the user does not lose what they typed.
+              (when (and line-snapshot (not line-restored))
+                (let ((input (plist-get line-snapshot :input)))
+                  (when (and input (> (length input) 0)
+                             ghostel--process
+                             (process-live-p ghostel--process))
+                    (process-send-string ghostel--process input))
+                  (message "ghostel: line-mode prompt lost; input forwarded raw")))
+              ;; Resume line mode if alt-screen just turned off, and
+              ;; update the alt-screen-prev cache for the next cycle.
+              (ghostel--line-mode-post-redraw)))
           (setq ghostel--snap-requested nil)
           (setq ghostel--windows-needing-snap nil))))))
 
@@ -4198,6 +5533,15 @@ output is arriving."
   (setq-local scroll-conservatively 101)
   (setq-local line-spacing 0)
   (setq-local list-buffers-directory (expand-file-name default-directory)) ; expose cwd to buffer-menu/ibuffer
+  ;; Set up the comint/shell completion plumbing once per buffer so
+  ;; `ghostel-line-mode-complete-at-point' has the right
+  ;; `comint-dynamic-complete-functions', `comint-file-name-chars',
+  ;; etc. ready when the user enters line mode.  The plumbing is
+  ;; cheap and harmless outside line mode (the capf is added to
+  ;; `completion-at-point-functions' but no one calls it).
+  (shell-completion-vars)
+  (setq ghostel--input-mode 'semi-char)
+  (use-local-map ghostel-semi-char-mode-map)
   (add-function :after after-focus-change-function #'ghostel--focus-change)
   (add-hook 'window-selection-change-functions #'ghostel--focus-change)
   (add-hook 'window-buffer-change-functions #'ghostel--focus-change)

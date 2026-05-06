@@ -86,7 +86,18 @@ Sets the initial value of the buffer-local state.  Use
   (and evil-ghostel-mode
        ghostel--term
        (not (ghostel--mode-enabled ghostel--term 1049))
-       (not ghostel--copy-mode-active)))
+       (eq ghostel--input-mode 'semi-char)))
+
+(defun evil-ghostel--line-mode-active-p ()
+  "Return non-nil when line mode editing is in effect.
+Line mode buffers shell input as plain buffer text inside
+`[ghostel--line-input-start, ghostel--line-input-end]'.  evil's
+default editing operators (operating on buffer text) are exactly
+right there, so PTY-routing intercepts must stand down."
+  (and evil-ghostel-mode
+       (eq ghostel--input-mode 'line)
+       (markerp ghostel--line-input-start)
+       (markerp ghostel--line-input-end)))
 
 ;; ---------------------------------------------------------------------------
 ;; Cursor synchronization
@@ -239,14 +250,18 @@ Set by the I/A advice which send Home/End directly.")
 (defun evil-ghostel--insert-state-entry ()
   "Sync terminal cursor to Emacs point when entering `emacs-state'.
 Skipped when `evil-ghostel--sync-inhibit' is set (by I/A advice
-which already sent Ctrl-a/Ctrl-e).
+which already sent Ctrl-a/Ctrl-e).  Also skipped outside semi-char:
+in line mode point and the terminal cursor are intentionally
+decoupled (the user is editing buffer text, not driving the shell
+cursor); in copy/Emacs/char modes the sync would either fight a
+read-only buffer or be redundant.
 When point is on a different row from the terminal cursor, snap
 back to the terminal cursor instead of sending up/down arrows
 which the shell would interpret as history navigation."
   (when (derived-mode-p 'ghostel-mode)
     (if evil-ghostel--sync-inhibit
         (setq evil-ghostel--sync-inhibit nil)
-      (when ghostel--term
+      (when (evil-ghostel--active-p)
         (let* ((tpos (ghostel--cursor-position ghostel--term))
                (trow (cdr tpos))
                (erow (- (line-number-at-pos (point) t) 1)))
@@ -264,17 +279,44 @@ cursor."
 ;; Advice for evil insert-line / append-line
 ;; ---------------------------------------------------------------------------
 
-(defun evil-ghostel--before-insert-line (&rest _)
-  "Send Ctrl-a to move terminal cursor to start of input."
-  (when (and evil-ghostel-mode ghostel--term)
+(defun evil-ghostel--around-insert-line (orig-fn &rest args)
+  "Route `evil-insert-line' according to the current input mode.
+ORIG-FN is the advised `evil-insert-line' called with ARGS.
+In semi-char, send Ctrl-a so the shell moves its readline cursor
+to the start of input — `orig-fn' then enters insert state and the
+buffer cursor is repositioned by the next redraw.
+In line mode, the input region is plain buffer text bounded by
+`ghostel--line-input-start' / `--line-input-end'; jump point there
+and enter insert state directly (`back-to-indentation' would land
+on the prompt, which is read-only).
+Outside ghostel, run unchanged."
+  (cond
+   ((evil-ghostel--active-p)
     (ghostel--send-encoded "a" "ctrl")
-    (setq evil-ghostel--sync-inhibit t)))
+    (setq evil-ghostel--sync-inhibit t)
+    (apply orig-fn args))
+   ((evil-ghostel--line-mode-active-p)
+    (goto-char (marker-position ghostel--line-input-start))
+    (setq evil-ghostel--sync-inhibit t)
+    (evil-insert-state 1))
+   (t (apply orig-fn args))))
 
-(defun evil-ghostel--before-append-line (&rest _)
-  "Send Ctrl-e to move terminal cursor to end of input."
-  (when (and evil-ghostel-mode ghostel--term)
+(defun evil-ghostel--around-append-line (orig-fn &rest args)
+  "Route `evil-append-line' according to the current input mode.
+ORIG-FN is the advised `evil-append-line' called with ARGS.
+Symmetric to `evil-ghostel--around-insert-line': Ctrl-e in
+semi-char, jump to `--line-input-end' in line mode, otherwise
+unchanged."
+  (cond
+   ((evil-ghostel--active-p)
     (ghostel--send-encoded "e" "ctrl")
-    (setq evil-ghostel--sync-inhibit t)))
+    (setq evil-ghostel--sync-inhibit t)
+    (apply orig-fn args))
+   ((evil-ghostel--line-mode-active-p)
+    (goto-char (marker-position ghostel--line-input-end))
+    (setq evil-ghostel--sync-inhibit t)
+    (evil-insert-state 1))
+   (t (apply orig-fn args))))
 
 ;; ---------------------------------------------------------------------------
 ;; Editing primitives
@@ -404,10 +446,18 @@ intercepted by evil's insert-state commands.")
 
 (defun evil-ghostel--passthrough-ctrl (key)
   "Send Ctrl+KEY to the terminal PTY, or fall back to evil's binding.
-Used for insert-state Ctrl keys that have readline/zle equivalents."
+Used for insert-state Ctrl keys that have readline/zle equivalents.
+Outside semi-char the local map is consulted first so line mode's
+own bindings (e.g. \\`C-a' → `ghostel-beginning-of-input-or-line',
+\\`C-d' → `ghostel-line-mode-delete-char-or-eof') win over evil's
+defaults; without that, the minor-mode aux map containing this
+passthrough would shadow line mode's local-map binding."
   (if (evil-ghostel--active-p)
       (ghostel--send-encoded key "ctrl")
-    (let ((cmd (lookup-key evil-insert-state-map (kbd (concat "C-" key)))))
+    (let* ((vec (kbd (concat "C-" key)))
+           (local (current-local-map))
+           (cmd (or (and local (lookup-key local vec))
+                    (lookup-key evil-insert-state-map vec))))
       (when (commandp cmd)
         (call-interactively cmd)))))
 
@@ -514,8 +564,8 @@ state transitions."
         ;; states expect point to follow the terminal cursor.
         (add-hook 'evil-emacs-state-entry-hook
                   #'evil-ghostel--insert-state-entry nil t)
-        (advice-add 'evil-insert-line :before #'evil-ghostel--before-insert-line)
-        (advice-add 'evil-append-line :before #'evil-ghostel--before-append-line)
+        (advice-add 'evil-insert-line :around #'evil-ghostel--around-insert-line)
+        (advice-add 'evil-append-line :around #'evil-ghostel--around-append-line)
         (advice-add 'evil-delete :around #'evil-ghostel--around-delete)
         (advice-add 'evil-change :around #'evil-ghostel--around-change)
         (advice-add 'evil-replace :around #'evil-ghostel--around-replace)
@@ -531,8 +581,8 @@ state transitions."
                  #'evil-ghostel--insert-state-entry t)
     (remove-hook 'evil-emacs-state-entry-hook
                  #'evil-ghostel--insert-state-entry t)
-    (advice-remove 'evil-insert-line #'evil-ghostel--before-insert-line)
-    (advice-remove 'evil-append-line #'evil-ghostel--before-append-line)
+    (advice-remove 'evil-insert-line #'evil-ghostel--around-insert-line)
+    (advice-remove 'evil-append-line #'evil-ghostel--around-append-line)
     (advice-remove 'evil-delete #'evil-ghostel--around-delete)
     (advice-remove 'evil-change #'evil-ghostel--around-change)
     (advice-remove 'evil-replace #'evil-ghostel--around-replace)
