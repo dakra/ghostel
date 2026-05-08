@@ -6,7 +6,7 @@
 ;; URL: https://github.com/dakra/ghostel
 ;; Version: 0.22.1
 ;; Keywords: terminals
-;; Package-Requires: ((emacs "28.1"))
+;; Package-Requires: ((emacs "28.1") (compat "30.1.0.1"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is NOT part of GNU Emacs.
@@ -81,6 +81,7 @@
 
 (require 'ansi-color)
 (require 'cl-lib)
+(require 'compat)
 (require 'project)
 (require 'shell)
 (require 'text-property-search)
@@ -1239,16 +1240,14 @@ again."
   (setq ghostel--scroll-intercept-active t)
   (remove-hook 'pre-command-hook #'ghostel--reenable-scroll-intercept t))
 
-(defvar ghostel--scroll-intercept-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map [mouse-4]    #'ghostel--scroll-intercept-up)
-    (define-key map [mouse-5]    #'ghostel--scroll-intercept-down)
-    (define-key map [wheel-up]   #'ghostel--scroll-intercept-up)
-    (define-key map [wheel-down] #'ghostel--scroll-intercept-down)
-    map)
-  "Keymap for `emulation-mode-map-alists' to intercept scroll events.
+(defvar-keymap ghostel--scroll-intercept-map
+  :doc "Keymap for `emulation-mode-map-alists' to intercept scroll events.
 Active only in ghostel buffers where `ghostel--scroll-intercept-active'
-is non-nil.")
+is non-nil."
+  "<mouse-4>"    #'ghostel--scroll-intercept-up
+  "<mouse-5>"    #'ghostel--scroll-intercept-down
+  "<wheel-up>"   #'ghostel--scroll-intercept-up
+  "<wheel-down>" #'ghostel--scroll-intercept-down)
 
 (defvar ghostel--emulation-alist
   `((ghostel--scroll-intercept-active . ,ghostel--scroll-intercept-map))
@@ -1354,132 +1353,123 @@ When NO-EXCEPTIONS is non-nil, also bind the keys in
                 (lambda () (interactive) (ghostel--send-string "\x1c")))
     (define-key map (kbd "M-:") #'ghostel--send-event)))
 
-(defvar ghostel-mode-map
-  (let ((map (make-sparse-keymap)))
-    ;; Clipboard media keys — useful in any mode.
-    (define-key map (kbd "<XF86Paste>") #'ghostel-yank)
-    (define-key map (kbd "<XF86Copy>")  #'kill-ring-save)
-    ;; Bracketed paste from the host terminal (TTY Emacs): forward the
-    ;; paste payload to the subprocess instead of letting the default
-    ;; `xterm-paste' insert it into the (renderer-owned) buffer.
-    (define-key map [xterm-paste]     #'ghostel-xterm-paste)
-    ;; Terminal control via C-c prefix
-    (define-key map (kbd "C-c C-c")   #'ghostel-send-C-c)
-    (define-key map (kbd "C-c C-z")   #'ghostel-send-C-z)
-    (define-key map (kbd "C-c C-\\")  #'ghostel-send-C-backslash)
-    (define-key map (kbd "C-c C-d")   #'ghostel-send-C-d)
-    (define-key map (kbd "C-g")       #'ghostel-send-C-g)
-    (define-key map (kbd "C-c C-t")   #'ghostel-copy-mode)
-    (define-key map (kbd "C-c M-w")   #'ghostel-copy-all)
-    (define-key map (kbd "C-c C-y")   #'ghostel-paste)
-    (define-key map (kbd "C-c M-l")   #'ghostel-clear-scrollback)
-    (define-key map (kbd "C-c C-q")   #'ghostel-send-next-key)
-    ;; Hyperlink navigation (OSC 8, auto-detected URLs, file:line refs)
-    (define-key map (kbd "C-c C-n")   #'ghostel-next-hyperlink)
-    (define-key map (kbd "C-c C-p")   #'ghostel-previous-hyperlink)
-    ;; Prompt navigation (OSC 133) — `ghostel-next-prompt' and
-    ;; `ghostel-previous-prompt' switch to Emacs mode so the terminal
-    ;; keeps running while the user jumps between prompts.
-    (define-key map (kbd "C-c M-n")   #'ghostel-next-prompt)
-    (define-key map (kbd "C-c M-p")   #'ghostel-previous-prompt)
-    ;; Input mode switching (eat.el conventions)
-    (define-key map (kbd "C-c C-e")   #'ghostel-emacs-mode)
-    (define-key map (kbd "C-c C-j")   #'ghostel-semi-char-mode)
-    (define-key map (kbd "C-c M-d")   #'ghostel-char-mode)
-    (define-key map (kbd "C-c C-l")   #'ghostel-line-mode)
-    ;; Mouse click events (for terminal mouse tracking)
-    (define-key map (kbd "<down-mouse-1>")  #'ghostel--mouse-press)
-    (define-key map (kbd "<mouse-1>")       #'ghostel--mouse-release)
-    (define-key map (kbd "<down-mouse-2>")  #'ghostel--mouse-press)
-    (define-key map (kbd "<mouse-2>")       #'ghostel--mouse-release)
-    (define-key map (kbd "<down-mouse-3>")  #'ghostel--mouse-press)
-    (define-key map (kbd "<mouse-3>")       #'ghostel--mouse-release)
-    (define-key map (kbd "<drag-mouse-1>")  #'ghostel--mouse-drag)
-    (define-key map (kbd "<drag-mouse-2>")  #'ghostel--mouse-drag)
-    (define-key map (kbd "<drag-mouse-3>")  #'ghostel--mouse-drag)
-    ;; Drag and drop
-    (define-key map [drag-n-drop]     #'ghostel--drop)
-    map)
-  "Base keymap for `ghostel-mode'.
+(defvar-keymap ghostel-mode-map
+  :doc "Base keymap for `ghostel-mode'.
 Contains the \\`C-c' prefix commands available in every input mode.
 Input modes (`ghostel-semi-char-mode-map', `ghostel-char-mode-map',
 `ghostel-readonly-mode-map', `ghostel-readonly-fast-exit-mode-map',
-`ghostel-line-mode-map') inherit or extend this map.")
+`ghostel-line-mode-map') inherit or extend this map."
+  ;; Clipboard media keys — useful in any mode.
+  "<XF86Paste>"      #'ghostel-yank
+  "<XF86Copy>"       #'kill-ring-save
+  ;; Bracketed paste from the host terminal (TTY Emacs): forward the
+  ;; paste payload to the subprocess instead of letting the default
+  ;; `xterm-paste' insert it into the (renderer-owned) buffer.
+  "<xterm-paste>"    #'ghostel-xterm-paste
+  ;; Terminal control via C-c prefix
+  "C-c C-c"          #'ghostel-send-C-c
+  "C-c C-z"          #'ghostel-send-C-z
+  "C-c C-\\"         #'ghostel-send-C-backslash
+  "C-c C-d"          #'ghostel-send-C-d
+  "C-g"              #'ghostel-send-C-g
+  "C-c C-t"          #'ghostel-copy-mode
+  "C-c M-w"          #'ghostel-copy-all
+  "C-c C-y"          #'ghostel-paste
+  "C-c M-l"          #'ghostel-clear-scrollback
+  "C-c C-q"          #'ghostel-send-next-key
+  ;; Hyperlink navigation (OSC 8, auto-detected URLs, file:line refs)
+  "C-c C-n"          #'ghostel-next-hyperlink
+  "C-c C-p"          #'ghostel-previous-hyperlink
+  ;; Prompt navigation (OSC 133) — `ghostel-next-prompt' and
+  ;; `ghostel-previous-prompt' switch to Emacs mode so the terminal
+  ;; keeps running while the user jumps between prompts.
+  "C-c M-n"          #'ghostel-next-prompt
+  "C-c M-p"          #'ghostel-previous-prompt
+  ;; Input mode switching (eat.el conventions)
+  "C-c C-e"          #'ghostel-emacs-mode
+  "C-c C-j"          #'ghostel-semi-char-mode
+  "C-c M-d"          #'ghostel-char-mode
+  "C-c C-l"          #'ghostel-line-mode
+  ;; Mouse click events (for terminal mouse tracking)
+  "<down-mouse-1>"   #'ghostel--mouse-press
+  "<mouse-1>"        #'ghostel--mouse-release
+  "<down-mouse-2>"   #'ghostel--mouse-press
+  "<mouse-2>"        #'ghostel--mouse-release
+  "<down-mouse-3>"   #'ghostel--mouse-press
+  "<mouse-3>"        #'ghostel--mouse-release
+  "<drag-mouse-1>"   #'ghostel--mouse-drag
+  "<drag-mouse-2>"   #'ghostel--mouse-drag
+  "<drag-mouse-3>"   #'ghostel--mouse-drag
+  ;; Drag and drop
+  "<drag-n-drop>"    #'ghostel--drop)
 
-(defvar ghostel-semi-char-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map ghostel-mode-map)
-    (ghostel--define-terminal-keys map)
-    ;; C-y: yank from Emacs kill ring into the terminal
-    (define-key map (kbd "C-y")       #'ghostel-yank)
-    (when (eq system-type 'darwin)
-      (define-key map (kbd "s-v")     #'ghostel-yank))
-    (define-key map (kbd "M-y")       #'ghostel-yank-pop)
-    map)
-  "Keymap for semi-char mode (the default input mode).
+(defvar-keymap ghostel-hyperlink-repeat-map
+  :doc "Repeat map for `ghostel-next-hyperlink' / `ghostel-previous-hyperlink'.
+Active after either command when `repeat-mode' is enabled, so a
+bare \\`n'/\\`p' or \\`C-n'/\\`C-p' keeps navigating."
+  :repeat t
+  "n"   #'ghostel-next-hyperlink
+  "p"   #'ghostel-previous-hyperlink
+  "C-n" #'ghostel-next-hyperlink
+  "C-p" #'ghostel-previous-hyperlink)
+
+(defvar-keymap ghostel-prompt-repeat-map
+  :doc "Repeat map for `ghostel-next-prompt' / `ghostel-previous-prompt'.
+Active after either command when `repeat-mode' is enabled, so a
+bare \\`n'/\\`p' or \\`M-n'/\\`M-p' keeps navigating."
+  :repeat t
+  "n"   #'ghostel-next-prompt
+  "p"   #'ghostel-previous-prompt
+  "M-n" #'ghostel-next-prompt
+  "M-p" #'ghostel-previous-prompt)
+
+(defvar-keymap ghostel-semi-char-mode-map
+  :doc "Keymap for semi-char mode (the default input mode).
 Most keys are sent to the terminal.  Keys in
 `ghostel-keymap-exceptions' pass through to Emacs.  Inherits the
-\\`C-c' prefix from `ghostel-mode-map'.")
+\\`C-c' prefix from `ghostel-mode-map'."
+  :parent ghostel-mode-map)
+(ghostel--define-terminal-keys ghostel-semi-char-mode-map)
+;; Yank bindings layer on top of the helper's `M-y' →
+;; `ghostel--send-event' default so the kill ring wins.
+(define-keymap :keymap ghostel-semi-char-mode-map
+  "C-y" #'ghostel-yank
+  "M-y" #'ghostel-yank-pop)
+(when (eq system-type 'darwin)
+  (define-key ghostel-semi-char-mode-map (kbd "s-v") #'ghostel-yank))
 
-(defvar ghostel-char-mode-map
-  (let ((map (make-sparse-keymap)))
-    ;; No parent — char mode captures everything, including C-c.
-    (ghostel--define-terminal-keys map 'no-exceptions)
-    ;; Bind `ghostel-send-C-g' so quit-flag and the mark get cleared.
-    (define-key map (kbd "C-g") #'ghostel-send-C-g)
-    ;; Mouse click/drag for terminal mouse tracking (no parent to
-    ;; inherit from; scroll wheel is handled by the emulation alist).
-    (define-key map (kbd "<down-mouse-1>")  #'ghostel--mouse-press)
-    (define-key map (kbd "<mouse-1>")       #'ghostel--mouse-release)
-    (define-key map (kbd "<down-mouse-2>")  #'ghostel--mouse-press)
-    (define-key map (kbd "<mouse-2>")       #'ghostel--mouse-release)
-    (define-key map (kbd "<down-mouse-3>")  #'ghostel--mouse-press)
-    (define-key map (kbd "<mouse-3>")       #'ghostel--mouse-release)
-    (define-key map (kbd "<drag-mouse-1>")  #'ghostel--mouse-drag)
-    (define-key map (kbd "<drag-mouse-2>")  #'ghostel--mouse-drag)
-    (define-key map (kbd "<drag-mouse-3>")  #'ghostel--mouse-drag)
-    ;; Sole escape hatch: exit char mode.  Graphical Emacs sends
-    ;; M-RET as the `<M-return>' symbol, terminal Emacs as the
-    ;; `\M-\r' character, and C-M-m is a synonym; bind all three
-    ;; so the user doesn't need to care which their setup uses.
-    (define-key map (kbd "M-RET")      #'ghostel-semi-char-mode)
-    (define-key map (kbd "M-<return>") #'ghostel-semi-char-mode)
-    (define-key map (kbd "C-M-m")      #'ghostel-semi-char-mode)
-    map)
-  "Keymap for char mode.
+;; No parent — char mode captures everything, including C-c.
+(defvar-keymap ghostel-char-mode-map
+  :doc "Keymap for char mode.
 All keys are sent to the terminal.
 \\<ghostel-char-mode-map>Only \\[ghostel-semi-char-mode] exits
 back to semi-char mode.")
+(ghostel--define-terminal-keys ghostel-char-mode-map 'no-exceptions)
+;; Explicit bindings layered on top of the helper's defaults.
+(define-keymap :keymap ghostel-char-mode-map
+  ;; Bind `ghostel-send-C-g' so quit-flag and the mark get cleared.
+  "C-g"              #'ghostel-send-C-g
+  ;; Mouse click/drag for terminal mouse tracking (no parent to
+  ;; inherit from; scroll wheel is handled by the emulation alist).
+  "<down-mouse-1>"   #'ghostel--mouse-press
+  "<mouse-1>"        #'ghostel--mouse-release
+  "<down-mouse-2>"   #'ghostel--mouse-press
+  "<mouse-2>"        #'ghostel--mouse-release
+  "<down-mouse-3>"   #'ghostel--mouse-press
+  "<mouse-3>"        #'ghostel--mouse-release
+  "<drag-mouse-1>"   #'ghostel--mouse-drag
+  "<drag-mouse-2>"   #'ghostel--mouse-drag
+  "<drag-mouse-3>"   #'ghostel--mouse-drag
+  ;; Sole escape hatch: exit char mode.  Graphical Emacs sends
+  ;; M-RET as the `<M-return>' symbol, terminal Emacs as the
+  ;; `\M-\r' character, and C-M-m is a synonym; bind all three
+  ;; so the user doesn't need to care which their setup uses.
+  "M-RET"            #'ghostel-semi-char-mode
+  "M-<return>"       #'ghostel-semi-char-mode
+  "C-M-m"            #'ghostel-semi-char-mode)
 
-(defvar ghostel-readonly-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map ghostel-mode-map)
-    ;; Smart `C-a': on a line with a `ghostel-prompt' prefix, jump
-    ;; to the start of the input area; on any other line (scrollback,
-    ;; output) fall through to `move-beginning-of-line' so the user
-    ;; gets the standard column-0 behaviour they expect.
-    (define-key map (kbd "C-a")       #'ghostel-beginning-of-input-or-line)
-    ;; `C-y' pastes from the kill ring into the terminal via
-    ;; bracketed paste — an explicit, deliberate action, distinct
-    ;; from typing characters one by one (which read-only mode does
-    ;; not allow).
-    (define-key map (kbd "C-y")       #'ghostel-yank)
-    (when (eq system-type 'darwin)
-      (define-key map (kbd "s-v")     #'ghostel-yank))
-    ;; Selection helpers shared by both copy and Emacs modes.
-    (define-key map (kbd "M-w")       #'ghostel-readonly-copy)
-    (define-key map (kbd "C-w")       #'ghostel-readonly-copy)
-    (define-key map (kbd "M->")       #'ghostel-readonly-end-of-buffer)
-    (define-key map (kbd "C-e")       #'ghostel-readonly-end-of-line)
-    (define-key map (kbd "C-l")       #'ghostel-readonly-recenter)
-    ;; RET / <return> follows the link at point.  Bound here rather
-    ;; than on the text-property link map so a misdetected link inside
-    ;; a typed command in semi-char/char mode never hijacks the key
-    ;; away from the PTY.  When point is not on a link this is a no-op.
-    (define-key map (kbd "RET")       #'ghostel-open-link-at-point)
-    (define-key map (kbd "<return>")  #'ghostel-open-link-at-point)
-    map)
-  "Keymap shared by `ghostel-copy-mode' and `ghostel-emacs-mode'.
+(defvar-keymap ghostel-readonly-mode-map
+  :doc "Keymap shared by `ghostel-copy-mode' and `ghostel-emacs-mode'.
 The buffer is read-only in both modes; the only difference between
 them is whether live terminal output keeps streaming (Emacs mode)
 or is paused (copy mode).  Self-insert, RET, TAB, DEL and friends
@@ -1491,22 +1481,32 @@ cursor.
 
 When `ghostel-readonly-fast-exit' is non-nil, the additional
 bindings in `ghostel-readonly-fast-exit-mode-map' are layered on
-top so that \\`q', \\`C-g', or any self-insert key exits.")
+top so that \\`q', \\`C-g', or any self-insert key exits."
+  :parent ghostel-mode-map
+  "C-a"      #'ghostel-beginning-of-input-or-line
+  "C-y"      #'ghostel-yank
+  "M-w"      #'ghostel-readonly-copy
+  "C-w"      #'ghostel-readonly-copy
+  "M->"      #'ghostel-readonly-end-of-buffer
+  "C-e"      #'ghostel-readonly-end-of-line
+  "C-l"      #'ghostel-readonly-recenter
+  "RET"      #'ghostel-open-link-at-point
+  "<return>" #'ghostel-open-link-at-point)
+(when (eq system-type 'darwin)
+  (define-key ghostel-readonly-mode-map (kbd "s-v") #'ghostel-yank))
 
-(defvar ghostel-readonly-fast-exit-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map ghostel-readonly-mode-map)
-    ;; Normal letter keys exit and send the key to the terminal.
-    (define-key map [remap self-insert-command] #'ghostel-readonly-exit-and-send)
-    (define-key map (kbd "q")       #'ghostel-readonly-exit)
-    (define-key map (kbd "C-c C-t") #'ghostel-readonly-exit)
-    (define-key map (kbd "C-g")     #'ghostel-readonly-exit)
-    ;; C-c C-l overrides the parent's `ghostel-line-mode' binding so
-    ;; clearing scrollback from inside read-only mode also exits cleanly.
-    (define-key map (kbd "C-c C-l") #'ghostel-readonly-exit-and-clear)
-    map)
-  "Keymap layered on `ghostel-readonly-mode-map' when fast exit is on.
-See `ghostel-readonly-fast-exit'.")
+(defvar-keymap ghostel-readonly-fast-exit-mode-map
+  :doc "Keymap layered on `ghostel-readonly-mode-map' when fast exit is on.
+See `ghostel-readonly-fast-exit'."
+  :parent ghostel-readonly-mode-map
+  ;; Normal letter keys exit and send the key to the terminal.
+  "<remap> <self-insert-command>" #'ghostel-readonly-exit-and-send
+  "q"                             #'ghostel-readonly-exit
+  "C-c C-t"                       #'ghostel-readonly-exit
+  "C-g"                           #'ghostel-readonly-exit
+  ;; C-c C-l overrides the parent's `ghostel-line-mode' binding so
+  ;; clearing scrollback from inside read-only mode also exits cleanly.
+  "C-c C-l"                       #'ghostel-readonly-exit-and-clear)
 
 ;; Char mode must override minor-mode keymaps.  Without this, a user
 ;; config that binds, say, \\`C-c' as a prefix in a global minor mode
@@ -2522,29 +2522,27 @@ position (no cursor and no prompt prop)."
                    (get-text-property (1- pos) 'ghostel-prompt))
           pos))))))
 
-(defvar ghostel-line-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map ghostel-mode-map)
-    (define-key map (kbd "RET") #'ghostel-line-mode-send-or-open-link)
-    (define-key map (kbd "<return>") #'ghostel-line-mode-send-or-open-link)
-    ;; Shift-Enter inserts a literal newline in the input
-    (define-key map (kbd "S-RET") #'ghostel-line-mode-newline)
-    (define-key map (kbd "<S-return>") #'ghostel-line-mode-newline)
-    (define-key map (kbd "C-c C-c") #'ghostel-line-mode-interrupt)
-    (define-key map (kbd "C-d") #'ghostel-line-mode-delete-char-or-eof)
-    (define-key map (kbd "M-p") #'ghostel-line-mode-history-previous)
-    (define-key map (kbd "M-n") #'ghostel-line-mode-history-next)
-    (define-key map (kbd "C-a") #'ghostel-beginning-of-input-or-line)
-    (define-key map (kbd "TAB") #'ghostel-line-mode-complete-at-point)
-    (define-key map (kbd "<tab>") #'ghostel-line-mode-complete-at-point)
-    (define-key map [remap self-insert-command] #'ghostel-line-mode-self-insert)
-    map)
-  "Keymap for `ghostel-line-mode'.
+(defvar-keymap ghostel-line-mode-map
+  :doc "Keymap for `ghostel-line-mode'.
 Editing commands work on the input region;
 \\<ghostel-line-mode-map>\\[ghostel-line-mode-send-or-open-link]
 sends the whole line to the shell at once, or follows the link at
 point when one is there.  \\[ghostel-line-mode-newline] inserts a
-literal newline in the input for multi-line prompts.")
+literal newline in the input for multi-line prompts."
+  :parent ghostel-mode-map
+  "RET"        #'ghostel-line-mode-send-or-open-link
+  "<return>"   #'ghostel-line-mode-send-or-open-link
+  ;; Shift-Enter inserts a literal newline in the input
+  "S-RET"      #'ghostel-line-mode-newline
+  "S-<return>" #'ghostel-line-mode-newline
+  "C-c C-c"    #'ghostel-line-mode-interrupt
+  "C-d"        #'ghostel-line-mode-delete-char-or-eof
+  "M-p"        #'ghostel-line-mode-history-previous
+  "M-n"        #'ghostel-line-mode-history-next
+  "C-a"        #'ghostel-beginning-of-input-or-line
+  "TAB"        #'ghostel-line-mode-complete-at-point
+  "<tab>"      #'ghostel-line-mode-complete-at-point
+  "<remap> <self-insert-command>" #'ghostel-line-mode-self-insert)
 
 (defun ghostel-line-mode-send-or-open-link ()
   "Open the hyperlink at point, or send the input line if there is none."
@@ -3248,13 +3246,14 @@ with optional `bash-completion' integration controlled by
 
 ;;; Hyperlinks (OSC 8)
 
-(defvar ghostel-link-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map [mouse-1] #'ghostel-open-link-at-click)
-    (define-key map [mouse-2] #'ghostel-open-link-at-click)
-    map)
-  "Keymap for clickable hyperlinks in ghostel buffers.
-Mouse clicks on a linkified cell open the link in any input mode.")
+(defvar-keymap ghostel-link-map
+  :doc "Keymap for clickable hyperlinks in ghostel buffers.
+Mouse clicks on a linkified cell open the link in any input mode.
+
+RET not bound here so a misdetected link inside a typed command in
+semi-char/char mode never hijacks the key away from the PTY."
+  "<mouse-1>" #'ghostel-open-link-at-click
+  "<mouse-2>" #'ghostel-open-link-at-click)
 
 (defun ghostel--native-link-help-echo (window _ pos)
   "Return the native OSC8 URI for the link at POS in WINDOW.

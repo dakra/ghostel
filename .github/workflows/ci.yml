@@ -21,9 +21,12 @@ jobs:
         with:
           version: ${{ matrix.emacs_version }}
 
+      - name: Install compat
+        run: git clone --depth 1 https://github.com/emacs-compat/compat.git /tmp/compat
+
       - name: Byte-compile
         run: |
-          emacs --batch -Q -L lisp \
+          emacs --batch -Q -L /tmp/compat -L lisp \
             --eval "(setq byte-compile-error-on-warn t)" \
             -f batch-byte-compile \
             lisp/ghostel.el lisp/ghostel-compile.el \
@@ -84,9 +87,12 @@ jobs:
       - name: Install fish
         run: sudo apt-get install -y fish
 
+      - name: Install compat
+        run: git clone --depth 1 https://github.com/emacs-compat/compat.git /tmp/compat
+
       - name: Run pure Elisp tests
         run: |
-          emacs --batch -Q -L lisp \
+          emacs --batch -Q -L /tmp/compat -L lisp \
             -l ert \
             -l test/ghostel-test.el \
             -f ghostel-test-run-elisp
@@ -109,9 +115,12 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/emacs-evil/evil.git /tmp/evil
 
+      - name: Install compat
+        run: git clone --depth 1 https://github.com/emacs-compat/compat.git /tmp/compat
+
       - name: Run evil-ghostel tests
         run: |
-          emacs --batch -Q -L /tmp/evil -L lisp -L extensions/evil-ghostel \
+          emacs --batch -Q -L /tmp/compat -L /tmp/evil -L lisp -L extensions/evil-ghostel \
             -l ert \
             -l test/evil-ghostel-test.el \
             -f evil-ghostel-test-run-elisp
@@ -196,9 +205,12 @@ jobs:
         with:
           name: ghostel-module-${{ matrix.platform }}
 
+      - name: Install compat
+        run: git clone --depth 1 https://github.com/emacs-compat/compat.git /tmp/compat
+
       - name: Run native module tests
         run: |
-          emacs --batch -Q -L lisp \
+          emacs --batch -Q -L /tmp/compat -L lisp \
             -l ert \
             -l test/ghostel-test.el \
             -f ghostel-test-run-native

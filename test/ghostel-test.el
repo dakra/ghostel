@@ -8107,12 +8107,13 @@ side effects have to happen explicitly inside the command."
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-c-g-binding-routes-through-send-handler ()
-  "\\`C-g' must resolve to `ghostel-send-C-g' in semi-char and char modes.
-`ghostel--define-terminal-keys' binds every \\`C-<letter>' to a
-lambda that sends the raw control code.  Without skipping \\`C-g',
-that lambda shadows the parent `ghostel-mode-map' binding to
-`ghostel-send-C-g' and the function `deactivate-mark' plus the
-`quit-flag' clear vanish on real keypresses."
+  "Quit binding must route through the quit handler in both live input modes.
+`ghostel--define-terminal-keys' binds every control-letter to a
+lambda that sends the raw control code.  Without skipping the
+quit binding, that lambda shadows the parent `ghostel-mode-map'
+override and the function `deactivate-mark' plus the `quit-flag'
+clear vanish on real keypresses (regression of #200 introduced
+by the input-mode refactor)."
   (should (eq (lookup-key ghostel-semi-char-mode-map (kbd "C-g"))
               #'ghostel-send-C-g))
   (should (eq (lookup-key ghostel-char-mode-map (kbd "C-g"))
