@@ -16,7 +16,7 @@ const pty = @import("pty.zig");
 const c = emacs.c;
 
 /// Module version — keep in sync with ghostel.el and build.zig.zon.
-const version = "0.22.1";
+const version = "0.23.0";
 
 // ---------------------------------------------------------------------------
 // Module entry point

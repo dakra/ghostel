@@ -2,9 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.23.0] — 2026-05-08
 
 ### Added
+- Eat-style input modes.  Five modes replace the old semi-char /
+  copy duality: `semi-char` (terminal-focused default), `char`
+  (send-everything, including most Emacs prefixes), `emacs` (live
+  but read-only — buffer keeps streaming while `isearch`, `occur`,
+  `M-x`, mark + `M-w` all work over the same vocabulary that reads
+  any Emacs buffer), `copy` (frozen, point-based navigation), and
+  `line` (shell-style local edit, send whole lines on RET, with
+  filename / env / executable / pcomplete / `bash-completion`-backed
+  TAB completion, history ring on `M-p` / `M-n`, `C-c C-c` interrupt,
+  and `C-d` EOF on empty input).  Mode switches live in a slim base
+  map so they work from every live mode: `C-c C-j` semi-char,
+  `C-c M-d` char, `C-c C-e` emacs, `C-c C-t` copy, `C-c C-l` line,
+  `M-RET` escape from char mode.  Prompt navigation (`C-c M-n` /
+  `C-c M-p`) auto-enters Emacs mode so the terminal keeps running
+  while the user jumps between prompts.  Line mode discovers the
+  prompt via the terminal cursor (new
+  `ghostel--cursor-row-char-offset` Zig binding that walks the
+  cursor row's cells so wide / box-drawing glyphs map correctly),
+  refined by OSC 133 markers when present, so it works in REPLs
+  and shells without integration loaded.  README gains an "Input
+  modes" section and `evil-ghostel` now gates on semi-char
+  specifically.  Closes
+  [#40](https://github.com/dakra/ghostel/issues/40).
+- `ghostel-compile` is now read-only by default, mirroring
+  `M-x compile`: `g` reruns, `n` / `p` walk errors, RET jumps,
+  `C-c C-c` jumps, `C-c C-k` interrupts.  `C-u M-x ghostel-compile`
+  opens a writable ghostel terminal (the previous default); useful
+  for `htop`, `less`, `read -p`, test prompts.  Two new commands
+  flip a buffer between states mid-run without restarting:
+  `ghostel-compile-switch-to-interactive` (`C-c C-j`) and
+  `ghostel-compile-switch-to-readonly` (`C-c C-e`).
+  `mode-line-process` shows `:run` / `:run/i` so the current
+  state is visible at a glance.  `ghostel-recompile` and
+  `M-x revert-buffer` both preserve the launch mode of the source
+  buffer; `next-error` / `M-g n` / `M-g p` work mid-run in either
+  variant.  `ghostel-compile-global-mode` advice now routes
+  `compilation-start CMD t` to a writable ghostel terminal —
+  callers asking for the comint variant still get a real TTY,
+  just rendered by ghostel.
 - Password prompt detection.  When `sudo`, `ssh`, `gpg`, `passwd`,
   etc. ask for a password ghostel pops up `read-passwd` and sends
   the answer through the PTY — the keystrokes never flow through
@@ -23,6 +62,118 @@ All notable changes to this project will be documented in this file.
   defcustom docstring includes a TRAMP-aware
   `auth-source-pick-first-password` example.  PR
   [#241](https://github.com/dakra/ghostel/pull/241).
+- `ghostel-debug-ghostel`, a wrapper around `M-x ghostel` that
+  installs self-removing advice on `ghostel--spawn-pty` and
+  `ghostel--start-process` to capture program / args / geometry /
+  stty-flags / extra-env / process-environment, the wrapper
+  command list passed to `make-process` (caught via `cl-letf*`
+  on `make-process` so TRAMP's file handler can't rewrite it
+  before capture), per-phase spawn timings, the first ~16 KB of
+  PTY output as a `(timestamp . chunk)` event log, and the first
+  ~64 sends.  `ghostel-debug-info` renders the capture on a
+  single chronological timeline (sends and PTY output
+  interleaved) and grows a TRAMP section with `tramp-version`,
+  `tramp-terminal-type`, the resolved `tramp-direct-async-process`,
+  multi-hop length, and the local-vs-toplevel TERM divergence
+  diagnostic that surfaces when `tramp-local-environment-variable-p`
+  would silently strip the pushed TERM.
+  `C-u M-x ghostel-debug-info` on a remote buffer additionally
+  runs a single-round-trip remote probe (`infocmp`,
+  `xterm-ghostty` / `xterm-256color` terminfo,
+  `~/.local/share/ghostel/terminfo` paths, `/bin/sh` identity,
+  remote `bash --version`, `$INPUTRC`, and the first 80 lines of
+  `~/.inputrc`).  All capture lives in `ghostel-debug.el` —
+  plain `M-x ghostel` sessions are unaffected.
+- Local "Key encoding (legacy mode)" section in
+  `ghostel-debug-info` that probes a fresh terminal for the
+  chords commonly cited in inputrc reports (`C-Backspace`,
+  `M-f`, `C-M-f`, `C-M-v`, …) and shows the resulting bytes,
+  mirroring `ghostel--send-encoded`'s encoder + raw fallback so
+  the output matches what a real keystroke produces.
+- `repeat-mode` support for prompt and link navigation:
+  `C-c C-n C-n C-n` cycles hyperlinks, `C-c M-n M-n M-n` cycles
+  prompts (bare `n` / `p` work after releasing the modifier).
+  Internally, eight keymaps in `ghostel.el` are converted from
+  `let` / `define-key` blocks to `defvar-keymap`; `compat
+  30.1.0.1` is added to `Package-Requires` so `defvar-keymap` is
+  available on Emacs 28.
+
+### Changed
+- `C-M-<letter>` chords (`C-M-f`, `C-M-v`, …) are now bound in
+  `ghostel-mode-map` and routed through libghostty's encoder so
+  readline `.inputrc` rules like `"\e\C-f": dump-functions`
+  actually fire.  Without the binding, Emacs's `forward-sexp` /
+  `scroll-down-command` ran instead of reaching the shell.
+  Fixes [#239](https://github.com/dakra/ghostel/issues/239).
+- Remote spawns now apply `stty sane` as a baseline (matching
+  vterm) instead of the prior per-spawn flag list that omitted
+  `echo` on the remote path without `ghostel-tramp-shell-integration`.
+  Any upstream that left the PTY with echo cleared (TRAMP env
+  stripping, custom remote `/etc/bashrc`, old bash readline) no
+  longer produces silent input on the remote shell.  All five
+  spawn paths share a single `ghostel--default-stty` constant.
+  Fixes [#224](https://github.com/dakra/ghostel/issues/224)
+  (third iteration).
+- `ghostel--set-buffer-face` now caches the last `(FG . BG)` pair
+  and short-circuits the `face-remap` round-trip when the colors
+  haven't changed.  The render path called this on every dirty
+  redraw, and `face-remap-remove-relative` /
+  `face-remap-add-relative` each call `force-mode-line-update`
+  internally — measured at ~960 FMLU per 5s with two visible
+  buffers running spinners, dropping to ~50 after the cache.  The
+  visible symptom was the minibuffer flickering and `C-g` / RET
+  taking several attempts to land while output was streaming.
+
+### Fixed
+- `ghostel-next-prompt` / `ghostel-previous-prompt` now land
+  correctly with the realistic two-property `ghostel-prompt` /
+  `ghostel-input` row layout.  `ghostel--prompt-input-start`
+  used `skip-chars` heuristics that jumped past the last char +
+  newline for any input ending in a single-char arg (e.g.
+  `echo b`) and landed on the last word for multi-word commands;
+  previous-prompt failed to recognize point inside a
+  `ghostel-input` region or at the start of input as "still on
+  the current prompt" and snapped back to the same prompt
+  instead of the prior one.
+- `C-g` in semi-char and char input modes now reaches
+  `ghostel-send-C-g` rather than the raw `^G` lambda installed
+  by `ghostel--define-terminal-keys`.  The terminal-key loop ran
+  on the per-mode child maps and shadowed the parent's `C-g`
+  binding, re-introducing
+  [#200](https://github.com/dakra/ghostel/issues/200) —
+  `deactivate-mark` and the `quit-flag` clear were skipped.
+  The loop now skips `?g`, and char mode binds it explicitly.
+- `ghostel-readonly-copy` (`M-w` / `C-w`) and the copy-mode
+  branch of `ghostel-xterm-paste` now honour
+  `ghostel-readonly-fast-exit nil` instead of unconditionally
+  exiting copy/Emacs mode on those keys.
+- `ghostel-readonly-copy` deactivates the mark like
+  `kill-ring-save` does, so `M-w` / `C-w` no longer leaves the
+  region highlighted when `ghostel-readonly-fast-exit` is nil.
+  Closes [#238](https://github.com/dakra/ghostel/issues/238).
+- RET on a `ghostel--detect-urls`-linkified cell no longer
+  hijacks the keystroke away from the PTY in the default
+  terminal mode.  RET is dropped from `ghostel-link-map`
+  (text-property keymaps outrank even
+  `emulation-mode-map-alists`) and bound on
+  `ghostel-copy-mode-map` instead, so click is still a real
+  click in any mode but RET routes to the local map.  Link
+  detection on the cursor's own row is now skipped regardless
+  of OSC 133 state, so REPLs and shells without integration
+  loaded (Gemini CLI, raw bash, …) no longer linkify the typed
+  command.
+- In evil normal state, output that grew scrollback no longer
+  leaves point above the new prompt.  The around-redraw advice
+  used to restore point by buffer position; it now tracks the
+  buffer line where the previous redraw placed point at the
+  terminal cursor and lets the renderer's new placement stand
+  when the user has not navigated.  Closes
+  [#228](https://github.com/dakra/ghostel/issues/228).
+- `ghostel-debug-info` no longer raises `void-variable` on
+  Emacs 28/29.  `tramp-direct-async-process` was added in Emacs
+  30.1's bundled TRAMP; the variable read is guarded with
+  `boundp` and a forward `defvar` quiets
+  `byte-compile-error-on-warn` in CI.
 
 ## [0.22.1] — 2026-05-04
 
