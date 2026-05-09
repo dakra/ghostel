@@ -42,7 +42,6 @@
 (declare-function ghostel--cursor-row-text "ghostel")
 (declare-function ghostel--remote-shell-p "ghostel")
 (declare-function ghostel--password-prompt-detected-p "ghostel")
-(declare-function ghostel--cursor-position "ghostel-module" (term))
 (defvar ghostel--password-mode-p)
 
 ;; Forward declarations for TRAMP symbols read by `ghostel-debug-info'
@@ -148,10 +147,7 @@ fired but the underlying signal vanished by the time we looked again
                          :buffer (current-buffer)
                          :buffer-name (buffer-name)
                          :source (ghostel--password-prompt-detected-p)
-                         :cursor (and ghostel--term
-                                      (ignore-errors
-                                        (ghostel--cursor-position
-                                         ghostel--term)))
+                         :cursor ghostel--cursor-pos
                          :row-text (ghostel--cursor-row-text)
                          :tty (and ghostel--process
                                    (process-tty-name ghostel--process))

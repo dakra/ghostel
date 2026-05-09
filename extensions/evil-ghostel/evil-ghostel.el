@@ -27,7 +27,6 @@
 (require 'evil)
 (require 'ghostel)
 
-(declare-function ghostel--cursor-position "ghostel-module")
 (declare-function ghostel--mode-enabled "ghostel-module")
 
 (defvar evil-ghostel-mode)
@@ -102,12 +101,11 @@ right there, so PTY-routing intercepts must stand down."
 
 (defun evil-ghostel--reset-cursor-point ()
   "Move Emacs point to the terminal cursor position.
-`ghostel--cursor-position' returns row relative to the viewport
-\(the last `ghostel--term-rows' lines of the buffer), so the row
-must be offset by the scrollback line count.  Mirrors the
+`ghostel--cursor-pos' holds the viewport-relative (COL . ROW), so
+the row must be offset by the scrollback line count.  Mirrors the
 placement math the native module performs in `src/render.zig'."
   (when (and ghostel--term ghostel--term-rows)
-    (let ((pos (ghostel--cursor-position ghostel--term)))
+    (let ((pos ghostel--cursor-pos))
       (when pos
         (let ((scrollback (max 0 (- (count-lines (point-min) (point-max))
                                     ghostel--term-rows))))
@@ -117,11 +115,11 @@ placement math the native module performs in `src/render.zig'."
 
 (defun evil-ghostel--cursor-buffer-line ()
   "Return the 0-indexed buffer line of the terminal cursor, or nil.
-Translates `ghostel--cursor-position' (viewport-relative row) into a
+Translates `ghostel--cursor-pos' (viewport-relative row) into a
 buffer line by adding the scrollback line count.  Mirrors the
 placement math the native module performs in `src/render.zig'."
   (when (and ghostel--term ghostel--term-rows)
-    (let ((pos (ghostel--cursor-position ghostel--term)))
+    (let ((pos ghostel--cursor-pos))
       (when pos
         (let ((scrollback (max 0 (- (count-lines (point-min) (point-max))
                                     ghostel--term-rows))))
@@ -130,7 +128,7 @@ placement math the native module performs in `src/render.zig'."
 (defun evil-ghostel--point-viewport-row ()
   "Return the viewport row of point, 0-indexed, or nil.
 Subtracts the scrollback line count from the buffer line so the
-result is comparable to `ghostel--cursor-position''s row."
+result is comparable to `ghostel--cursor-pos''s row."
   (when ghostel--term-rows
     (let ((scrollback (max 0 (- (count-lines (point-min) (point-max))
                                 ghostel--term-rows))))
@@ -159,8 +157,8 @@ survives redraws that *don't* scroll the prompt.")
   "Pending terminal cursor (COL . VIEWPORT-ROW), or nil to read live state.
 Within a single advice call we may emit several key sequences
 \(arrow-key sync, then backspaces, then another sync) before any
-of them are echoed by the PTY.  `ghostel--cursor-position' reflects
-the live libghostty state, which lags our queued keys, so a second
+of them are echoed by the PTY.  `ghostel--cursor-pos' reflects
+the rendered state, which lags our queued keys, so a second
 sync that reads it would compute deltas from a stale baseline and
 over-correct.  The shadow models where the cursor will land once
 the queue drains; `evil-ghostel--cursor-to-point' reads it in
@@ -172,9 +170,8 @@ cannot model (Ctrl-a/e/u, paste).")
 
 (defun evil-ghostel--shadow-or-live ()
   "Return best-known terminal cursor (COL . VIEWPORT-ROW), or nil.
-Shadow value if set, otherwise the live libghostty cursor."
-  (or evil-ghostel--shadow-cursor
-      (and ghostel--term (ghostel--cursor-position ghostel--term))))
+Shadow value if set, otherwise the rendered cursor from `ghostel--cursor-pos'."
+  (or evil-ghostel--shadow-cursor ghostel--cursor-pos))
 
 (defun evil-ghostel--invalidate-shadow ()
   "Clear `evil-ghostel--shadow-cursor'.
@@ -184,7 +181,7 @@ next read falls back to the live libghostty position."
 
 (defun evil-ghostel--cursor-to-point ()
   "Move the terminal cursor to Emacs point by sending arrow keys.
-`ghostel--cursor-position' returns the row within the viewport (the
+`ghostel--cursor-pos' holds the row within the viewport (the
 last `ghostel--term-rows' lines), so the buffer line must be
 converted to a viewport row by subtracting the scrollback offset —
 otherwise dy is wrong by exactly the scrollback line count.
@@ -327,7 +324,7 @@ which the shell would interpret as history navigation."
     (if evil-ghostel--sync-inhibit
         (setq evil-ghostel--sync-inhibit nil)
       (when (evil-ghostel--active-p)
-        (let* ((tpos (ghostel--cursor-position ghostel--term))
+        (let* ((tpos ghostel--cursor-pos)
                (trow (cdr tpos))
                ;; `tpos' is viewport-relative; convert point's buffer
                ;; line to a viewport row before comparing — otherwise
@@ -478,7 +475,7 @@ typical single-line shell case) and the explicit cursor-sync +
 backspace path (when point is on a different line, the multi-line
 TUI case from issue #218)."
   (when ghostel--term
-    (let* ((tpos (ghostel--cursor-position ghostel--term))
+    (let* ((tpos ghostel--cursor-pos)
            (trow (cdr tpos))
            (scrollback (if ghostel--term-rows
                            (max 0 (- (count-lines (point-min) (point-max))

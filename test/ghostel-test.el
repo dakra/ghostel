@@ -157,60 +157,36 @@ succeeds."
 ;; -----------------------------------------------------------------------
 
 (ert-deftest ghostel-test-cursor-position ()
-  "Test `ghostel--cursor-position' returns correct (COL . ROW)."
+  "Test `ghostel--cursor-pos' set to correct (COL . ROW)."
   (let ((term (ghostel--new 25 80 1000)))
+    (ghostel--redraw term)
+
     ;; Origin
-    (should (equal '(0 . 0) (ghostel--cursor-position term)))
+    (should (equal '(0 . 0) ghostel--cursor-pos))
 
     ;; After writing text
     (ghostel--write-input term "hello")
-    (should (equal '(5 . 0) (ghostel--cursor-position term)))
+    (ghostel--redraw term)
+    (should (equal '(5 . 0) ghostel--cursor-pos))
 
     ;; After cursor movement
     (ghostel--write-input term "\e[3D")
-    (should (equal '(2 . 0) (ghostel--cursor-position term)))
+    (ghostel--redraw term)
+    (should (equal '(2 . 0) ghostel--cursor-pos))
 
     ;; After newline — cursor on row 1
     (ghostel--write-input term "\nworld")
-    (should (equal '(5 . 1) (ghostel--cursor-position term)))
+    (ghostel--redraw term)
+    (should (equal '(5 . 1) ghostel--cursor-pos))
 
     ;; Absolute positioning
     (ghostel--write-input term "\e[4;6H")
-    (should (equal '(5 . 3) (ghostel--cursor-position term)))))
+    (ghostel--redraw term)
+    (should (equal '(5 . 3) ghostel--cursor-pos))))
 
 ;; -----------------------------------------------------------------------
 ;; Test: erase sequences
 ;; -----------------------------------------------------------------------
-
-(ert-deftest ghostel-test-cursor-position-preserves-viewport ()
-  "`ghostel--cursor-position' must not move the viewport.
-The function temporarily scrolls to the bottom to query the cursor and
-must restore the previous offset.  If it leaves the viewport parked at
-`offset+len==total', the next `ghostel--redraw' mistakes that for a
-libghostty scrollback-clear and triggers a full erase + rebuild — which
-would collapse all buffer markers to `point-min'.  Anchor a marker in
-scrollback, call cursor-position, redraw, and assert the marker held."
-  (let ((buf (generate-new-buffer " *ghostel-test-cursor-pos-vp*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (let* ((term (ghostel--new 5 80 1000))
-                 (inhibit-read-only t))
-            ;; Overflow the viewport so the buffer holds real scrollback.
-            (dotimes (i 12)
-              (ghostel--write-input term (format "row-%02d\r\n" i)))
-            (ghostel--redraw term t)
-            ;; Anchor a marker on a scrolled-off row, well past `point-min'.
-            (goto-char (point-min))
-            (search-forward "row-00")
-            (let* ((target (point))
-                   (m (copy-marker target)))
-              (unwind-protect
-                  (progn
-                    (ghostel--cursor-position term)
-                    (ghostel--redraw term)
-                    (should (= target (marker-position m))))
-                (set-marker m nil)))))
-      (kill-buffer buf))))
 
 (ert-deftest ghostel-test-redraw-preserves-mark ()
   "`ghostel--redraw' must keep `mark' stable across the destructive ops.
@@ -3538,7 +3514,7 @@ below it."
                        (ghostel--flush-pending-output)
                        (let ((inhibit-read-only t))
                          (ghostel--redraw ghostel--term t))
-                       (let ((pos (ghostel--cursor-position ghostel--term))
+                       (let ((pos ghostel--cursor-pos)
                              (vp-start (ghostel--viewport-start)))
                          (and pos vp-start
                               (save-excursion
@@ -3550,7 +3526,7 @@ below it."
                                   (line-beginning-position)
                                   (line-end-position)))))))
                      15)
-                    (let* ((pos (ghostel--cursor-position ghostel--term))
+                    (let* ((pos ghostel--cursor-pos)
                            (col (car pos))
                            (row (cdr pos))
                            (vp-start (ghostel--viewport-start)))
@@ -4031,6 +4007,7 @@ a successful submission."
           (setq ghostel--term-rows 5)
           (setq ghostel--process 'fake-proc)
           (setq ghostel--password-mode-p t)
+          (ghostel--redraw ghostel--term)
           (let ((ghostel-password-prompt-functions
                  (list (lambda (_row) nil) (lambda (_row) nil))))
             (cl-letf (((symbol-function 'process-send-string)
@@ -4051,6 +4028,7 @@ a successful submission."
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 5 80 1000))
           (setq ghostel--term-rows 5)
+          (ghostel--redraw ghostel--term)
           (let ((ghostel-password-prompt-functions
                  (list (lambda (_row) (cl-incf calls) nil))))
             (cl-letf (((symbol-function 'ghostel--password-prompt-detected-p)
@@ -4089,8 +4067,7 @@ otherwise look like a fresh rising edge and pop a second
                  (list (lambda (_row) (cl-incf calls) nil))))
             (cl-letf (((symbol-function 'ghostel--password-prompt-detected-p)
                        (lambda () t))
-                      ((symbol-function 'ghostel--cursor-position)
-                       (lambda (_term) '(0 . 2))))
+                      (ghostel--cursor-pos '(0 . 2)))
               ;; Initial rising edge fires once.
               (ghostel--detect-password-prompt)
               (sleep-for 0.05)
@@ -4109,8 +4086,7 @@ otherwise look like a fresh rising edge and pop a second
             ;; the next program's prompt).  Detector must re-fire.
             (cl-letf (((symbol-function 'ghostel--password-prompt-detected-p)
                        (lambda () t))
-                      ((symbol-function 'ghostel--cursor-position)
-                       (lambda (_term) '(0 . 4))))
+                      (ghostel--cursor-pos '(0 . 4)))
               (ghostel--detect-password-prompt)
               (sleep-for 0.05)
               (should (= 2 calls)))))
@@ -5159,8 +5135,7 @@ custom MODE / NAME-FUNCTION / HIGHLIGHT-REGEXP survive a revert."
               ((symbol-function 'ghostel--new) (lambda (&rest _) 'fake))
               ((symbol-function 'ghostel--apply-palette) #'ignore)
               ((symbol-function 'ghostel--set-size) #'ignore)
-              ((symbol-function 'ghostel--cursor-position)
-               (lambda (_) (cons 0 0)))
+              (ghostel--cursor-pos (cons 0 0))
               ((symbol-function 'ghostel-compile--render-header-live)
                #'ignore)
               ((symbol-function 'ghostel-compile--spawn)
@@ -5195,8 +5170,7 @@ custom MODE / NAME-FUNCTION / HIGHLIGHT-REGEXP survive a revert."
               ((symbol-function 'ghostel--new) (lambda (&rest _) 'fake))
               ((symbol-function 'ghostel--apply-palette) #'ignore)
               ((symbol-function 'ghostel--set-size) #'ignore)
-              ((symbol-function 'ghostel--cursor-position)
-               (lambda (_) (cons 0 0)))
+              (ghostel--cursor-pos (cons 0 0))
               ((symbol-function 'ghostel-compile--render-header-live)
                #'ignore)
               ((symbol-function 'ghostel-compile--spawn)
@@ -5522,8 +5496,7 @@ the same dimensions so PTY and VT always agree."
                       (push (list rows cols) set-size-calls)))
                    ((symbol-function 'ghostel-compile--render-header-live)
                     (lambda (&rest _) (push 'render-header call-order)))
-                   ((symbol-function 'ghostel--cursor-position)
-                    (lambda (_term) (cons 0 0)))
+                   (ghostel--cursor-pos (cons 0 0))
                    ((symbol-function 'ghostel-compile--spawn)
                     (lambda (_cmd buf h w)
                       (push 'spawn call-order)
@@ -5587,8 +5560,7 @@ dimensions when no output window exists."
                     (lambda (&rest _) (setq set-size-called t)))
                    ((symbol-function 'ghostel-compile--render-header-live)
                     #'ignore)
-                   ((symbol-function 'ghostel--cursor-position)
-                    (lambda (_term) (cons 0 0)))
+                   (ghostel--cursor-pos (cons 0 0))
                    ((symbol-function 'ghostel-compile--spawn)
                     (lambda (_cmd buf _h _w)
                       (let ((p (start-process "ghostel-test-nowin-fake"
@@ -7767,15 +7739,14 @@ hand nil to the native module."
     (setq-local ghostel--saved-cursor-type 'box)
     (let ((ghostel-readonly-fake-cursor t)
           (cursor-in-non-selected-windows 'hollow))
-      (cl-letf (((symbol-function 'ghostel--cursor-buffer-pos)
-                 (lambda () 5)))
-        (goto-char 1)
-        (ghostel--fake-cursor-update)
-        (should ghostel--fake-cursor-overlay)
-        (should (= 5 (overlay-start ghostel--fake-cursor-overlay)))
-        (should (= 6 (overlay-end ghostel--fake-cursor-overlay)))
-        (should (eq 'ghostel-fake-cursor
-                    (overlay-get ghostel--fake-cursor-overlay 'face)))))))
+      (setq-local ghostel--cursor-char-pos 5)
+      (goto-char 1)
+      (ghostel--fake-cursor-update)
+      (should ghostel--fake-cursor-overlay)
+      (should (= 5 (overlay-start ghostel--fake-cursor-overlay)))
+      (should (= 6 (overlay-end ghostel--fake-cursor-overlay)))
+      (should (eq 'ghostel-fake-cursor
+                  (overlay-get ghostel--fake-cursor-overlay 'face))))))
 
 (ert-deftest ghostel-test-fake-cursor-cleared-when-point-coincides ()
   "Overlay is removed when point lands on the live cursor position."
@@ -7786,14 +7757,13 @@ hand nil to the native module."
     (setq-local ghostel--saved-cursor-type 'box)
     (let ((ghostel-readonly-fake-cursor t)
           (cursor-in-non-selected-windows 'hollow))
-      (cl-letf (((symbol-function 'ghostel--cursor-buffer-pos)
-                 (lambda () 5)))
-        (goto-char 1)
-        (ghostel--fake-cursor-update)
-        (should ghostel--fake-cursor-overlay)
-        (goto-char 5)
-        (ghostel--fake-cursor-update)
-        (should-not ghostel--fake-cursor-overlay)))))
+      (setq-local ghostel--cursor-char-pos 5)
+      (goto-char 1)
+      (ghostel--fake-cursor-update)
+      (should ghostel--fake-cursor-overlay)
+      (goto-char 5)
+      (ghostel--fake-cursor-update)
+      (should-not ghostel--fake-cursor-overlay))))
 
 (ert-deftest ghostel-test-fake-cursor-disabled-by-defcustom ()
   "No overlay is created when `ghostel-readonly-fake-cursor' is nil."
@@ -7804,11 +7774,10 @@ hand nil to the native module."
     (setq-local ghostel--saved-cursor-type 'box)
     (let ((ghostel-readonly-fake-cursor nil)
           (cursor-in-non-selected-windows 'hollow))
-      (cl-letf (((symbol-function 'ghostel--cursor-buffer-pos)
-                 (lambda () 5)))
-        (goto-char 1)
-        (ghostel--fake-cursor-update)
-        (should-not ghostel--fake-cursor-overlay)))))
+      (setq-local ghostel--cursor-char-pos 5)
+      (goto-char 1)
+      (ghostel--fake-cursor-update)
+      (should-not ghostel--fake-cursor-overlay))))
 
 (ert-deftest ghostel-test-fake-cursor-disabled-by-cinsw ()
   "No overlay when `cursor-in-non-selected-windows' resolves to nil."
@@ -7819,11 +7788,10 @@ hand nil to the native module."
     (setq-local ghostel--saved-cursor-type 'box)
     (let ((ghostel-readonly-fake-cursor t)
           (cursor-in-non-selected-windows nil))
-      (cl-letf (((symbol-function 'ghostel--cursor-buffer-pos)
-                 (lambda () 5)))
-        (goto-char 1)
-        (ghostel--fake-cursor-update)
-        (should-not ghostel--fake-cursor-overlay)))))
+      (setq-local ghostel--cursor-char-pos 5)
+      (goto-char 1)
+      (ghostel--fake-cursor-update)
+      (should-not ghostel--fake-cursor-overlay))))
 
 (ert-deftest ghostel-test-fake-cursor-not-in-semi-char ()
   "No overlay outside copy / Emacs mode."
@@ -7833,13 +7801,12 @@ hand nil to the native module."
     (setq-local ghostel--saved-cursor-type 'box)
     (let ((ghostel-readonly-fake-cursor t)
           (cursor-in-non-selected-windows 'hollow))
-      (cl-letf (((symbol-function 'ghostel--cursor-buffer-pos)
-                 (lambda () 5)))
-        (dolist (mode '(semi-char char line))
-          (setq-local ghostel--input-mode mode)
-          (goto-char 1)
-          (ghostel--fake-cursor-update)
-          (should-not ghostel--fake-cursor-overlay))))))
+      (setq-local ghostel--cursor-char-pos 5)
+      (dolist (mode '(semi-char char line))
+        (setq-local ghostel--input-mode mode)
+        (goto-char 1)
+        (ghostel--fake-cursor-update)
+        (should-not ghostel--fake-cursor-overlay)))))
 
 (ert-deftest ghostel-test-fake-cursor-box-style-uses-box-face ()
   "`box' resolution paints with the solid face."
@@ -7850,12 +7817,11 @@ hand nil to the native module."
     (setq-local ghostel--saved-cursor-type 'box)
     (let ((ghostel-readonly-fake-cursor t)
           (cursor-in-non-selected-windows 'box))
-      (cl-letf (((symbol-function 'ghostel--cursor-buffer-pos)
-                 (lambda () 5)))
-        (goto-char 1)
-        (ghostel--fake-cursor-update)
-        (should (eq 'ghostel-fake-cursor-box
-                    (overlay-get ghostel--fake-cursor-overlay 'face)))))))
+      (setq-local ghostel--cursor-char-pos 5)
+      (goto-char 1)
+      (ghostel--fake-cursor-update)
+      (should (eq 'ghostel-fake-cursor-box
+                  (overlay-get ghostel--fake-cursor-overlay 'face))))))
 
 (ert-deftest ghostel-test-fake-cursor-eol-uses-after-string ()
   "At end-of-line / end-of-buffer, the overlay uses an after-string."
@@ -7866,16 +7832,15 @@ hand nil to the native module."
     (setq-local ghostel--saved-cursor-type 'box)
     (let ((ghostel-readonly-fake-cursor t)
           (cursor-in-non-selected-windows 'hollow))
-      (cl-letf (((symbol-function 'ghostel--cursor-buffer-pos)
-                 (lambda () 4)))
-        (goto-char 1)
-        (ghostel--fake-cursor-update)
-        (should ghostel--fake-cursor-overlay)
-        (let ((after (overlay-get ghostel--fake-cursor-overlay 'after-string)))
-          (should (stringp after))
-          (should (eq 'ghostel-fake-cursor
-                      (get-text-property 0 'face after))))
-        (should (null (overlay-get ghostel--fake-cursor-overlay 'face)))))))
+      (setq-local ghostel--cursor-char-pos 4)
+      (goto-char 1)
+      (ghostel--fake-cursor-update)
+      (should ghostel--fake-cursor-overlay)
+      (let ((after (overlay-get ghostel--fake-cursor-overlay 'after-string)))
+        (should (stringp after))
+        (should (eq 'ghostel-fake-cursor
+                    (get-text-property 0 'face after))))
+      (should (null (overlay-get ghostel--fake-cursor-overlay 'face))))))
 
 (ert-deftest ghostel-test-fake-cursor-cleared-on-leave-readonly ()
   "`ghostel--leave-readonly-state' clears the overlay and the hook."
@@ -7886,16 +7851,15 @@ hand nil to the native module."
     (setq-local ghostel--saved-cursor-type 'box)
     (let ((ghostel-readonly-fake-cursor t)
           (cursor-in-non-selected-windows 'hollow))
-      (cl-letf (((symbol-function 'ghostel--cursor-buffer-pos)
-                 (lambda () 5)))
-        (goto-char 1)
-        (add-hook 'pre-redisplay-functions #'ghostel--fake-cursor-update nil t)
-        (ghostel--fake-cursor-update)
-        (should ghostel--fake-cursor-overlay)
-        (should (memq #'ghostel--fake-cursor-update pre-redisplay-functions))
-        (ghostel--leave-readonly-state)
-        (should-not ghostel--fake-cursor-overlay)
-        (should-not (memq #'ghostel--fake-cursor-update pre-redisplay-functions))))))
+      (setq-local ghostel--cursor-char-pos 5)
+      (goto-char 1)
+      (add-hook 'pre-redisplay-functions #'ghostel--fake-cursor-update nil t)
+      (ghostel--fake-cursor-update)
+      (should ghostel--fake-cursor-overlay)
+      (should (memq #'ghostel--fake-cursor-update pre-redisplay-functions))
+      (ghostel--leave-readonly-state)
+      (should-not ghostel--fake-cursor-overlay)
+      (should-not (memq #'ghostel--fake-cursor-update pre-redisplay-functions)))))
 
 (ert-deftest ghostel-test-fake-cursor-toggles-between-eol-and-mid-line ()
   "Same overlay flips between `face' and `after-string' as it crosses EOL."
@@ -7905,29 +7869,27 @@ hand nil to the native module."
     (setq-local ghostel--input-mode 'copy)
     (setq-local ghostel--saved-cursor-type 'box)
     (let ((ghostel-readonly-fake-cursor t)
-          (cursor-in-non-selected-windows 'hollow)
-          (live-pos 3))
-      (cl-letf (((symbol-function 'ghostel--cursor-buffer-pos)
-                 (lambda () live-pos)))
-        (goto-char 1)
-        ;; Mid-line: face set, no after-string.
+          (cursor-in-non-selected-windows 'hollow))
+      (setq-local ghostel--cursor-char-pos 3)
+      (goto-char 1)
+      ;; Mid-line: face set, no after-string.
+      (ghostel--fake-cursor-update)
+      (let ((ov ghostel--fake-cursor-overlay))
+        (should ov)
+        (should (eq 'ghostel-fake-cursor (overlay-get ov 'face)))
+        (should-not (overlay-get ov 'after-string))
+        ;; Move live cursor to EOL: same overlay flips to after-string.
+        (setq ghostel--cursor-char-pos 7)
         (ghostel--fake-cursor-update)
-        (let ((ov ghostel--fake-cursor-overlay))
-          (should ov)
-          (should (eq 'ghostel-fake-cursor (overlay-get ov 'face)))
-          (should-not (overlay-get ov 'after-string))
-          ;; Move live cursor to EOL: same overlay flips to after-string.
-          (setq live-pos 7)
-          (ghostel--fake-cursor-update)
-          (should (eq ov ghostel--fake-cursor-overlay))
-          (should-not (overlay-get ov 'face))
-          (should (stringp (overlay-get ov 'after-string)))
-          ;; Move back to mid-line: flips back.
-          (setq live-pos 4)
-          (ghostel--fake-cursor-update)
-          (should (eq ov ghostel--fake-cursor-overlay))
-          (should (eq 'ghostel-fake-cursor (overlay-get ov 'face)))
-          (should-not (overlay-get ov 'after-string)))))))
+        (should (eq ov ghostel--fake-cursor-overlay))
+        (should-not (overlay-get ov 'face))
+        (should (stringp (overlay-get ov 'after-string)))
+        ;; Move back to mid-line: flips back.
+        (setq ghostel--cursor-char-pos 4)
+        (ghostel--fake-cursor-update)
+        (should (eq ov ghostel--fake-cursor-overlay))
+        (should (eq 'ghostel-fake-cursor (overlay-get ov 'face)))
+        (should-not (overlay-get ov 'after-string))))))
 
 (ert-deftest ghostel-test-fake-cursor-reuses-overlay-across-positions ()
   "Successive updates with different positions reuse one overlay."
@@ -7937,19 +7899,17 @@ hand nil to the native module."
     (setq-local ghostel--input-mode 'copy)
     (setq-local ghostel--saved-cursor-type 'box)
     (let ((ghostel-readonly-fake-cursor t)
-          (cursor-in-non-selected-windows 'hollow)
-          (live-pos 3))
-      (cl-letf (((symbol-function 'ghostel--cursor-buffer-pos)
-                 (lambda () live-pos)))
-        (goto-char 1)
+          (cursor-in-non-selected-windows 'hollow))
+      (setq-local ghostel--cursor-char-pos 3)
+      (goto-char 1)
+      (ghostel--fake-cursor-update)
+      (let ((ov ghostel--fake-cursor-overlay))
+        (should ov)
+        (should (= 3 (overlay-start ov)))
+        (setq ghostel--cursor-char-pos 5)
         (ghostel--fake-cursor-update)
-        (let ((ov ghostel--fake-cursor-overlay))
-          (should ov)
-          (should (= 3 (overlay-start ov)))
-          (setq live-pos 5)
-          (ghostel--fake-cursor-update)
-          (should (eq ov ghostel--fake-cursor-overlay))
-          (should (= 5 (overlay-start ov))))))))
+        (should (eq ov ghostel--fake-cursor-overlay))
+        (should (= 5 (overlay-start ov)))))))
 
 (ert-deftest ghostel-test-fake-cursor-clears-when-term-nil ()
   "Overlay is cleared when `ghostel--term' becomes nil (process exit)."
@@ -7960,14 +7920,14 @@ hand nil to the native module."
     (setq-local ghostel--saved-cursor-type 'box)
     (let ((ghostel-readonly-fake-cursor t)
           (cursor-in-non-selected-windows 'hollow))
-      (cl-letf (((symbol-function 'ghostel--cursor-buffer-pos)
-                 (lambda () 5)))
-        (goto-char 1)
-        (ghostel--fake-cursor-update)
-        (should ghostel--fake-cursor-overlay)
-        (setq-local ghostel--term nil)
-        (ghostel--fake-cursor-update)
-        (should-not ghostel--fake-cursor-overlay)))))
+      (setq-local ghostel--cursor-char-pos 5)
+      (goto-char 1)
+      (ghostel--fake-cursor-update)
+      (should ghostel--fake-cursor-overlay)
+      (setq-local ghostel--term nil)
+      (setq-local ghostel--cursor-char-pos nil)
+      (ghostel--fake-cursor-update)
+      (should-not ghostel--fake-cursor-overlay))))
 
 ;; -----------------------------------------------------------------------
 ;; Test: ghostel-project buffer naming
@@ -10131,13 +10091,10 @@ cursor sits at the end of the `>>> ' prompt the REPL printed."
           (insert ">>> \n")
           (setq ghostel--term 'fake)
           (setq ghostel--term-rows 1)
-          (cl-letf (((symbol-function 'ghostel--cursor-position)
-                     (lambda (_term) (cons 4 0)))
-                    ((symbol-function 'ghostel--cursor-row-char-offset)
-                     (lambda (_term) 4)))
-            ;; Cursor at col 4 of row 0 → buffer position right
-            ;; after `>>> ', i.e. position 5 (1-indexed).
-            (should (= (ghostel--line-mode-find-prompt-end) 5))))
+          (setq ghostel--cursor-char-pos 5)
+          ;; Cursor at char-pos 5 → `ghostel--line-mode-find-prompt-end'
+          ;; returns 5, pointing right after `>>> '.
+          (should (= (ghostel--line-mode-find-prompt-end) 5)))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-line-mode-find-prompt-end-prefers-cursor-over-stale-prompt ()
@@ -10157,46 +10114,12 @@ onto the bash prompt."
           (insert ">>> \n")
           (setq ghostel--term 'fake)
           (setq ghostel--term-rows 3)
-          (cl-letf (((symbol-function 'ghostel--cursor-position)
-                     (lambda (_term) (cons 4 2)))
-                    ((symbol-function 'ghostel--cursor-row-char-offset)
-                     (lambda (_term) 4)))
-            (let ((pos (ghostel--line-mode-find-prompt-end)))
-              (should pos)
-              (should (string= ">>> "
-                               (buffer-substring-no-properties
-                                (- pos 4) pos))))))
-      (kill-buffer buf))))
-
-(ert-deftest ghostel-test-line-mode-find-prompt-end-uses-char-offset ()
-  "Cursor → buffer-pos uses cell-walking offset, not display columns.
-Regression for the pgtk wide-char case where Emacs `char-width'
-of e.g. a box-drawing glyph reports 2 but libghostty's grid
-treats it as 1 column.  The Zig-side `cursor-row-char-offset' is
-the source of truth so the Emacs/terminal width disagreement
-cannot misplace the input boundary."
-  (let ((buf (generate-new-buffer " *ghostel-test-line-wide*")))
-    (unwind-protect
-        (with-current-buffer buf
-          ;; Pretend a wide cell is on the row.  We don't need a real
-          ;; wide char in the buffer for this test — only that the
-          ;; offset returned by Zig drives the math (not the display
-          ;; column which `move-to-column' would use).
-          (insert "AB$ ")  ; 4 chars in buffer
-          (setq ghostel--term 'fake)
-          (setq ghostel--term-rows 1)
-          (cl-letf (((symbol-function 'ghostel--cursor-position)
-                     ;; Pretend libghostty says cursor at grid col 5
-                     ;; (e.g. 2 grid cols for `A' as a wide cell, 1
-                     ;; for `B', 1 for `$', 1 for ` ').
-                     (lambda (_term) (cons 5 0)))
-                    ((symbol-function 'ghostel--cursor-row-char-offset)
-                     ;; Cell-walking gives the actual char count: 4.
-                     (lambda (_term) 4)))
-            ;; Should land at position 5 (after the 4 buffer chars),
-            ;; matching the Zig offset — NOT what `move-to-column 5'
-            ;; would yield (which depends on `char-width').
-            (should (= (ghostel--line-mode-find-prompt-end) 5))))
+          (setq ghostel--cursor-char-pos (1- (point-max)))
+          (let ((pos (ghostel--line-mode-find-prompt-end)))
+            (should pos)
+            (should (string= ">>> "
+                             (buffer-substring-no-properties
+                              (- pos 4) pos)))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-line-mode-find-prompt-end-osc133-on-cursor-row ()
@@ -10211,11 +10134,7 @@ input already typed at the prompt)."
           (insert "ls -la")
           (setq ghostel--term 'fake)
           (setq ghostel--term-rows 1)
-          (cl-letf (((symbol-function 'ghostel--cursor-position)
-                     ;; Cursor at end of typed input.
-                     (lambda (_term) (cons 8 0)))
-                    ((symbol-function 'ghostel--cursor-row-char-offset)
-                     (lambda (_term) 8)))
+          (let ((ghostel--cursor-char-pos 8))
             ;; Prompt prefix ends at position 3 (after "$ ").
             (should (= (ghostel--line-mode-find-prompt-end) 3))))
       (kill-buffer buf))))
@@ -10248,10 +10167,7 @@ but the cursor is at the end of the REPL's prompt."
           (setq ghostel--process 'fake-proc)
           (cl-letf (((symbol-function 'ghostel--mode-enabled)
                      (lambda (&rest _) nil))
-                    ((symbol-function 'ghostel--cursor-position)
-                     (lambda (_term) (cons 4 0)))
-                    ((symbol-function 'ghostel--cursor-row-char-offset)
-                     (lambda (_term) 4))
+                    (ghostel--cursor-char-pos 4)
                     ((symbol-function 'process-live-p) (lambda (_p) t))
                     ((symbol-function 'process-send-string)
                      (lambda (_p s) (setq sent s)))
@@ -10288,10 +10204,7 @@ Regression: `ghostel--line-mode-enter' previously cleared
           (setq ghostel--process 'fake-proc)
           (cl-letf (((symbol-function 'ghostel--mode-enabled)
                      (lambda (&rest _) nil))
-                    ((symbol-function 'ghostel--cursor-position)
-                     (lambda (_term) (cons 4 0)))
-                    ((symbol-function 'ghostel--cursor-row-char-offset)
-                     (lambda (_term) 4))
+                    (ghostel--cursor-char-pos 4)
                     ((symbol-function 'ghostel--invalidate)
                      (lambda (&rest _) (cl-incf invalidate-calls)))
                     ((symbol-function 'ghostel--scroll-bottom) #'ignore)
@@ -10324,10 +10237,7 @@ the hot path."
           (setq ghostel--process 'fake-proc)
           (cl-letf (((symbol-function 'ghostel--mode-enabled)
                      (lambda (&rest _) nil))
-                    ((symbol-function 'ghostel--cursor-position)
-                     (lambda (_term) (cons 4 0)))
-                    ((symbol-function 'ghostel--cursor-row-char-offset)
-                     (lambda (_term) 4))
+                    (ghostel--cursor-char-pos 4)
                     ((symbol-function 'ghostel--invalidate)
                      (lambda (&rest _) (cl-incf invalidate-calls)))
                     ((symbol-function 'ghostel--scroll-bottom) #'ignore)
@@ -13790,7 +13700,6 @@ slip past the unit tests."
     ghostel-test-line-mode-find-prompt-end
     ghostel-test-line-mode-find-prompt-end-uses-cursor
     ghostel-test-line-mode-find-prompt-end-prefers-cursor-over-stale-prompt
-    ghostel-test-line-mode-find-prompt-end-uses-char-offset
     ghostel-test-line-mode-find-prompt-end-osc133-on-cursor-row
     ghostel-test-line-mode-requires-anchor
     ghostel-test-line-mode-enters-without-osc133

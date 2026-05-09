@@ -68,7 +68,6 @@
 (require 'ghostel)
 (require 'compile)
 
-(declare-function ghostel--cursor-position "ghostel-module" (term))
 (declare-function ghostel--new "ghostel-module")
 (declare-function ghostel--set-size "ghostel-module")
 (declare-function ghostel--write-input "ghostel-module")
@@ -749,13 +748,13 @@ any other code that walks `compilation-arguments') re-runs via
       ;; between the last output line and the footer.
       ;;
       ;; The VT cursor's row after the render is where output will go;
-      ;; use it directly (via `ghostel--cursor-position') rather than
+      ;; use it directly (via `ghostel--cursor-pos') rather than
       ;; counting source newlines in the header text — a long command
       ;; line that wraps in the terminal would desynchronise otherwise.
       (setq ghostel-compile--scan-marker
             (save-excursion
               (goto-char (point-min))
-              (forward-line (cdr (ghostel--cursor-position ghostel--term)))
+              (forward-line (cdr ghostel--cursor-pos))
               (copy-marker (point))))
       (ghostel-compile--set-mode-line-running)
       ;; Match the VT size computed above (or fall back to the selected
@@ -907,7 +906,7 @@ Bound to \\[ghostel-compile-switch-to-interactive] in
     ;; lands at the prompt, not at wherever they happened to be
     ;; navigating in the read-only buffer.
     (when ghostel--term
-      (let ((rc (ghostel--cursor-position ghostel--term)))
+      (let ((rc ghostel--cursor-pos))
         (goto-char (point-min))
         (forward-line (cdr rc))
         (move-to-column (car rc))))

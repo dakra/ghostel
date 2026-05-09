@@ -265,7 +265,7 @@ Scrollback navigation must not be disturbed by output redraws."
   "Test that `evil-ghostel--reset-cursor-point' moves point to terminal cursor."
   (evil-ghostel-test--with-buffer 5 40 "hello world"
                                   ;; Terminal cursor is at col 11, row 0
-                                  (should (equal '(11 . 0) (ghostel--cursor-position term)))
+                                  (should (equal '(11 . 0) ghostel--cursor-pos))
                                   ;; Move point somewhere else
                                   (goto-char (point-min))
                                   (should (= 0 (current-column)))
@@ -278,7 +278,7 @@ Scrollback navigation must not be disturbed by output redraws."
   "Test cursor reset with text on multiple lines."
   (evil-ghostel-test--with-buffer 5 40 "line1\nline2-text"
                                   ;; Cursor should be on row 1 (second line)
-                                  (let ((pos (ghostel--cursor-position term)))
+                                  (let ((pos ghostel--cursor-pos))
                                     (should (= 1 (cdr pos))))
                                   (goto-char (point-min))
                                   (evil-ghostel--reset-cursor-point)
@@ -286,7 +286,7 @@ Scrollback navigation must not be disturbed by output redraws."
 
 (ert-deftest evil-ghostel-test-reset-cursor-point-with-scrollback ()
   "Regression: reset-cursor-point must anchor to the viewport, not point-min.
-`ghostel--cursor-position' returns the row within the viewport (the
+`ghostel--cursor-pos' holds the row within the viewport (the
 last `ghostel--term-rows' lines of the buffer).  With scrollback
 present, interpreting the row as an offset from `point-min' lands
 point in the scrollback region instead of the visible viewport."
@@ -319,7 +319,7 @@ point in the scrollback region instead of the visible viewport."
                         (line-end-position))))
         (should (string-match-p "last-11" line-text)))
       ;; And the landing column matches the terminal cursor column.
-      (should (= (car (ghostel--cursor-position term))
+      (should (= (car ghostel--cursor-pos)
                  (current-column))))))
 
 ;; -----------------------------------------------------------------------
@@ -330,7 +330,7 @@ point in the scrollback region instead of the visible viewport."
   "Test that `evil-ghostel--cursor-to-point' sends correct arrow keys."
   (evil-ghostel-test--with-buffer 5 40 "$ echo hello world"
                                   ;; Terminal cursor at col 18, row 0
-                                  (should (equal '(18 . 0) (ghostel--cursor-position term)))
+                                  (should (equal '(18 . 0) ghostel--cursor-pos))
                                   ;; Move point to col 7 (start of "hello")
                                   (goto-char (point-min))
                                   (move-to-column 7)
@@ -348,8 +348,10 @@ point in the scrollback region instead of the visible viewport."
   "Test arrow key sending when point is to the right of terminal cursor."
   (evil-ghostel-test--with-buffer 5 40 "hello"
                                   ;; Terminal cursor at col 5
-                                  ;; Move cursor left in terminal, then move point right of it
+                                  ;; Move cursor left in terminal, then redraw so ghostel--cursor-pos
+                                  ;; reflects the new position (col 2).
                                   (ghostel--write-input term "\e[3D") ; cursor left 3 → col 2
+                                  (let ((inhibit-read-only t)) (ghostel--redraw term t))
                                   (goto-char (point-min))
                                   (move-to-column 4) ; point at col 4
                                   (let ((keys-sent '()))
@@ -374,7 +376,7 @@ point in the scrollback region instead of the visible viewport."
 
 (ert-deftest evil-ghostel-test-cursor-to-point-with-scrollback ()
   "Regression: cursor-to-point must subtract scrollback from buffer line.
-`ghostel--cursor-position' returns viewport-relative rows, so a
+`ghostel--cursor-pos' holds viewport-relative rows, so a
 buffer line N must be converted to viewport row N-scrollback before
 diffing — otherwise dy is wrong by exactly the scrollback line count
 and the helper sends arrows that move the cursor off the input."
@@ -394,7 +396,7 @@ and the helper sends arrows that move the cursor off the input."
         (ghostel--redraw term t))
       ;; Terminal cursor is on the last viewport row; move point to the
       ;; first viewport row (one row above the cursor).
-      (let* ((tpos (ghostel--cursor-position term))
+      (let* ((tpos ghostel--cursor-pos)
              (trow (cdr tpos))
              (target-viewport-row (1- trow))
              (scrollback (max 0 (- (count-lines (point-min) (point-max))
@@ -468,7 +470,7 @@ redrawing elsewhere."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 0))))
+             (ghostel--cursor-pos '(0 . 0)))
      (evil-normal-state)
      (let ((sync-called nil))
        (cl-letf (((symbol-function 'evil-ghostel--cursor-to-point)
@@ -482,7 +484,7 @@ redrawing elsewhere."
    (setq-local ghostel--term t)
    (insert "hello")
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(5 . 0))))
+             (ghostel--cursor-pos '(5 . 0)))
      (evil-normal-state)
      (goto-char (point-min))
      (move-to-column 2)
@@ -497,7 +499,7 @@ redrawing elsewhere."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 0))))
+             (ghostel--cursor-pos '(0 . 0)))
      (evil-normal-state)
      (let ((keys-sent '()))
        (cl-letf (((symbol-function 'ghostel--send-encoded)
@@ -514,7 +516,7 @@ redrawing elsewhere."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 0))))
+             (ghostel--cursor-pos '(0 . 0)))
      (evil-normal-state)
      (let ((keys-sent '()))
        (cl-letf (((symbol-function 'ghostel--send-encoded)
@@ -536,7 +538,7 @@ line the user navigated to with `kk'."
    (insert "line one\nline two\nline three")
    ;; Terminal cursor at end of line three (row 2); point on row 0.
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(10 . 2))))
+             (ghostel--cursor-pos '(10 . 2)))
      (evil-normal-state)
      (goto-char (point-min))
      (let ((keys-sent '()))
@@ -557,7 +559,7 @@ goes to the end of the last input line."
    (setq-local ghostel--term t)
    (insert "line one\nline two\nline three")
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(10 . 2))))
+             (ghostel--cursor-pos '(10 . 2)))
      (evil-normal-state)
      (goto-char (point-min))
      (let ((keys-sent '()))
@@ -579,7 +581,7 @@ the last input line — what was reported as `C deletes the last line'."
    (setq-local ghostel--term t)
    (insert "line one\nline two\nline three")
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(10 . 2))))
+             (ghostel--cursor-pos '(10 . 2)))
      (evil-normal-state)
      ;; Point at end of line one (just before the first newline).
      (goto-char (point-min))
@@ -674,7 +676,7 @@ padding that should be stripped per line."
    (insert "hello world")
    (goto-char (point-min))
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 0)))
+             (ghostel--cursor-pos '(0 . 0))
              ((symbol-function 'evil-ghostel--cursor-to-point) #'ignore))
      (evil-normal-state)
      (let ((bs-count 0))
@@ -697,7 +699,7 @@ See issue #218 for the multi-line counterpart."
    (insert "$ hello")
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
              ;; Terminal cursor on the same row as point.
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(7 . 0))))
+             (ghostel--cursor-pos '(7 . 0)))
      (evil-normal-state)
      (let ((keys-sent '()))
        (cl-letf (((symbol-function 'ghostel--send-encoded)
@@ -720,7 +722,7 @@ Same single-line shell rationale as `dd' — see
    (setq-local ghostel--term t)
    (insert "$ hello")
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(7 . 0))))
+             (ghostel--cursor-pos '(7 . 0)))
      (evil-normal-state)
      (let ((keys-sent '()))
        (cl-letf (((symbol-function 'ghostel--send-encoded)
@@ -744,7 +746,7 @@ target the line the cursor sat on (the last input line)."
    (insert "line one\nline two\nline three")
    ;; Terminal cursor reported at end of line three (col 10, row 2)
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(10 . 2))))
+             (ghostel--cursor-pos '(10 . 2)))
      (evil-normal-state)
      (goto-char (point-min))
      (let ((keys-sent '()))
@@ -776,7 +778,7 @@ on a different row than point."
                    "BBB" (make-string 77 ?\s)))
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
              ;; Terminal cursor on row 1 (BBB); point will be on row 0 (AAA).
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 1)))
+             (ghostel--cursor-pos '(0 . 1))
              ((symbol-function 'evil-ghostel--cursor-to-point) #'ignore))
      (evil-normal-state)
      (goto-char (point-min))
@@ -800,7 +802,7 @@ so calls from `evil-delete-char' (which passes only 4 args to
    (insert "hello")
    (goto-char (point-min))
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 0)))
+             (ghostel--cursor-pos '(0 . 0))
              ((symbol-function 'evil-ghostel--cursor-to-point) #'ignore)
              ((symbol-function 'ghostel--send-encoded) #'ignore))
      (evil-normal-state)
@@ -819,7 +821,7 @@ so calls from `evil-delete-char' (which passes only 4 args to
    (insert "hello world")
    (goto-char (point-min))
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 0)))
+             (ghostel--cursor-pos '(0 . 0))
              ((symbol-function 'evil-ghostel--cursor-to-point) #'ignore))
      (evil-normal-state)
      (let ((bs-count 0))
@@ -839,7 +841,7 @@ Regression: delete-func arg was not optional in advice signature."
    (insert "hello world")
    (goto-char (point-min))
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 0)))
+             (ghostel--cursor-pos '(0 . 0))
              ((symbol-function 'ghostel--send-encoded) #'ignore))
      (evil-normal-state)
      ;; evil-change-whole-line calls evil-change without delete-func
@@ -857,7 +859,7 @@ Regression: delete-func arg was not optional in advice signature."
    (insert "hello")
    (goto-char (point-min))
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 0)))
+             (ghostel--cursor-pos '(0 . 0))
              ((symbol-function 'evil-ghostel--cursor-to-point) #'ignore))
      (evil-normal-state)
      (let ((bs-count 0)
@@ -886,7 +888,7 @@ ranges don't)."
    (insert "AB   \nC")
    (goto-char (point-min))
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 0)))
+             (ghostel--cursor-pos '(0 . 0))
              ((symbol-function 'evil-ghostel--cursor-to-point) #'ignore))
      (evil-normal-state)
      (let ((bs-count 0)
@@ -914,7 +916,7 @@ ranges don't)."
    (insert "hello")
    (kill-new "world")
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 0)))
+             (ghostel--cursor-pos '(0 . 0))
              ((symbol-function 'evil-ghostel--cursor-to-point) #'ignore))
      (evil-normal-state)
      (let ((pasted nil))
@@ -934,7 +936,7 @@ ranges don't)."
    (setq-local ghostel--term t)
    (insert "hello world")
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(11 . 0))))
+             (ghostel--cursor-pos '(11 . 0)))
      (evil-insert-state)
      ;; Test a sample of keys from evil-ghostel--ctrl-passthrough-keys
      (dolist (key '("a" "d" "e" "k" "r" "u" "w" "y"))
@@ -955,7 +957,7 @@ position the cursor no longer holds."
    (setq-local ghostel--term t)
    (insert "hello")
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(5 . 0)))
+             (ghostel--cursor-pos '(5 . 0))
              ((symbol-function 'ghostel--send-encoded) #'ignore))
      (evil-insert-state)
      (setq evil-ghostel--shadow-cursor (cons 5 0))
@@ -974,7 +976,7 @@ Prevents up/down arrows being sent as history navigation."
    (insert "line one\nline two\nline three")
    ;; Terminal cursor on row 2 (last line), col 5
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(5 . 2))))
+             (ghostel--cursor-pos '(5 . 2)))
      (evil-normal-state)
      ;; Move point to row 0 (first line) simulating `kk`
      (goto-char (point-min))
@@ -1000,7 +1002,7 @@ Prevents up/down arrows being sent as history navigation."
    (insert "hello world")
    ;; Terminal cursor on row 0, col 0
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 0))))
+             (ghostel--cursor-pos '(0 . 0)))
      (evil-normal-state)
      ;; Move point to col 5 on the same row
      (goto-char (point-min))
@@ -1052,7 +1054,7 @@ become `ghostel--line-input-start' / `--line-input-end'."
   "Insert-state entry hook does not touch cursor sync in line mode.
 Point and the terminal cursor are intentionally decoupled there."
   (evil-ghostel-test--with-line-mode "$ echo hi" 3 10
-    (cl-letf (((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 0))))
+    (cl-letf ((ghostel--cursor-pos '(0 . 0)))
       (evil-normal-state)
       (let ((sync-called nil))
         (cl-letf (((symbol-function 'evil-ghostel--cursor-to-point)
@@ -1068,7 +1070,7 @@ Point and the terminal cursor are intentionally decoupled there."
    (setq-local ghostel--term t)
    (setq-local ghostel--input-mode 'copy)
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 0))))
+             (ghostel--cursor-pos '(0 . 0)))
      (evil-normal-state)
      (let ((sync-called nil))
        (cl-letf (((symbol-function 'evil-ghostel--cursor-to-point)
@@ -1144,7 +1146,7 @@ C-d (`ghostel-line-mode-delete-char-or-eof')."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(0 . 0))))
+             (ghostel--cursor-pos '(0 . 0)))
      (evil-normal-state)
      (let ((keys-sent '()))
        (cl-letf (((symbol-function 'ghostel--send-encoded)
@@ -1360,7 +1362,7 @@ sync emits zero keys once point is at col 6."
    (goto-char (point-min))
    (move-to-column 6)
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(17 . 0))))
+             (ghostel--cursor-pos '(17 . 0)))
      (let ((first-keys '()) (second-keys '()))
        (cl-letf (((symbol-function 'ghostel--send-encoded)
                   (lambda (key _mods &rest _) (push key first-keys))))
@@ -1383,7 +1385,7 @@ A follow-up `cursor-to-point' from BEG should be a no-op."
    (goto-char (point-min))
    (move-to-column 6)
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(17 . 0))))
+             (ghostel--cursor-pos '(17 . 0)))
      (cl-letf (((symbol-function 'ghostel--send-encoded) #'ignore))
        (evil-ghostel--delete-region 7 12))
      ;; Shadow is at end-col (11) - count (5) = 6, viewport row 0.
@@ -1412,7 +1414,7 @@ content."
    (goto-char (point-min))
    (move-to-column 5)  ; start of word2
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(14 . 0))))
+             (ghostel--cursor-pos '(14 . 0)))
      (let ((bs-count 0))
        (cl-letf (((symbol-function 'ghostel--send-encoded)
                   (lambda (key _mods &rest _)
@@ -1433,7 +1435,7 @@ to move the point to the beginning of the line'."
    (goto-char (point-min))
    (move-to-column 6)
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(17 . 0))))
+             (ghostel--cursor-pos '(17 . 0)))
      (let ((keys-sent '()))
        (cl-letf (((symbol-function 'ghostel--send-encoded)
                   (lambda (key _mods &rest _) (push key keys-sent))))
@@ -1467,7 +1469,7 @@ and silently undoing the user's `^' / `$' / `0' navigation."
    (insert "scroll-0\nscroll-1\nscroll-2\nscroll-3\nscroll-4\nscroll-5\nscroll-6\n$ ")
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
              ;; Cursor on the cursor's row at viewport row 4 (last).
-             ((symbol-function 'ghostel--cursor-position) (lambda (_) '(2 . 4))))
+             (ghostel--cursor-pos '(2 . 4)))
      ;; Park point at col 0 of the cursor row (buffer line 7) — this is
      ;; the same viewport row as the cursor.
      (goto-char (point-max))

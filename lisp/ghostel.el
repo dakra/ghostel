@@ -827,8 +827,6 @@ Used when `cursor-in-non-selected-windows' resolves to box.")
 
 ;; Declare native module functions for the byte compiler
 
-(declare-function ghostel--cursor-position "ghostel-module")
-(declare-function ghostel--cursor-row-char-offset "ghostel-module")
 (declare-function ghostel--encode-key "ghostel-module")
 (declare-function ghostel--focus-event "ghostel-module")
 (declare-function ghostel--mode-enabled "ghostel-module")
@@ -1130,6 +1128,12 @@ Updated whenever the terminal is created or resized.")
 (defvar-local ghostel--term-cols nil
   "Column count of the native terminal.
 Updated whenever the terminal is created or resized.")
+
+(defvar-local ghostel--cursor-pos nil
+  "The position of the terminal cursor as (COL . ROW) in terminal screen coords.")
+
+(defvar-local ghostel--cursor-char-pos nil
+  "The position of the terminal cursor in the buffer.")
 
 (defvar-local ghostel--rendered-font nil
   "The font last used for rendering. Internally used by native code.")
@@ -2383,7 +2387,7 @@ Accepts an optional unused WINDOW argument so it can serve as a
   (let ((style (and ghostel-readonly-fake-cursor
                     (memq ghostel--input-mode '(copy emacs))
                     (ghostel--fake-cursor-style)))
-        (pos (and ghostel--term (ghostel--cursor-buffer-pos))))
+        (pos ghostel--cursor-char-pos))
     (cond
      ((or (null style) (null pos) (= pos (point)))
       (ghostel--fake-cursor-clear))
@@ -2692,37 +2696,6 @@ renderer (chars typed via the PTY in a previous mode).  Cleared to
 many backspaces to erase them — keeps a subsequent send from
 duplicating the prefix when the shell echoes our line back.")
 
-(defun ghostel--cursor-buffer-pos ()
-  "Return the buffer position of the live terminal cursor, or nil.
-Maps libghostty's viewport (COL . ROW) to a buffer position: walks
-ROW lines down from `ghostel--viewport-start' (the renderer
-guarantees one buffer line per viewport row), then advances by
-the cursor's char offset within its row.  The offset comes from
-`ghostel--cursor-row-char-offset' — it counts cells, not display
-columns, so it stays correct on pgtk where Emacs `char-width'
-disagrees with libghostty's grid width for box-drawing glyphs.
-Returns nil when the cursor has no value or the native module is
-not loaded — the caller falls back accordingly."
-  (when (and ghostel--term
-             (fboundp 'ghostel--cursor-position)
-             (fboundp 'ghostel--cursor-row-char-offset))
-    ;; `ignore-errors' protects line-mode entry on a non-user-ptr
-    ;; `ghostel--term' (which the unit-test fixtures pass via 'fake).
-    ;; A real getScrollbar failure deep in libghostty would also be
-    ;; swallowed here — accepted because the fallback path
-    ;; (OSC 133 walk-back, then the entry user-error) is harmless,
-    ;; whereas surfacing a Zig signal during line-mode entry would
-    ;; just abort the mode toggle with a confusing trace.
-    (let ((cursor (ignore-errors (ghostel--cursor-position ghostel--term)))
-          (offset (ignore-errors (ghostel--cursor-row-char-offset ghostel--term)))
-          (vp-start (ghostel--viewport-start)))
-      (when (and cursor offset vp-start)
-        (save-excursion
-          (goto-char vp-start)
-          (forward-line (cdr cursor))
-          (let ((row-end (line-end-position)))
-            (min (+ (point) offset) row-end)))))))
-
 (defun ghostel--line-mode-find-prompt-end ()
   "Return the buffer position where line-mode input begins.
 The cursor's buffer position is the source of truth — whatever the
@@ -2735,7 +2708,8 @@ return the position right after the last contiguous
 `ghostel-prompt' char on that row; otherwise return the cursor
 position itself.  Returns nil when neither path can locate a
 position (no cursor and no prompt prop)."
-  (let ((cursor-pos (ghostel--cursor-buffer-pos)))
+
+  (let ((cursor-pos ghostel--cursor-char-pos))
     (cond
      (cursor-pos
       (let* ((row-start (save-excursion
@@ -4371,7 +4345,7 @@ properties, with trailing whitespace trimmed.  Returns nil for
 the empty row so callers can pass the result through `or' to a
 default."
   (when ghostel--term
-    (let ((pos (ignore-errors (ghostel--cursor-position ghostel--term)))
+    (let ((pos ghostel--cursor-pos)
           (vp-start (ghostel--viewport-start)))
       (when (and pos vp-start)
         (save-excursion
@@ -4431,8 +4405,7 @@ cursor is still on the row where the previous handler returned
 \(see `ghostel--password-handled-cursor')."
   (when ghostel-detect-password-prompts
     (let ((now (ghostel--password-prompt-detected-p))
-          (cursor (and ghostel--term
-                       (ignore-errors (ghostel--cursor-position ghostel--term)))))
+          (cursor ghostel--cursor-pos))
       (cond
        ;; Echo back on — clear all state so a future prompt re-arms.
        ((not now)
@@ -4508,9 +4481,7 @@ indicator and suppression always reach a sane state."
                          (process-live-p ghostel--process))
                 (process-send-string ghostel--process wire))
             (clear-string wire))))
-      (setq ghostel--password-handled-cursor
-            (and ghostel--term
-                 (ignore-errors (ghostel--cursor-position ghostel--term))))
+      (setq ghostel--password-handled-cursor ghostel--cursor-pos)
       (setq ghostel--password-mode-p nil)
       (ghostel--mode-line-refresh))))
 

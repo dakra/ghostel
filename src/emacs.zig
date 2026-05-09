@@ -448,6 +448,8 @@ pub const Sym = struct {
     @"ghostel--kitty-display-virtual": Value,
     @"ghostel--kitty-clear": Value,
     @"ghostel--rendered-font": Value,
+    @"ghostel--cursor-pos": Value,
+    @"ghostel--cursor-char-pos": Value,
 
     // Debugging and logging
     message: Value,

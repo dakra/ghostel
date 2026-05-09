@@ -904,6 +904,15 @@ fn renderCursor(self: *Self, env: emacs.Env) !void {
             env.moveToColumn(@as(i64, cx));
         }
 
+        _ = env.call2(
+            emacs.sym.set,
+            emacs.sym.@"ghostel--cursor-pos",
+            env.call2(emacs.sym.cons, env.makeInteger(cx), env.makeInteger(cy)),
+        );
+        _ = env.call2(emacs.sym.set, emacs.sym.@"ghostel--cursor-char-pos", env.point());
+    } else {
+        _ = env.call2(emacs.sym.set, emacs.sym.@"ghostel--cursor-pos", env.nil());
+        _ = env.call2(emacs.sym.set, emacs.sym.@"ghostel--cursor-char-pos", env.nil());
     }
 
     _ = env.call2(
