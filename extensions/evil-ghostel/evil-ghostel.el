@@ -145,6 +145,41 @@ helper is unsafe there — use `evil-ghostel--last-cursor-line' instead."
     (when cursor-line
       (= (- (line-number-at-pos (point) t) 1) cursor-line))))
 
+(defun evil-ghostel--cursor-buffer-position ()
+  "Return the buffer position at the terminal cursor's row+col, or nil.
+Translates `ghostel--cursor-pos' through the scrollback offset to a
+buffer line, then walks to the cursor's column.  Used to clamp
+forward motion at the end of input — anything past this position on
+the cursor's row is stale whitespace from a redraw that didn't emit
+`CSI K' (zsh's zle, prompt_toolkit at certain widths)."
+  (let ((line (evil-ghostel--cursor-buffer-line))
+        (cur ghostel--cursor-pos))
+    (when (and line cur)
+      (save-excursion
+        (goto-char (point-min))
+        (forward-line line)
+        (move-to-column (car cur))
+        (point)))))
+
+(defun evil-ghostel--cursor-row-has-prompt-prop-p ()
+  "Non-nil when any character on the cursor's row carries `ghostel-prompt'.
+Used by the `0'/`^' fallback to decide whether the existing
+property-scan path can locate the input start, or whether to ask
+readline directly via \\`C-a'."
+  (let ((line (evil-ghostel--cursor-buffer-line)))
+    (when line
+      (save-excursion
+        (goto-char (point-min))
+        (forward-line line)
+        (let ((bol (line-beginning-position))
+              (eol (line-end-position))
+              (found nil))
+          (while (and (< bol eol) (not found))
+            (when (get-text-property bol 'ghostel-prompt)
+              (setq found t))
+            (setq bol (1+ bol)))
+          found)))))
+
 (defvar-local evil-ghostel--last-cursor-line nil
   "Buffer line where the previous redraw placed the terminal cursor.
 Used by `evil-ghostel--around-redraw' to recognize the case where the
@@ -348,24 +383,33 @@ cursor."
 ;; Advice for beginning-of-line motions
 
 (defun evil-ghostel--around-beginning-of-line (orig-fn &rest args)
-  "Route `0' / `^' to `ghostel-beginning-of-input-or-line' on prompt rows.
+  "Route `0' / `^' to the input start, falling back through layers.
 ORIG-FN is the advised motion called with ARGS.
 
 In a shell or REPL, the literal column 0 lands point on top of the
-prompt (`$ ', `>>> ') — almost never what the user wants.  When
-point is on a row that carries the `ghostel-prompt' text property
-or the line-mode input marker, jump to the start of the editable
-input instead so `0' / `^' followed by `i' lands typing at the
-expected place, and `d0' / `c0' don't try to delete the prompt
-characters.
+prompt (`$ ', `>>> ') — almost never what the user wants.  Layers,
+in order of preference:
 
-Falls through to ORIG-FN when ghostel isn't active or the row has
-no prompt to skip — preserving standard motion semantics in
-scrollback, output, and non-prompt rows."
-  (if (or (evil-ghostel--active-p)
-          (evil-ghostel--line-mode-active-p))
-      (ghostel-beginning-of-input-or-line)
-    (apply orig-fn args)))
+1. Line mode: `ghostel--line-input-start' marker.
+2. Semi-char with `ghostel-prompt' property on the row: walk past it.
+3. Semi-char on the cursor's row, no property (no OSC 133 sourced):
+   send \\`C-a' to readline so it moves the cursor to input start.
+   `evil-ghostel--sync-point-on-next-redraw' lands point there once
+   the echo is processed.
+4. Otherwise (scrollback, no prompt to skip): default `move-beginning-
+   of-line', preserving standard motion semantics."
+  (cond
+   ((evil-ghostel--line-mode-active-p)
+    (ghostel-beginning-of-input-or-line))
+   ((and (evil-ghostel--active-p)
+         (evil-ghostel--point-on-cursor-line-p)
+         (not (evil-ghostel--cursor-row-has-prompt-prop-p)))
+    (ghostel--send-encoded "a" "ctrl")
+    (evil-ghostel--invalidate-shadow)
+    (setq evil-ghostel--sync-point-on-next-redraw t))
+   ((evil-ghostel--active-p)
+    (ghostel-beginning-of-input-or-line))
+   (t (apply orig-fn args))))
 
 
 ;; Advice for evil insert-line / append-line
@@ -418,6 +462,64 @@ cursor to point's row, then send Ctrl-e in semi-char; jump to
    (t (apply orig-fn args))))
 
 
+;; Motion clamp: stop forward motion at the terminal cursor
+
+(defconst evil-ghostel--clamped-forward-motions
+  '(evil-forward-word-begin
+    evil-forward-word-end
+    evil-forward-WORD-begin
+    evil-forward-WORD-end
+    evil-end-of-line
+    evil-end-of-visual-line
+    evil-last-non-blank)
+  "Forward/end-of-line motions that must not cross the terminal cursor.
+zsh's zle and prompt_toolkit redraw deletions by overwriting with
+spaces rather than emitting `CSI K', leaving stale whitespace cells
+in the Emacs buffer past the live end of input.  Without clamping,
+`w' / `e' / `$' walk into that region and subsequent operators
+target the wrong text — see issue #246.")
+
+(defun evil-ghostel--around-clamped-forward-motion (orig-fn &rest args)
+  "Stop forward motion at the terminal cursor when on the input row.
+ORIG-FN is the advised motion called with ARGS.  When semi-char is
+active and point is at or before the cursor's buffer position,
+narrow the buffer's upper bound to the cursor so motion cannot
+cross into stale whitespace cells.  When point is past the cursor
+\(scrollback) or off the cursor's row entirely, motion runs
+unrestricted."
+  (if (evil-ghostel--active-p)
+      (let ((cursor-pos (evil-ghostel--cursor-buffer-position)))
+        (if (and cursor-pos (<= (point) cursor-pos))
+            (save-restriction
+              (narrow-to-region (point-min) cursor-pos)
+              (apply orig-fn args))
+          (apply orig-fn args)))
+    (apply orig-fn args)))
+
+
+;; Public helpers
+
+(defun evil-ghostel-send-and-follow (key &optional modifier)
+  "Send KEY (with MODIFIER) to the terminal and let point follow.
+Like a plain `ghostel--send-encoded', but also requests that the
+next redraw move point to the new terminal cursor position
+\(rather than restoring the saved point as the redraw advice does
+in normal state by default).  Use to wrap user keybindings that
+should drive both the readline cursor and Emacs point — e.g. to
+make Home in normal state behave like readline \\`C-a':
+
+  (define-key evil-normal-state-map (kbd \"<home>\")
+    (lambda () (interactive)
+      (evil-ghostel-send-and-follow \"a\" \"ctrl\")))
+
+No-op outside semi-char (line mode owns its own input model;
+copy/emacs/char modes don't expect terminal-driven motion)."
+  (when (evil-ghostel--active-p)
+    (ghostel--send-encoded key (or modifier ""))
+    (evil-ghostel--invalidate-shadow)
+    (setq evil-ghostel--sync-point-on-next-redraw t)))
+
+
 ;; Editing primitives
 
 (defun evil-ghostel--meaningful-length (text)
@@ -764,6 +866,9 @@ state transitions."
         (advice-add 'evil-paste-before :around #'evil-ghostel--around-paste-before)
         (advice-add 'evil-undo :around #'evil-ghostel--around-undo)
         (advice-add 'evil-redo :around #'evil-ghostel--around-redo)
+        (dolist (motion evil-ghostel--clamped-forward-motions)
+          (advice-add motion :around
+                      #'evil-ghostel--around-clamped-forward-motion))
         (advice-add 'ghostel--redraw :around #'evil-ghostel--around-redraw)
         (advice-add 'ghostel--set-cursor-style :around
                     #'evil-ghostel--override-cursor-style)
@@ -785,6 +890,8 @@ state transitions."
     (advice-remove 'evil-paste-before #'evil-ghostel--around-paste-before)
     (advice-remove 'evil-undo #'evil-ghostel--around-undo)
     (advice-remove 'evil-redo #'evil-ghostel--around-redo)
+    (dolist (motion evil-ghostel--clamped-forward-motions)
+      (advice-remove motion #'evil-ghostel--around-clamped-forward-motion))
     (advice-remove 'ghostel--redraw #'evil-ghostel--around-redraw)
     (advice-remove 'ghostel--set-cursor-style
                    #'evil-ghostel--override-cursor-style)))

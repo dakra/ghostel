@@ -1322,7 +1322,10 @@ inserts at the prompt position rather than at the input start."
    ;; Mark the prompt prefix so ghostel-beginning-of-input-or-line
    ;; treats it as a prompt row.
    (put-text-property 1 3 'ghostel-prompt t)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+             ;; Cursor on the same buffer row (row 0) so the prop-scan
+             ;; branch is selected over the C-a fallback.
+             (ghostel--cursor-pos '(9 . 0)))
      (evil-normal-state)
      (goto-char (point-max))
      (evil-beginning-of-line)
@@ -1333,17 +1336,41 @@ inserts at the prompt position rather than at the input start."
      (should (= 2 (current-column))))))
 
 (ert-deftest evil-ghostel-test-beginning-of-line-falls-through-no-prompt ()
-  "On rows without a prompt property `0' / `^' keep their default
-column-0 / first-non-blank behaviour — scrollback navigation must
-not be hijacked."
+  "Off the cursor row (true scrollback) `0' / `^' keep default
+column-0 behaviour — scrollback navigation must not be hijacked
+into sending `C-a' to readline."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
-   (insert "  output line")  ; no ghostel-prompt property anywhere
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+   (insert "scrollback line\n$ ")  ; cursor on row 1, point on row 0
+   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+             ;; Cursor on row 1 (the prompt row); point will be on row 0.
+             (ghostel--cursor-pos '(2 . 1))
+             ((symbol-function 'ghostel--send-encoded)
+              (lambda (&rest _) (error "Should not send to PTY off cursor row"))))
      (evil-normal-state)
-     (goto-char (point-max))
+     (goto-char (point-min))
+     (forward-char 5)  ; somewhere on the scrollback row
      (evil-beginning-of-line)
      (should (= 0 (current-column))))))
+
+(ert-deftest evil-ghostel-test-beginning-of-line-no-prop-sends-ctrl-a ()
+  "On the cursor's row with no `ghostel-prompt' prop, `0' / `^'
+sends `C-a' to readline so it can supply the input start without
+needing OSC 133.  Verifies the fallback path used when noctuid's
+shell isn't sourcing the integration (issue #246)."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   (insert "$ command")  ; no ghostel-prompt property anywhere
+   (let ((sent nil))
+     (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+               (ghostel--cursor-pos '(9 . 0))
+               ((symbol-function 'ghostel--send-encoded)
+                (lambda (key mod) (setq sent (cons key mod)))))
+       (evil-normal-state)
+       (goto-char (point-max))
+       (evil-beginning-of-line)
+       (should (equal sent (cons "a" "ctrl")))
+       (should evil-ghostel--sync-point-on-next-redraw)))))
 
 ;; -----------------------------------------------------------------------
 ;; Test: shadow cursor (queued-key model)
@@ -1509,6 +1536,185 @@ sticks."
                                   (should (= 1 (line-number-at-pos)))))
 
 ;; -----------------------------------------------------------------------
+;; Test: motion clamp at terminal cursor (issue #246)
+;; -----------------------------------------------------------------------
+
+(ert-deftest evil-ghostel-test-clamp-forward-word-stops-at-cursor ()
+  "`w' on the cursor's row stops at the terminal cursor, not at
+trailing-whitespace cells left over from a non-CSI-K redraw.
+Mirrors zsh's zle behaviour: after deleting a word inline, zsh
+overwrites the deleted columns with spaces — those spaces end up
+in the Emacs buffer past the live end of input."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   ;; Buffer = `$ word word     ' (5 stale spaces past col 11).
+   ;; Terminal cursor sits at col 11 — the live end of input.
+   (insert "$ word word     ")
+   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+             (ghostel--cursor-pos '(11 . 0)))
+     (evil-normal-state)
+     (goto-char (point-min))
+     (forward-char 7)  ; col 7 = start of second 'word'
+     (evil-forward-word-begin 1)
+     ;; Without the clamp, evil walks past the trailing spaces and
+     ;; jumps to the next buffer line — landing point at line 2.
+     ;; With the clamp the narrow's upper bound is the cursor, so
+     ;; motion stops at end-of-narrow (the cursor itself).
+     (should (= 1 (line-number-at-pos)))
+     (should (<= (current-column) 11)))))
+
+(ert-deftest evil-ghostel-test-clamp-end-of-line-stops-at-cursor ()
+  "`$' lands at the terminal cursor's column, not on a trailing space."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   (insert "$ word     ")  ; 5 stale spaces past col 6
+   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+             (ghostel--cursor-pos '(6 . 0)))
+     (evil-normal-state)
+     (goto-char (point-min))
+     (forward-char 2)
+     (evil-end-of-line)
+     ;; Clamped: lands at col 5 (last char inside [point-min, cursor-pos)).
+     (should (= 5 (current-column))))))
+
+(ert-deftest evil-ghostel-test-clamp-no-effect-when-point-past-cursor ()
+  "When point is past the terminal cursor (scrollback / output
+above the prompt), the clamp does nothing — narrowing would cut
+point out of the visible region."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   ;; Two lines: scrollback `foo bar baz' on row 0, prompt on row 1.
+   ;; Cursor on row 1 col 2; point on row 0.
+   (insert "foo bar baz\n$ ")
+   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+             (ghostel--cursor-pos '(2 . 1)))
+     (evil-normal-state)
+     (goto-char (point-min))
+     (evil-forward-word-begin 1)
+     ;; Should land at col 4 (start of `bar') on row 0 — unrestricted.
+     (should (= 1 (line-number-at-pos)))
+     (should (= 4 (current-column))))))
+
+(ert-deftest evil-ghostel-test-clamp-disabled-outside-semi-char ()
+  "Clamp is a no-op outside semi-char so line/copy/emacs modes
+keep their default motion semantics."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   (setq-local ghostel--input-mode 'line)  ; line mode -> not active-p
+   (insert "$ word word     ")
+   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+             (ghostel--cursor-pos '(11 . 0)))
+     (evil-normal-state)
+     (goto-char (point-min))
+     (forward-char 7)
+     (evil-end-of-line)
+     ;; Unrestricted: lands at col 15 (last char of 16-col line; evil
+     ;; normal-state $ decrements one off `move-end-of-line').  Past
+     ;; the cursor at col 11 — proves the clamp is off.
+     (should (= 15 (current-column))))))
+
+(ert-deftest evil-ghostel-test-clamp-survives-operator-pending-cw ()
+  "`cw' goes through evil's operator-pending branch where
+`evil-forward-word-begin' calls `bounds-of-thing-at-point' and
+`forward-thing' instead of `evil-forward-beginning'.  All three
+must run cleanly under the clamp's `save-restriction'."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   (insert "$ word word word")
+   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+             (ghostel--cursor-pos '(16 . 0)))
+     (evil-normal-state)
+     (goto-char (point-min))
+     (forward-char 7)  ; col 7 = start of 2nd `word'
+     ;; Simulate operator-pending state: evil-state=operator and
+     ;; evil-this-operator=evil-change so the cw branch fires.
+     (let ((evil-state 'operator)
+           (evil-this-operator 'evil-change)
+           (orig (point)))
+       ;; What `cw' invokes for its end-of-range motion.
+       (evil-forward-word-begin 1)
+       ;; ce-style: lands past the end of current word — col 11.
+       (should (= 11 (current-column)))
+       (should (> (point) orig))))))
+
+(ert-deftest evil-ghostel-test-cw-end-to-end-leaves-point-at-input-start ()
+  "Drive the full `bbcw' path against a fresh `$ word word word'
+prompt and assert point ends at col 7 (the start of the changed
+word) in insert state — the user-visible expectation.
+
+The user-reported regression in issue #246 follow-up was that `cw'
+\(after `<esc>bb') moved point to col 0 in zsh / col 2 in pi
+instead of col 7.  This test exercises the full advice chain with
+mocked PTY effects."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   (insert "$ word word word")
+   (let ((sent '()))
+     (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+               (ghostel--cursor-pos '(16 . 0))
+               ((symbol-function 'ghostel--send-encoded)
+                (lambda (k m) (push (cons k m) sent))))
+       (evil-normal-state)
+       (goto-char (point-min))
+       (forward-char 7)  ; col 7 = start of 2nd `word'
+       (let ((beg (point))
+             ;; Compute END as cw would, in operator-pending semantics.
+             (end (save-excursion
+                    (let ((evil-state 'operator)
+                          (evil-this-operator 'evil-change))
+                      (evil-forward-word-begin 1))
+                    (point))))
+         (evil-change beg end 'exclusive nil nil))
+       ;; Final state: insert mode, point at BEG (col 7).
+       (should (eq evil-state 'insert))
+       (should (= 7 (current-column)))
+       (should (= 1 (line-number-at-pos)))))))
+
+(ert-deftest evil-ghostel-test-cw-then-dw-no-overdelete ()
+  "End-to-end repro for issue #246 mechanism: after a `cw' that
+leaves stale trailing whitespace (zsh-style redraw), the next
+`w' must not jump to the next buffer line, and `dw' must target
+text on the input row, not phantom-skipped content.
+
+Models the buffer state we observed in the live zsh repro:
+  cursor=(7 . 0)  buffer=`$ word word     '  point=8 col=7"
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   (insert "$ word word     ")  ; post-cw zsh state
+   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+             (ghostel--cursor-pos '(7 . 0)))
+     (evil-normal-state)
+     (goto-char (point-min))
+     (forward-char 7)  ; col 7 — same as terminal cursor
+     ;; `w' at col 7 with clamp must not jump off line 1.  Evil
+     ;; signals end-of-buffer when the narrowed region has no next
+     ;; word; that's fine — it means motion didn't escape into stale
+     ;; cells.  Point stays put.
+     (ignore-errors (evil-forward-word-begin 1))
+     (should (= 1 (line-number-at-pos)))
+     (should (<= (current-column) 7)))))
+
+;; -----------------------------------------------------------------------
+;; Test: send-and-follow public helper (issue #246 part 2b)
+;; -----------------------------------------------------------------------
+
+(ert-deftest evil-ghostel-test-send-and-follow-sets-sync-flag ()
+  "`evil-ghostel-send-and-follow' sends the encoded key and arms
+the next-redraw point sync, so user-defined normal-state
+passthrough bindings can move both the readline cursor and Emacs
+point."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   (let ((sent nil))
+     (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+               ((symbol-function 'ghostel--send-encoded)
+                (lambda (k m) (setq sent (cons k m)))))
+       (setq evil-ghostel--sync-point-on-next-redraw nil)
+       (evil-ghostel-send-and-follow "a" "ctrl")
+       (should (equal sent (cons "a" "ctrl")))
+       (should evil-ghostel--sync-point-on-next-redraw)))))
+
+;; -----------------------------------------------------------------------
 ;; Runner
 ;; -----------------------------------------------------------------------
 
@@ -1551,6 +1757,15 @@ sticks."
     evil-ghostel-test-escape-evil-fallback-when-lookup-nil
     evil-ghostel-test-beginning-of-line-skips-prompt
     evil-ghostel-test-beginning-of-line-falls-through-no-prompt
+    evil-ghostel-test-beginning-of-line-no-prop-sends-ctrl-a
+    evil-ghostel-test-clamp-forward-word-stops-at-cursor
+    evil-ghostel-test-clamp-end-of-line-stops-at-cursor
+    evil-ghostel-test-clamp-no-effect-when-point-past-cursor
+    evil-ghostel-test-clamp-disabled-outside-semi-char
+    evil-ghostel-test-clamp-survives-operator-pending-cw
+    evil-ghostel-test-cw-end-to-end-leaves-point-at-input-start
+    evil-ghostel-test-cw-then-dw-no-overdelete
+    evil-ghostel-test-send-and-follow-sets-sync-flag
     evil-ghostel-test-shadow-cursor-tracks-cursor-to-point
     evil-ghostel-test-shadow-cursor-tracks-delete-region
     evil-ghostel-test-delete-word-with-trailing-space
