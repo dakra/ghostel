@@ -635,6 +635,115 @@ not clobbered."
       (when (buffer-live-p buf) (kill-buffer buf)))))
 
 ;; -----------------------------------------------------------------------
+;; Test: hidden buffer behavior
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-delayed-redraw-skips-native-redraw-without-window ()
+  "When the buffer has no window, `ghostel--delayed-redraw' must not call \
+`ghostel--redraw'."
+  (let ((buf (generate-new-buffer " *ghostel-test-no-window-redraw*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term t)
+                (redraw-called nil))
+            (cl-letf (((symbol-function 'ghostel--flush-pending-output) #'ignore)
+                      ((symbol-function 'ghostel--mode-enabled)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'ghostel--correct-mangled-scroll-positions)
+                       #'ignore)
+                      ((symbol-function 'ghostel--redraw)
+                       (lambda (&rest _) (setq redraw-called t)))
+                      ((symbol-function 'get-buffer-window-list)
+                       (lambda (&rest _) nil)))
+              (ghostel--delayed-redraw buf)
+              (should-not redraw-called))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-defers-redraw-while-hidden ()
+  "Buffer is not redrawn while hidden.
+When the buffer reappears, it is immediately redrawn."
+  (let* ((win (selected-window))
+         (orig-buf (window-buffer win))
+         (buf (generate-new-buffer " *ghostel-test-hidden-defer*")))
+    (unwind-protect
+        (progn
+          (set-window-buffer win buf)
+          (with-current-buffer buf
+            (ghostel-mode)
+            (let* ((term (ghostel--new 5 40 100))
+                   (ghostel--term term)
+                   (ghostel--term-rows 5)
+                   (inhibit-read-only t))
+              (ghostel--write-input term "initial\r\n")
+              (ghostel--redraw term t)
+              (should (string-match-p "initial" (buffer-string)))
+
+              ;; Hide the buffer.
+              (set-window-buffer win orig-buf)
+
+              ;; Output arrives while hidden but does not appear; make
+              ;; run-with-timer fire synchronously so no sleep is needed.
+              (ghostel--write-input term "while-hidden\r\n")
+              (cl-letf (((symbol-function 'run-with-timer)
+                         (lambda (_delay _repeat fn &rest args)
+                           (apply fn args) nil)))
+                (ghostel--invalidate))
+
+              ;; Redraw blocked: buffer still shows the old content.
+              (should-not (string-match-p "while-hidden" (buffer-string)))
+
+              ;; Reshow the buffer; hook calls ghostel--invalidate again.
+              (set-window-buffer win buf)
+              (cl-letf (((symbol-function 'run-with-timer)
+                         (lambda (_delay _repeat fn &rest args)
+                           (apply fn args) nil)))
+                (run-hook-with-args 'window-buffer-change-functions win))
+
+              (should (string-match-p "while-hidden" (buffer-string))))))
+      (set-window-buffer win orig-buf)
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-pty-output-is-processed-when-buffer-is-hidden ()
+  "Output is processed but not drawn while the buffer is hidden.
+When the buffer reappears, it is immediately redrawn."
+  (let* ((win (selected-window))
+         (orig-buf (window-buffer win))
+         (buf (generate-new-buffer " *ghostel-test-hidden-defer*")))
+    (unwind-protect
+        (progn
+          (set-window-buffer win buf)
+          (with-current-buffer buf
+            (ghostel-mode)
+            (let* ((term (ghostel--new 5 40 100))
+                   (ghostel--term term)
+                   (ghostel--term-rows 5)
+                   (inhibit-read-only t))
+              (ghostel--write-input term "initial\r\n")
+              (ghostel--redraw term t)
+              (should (string-match-p "initial" (buffer-string)))
+
+              ;; Hide the buffer.
+              (set-window-buffer win orig-buf)
+
+              ;; Simulate process output; make run-with-timer fire
+              ;; synchronously so no sleep is needed.
+              (cl-letf (((symbol-function 'run-with-timer)
+                         (lambda (_delay _repeat fn &rest args)
+                           (apply fn args) nil))
+                        ((symbol-function 'process-buffer)
+                         (lambda (_) buf)))
+                (ghostel--filter nil "while-hidden\r\n"))
+              (should-not (string-match-p "while-hidden" (buffer-string)))
+
+              ;; Output should have been processed so force redrawing should
+              ;; show it:
+              (ghostel--redraw term)
+              (should (string-match-p "while-hidden" (buffer-string))))))
+      (set-window-buffer win orig-buf)
+      (kill-buffer buf))))
+
+;; -----------------------------------------------------------------------
 ;; Test: clear screen (ghostel-clear)
 ;; -----------------------------------------------------------------------
 
@@ -13876,7 +13985,8 @@ slip past the unit tests."
     ghostel-test-kitty-display-image-records-error
     ghostel-test-kitty-display-image-rejects-source-rect
     ghostel-test-kitty-display-image-clamps-negative-vp-col
-    ghostel-test-kitty-display-image-fully-off-screen-skipped)
+    ghostel-test-kitty-display-image-fully-off-screen-skipped
+    ghostel-test-delayed-redraw-skips-native-redraw-without-window)
   "Tests that require only Elisp (no native module).")
 
 (defun ghostel-test-run-elisp ()
