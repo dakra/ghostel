@@ -1131,6 +1131,9 @@ Updated whenever the terminal is created or resized.")
   "Column count of the native terminal.
 Updated whenever the terminal is created or resized.")
 
+(defvar-local ghostel--rendered-font nil
+  "The font last used for rendering. Internally used by native code.")
+
 (defvar-local ghostel--input-mode 'semi-char
   "Current input mode.
 One of `semi-char', `char', `copy', `emacs', or `line'.  See
@@ -1211,11 +1214,6 @@ to a non-`point-min' non-saved position (e.g. programmatic
 saved key is refreshed to the new content and the original scroll
 intent is lost.  That's an accepted tradeoff for avoiding a
 `post-command-hook' that would fire on every keystroke.")
-
-(defvar-local ghostel--has-wide-chars nil
-  "Set by the native renderer when wide characters are present.
-Cleared before each redraw; checked afterwards to decide whether
-pixel-based trailing-space compensation is needed.")
 
 (defvar-local ghostel--kitty-active nil
   "Non-nil when kitty image overlays are present in the buffer.")
@@ -3730,41 +3728,6 @@ when called from the deferred-detection timer outside the redraw scope."
                               #'ghostel--run-queued-plain-link-detection
                               (current-buffer)))))))
 
-(defun ghostel--compensate-wide-chars ()
-  "Shrink trailing spaces on lines where wide-char glyphs cause pixel overflow.
-Emoji glyphs often render wider than `char-width' times `frame-char-width'
-pixels, making the display engine treat the line as wider than the window
-even though `string-width' equals the terminal column count.  For each
-overflowing line we replace the trailing whitespace with a single stretch
-glyph of exactly the remaining pixel width."
-  (let ((win (get-buffer-window)))
-    (when (and win (display-graphic-p))
-      (let ((win-w (window-body-width win t))
-            (inhibit-read-only t))
-        (save-excursion
-          (goto-char (point-min))
-          (while (not (eobp))
-            (let* ((bol (line-beginning-position))
-                   (eol (line-end-position))
-                   (spaces-start (save-excursion
-                                   (goto-char eol)
-                                   (skip-chars-backward " " bol)
-                                   (point)))
-                   (avail (- eol spaces-start)))
-              (when (> avail 0)
-                ;; Strip stale compensation so pixel measurement is accurate.
-                (remove-text-properties spaces-start eol '(display nil))
-                (let* ((content-pw (car (window-text-pixel-size win bol spaces-start)))
-                       (remaining (max 0 (- win-w content-pw)))
-                       (natural-pw (* avail (frame-char-width (window-frame win)))))
-                  ;; Only compensate when we would shrink the trailing spaces;
-                  ;; never widen them as that could introduce truncation on
-                  ;; lines that fit naturally.
-                  (when (< remaining natural-pw)
-                    (put-text-property spaces-start eol 'display
-                                       `(space :width (,remaining)))))))
-            (forward-line 1)))))))
-
 
 ;;; Kitty graphics protocol
 
@@ -4888,13 +4851,8 @@ Call this after changing the Emacs theme so terminals match."
       (when (and (derived-mode-p 'ghostel-mode) ghostel--term)
         (ghostel--apply-palette ghostel--term)
         (when (ghostel--terminal-live-p)
-          (let ((inhibit-read-only t)
-                (snap (and (eq ghostel--input-mode 'line)
-                           (ghostel--line-mode-snapshot))))
-            (ghostel--redraw ghostel--term)
-            (when snap
-              (ghostel--line-mode-restore snap))
-            (ghostel--schedule-link-detection)))))))
+          (setq ghostel--force-next-redraw t)
+          (ghostel--delayed-redraw buf))))))
 
 (defun ghostel--on-theme-change (&rest _args)
   "Hook function to sync terminal colors after theme change."
@@ -5575,6 +5533,16 @@ on the remote host."
 (defvar-local ghostel--last-output-time nil
   "Time of the last process output, for adaptive frame rate.")
 
+(defun ghostel--get-render-window (buffer)
+  "Return a live window showing BUFFER.
+Used as the reference window for determining graphics properties when
+rendering, such as fonts and glyph sizes.  Prefer graphical windows over
+terminal windows."
+  (let ((wins (get-buffer-window-list buffer nil t)))
+    (or (cl-find-if (lambda (w) (display-graphic-p (window-frame w)))
+                    wins)
+        (car wins))))
+
 (defun ghostel--invalidate ()
   "Schedule a redraw after a short delay.
 With `ghostel-adaptive-fps', use a shorter delay for the first
@@ -5887,7 +5855,6 @@ new output arrives."
           ;; post-pause input mode and skips its own capture.
           (ghostel--line-mode-pre-redraw)
           (setq ghostel--force-next-redraw nil)
-          (setq ghostel--has-wide-chars nil)
           (ghostel--correct-mangled-scroll-positions buffer)
           (let* ((preedit-state (ghostel--capture-preedit-state))
                  (preedit-window (plist-get preedit-state :window))
@@ -5898,6 +5865,7 @@ new output arrives."
                   (mapcar #'ghostel--capture-window-state
                           (cl-remove-if #'ghostel--window-anchored-p
                                         all-windows)))
+                 (render-win (ghostel--get-render-window buffer))
                  ;; In Emacs mode the buffer-point is normally
                  ;; decoupled from the terminal cursor.  Stash a
                  ;; marker so we can restore it after the renderer
@@ -5922,9 +5890,9 @@ new output arrives."
                  (inhibit-read-only t)
                  (inhibit-redisplay t)
                  (inhibit-modification-hooks t))
-            (ghostel--redraw ghostel--term ghostel-full-redraw)
-            (when ghostel--has-wide-chars
-              (ghostel--compensate-wide-chars))
+            (when render-win
+              (with-selected-window render-win
+                (ghostel--redraw ghostel--term ghostel-full-redraw)))
             (let ((line-restored
                    (and line-snapshot
                         (ghostel--line-mode-restore line-snapshot))))
@@ -5973,17 +5941,15 @@ new output arrives."
           (setq ghostel--windows-needing-snap nil))
         (ghostel--detect-password-prompt)))))
 
-
 (defun ghostel-force-redraw ()
-  "Force a full terminal redraw (for debugging)."
+  "Force a full terminal redraw on the next display cycle.
+Cancels any pending redraw timer and schedules an immediate one.
+Requires the buffer to be visible in a window; has no effect otherwise."
   (interactive)
-  (when ghostel--term
-    (setq ghostel--has-wide-chars nil)
-    (let ((inhibit-read-only t))
-      (ghostel--redraw ghostel--term ghostel-full-redraw))
-    (when ghostel--has-wide-chars
-      (ghostel--compensate-wide-chars))
-    (ghostel--schedule-link-detection)))
+  (when ghostel--redraw-timer
+    (cancel-timer ghostel--redraw-timer)
+    (setq ghostel--redraw-timer nil))
+  (ghostel--delayed-redraw (current-buffer)))
 
 
 ;;; Window resize

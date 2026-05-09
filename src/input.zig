@@ -59,8 +59,8 @@ pub fn encodeAndSendMouse(env: emacs.Env, term: *Terminal, action: i64, button: 
     // Set size: 1 pixel = 1 cell so Emacs cell coords map directly
     var size: gt.c.GhosttyMouseEncoderSize = .{
         .size = @sizeOf(gt.c.GhosttyMouseEncoderSize),
-        .screen_width = term.size.cols,
-        .screen_height = term.size.rows,
+        .screen_width = term.renderer.size.cols,
+        .screen_height = term.renderer.size.rows,
         .cell_width = 1,
         .cell_height = 1,
         .padding_top = 0,

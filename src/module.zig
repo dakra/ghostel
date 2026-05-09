@@ -7,7 +7,6 @@ const std = @import("std");
 const emacs = @import("emacs.zig");
 const Terminal = @import("terminal.zig");
 const gt = @import("ghostty.zig");
-const render = @import("render.zig");
 const input = @import("input.zig");
 const kitty_graphics = @import("kitty_graphics.zig");
 const sys = @import("sys.zig");
@@ -757,7 +756,7 @@ fn fnRedraw(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*
         defer vt_log_env = null;
     }
 
-    render.redraw(env, term, force_full) catch |err| {
+    term.renderer.redraw(env, term, force_full) catch |err| {
         env.logStackTrace(@errorReturnTrace());
         env.signalErrorf("Redraw failed: {s}", .{@errorName(err)});
         return env.nil();
@@ -1370,8 +1369,8 @@ fn deviceAttributesCallback(_: gt.Terminal, _: ?*anyopaque, out: [*c]gt.DeviceAt
 fn sizeCallback(_: gt.Terminal, userdata: ?*anyopaque, out: [*c]gt.SizeReportSize) callconv(.c) bool {
     const term: *Terminal = @ptrCast(@alignCast(userdata));
     out[0] = .{
-        .rows = term.size.rows,
-        .columns = term.size.cols,
+        .rows = term.renderer.size.rows,
+        .columns = term.renderer.size.cols,
         .cell_width = term.cell_width_px,
         .cell_height = term.cell_height_px,
     };
@@ -1480,7 +1479,7 @@ fn fnUriAt(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*anyop
         return env.nil();
     };
 
-    if (col < 0 or col >= term.size.cols) return env.nil();
+    if (col < 0 or col >= term.renderer.size.cols) return env.nil();
     // The Emacs buffer always carries a trailing newline, so the line
     // immediately after the last content row produces row_from_bottom == 0.
     if (row_from_bottom <= 0 or row_from_bottom > total_rows) return env.nil();

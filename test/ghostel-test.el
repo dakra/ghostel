@@ -367,6 +367,7 @@ attached."
   (let ((buf (generate-new-buffer " *ghostel-test-sb-url*")))
     (unwind-protect
         (with-current-buffer buf
+          (set-window-buffer (selected-window) (current-buffer))
           (ghostel-mode)
           (let* ((term (ghostel--new 5 80 1000))
                  (ghostel--term term)
@@ -532,6 +533,7 @@ unlike semi-char mode where it tracks the terminal cursor."
   (let ((buf (generate-new-buffer " *ghostel-test-emacs-pt*")))
     (unwind-protect
         (with-current-buffer buf
+          (set-window-buffer (selected-window) buf)
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 5 80 1000))
           (setq ghostel--term-rows 5)
@@ -614,6 +616,7 @@ not clobbered."
   (let ((buf (generate-new-buffer " *ghostel-test-line-live*")))
     (unwind-protect
         (with-current-buffer buf
+          (set-window-buffer (selected-window) buf)
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 5 80 1000))
           (setq ghostel--term-rows 5)
@@ -5975,6 +5978,7 @@ for new size inside BSU/ESU → verify buffer shows new content."
   (let ((buf (generate-new-buffer " *ghostel-test-resize-redraw*")))
     (unwind-protect
         (with-current-buffer buf
+          (set-window-buffer (selected-window) (current-buffer))
           (ghostel-mode)
           (let* ((term (ghostel--new 10 40 100))
                  (ghostel--term term)
@@ -7362,6 +7366,7 @@ app redraws all rows at new width via the filter pipeline."
   (let ((buf (generate-new-buffer " *ghostel-test-width-change*")))
     (unwind-protect
         (with-current-buffer buf
+          (set-window-buffer (selected-window) (current-buffer))
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 6 80 100))
           (let* ((proc (start-process "ghostel-test-w" buf "sleep" "60"))
@@ -7423,6 +7428,7 @@ rendered by `ghostel--delayed-redraw'.  This is the exact real-world path."
   (let ((buf (generate-new-buffer " *ghostel-test-pipeline*")))
     (unwind-protect
         (with-current-buffer buf
+          (set-window-buffer (selected-window) (current-buffer))
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 10 40 100))
           (let* ((process-environment
@@ -7492,7 +7498,7 @@ rendered by `ghostel--delayed-redraw'.  This is the exact real-world path."
     (cl-letf (((symbol-function 'ghostel--apply-palette)
                (lambda (term) (push term palette-calls)))
               ((symbol-function 'ghostel--redraw)
-               (lambda (term) (push term redraw-calls)))
+               (lambda (term _) (push term redraw-calls)))
               ((symbol-function 'ghostel--schedule-link-detection)
                (lambda (&rest _args)
                  (setq post-process-calls (1+ post-process-calls)))))
@@ -7507,6 +7513,7 @@ rendered by `ghostel--delayed-redraw'.  This is the exact real-world path."
                 (setq ghostel--term 'fake-term)
                 (setq ghostel--input-mode 'semi-char)
                 (setq ghostel-enable-url-detection t))
+              (set-window-buffer (selected-window) buf)
               ;; `other' is not a ghostel buffer and should be ignored.
               (ghostel-sync-theme)
               (should (memq 'fake-term palette-calls))

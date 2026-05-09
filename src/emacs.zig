@@ -61,8 +61,16 @@ pub const Env = struct {
 
     // --- Type constructors ---
 
+    pub fn makeList(self: Env, items: []const Value) Value {
+        return self.funcall(sym.list, @constCast(items));
+    }
+
     pub fn makeInteger(self: Env, n: i64) Value {
         return self.raw.make_integer.?(self.raw, @intCast(n));
+    }
+
+    pub fn makeFloat(self: Env, n: f64) Value {
+        return self.raw.make_float.?(self.raw, n);
     }
 
     pub fn makeString(self: Env, str: []const u8) Value {
@@ -82,6 +90,10 @@ pub const Env = struct {
 
     pub fn extractInteger(self: Env, val: Value) i64 {
         return @intCast(self.raw.extract_integer.?(self.raw, val));
+    }
+
+    pub fn extractFloat(self: Env, val: Value) f64 {
+        return self.raw.extract_float.?(self.raw, val);
     }
 
     pub fn extractString(self: Env, val: Value, buf: []u8) ?[]const u8 {
@@ -124,6 +136,10 @@ pub const Env = struct {
 
     // --- Type checking ---
 
+    pub fn isNil(self: Env, val: Value) bool {
+        return !self.isNotNil(val);
+    }
+
     pub fn isNotNil(self: Env, val: Value) bool {
         return self.raw.is_not_nil.?(self.raw, val);
     }
@@ -140,6 +156,20 @@ pub const Env = struct {
 
     pub fn freeGlobalRef(self: Env, val: Value) void {
         self.raw.free_global_ref.?(self.raw, val);
+    }
+
+    // --- Vectors ---
+
+    pub fn vecGet(self: Env, vec: Value, i: c_long) Value {
+        return self.raw.vec_get.?(self.raw, vec, i);
+    }
+
+    pub fn vecSet(self: Env, vec: Value, i: c_long, value: Value) void {
+        self.raw.vec_set.?(self.raw, vec, i, value);
+    }
+
+    pub fn vecSize(self: Env, vec: Value) c_long {
+        return self.raw.vec_size.?(self.raw, vec);
     }
 
     // --- Non-local exit handling ---
@@ -352,10 +382,12 @@ pub const Sym = struct {
     dot: Value,
     dash: Value,
     line: Value,
+    @":font": Value,
 
     // Built-in functions
     cons: Value,
     list: Value,
+    set: Value,
     @"symbol-value": Value,
     @"put-text-property": Value,
     @"goto-char": Value,
@@ -374,13 +406,25 @@ pub const Sym = struct {
     @"marker-position": Value,
     @"set-marker": Value,
     ding: Value,
+    @"face-attribute": Value,
+    @"query-font": Value,
+    @"font-at": Value,
+    @"font-get-glyphs": Value,
+    @"selected-window": Value,
+    fontp: Value,
+    @"font-object": Value,
+    @"font-has-char-p": Value,
 
-    // Text property names
+    // Text properties
     face: Value,
     @"help-echo": Value,
     @"mouse-face": Value,
     highlight: Value,
     keymap: Value,
+    default: Value,
+    display: Value,
+    @"min-width": Value,
+    height: Value,
     @"ghostel-wrap": Value,
     @"ghostel-prompt": Value,
     @"ghostel-input": Value,
@@ -388,7 +432,6 @@ pub const Sym = struct {
     // Ghostel symbols
     @"ghostel-link-map": Value,
     @"ghostel--set-buffer-face": Value,
-    @"ghostel--has-wide-chars": Value,
     @"ghostel--set-cursor-style": Value,
     @"ghostel--update-directory": Value,
     @"ghostel--osc51-eval": Value,
@@ -404,6 +447,7 @@ pub const Sym = struct {
     @"ghostel--kitty-display-image": Value,
     @"ghostel--kitty-display-virtual": Value,
     @"ghostel--kitty-clear": Value,
+    @"ghostel--rendered-font": Value,
 
     // Debugging and logging
     message: Value,

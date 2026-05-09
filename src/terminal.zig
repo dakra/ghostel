@@ -1,10 +1,13 @@
 /// Terminal state management wrapping libghostty-vt.
 ///
-/// Holds the GhosttyTerminal, RenderState, and associated iterators.
-/// All ghostty resources are created and destroyed together.
+/// Holds the resources for a single instance of a Ghostel terminal
+///
 const std = @import("std");
-const gt = @import("ghostty.zig");
+
 const emacs = @import("emacs.zig");
+const gt = @import("ghostty.zig");
+const Renderer = @import("Renderer.zig");
+
 const Self = @This();
 
 /// The libghostty terminal handle.
@@ -25,23 +28,12 @@ key_encoder: gt.c.GhosttyKeyEncoder,
 /// Mouse encoder for translating mouse events to escape sequences.
 mouse_encoder: gt.c.GhosttyMouseEncoder,
 
-/// Terminal viewport dimensions.
-size: ViewportSize,
-
-/// Any pending resize as `.{cols, rows}`. Resizes are comitted on next redraw.
-pending_resize: ?ViewportSize = null,
-
 /// Cell pixel dimensions, used to answer XTWINOPS CSI 14/16/18 t
 /// queries.  Updated on every resize.  Initialized to 1x1 — apps
 /// querying before the first resize will get a degenerate answer
 /// rather than zero (which some apps treat as "no support").
 cell_width_px: u32 = 1,
 cell_height_px: u32 = 1,
-
-/// Number of libghostty rows already materialized into the Emacs buffer. Polled
-/// on each redraw; kept in sync by appending newly-scrolled-off rows and
-/// trimming rows evicted by libghostty's scrollback cap.
-rows_in_buffer: usize = 0,
 
 /// True iff the last byte of the previous `fnWriteInput` input was
 /// `\r`. Carries the bare-LF detection state across write-input calls
@@ -55,10 +47,10 @@ rows_in_buffer: usize = 0,
 /// new.
 last_input_was_cr: bool = false,
 
+renderer: Renderer,
+
 /// Cached Emacs env pointer — only valid during a callback from Emacs.
 env: ?emacs.Env = null,
-
-const ViewportSize = struct { cols: u16, rows: u16 };
 
 /// Create a new terminal with the given dimensions and scrollback.
 pub fn init(cols: u16, rows: u16, max_scrollback: usize) !Self {
@@ -104,6 +96,12 @@ pub fn init(cols: u16, rows: u16, max_scrollback: usize) !Self {
     }
     errdefer gt.c.ghostty_mouse_encoder_free(mouse_encoder);
 
+    // Enable grapheme clustering since that is how Emacs will render it anyway
+    const mode_grapheme = gt.c.ghostty_mode_new(@as(c_int, 2027), false);
+    if (gt.c.ghostty_terminal_mode_set(terminal, mode_grapheme, true) != gt.SUCCESS) {
+        return error.EnableGraphemeClusteringFailed;
+    }
+
     return .{
         .terminal = terminal,
         .render_state = render_state,
@@ -111,12 +109,13 @@ pub fn init(cols: u16, rows: u16, max_scrollback: usize) !Self {
         .row_cells = row_cells,
         .key_encoder = key_encoder,
         .mouse_encoder = mouse_encoder,
-        .size = .{ .cols = cols, .rows = rows },
+        .renderer = try .init(cols, rows),
     };
 }
 
 /// Free all ghostty resources.
 pub fn deinit(self: *Self) void {
+    self.renderer.deinit();
     gt.c.ghostty_mouse_encoder_free(self.mouse_encoder);
     gt.c.ghostty_key_encoder_free(self.key_encoder);
     gt.c.ghostty_render_state_row_cells_free(self.row_cells);
@@ -237,7 +236,7 @@ pub fn vtWrite(self: *Self, data: []const u8) void {
 /// to ensure that the we fully render the very latest state in case any rows
 /// get promoted to scrollback due to vertical shrinking of the viewport.
 pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) void {
-    self.pending_resize = .{ .cols = cols, .rows = rows };
+    self.renderer.resize(cols, rows);
     self.cell_width_px = cell_w;
     self.cell_height_px = cell_h;
 }
