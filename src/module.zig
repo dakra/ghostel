@@ -356,10 +356,7 @@ fn dispatchPostWriteOscs(env: emacs.Env, term: *Terminal, data: []const u8) void
             // OSC 51;E: whitelisted Elisp eval (ghostel extension).
             51 => {
                 if (osc.payload.len < 2 or osc.payload[0] != 'E') continue;
-                _ = env.call1(
-                    emacs.sym.@"ghostel--osc51-eval",
-                    env.makeString(osc.payload[1..]),
-                );
+                _ = env.f("ghostel--osc51-eval", .{osc.payload[1..]});
             },
             // OSC 52: clipboard set.  Queries ("?") are ignored.
             52 => {
@@ -368,11 +365,7 @@ fn dispatchPostWriteOscs(env: emacs.Env, term: *Terminal, data: []const u8) void
                 const b64 = osc.payload[semi + 1 ..];
                 if (b64.len == 0) continue;
                 if (b64.len == 1 and b64[0] == '?') continue;
-                _ = env.call2(
-                    emacs.sym.@"ghostel--osc52-handle",
-                    env.makeString(selection),
-                    env.makeString(b64),
-                );
+                _ = env.f("ghostel--osc52-handle", .{ selection, b64 });
             },
             // OSC 133: semantic prompt markers (A/B/C/D/P).  P is
             // "explicit prompt start" — same as A for navigation but
@@ -389,11 +382,7 @@ fn dispatchPostWriteOscs(env: emacs.Env, term: *Terminal, data: []const u8) void
                     env.makeString(param_data)
                 else
                     env.nil();
-                _ = env.call2(
-                    emacs.sym.@"ghostel--osc133-marker",
-                    env.makeString(&type_str),
-                    param_val,
-                );
+                _ = env.f("ghostel--osc133-marker", .{ &type_str, param_val });
             },
             // OSC 9: iTerm2 desktop notification, with ConEmu sub-codes
             // carved out (see `dispatchOsc9`).
@@ -484,11 +473,7 @@ fn dispatchOsc9(env: emacs.Env, term: *Terminal, payload: []const u8) void {
 }
 
 fn dispatchOsc9Notification(env: emacs.Env, body: []const u8) void {
-    _ = env.call2(
-        emacs.sym.@"ghostel--handle-notification",
-        env.makeString(""),
-        env.makeString(body),
-    );
+    _ = env.f("ghostel--handle-notification", .{ "", body });
 }
 
 /// Parse the payload that follows `9;4;` and dispatch to Elisp.  Returns
@@ -534,11 +519,7 @@ fn dispatchOsc9Progress(env: emacs.Env, data: []const u8) bool {
         }
     }
 
-    _ = env.call2(
-        emacs.sym.@"ghostel--osc-progress",
-        env.makeString(state_str),
-        progress_val,
-    );
+    _ = env.f("ghostel--osc-progress", .{ state_str, progress_val });
     return true;
 }
 
@@ -553,11 +534,7 @@ fn dispatchOsc777(env: emacs.Env, payload: []const u8) void {
     const second_semi = std.mem.indexOfScalar(u8, after_ext, ';');
     const title = if (second_semi) |s| after_ext[0..s] else "";
     const body = if (second_semi) |s| after_ext[s + 1 ..] else after_ext;
-    _ = env.call2(
-        emacs.sym.@"ghostel--handle-notification",
-        env.makeString(title),
-        env.makeString(body),
-    );
+    _ = env.f("ghostel--handle-notification", .{ title, body });
 }
 
 /// Send `OSC N;rgb:RRRR/GGGG/BBBB <term>` for a dynamic color (OSC 10/11).
@@ -582,7 +559,7 @@ fn sendDynamicColorReply(
             term_bytes,
         },
     ) catch return;
-    _ = env.call1(emacs.sym.@"ghostel--flush-output", env.makeString(written));
+    _ = env.f("ghostel--flush-output", .{written});
 }
 
 /// Send `OSC 4;INDEX;rgb:RRRR/GGGG/BBBB <term>` for a palette entry.
@@ -607,7 +584,7 @@ fn sendPaletteColorReply(
             term_bytes,
         },
     ) catch return;
-    _ = env.call1(emacs.sym.@"ghostel--flush-output", env.makeString(written));
+    _ = env.f("ghostel--flush-output", .{written});
 }
 
 /// Scan data for OSC 4/10/11 color queries and emit responses in source
@@ -776,7 +753,7 @@ fn fnRedraw(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*
     // Running kitty-clear before redraw would use the pre-promotion viewport
     // boundary, wiping the overlay on the row that's about to be promoted
     // into scrollback — exactly the row we want to keep tagged.
-    _ = env.call0(emacs.sym.@"ghostel--kitty-clear");
+    _ = env.f("ghostel--kitty-clear", .{});
     kitty_graphics.emitPlacements(env, term) catch |err| {
         env.logStackTrace(@errorReturnTrace());
         env.logErrorf("ghostel: emitPlacements failed: {s}", .{@errorName(err)});
@@ -874,7 +851,7 @@ fn fnFocusEvent(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*
     term.env = env;
     defer term.env = null;
 
-    _ = env.call1(emacs.sym.@"ghostel--flush-output", env.makeString(buf[0..written]));
+    _ = env.f("ghostel--flush-output", .{buf[0..written]});
     return env.t();
 }
 
@@ -1216,8 +1193,7 @@ fn writePtyCallback(_: gt.Terminal, userdata: ?*anyopaque, data: [*c]const u8, l
     const env = term.env orelse return;
 
     if (len == 0) return;
-    const str = env.makeString(data[0..len]);
-    _ = env.call1(emacs.sym.@"ghostel--flush-output", str);
+    _ = env.f("ghostel--flush-output", .{data[0..len]});
 }
 
 /// Called when the terminal receives BEL.
@@ -1225,7 +1201,7 @@ fn bellCallback(_: gt.Terminal, userdata: ?*anyopaque) callconv(.c) void {
     const term: *Terminal = @ptrCast(@alignCast(userdata));
     const env = term.env orelse return;
 
-    _ = env.call0(emacs.sym.ding);
+    _ = env.f("ding", .{});
 }
 
 /// Called when the terminal receives a device attributes query (DA1/DA2/DA3).
@@ -1275,7 +1251,7 @@ fn titleChangedCallback(_: gt.Terminal, userdata: ?*anyopaque) callconv(.c) void
         return;
     };
     if (title) |t| {
-        _ = env.call1(emacs.sym.@"ghostel--set-title", env.makeString(t));
+        _ = env.f("ghostel--set-title", .{t});
     }
 }
 
@@ -1315,12 +1291,7 @@ fn vtLogCallback(
     const scope_slice: []const u8 = if (scope_len > 0) scope[0..scope_len] else "default";
     const msg_slice: []const u8 = if (message_len > 0) message[0..message_len] else "";
 
-    _ = env.call3(
-        emacs.sym.@"ghostel--debug-log-vt",
-        env.makeString(level_str),
-        env.makeString(scope_slice),
-        env.makeString(msg_slice),
-    );
+    _ = env.f("ghostel--debug-log-vt", .{ level_str, scope_slice, msg_slice });
 
     // If the Elisp call signaled an error (e.g. ghostel--debug-log-vt is
     // void-function because ghostel-debug.el isn't loaded), clear it so it

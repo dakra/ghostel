@@ -198,7 +198,7 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool
 
     // Update working directory from OSC 7
     if (try term.getPwd()) |pwd| {
-        _ = env.call1(emacs.sym.@"ghostel--update-directory", env.makeString(pwd));
+        _ = env.f("ghostel--update-directory", .{pwd});
     }
 
     // Park the viewport one row above the bottom. On the next render, if
@@ -212,15 +212,15 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool
 
 fn updateFontInfo(self: *Self, env: emacs.Env) bool {
     const new_font = getDefaultFont(env);
-    const current_font = env.call1(emacs.sym.@"symbol-value", emacs.sym.@"ghostel--rendered-font");
+    const current_font = env.f("symbol-value", .{emacs.sym.@"ghostel--rendered-font"});
     if (env.eq(new_font, current_font)) return false;
 
-    _ = env.call2(emacs.sym.set, emacs.sym.@"ghostel--rendered-font", new_font);
+    _ = env.f("set", .{ emacs.sym.@"ghostel--rendered-font", new_font });
 
     if (env.isNil(new_font)) {
         self.font_info = null;
     } else {
-        const default_font_info = env.call1(emacs.sym.@"query-font", new_font);
+        const default_font_info = env.f("query-font", .{new_font});
         // The value is a vector:
         // [ NAME FILENAME PIXEL-SIZE SIZE ASCENT DESCENT SPACE-WIDTH AVERAGE-WIDTH
         //   CAPABILITY ]
@@ -237,8 +237,8 @@ fn updateFontInfo(self: *Self, env: emacs.Env) bool {
 }
 
 fn getDefaultFont(env: emacs.Env) emacs.Value {
-    const font = env.call2(emacs.sym.@"face-attribute", emacs.sym.default, emacs.sym.@":font");
-    if (env.isNil(env.call2(emacs.sym.fontp, font, emacs.sym.@"font-object"))) return env.nil();
+    const font = env.f("face-attribute", .{ emacs.sym.default, emacs.sym.@":font" });
+    if (env.isNil(env.f("fontp", .{ font, emacs.sym.@"font-object" }))) return env.nil();
     return font;
 }
 
@@ -246,12 +246,7 @@ fn probeCoverage(env: emacs.Env, font: emacs.Value) u32 {
     const start_probe: u32 = 0xFF;
     const max_probe: u32 = 0x300;
     for (start_probe..max_probe) |x| {
-        const has_char = env.isNotNil(env.call2(
-            emacs.sym.@"font-has-char-p",
-            font,
-            env.makeInteger(@as(i64, @intCast(x))),
-        ));
-
+        const has_char = env.isNotNil(env.f("font-has-char-p", .{ font, x }));
         if (!has_char) return @intCast(x);
     }
 
@@ -412,7 +407,7 @@ fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps, default_co
     if (props.hyperlink) {
         env.putTextProperty(start_val, end_val, s.@"help-echo", s.@"ghostel--native-link-help-echo");
         env.putTextProperty(start_val, end_val, s.@"mouse-face", s.highlight);
-        env.putTextProperty(start_val, end_val, s.keymap, env.call1(s.@"symbol-value", s.@"ghostel-link-map"));
+        env.putTextProperty(start_val, end_val, s.keymap, env.f("symbol-value", .{s.@"ghostel-link-map"}));
     }
 
     if (props.prompt) {
@@ -673,25 +668,25 @@ fn adjustGlyphs(self: *Self, env: emacs.Env, row_start: i64) void {
 
     const s = emacs.sym;
 
-    const window = env.call0(emacs.sym.@"selected-window");
+    const window = env.f("selected-window", .{});
     if (env.isNil(window)) return;
 
     for (self.row.adjust_cells.items) |cell| {
         const start_val = env.makeInteger(row_start + @as(i64, @intCast(cell.char_start)));
         const end_val = env.makeInteger(row_start + @as(i64, @intCast(cell.char_start + cell.char_len)));
-        const font = env.call2(s.@"font-at", start_val, window);
+        const font = env.f("font-at", .{ start_val, window });
         // TODO: Maybe we should replace the cell with something else if there
         //       is no font. Today, it will just show the missing char glyph,
         //       which will push the line size bigger. This is rare, though.
         //       Most chars are covered by SOME font on the system.
         if (env.isNil(font)) continue;
 
-        const font_info = env.call1(s.@"query-font", font);
+        const font_info = env.f("query-font", .{font});
         const ascent = env.extractInteger(env.vecGet(font_info, 4));
         const descent = env.extractInteger(env.vecGet(font_info, 5));
         const height = ascent + descent;
 
-        const glyphs = env.call3(s.@"font-get-glyphs", font, start_val, end_val);
+        const glyphs = env.f("font-get-glyphs", .{ font, start_val, end_val });
         if (env.vecSize(glyphs) == 0) continue;
 
         // Each element is a vector containing information of a glyph in this format:
@@ -710,16 +705,10 @@ fn adjustGlyphs(self: *Self, env: emacs.Env, row_start: i64) void {
         const scale_height = @as(f64, @floatFromInt(default_font_info.height)) / @as(f64, @floatFromInt(height + 1));
         const scale = @min(scale_width, scale_height);
 
-        const min_width_spec = env.makeList(&[_]emacs.Value{
-            s.@"min-width",
-            env.makeList(&[_]emacs.Value{env.makeInteger(num_cells)}),
-        });
-        const scale_spec = env.makeList(&[_]emacs.Value{
-            s.height,
-            env.makeFloat(scale),
-        });
-        const display_spec = env.makeList(&[_]emacs.Value{ min_width_spec, scale_spec });
-        _ = env.call4(s.@"put-text-property", start_val, end_val, s.display, display_spec);
+        const min_width_spec = env.f("list", .{ s.@"min-width", env.f("list", .{num_cells}) });
+        const scale_spec = env.f("list", .{ s.height, scale });
+        const display_spec = env.f("list", .{ min_width_spec, scale_spec });
+        _ = env.f("put-text-property", .{ start_val, end_val, s.display, display_spec });
     }
 }
 
@@ -840,11 +829,10 @@ pub fn render(self: *Self, env: emacs.Env, term: *Terminal, skip: usize, force_f
         // Set buffer default face
         var fg_hex: [7]u8 = undefined;
         var bg_hex: [7]u8 = undefined;
-        _ = env.call2(
-            emacs.sym.@"ghostel--set-buffer-face",
-            env.makeString(formatColor(default_colors.fg, &fg_hex)),
-            env.makeString(formatColor(default_colors.bg, &bg_hex)),
-        );
+        _ = env.f("ghostel--set-buffer-face", .{
+            formatColor(default_colors.fg, &fg_hex),
+            formatColor(default_colors.bg, &bg_hex),
+        });
 
         // Incremental redraw: only update dirty rows when possible.
         // force_full bypasses partial mode to avoid stale rows after scrolls.
@@ -904,22 +892,17 @@ fn renderCursor(self: *Self, env: emacs.Env) !void {
             env.moveToColumn(@as(i64, cx));
         }
 
-        _ = env.call2(
-            emacs.sym.set,
-            emacs.sym.@"ghostel--cursor-pos",
-            env.call2(emacs.sym.cons, env.makeInteger(cx), env.makeInteger(cy)),
-        );
-        _ = env.call2(emacs.sym.set, emacs.sym.@"ghostel--cursor-char-pos", env.point());
+        _ = env.f("set", .{ emacs.sym.@"ghostel--cursor-pos", env.f("cons", .{ cx, cy }) });
+        _ = env.f("set", .{ emacs.sym.@"ghostel--cursor-char-pos", env.point() });
     } else {
-        _ = env.call2(emacs.sym.set, emacs.sym.@"ghostel--cursor-pos", env.nil());
-        _ = env.call2(emacs.sym.set, emacs.sym.@"ghostel--cursor-char-pos", env.nil());
+        _ = env.f("set", .{ emacs.sym.@"ghostel--cursor-pos", env.nil() });
+        _ = env.f("set", .{ emacs.sym.@"ghostel--cursor-char-pos", env.nil() });
     }
 
-    _ = env.call2(
-        emacs.sym.@"ghostel--set-cursor-style",
-        env.makeInteger(@as(i64, cursor_style)),
+    _ = env.f("ghostel--set-cursor-style", .{
+        cursor_style,
         if (cursor_visible) env.t() else env.nil(),
-    );
+    });
 }
 
 // Render content from the current viewport scroll position all the way to

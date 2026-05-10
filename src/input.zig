@@ -45,7 +45,7 @@ pub fn encodeAndSend(env: emacs.Env, term: *Terminal, key: Key, mods: Mods, utf8
 
     // Send encoded bytes to the PTY via Elisp
     const str = env.makeString(buf[0..written]);
-    _ = env.call1(env.intern("ghostel--flush-output"), str);
+    _ = env.f("ghostel--flush-output", .{str});
 
     return true;
 }
@@ -103,8 +103,7 @@ pub fn encodeAndSendMouse(env: emacs.Env, term: *Terminal, action: i64, button: 
     if (written == 0) return false;
 
     // Send to PTY
-    const str = env.makeString(buf[0..written]);
-    _ = env.call1(env.intern("ghostel--flush-output"), str);
+    _ = env.f("ghostel--flush-output", .{buf[0..written]});
     return true;
 }
 
