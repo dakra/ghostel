@@ -31,27 +31,116 @@ export fn emacs_module_init(runtime: *c.struct_emacs_runtime) callconv(.c) c_int
     const env = emacs.Env.init(raw_env);
 
     // Register functions
-    env.bindFunction("ghostel--new", 2, 5, &fnNew, "Create a new ghostel terminal.\n\n(ghostel--new ROWS COLS &optional MAX-SCROLLBACK KITTY-STORAGE-LIMIT KITTY-MEDIUMS)\n\nKITTY-STORAGE-LIMIT is the kitty graphics image storage cap in bytes (default 320 MiB); 0 disables kitty graphics entirely.\nKITTY-MEDIUMS is a bitfield: bit 0 = file medium, bit 1 = temp-file medium, bit 2 = shared-memory medium (default 0 = direct only).");
-    env.bindFunction("ghostel--write-input", 2, 2, &fnWriteInput, "Write raw bytes to the terminal.\n\n(ghostel--write-input TERM DATA)");
-    env.bindFunction("ghostel--set-size", 3, 5, &fnSetSize, "Resize the terminal.\n\n(ghostel--set-size TERM ROWS COLS &optional CELL-W CELL-H)");
-    env.bindFunction("ghostel--get-title", 1, 1, &fnGetTitle, "Get the terminal title.\n\n(ghostel--get-title TERM)");
-    env.bindFunction("ghostel--get-pwd", 1, 1, &fnGetPwd, "Get the terminal's working directory from OSC 7.\n\n(ghostel--get-pwd TERM)");
-    env.bindFunction("ghostel--redraw", 1, 2, &fnRedraw, "Redraw the terminal into the current buffer.\n\n(ghostel--redraw TERM &optional FULL)");
-    env.bindFunction("ghostel--encode-key", 3, 4, &fnEncodeKey, "Encode a key event using the terminal's key encoder.\n\n(ghostel--encode-key TERM KEY MODS &optional UTF8)");
-    env.bindFunction("ghostel--mouse-event", 6, 6, &fnMouseEvent, "Send a mouse event to the terminal.\n\n(ghostel--mouse-event TERM ACTION BUTTON ROW COL MODS)");
-    env.bindFunction("ghostel--focus-event", 2, 2, &fnFocusEvent, "Send a focus event to the terminal.\n\n(ghostel--focus-event TERM GAINED)");
-    env.bindFunction("ghostel--set-palette", 2, 2, &fnSetPalette, "Set the ANSI color palette.\n\n(ghostel--set-palette TERM COLORS-STRING)");
-    env.bindFunction("ghostel--set-default-colors", 3, 3, &fnSetDefaultColors, "Set default foreground and background colors.\n\n(ghostel--set-default-colors TERM FG-HEX BG-HEX)");
-    env.bindFunction("ghostel--mode-enabled", 2, 2, &fnModeEnabled, "Return t if terminal DEC private MODE is enabled.\n\n(ghostel--mode-enabled TERM MODE)");
-    env.bindFunction("ghostel--alt-screen-p", 1, 1, &fnAltScreen, "Return t if terminal is on the alternate screen buffer.\n\n(ghostel--alt-screen-p TERM)");
-    env.bindFunction("ghostel--debug-state", 1, 1, &fnDebugState, "Return debug info about terminal/render state.\n\n(ghostel--debug-state TERM)");
-    env.bindFunction("ghostel--debug-feed", 2, 2, &fnDebugFeed, "Feed STR to terminal and return first row + cursor.\n\n(ghostel--debug-feed TERM STR)");
-    env.bindFunction("ghostel--copy-all-text", 1, 1, &fnCopyAllText, "Return entire scrollback as plain text string.\n\n(ghostel--copy-all-text TERM)");
-    env.bindFunction("ghostel--module-version", 0, 0, &fnModuleVersion, "Return the native module version string.\n\n(ghostel--module-version)");
-    env.bindFunction("ghostel--enable-vt-log", 0, 0, &fnEnableVtLog, "Enable libghostty internal log routing to *ghostel-debug*.\n\n(ghostel--enable-vt-log)");
-    env.bindFunction("ghostel--disable-vt-log", 0, 0, &fnDisableVtLog, "Disable libghostty internal log routing.\n\n(ghostel--disable-vt-log)");
-    env.bindFunction("ghostel--native-uri-at", 3, 3, &fnUriAt, "Get URI at ROW-from-bottom and COL.\n\n(ghostel--native-uri-at TERM ROW COL)");
-    env.bindFunction("ghostel--pty-password-input-p", 1, 1, &fnPtyPasswordInputP, "Return t if the tty at PATH is in canonical mode with echo off.\n\nThis mirrors libghostty's password-input heuristic.  Returns nil when the path can't be opened, `tcgetattr' fails, or the tty is in some other state.\n\n(ghostel--pty-password-input-p PATH)");
+    env.bindFunction("ghostel--new", 2, 5, &fnNew,
+        \\Create a new ghostel terminal.
+        \\
+        \\(ghostel--new ROWS COLS &optional MAX-SCROLLBACK KITTY-STORAGE-LIMIT KITTY-MEDIUMS)
+        \\
+        \\KITTY-STORAGE-LIMIT is the kitty graphics image storage cap in bytes (default 320 MiB); 0 disables kitty graphics entirely.
+        \\KITTY-MEDIUMS is a bitfield: bit 0 = file medium, bit 1 = temp-file medium, bit 2 = shared-memory medium (default 0 = direct only).
+    );
+    env.bindFunction("ghostel--write-input", 2, 2, &fnWriteInput,
+        \\Write raw bytes to the terminal.
+        \\
+        \\(ghostel--write-input TERM DATA)
+    );
+    env.bindFunction("ghostel--set-size", 3, 5, &fnSetSize,
+        \\Resize the terminal.
+        \\
+        \\(ghostel--set-size TERM ROWS COLS &optional CELL-W CELL-H)
+    );
+    env.bindFunction("ghostel--get-title", 1, 1, &fnGetTitle,
+        \\Get the terminal title.
+        \\
+        \\(ghostel--get-title TERM)
+    );
+    env.bindFunction("ghostel--get-pwd", 1, 1, &fnGetPwd,
+        \\Get the terminal's working directory from OSC 7.
+        \\
+        \\(ghostel--get-pwd TERM)
+    );
+    env.bindFunction("ghostel--redraw", 1, 2, &fnRedraw,
+        \\Redraw the terminal into the current buffer.
+        \\
+        \\(ghostel--redraw TERM &optional FULL)
+    );
+    env.bindFunction("ghostel--encode-key", 3, 4, &fnEncodeKey,
+        \\Encode a key event using the terminal's key encoder.
+        \\
+        \\(ghostel--encode-key TERM KEY MODS &optional UTF8)
+    );
+    env.bindFunction("ghostel--mouse-event", 6, 6, &fnMouseEvent,
+        \\Send a mouse event to the terminal.
+        \\
+        \\(ghostel--mouse-event TERM ACTION BUTTON ROW COL MODS)
+    );
+    env.bindFunction("ghostel--focus-event", 2, 2, &fnFocusEvent,
+        \\Send a focus event to the terminal.
+        \\
+        \\(ghostel--focus-event TERM GAINED)
+    );
+    env.bindFunction("ghostel--set-palette", 2, 2, &fnSetPalette,
+        \\Set the ANSI color palette.
+        \\
+        \\(ghostel--set-palette TERM COLORS-STRING)
+    );
+    env.bindFunction("ghostel--set-default-colors", 3, 3, &fnSetDefaultColors,
+        \\Set default foreground and background colors.
+        \\
+        \\(ghostel--set-default-colors TERM FG-HEX BG-HEX)
+    );
+    env.bindFunction("ghostel--mode-enabled", 2, 2, &fnModeEnabled,
+        \\Return t if terminal DEC private MODE is enabled.
+        \\
+        \\(ghostel--mode-enabled TERM MODE)
+    );
+    env.bindFunction("ghostel--alt-screen-p", 1, 1, &fnAltScreen,
+        \\Return t if terminal is on the alternate screen buffer.
+        \\
+        \\(ghostel--alt-screen-p TERM)
+    );
+    env.bindFunction("ghostel--debug-state", 1, 1, &fnDebugState,
+        \\Return debug info about terminal/render state.
+        \\
+        \\(ghostel--debug-state TERM)
+    );
+    env.bindFunction("ghostel--debug-feed", 2, 2, &fnDebugFeed,
+        \\Feed STR to terminal and return first row + cursor.
+        \\
+        \\(ghostel--debug-feed TERM STR)
+    );
+    env.bindFunction("ghostel--copy-all-text", 1, 1, &fnCopyAllText,
+        \\Return entire scrollback as plain text string.
+        \\
+        \\(ghostel--copy-all-text TERM)
+    );
+    env.bindFunction("ghostel--module-version", 0, 0, &fnModuleVersion,
+        \\Return the native module version string.
+        \\
+        \\(ghostel--module-version)
+    );
+    env.bindFunction("ghostel--enable-vt-log", 0, 0, &fnEnableVtLog,
+        \\Enable libghostty internal log routing to *ghostel-debug*.
+        \\
+        \\(ghostel--enable-vt-log)
+    );
+    env.bindFunction("ghostel--disable-vt-log", 0, 0, &fnDisableVtLog,
+        \\Disable libghostty internal log routing.
+        \\
+        \\(ghostel--disable-vt-log)
+    );
+    env.bindFunction("ghostel--native-uri-at", 3, 3, &fnUriAt,
+        \\Get URI at ROW-from-bottom and COL.
+        \\
+        \\(ghostel--native-uri-at TERM ROW COL)
+    );
+    env.bindFunction("ghostel--pty-password-input-p", 1, 1, &fnPtyPasswordInputP,
+        \\Return t if the tty at PATH is in canonical mode with echo off.
+        \\
+        \\This mirrors libghostty's password-input heuristic.  Returns nil when the path can't be opened, `tcgetattr' fails, or the tty is in some other state.
+        \\
+        \\(ghostel--pty-password-input-p PATH)
+    );
 
     emacs.initSymbols(env);
 
