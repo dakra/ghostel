@@ -138,6 +138,35 @@ Simulates compiler output or build logs with linkifiable content."
         (setq total (+ total (length line)))))
     (apply #'concat (nreverse parts))))
 
+(defun ghostel-bench--gen-mixed-emoji-cjk-ascii (size)
+  "Generate ~SIZE bytes of mixed emoji, CJK, and ASCII as in a chat log.
+Includes multi-codepoint grapheme clusters: skin-tone modifiers, ZWJ
+sequences, flag pairs, and keycap sequences."
+  (let ((lines
+         ;; Multi-codepoint clusters exercised:
+         ;;   👋🏽 = wave + medium skin tone (U+1F44B U+1F3FD)
+         ;;   👨‍💻 = man ZWJ laptop (U+1F468 U+200D U+1F4BB)
+         ;;   🇯🇵 = flag Japan (U+1F1EF U+1F1F5)
+         ;;   🇰🇷 = flag Korea (U+1F1F0 U+1F1F7)
+         ;;   1️⃣  = digit-1 + VS-16 + combining enclosing keycap
+         ;;   👍🏾 = thumbs-up + medium-dark skin tone (U+1F44D U+1F3FE)
+         ;;   🧑‍🤝‍🧑 = couple holding hands ZWJ sequence
+         '("User1: hello! 👋🏽 how are you doing today?\r\n"
+           "User2: 我很好，谢谢！Working on some 代码 right now 👨‍💻\r\n"
+           "User1: nice! step 1️⃣ — any bugs? 🐛🔍\r\n"
+           "User2: 有一个问题... the output looks like: [ERROR] 失败 at line 42\r\n"
+           "User3: こんにちは 🇯🇵！I saw that too — emoji widths were off 😅\r\n"
+           "User1: 맞아요 🇰🇷, fixed it ✅ 🎉 shipping tomorrow\r\n"
+           "User2: great! 太好了！ ping me at 9am 🕘 東京時間\r\n"
+           "User3: ack 👍🏾 🧑‍🤝‍🧑 see you then — 明日また！\r\n"))
+        (parts nil)
+        (total 0))
+    (while (< total size)
+      (let ((line (nth (% (/ total 50) (length lines)) lines)))
+        (push line parts)
+        (setq total (+ total (string-bytes line)))))
+    (apply #'concat (nreverse parts))))
+
 (defun ghostel-bench--gen-tui-frame (rows cols)
   "Generate a single TUI-style frame: clear + fill ROWS x COLS."
   (let ((parts (list "\e[2J\e[H")))
@@ -147,6 +176,20 @@ Simulates compiler output or build logs with linkifiable content."
       (push (make-string cols (if (cl-evenp r) ?- ?=)) parts))
     (push "\e[0m" parts)
     (apply #'concat (nreverse parts))))
+
+;; ---------------------------------------------------------------------------
+;; Benchmark buffer helper
+;; ---------------------------------------------------------------------------
+
+(defmacro ghostel-bench--with-bench-buffer (&rest body)
+  "Like `with-temp-buffer', but display the buffer in the selected window.
+Ensures redraw paths that require a live window (wide-char compensation,
+anchoring) actually run, matching real `ghostel-mode' conditions."
+  (declare (indent 0) (debug t))
+  `(with-temp-buffer
+     (when (window-live-p (selected-window))
+       (set-window-buffer (selected-window) (current-buffer)))
+     ,@body))
 
 ;; ---------------------------------------------------------------------------
 ;; Data encoding helper
@@ -260,8 +303,11 @@ The caller must call `delete-process' when done."
   "Write data from GEN-FN to a temp file, return path."
   (let ((file (make-temp-file "ghostel-bench-" nil ".bin")))
     (with-temp-file file
-      (set-buffer-multibyte nil)
-      (insert (funcall gen-fn ghostel-bench-data-size)))
+      (let ((data (funcall gen-fn ghostel-bench-data-size)))
+        (set-buffer-multibyte nil)
+        (insert (if (multibyte-string-p data)
+                    (encode-coding-string data 'utf-8)
+                  data))))
     file))
 
 (defun ghostel-bench--e2e-ghostel (data-file detect-p)
@@ -472,14 +518,39 @@ batching, so `pty/*/term' is already e2e for term."
             (ghostel-bench--measure
              "e2e/urls/term" ghostel-bench-data-size ghostel-bench-iterations
              (lambda () (ghostel-bench--pty-term data-file)))))
+      (delete-file data-file)))
+  ;; --- Mixed emoji/CJK/ASCII: exercises wide-char and grapheme-cluster paths ---
+  (let ((data-file (ghostel-bench--write-data-file
+                    #'ghostel-bench--gen-mixed-emoji-cjk-ascii)))
+    (unwind-protect
+        (progn
+          (message "  [mixed emoji/CJK/ASCII data]")
+          (ghostel-bench--measure
+           "e2e/mixed/ghostel" ghostel-bench-data-size ghostel-bench-iterations
+           (lambda () (ghostel-bench--e2e-ghostel data-file t)))
+          (ghostel-bench--measure
+           "e2e/mixed/ghostel-nodetect" ghostel-bench-data-size ghostel-bench-iterations
+           (lambda () (ghostel-bench--e2e-ghostel data-file nil)))
+          (when ghostel-bench-include-vterm
+            (ghostel-bench--measure
+             "e2e/mixed/vterm" ghostel-bench-data-size ghostel-bench-iterations
+             (lambda () (ghostel-bench--e2e-vterm data-file))))
+          (when ghostel-bench-include-eat
+            (ghostel-bench--measure
+             "e2e/mixed/eat" ghostel-bench-data-size ghostel-bench-iterations
+             (lambda () (ghostel-bench--e2e-eat data-file))))
+          (when ghostel-bench-include-term
+            (ghostel-bench--measure
+             "e2e/mixed/term" ghostel-bench-data-size ghostel-bench-iterations
+             (lambda () (ghostel-bench--pty-term data-file)))))
       (delete-file data-file))))
 
 (defun ghostel-bench--pty-ghostel (data-file full-redraw &optional no-detect)
   "Benchmark ghostel processing `cat DATA-FILE' through a real PTY.
 FULL-REDRAW controls `ghostel-full-redraw'.
 When NO-DETECT is non-nil, disable URL and file detection."
-  (with-temp-buffer
-    (let* ((rows 24) (cols 80)
+  (ghostel-bench--with-bench-buffer
+	(let* ((rows 24) (cols 80)
            (term (ghostel-bench--make-ghostel rows cols))
            (ghostel-enable-url-detection (not no-detect))
            (ghostel-enable-file-detection (not no-detect))
@@ -526,8 +597,8 @@ When NO-DETECT is non-nil, disable URL and file detection."
 
 (defun ghostel-bench--pty-vterm (data-file)
   "Benchmark vterm processing `cat DATA-FILE' through a real PTY."
-  (with-temp-buffer
-    (let* ((rows 24) (cols 80)
+  (ghostel-bench--with-bench-buffer
+	(let* ((rows 24) (cols 80)
            (term (ghostel-bench--make-vterm rows cols))
            (redraw-timer nil)
            (done nil)
@@ -557,8 +628,8 @@ When NO-DETECT is non-nil, disable URL and file detection."
 
 (defun ghostel-bench--pty-eat (data-file)
   "Benchmark eat processing `cat DATA-FILE' through a real PTY."
-  (with-temp-buffer
-    (let* ((rows 24) (cols 80)
+  (ghostel-bench--with-bench-buffer
+	(let* ((rows 24) (cols 80)
            (term (ghostel-bench--make-eat rows cols))
            (inhibit-read-only t)
            (redraw-timer nil)
@@ -597,11 +668,11 @@ When NO-DETECT is non-nil, disable URL and file detection."
 Uses `term-emulate-terminal' directly as the process filter, which is
 how real `M-x term' works — no timer batching since term does parse
 and render in a single call."
-  (with-temp-buffer
-    (term-mode)
-    (setq term-width 80 term-height 24)
-    (setq term-buffer-maximum-size ghostel-bench-scrollback)
-    (let* ((inhibit-read-only t)
+  (ghostel-bench--with-bench-buffer
+	(term-mode)
+	(setq term-width 80 term-height 24)
+	(setq term-buffer-maximum-size ghostel-bench-scrollback)
+	(let* ((inhibit-read-only t)
            (done nil)
            (proc (make-process
                   :name "term-bench"
@@ -687,6 +758,40 @@ and render in a single call."
             (ghostel-bench--measure
              "pty/urls/term" ghostel-bench-data-size ghostel-bench-iterations
              (lambda () (ghostel-bench--pty-term data-file)))))
+      (delete-file data-file)))
+  ;; --- Mixed emoji/CJK/ASCII: exercises wide-char and grapheme-cluster paths ---
+  (let ((data-file (ghostel-bench--write-data-file
+                    #'ghostel-bench--gen-mixed-emoji-cjk-ascii)))
+    (unwind-protect
+        (progn
+          (message "  [mixed emoji/CJK/ASCII data]")
+          ;; ghostel incremental
+          (ghostel-bench--measure
+           "pty/mixed/ghostel-incr" ghostel-bench-data-size ghostel-bench-iterations
+           (lambda () (ghostel-bench--pty-ghostel data-file nil)))
+          ;; ghostel full
+          (ghostel-bench--measure
+           "pty/mixed/ghostel-full" ghostel-bench-data-size ghostel-bench-iterations
+           (lambda () (ghostel-bench--pty-ghostel data-file t)))
+          ;; ghostel default, no URL/file detection
+          (ghostel-bench--measure
+           "pty/mixed/ghostel-nodetect" ghostel-bench-data-size ghostel-bench-iterations
+           (lambda () (ghostel-bench--pty-ghostel data-file ghostel-full-redraw t)))
+          ;; vterm
+          (when ghostel-bench-include-vterm
+            (ghostel-bench--measure
+             "pty/mixed/vterm" ghostel-bench-data-size ghostel-bench-iterations
+             (lambda () (ghostel-bench--pty-vterm data-file))))
+          ;; eat
+          (when ghostel-bench-include-eat
+            (ghostel-bench--measure
+             "pty/mixed/eat" ghostel-bench-data-size ghostel-bench-iterations
+             (lambda () (ghostel-bench--pty-eat data-file))))
+          ;; term
+          (when ghostel-bench-include-term
+            (ghostel-bench--measure
+             "pty/mixed/term" ghostel-bench-data-size ghostel-bench-iterations
+             (lambda () (ghostel-bench--pty-term data-file)))))
       (delete-file data-file))))
 
 ;; =========================================================================
@@ -705,7 +810,7 @@ terminal engine with periodic redraws, all in a tight loop."
          (chunk-size ghostel-bench-chunk-size)
          (redraw-every 16))
     ;; ghostel incremental
-    (with-temp-buffer
+    (ghostel-bench--with-bench-buffer
       (let* ((data (ghostel-bench--encode-for-backend raw-data 'ghostel))
              (data-len (length data))
              (term (ghostel-bench--make-ghostel 24 80))
@@ -722,7 +827,7 @@ terminal engine with periodic redraws, all in a tight loop."
                  (when (zerop (% chunk-count redraw-every))
                    (ghostel--redraw term nil)))))))))
     ;; ghostel full
-    (with-temp-buffer
+    (ghostel-bench--with-bench-buffer
       (let* ((data (ghostel-bench--encode-for-backend raw-data 'ghostel))
              (data-len (length data))
              (term (ghostel-bench--make-ghostel 24 80))
@@ -739,7 +844,7 @@ terminal engine with periodic redraws, all in a tight loop."
                  (when (zerop (% chunk-count redraw-every))
                    (ghostel--redraw term t)))))))))
     ;; ghostel default, no detection
-    (with-temp-buffer
+    (ghostel-bench--with-bench-buffer
       (let* ((data (ghostel-bench--encode-for-backend raw-data 'ghostel))
              (data-len (length data))
              (term (ghostel-bench--make-ghostel 24 80))
@@ -759,8 +864,8 @@ terminal engine with periodic redraws, all in a tight loop."
                    (ghostel--redraw term ghostel-full-redraw)))))))))
     ;; vterm
     (when ghostel-bench-include-vterm
-      (with-temp-buffer
-        (let* ((data (ghostel-bench--encode-for-backend raw-data 'vterm))
+      (ghostel-bench--with-bench-buffer
+		(let* ((data (ghostel-bench--encode-for-backend raw-data 'vterm))
                (data-len (length data))
                (term (ghostel-bench--make-vterm 24 80)))
           (ghostel-bench--measure
@@ -776,8 +881,8 @@ terminal engine with periodic redraws, all in a tight loop."
                      (vterm--redraw term))))))))))
     ;; eat
     (when ghostel-bench-include-eat
-      (with-temp-buffer
-        (let* ((data (ghostel-bench--encode-for-backend raw-data 'eat))
+      (ghostel-bench--with-bench-buffer
+		(let* ((data (ghostel-bench--encode-for-backend raw-data 'eat))
                (data-len (length data))
                (term (ghostel-bench--make-eat 24 80))
                (inhibit-read-only t))
@@ -795,8 +900,8 @@ terminal engine with periodic redraws, all in a tight loop."
           (eat-term-delete term))))
     ;; term
     (when ghostel-bench-include-term
-      (with-temp-buffer
-        (let* ((data (ghostel-bench--encode-for-backend raw-data 'term))
+      (ghostel-bench--with-bench-buffer
+		(let* ((data (ghostel-bench--encode-for-backend raw-data 'term))
                (data-len (length data))
                (proc (ghostel-bench--make-term 24 80))
                (inhibit-read-only t))
@@ -828,7 +933,7 @@ content — relevant for apps like htop, vim, claude-code."
              (raw-frame (ghostel-bench--gen-tui-frame rows cols))
              (label (format "%dx%d" rows cols)))
         ;; ghostel incremental
-        (with-temp-buffer
+        (ghostel-bench--with-bench-buffer
           (let ((frame (ghostel-bench--encode-for-backend raw-frame 'ghostel))
                 (term (ghostel-bench--make-ghostel rows cols))
                 (inhibit-read-only t))
@@ -841,7 +946,7 @@ content — relevant for apps like htop, vim, claude-code."
                       (ghostel--redraw term nil)))))
               (message "    ^ %.0f fps" (/ 1000.0 (plist-get result :per-iter-ms))))))
         ;; ghostel full
-        (with-temp-buffer
+        (ghostel-bench--with-bench-buffer
           (let ((frame (ghostel-bench--encode-for-backend raw-frame 'ghostel))
                 (term (ghostel-bench--make-ghostel rows cols))
                 (inhibit-read-only t))
@@ -855,8 +960,8 @@ content — relevant for apps like htop, vim, claude-code."
               (message "    ^ %.0f fps" (/ 1000.0 (plist-get result :per-iter-ms))))))
         ;; vterm
         (when ghostel-bench-include-vterm
-          (with-temp-buffer
-            (let ((frame (ghostel-bench--encode-for-backend raw-frame 'vterm))
+          (ghostel-bench--with-bench-buffer
+			(let ((frame (ghostel-bench--encode-for-backend raw-frame 'vterm))
                   (term (ghostel-bench--make-vterm rows cols)))
               (let ((result
                      (ghostel-bench--measure
@@ -868,8 +973,8 @@ content — relevant for apps like htop, vim, claude-code."
                 (message "    ^ %.0f fps" (/ 1000.0 (plist-get result :per-iter-ms)))))))
         ;; eat
         (when ghostel-bench-include-eat
-          (with-temp-buffer
-            (let ((frame (ghostel-bench--encode-for-backend raw-frame 'eat))
+          (ghostel-bench--with-bench-buffer
+			(let ((frame (ghostel-bench--encode-for-backend raw-frame 'eat))
                   (term (ghostel-bench--make-eat rows cols))
                   (inhibit-read-only t))
               (let ((result
@@ -883,8 +988,8 @@ content — relevant for apps like htop, vim, claude-code."
               (eat-term-delete term))))
         ;; term
         (when ghostel-bench-include-term
-          (with-temp-buffer
-            (let* ((frame (ghostel-bench--encode-for-backend raw-frame 'term))
+          (ghostel-bench--with-bench-buffer
+			(let* ((frame (ghostel-bench--encode-for-backend raw-frame 'term))
                    (proc (ghostel-bench--make-term rows cols))
                    (inhibit-read-only t))
               (let ((result
@@ -918,7 +1023,7 @@ status bars, prompt redraws, and most TUI updates actually produce."
              (static-frame (ghostel-bench--gen-tui-frame rows cols))
              (status-template (format "\e[%d;1H\e[1;33;41m%%-%ds\e[0m" rows cols)))
         ;; ghostel incremental
-        (with-temp-buffer
+        (ghostel-bench--with-bench-buffer
           (let* ((static (ghostel-bench--encode-for-backend static-frame 'ghostel))
                  (term (ghostel-bench--make-ghostel rows cols))
                  (ghostel-enable-url-detection nil)
@@ -938,7 +1043,7 @@ status bars, prompt redraws, and most TUI updates actually produce."
                       (ghostel--redraw term nil)))))
               (message "    ^ %.0f fps" (/ 1000.0 (plist-get result :per-iter-ms))))))
         ;; ghostel full
-        (with-temp-buffer
+        (ghostel-bench--with-bench-buffer
           (let* ((static (ghostel-bench--encode-for-backend static-frame 'ghostel))
                  (term (ghostel-bench--make-ghostel rows cols))
                  (ghostel-enable-url-detection nil)
@@ -959,8 +1064,8 @@ status bars, prompt redraws, and most TUI updates actually produce."
               (message "    ^ %.0f fps" (/ 1000.0 (plist-get result :per-iter-ms))))))
         ;; vterm
         (when ghostel-bench-include-vterm
-          (with-temp-buffer
-            (let* ((static (ghostel-bench--encode-for-backend static-frame 'vterm))
+          (ghostel-bench--with-bench-buffer
+			(let* ((static (ghostel-bench--encode-for-backend static-frame 'vterm))
                    (term (ghostel-bench--make-vterm rows cols))
                    (counter 0))
               (vterm--write-input term static)
@@ -977,8 +1082,8 @@ status bars, prompt redraws, and most TUI updates actually produce."
                 (message "    ^ %.0f fps" (/ 1000.0 (plist-get result :per-iter-ms)))))))
         ;; eat
         (when ghostel-bench-include-eat
-          (with-temp-buffer
-            (let* ((static (ghostel-bench--encode-for-backend static-frame 'eat))
+          (ghostel-bench--with-bench-buffer
+			(let* ((static (ghostel-bench--encode-for-backend static-frame 'eat))
                    (term (ghostel-bench--make-eat rows cols))
                    (inhibit-read-only t)
                    (counter 0))
@@ -999,8 +1104,8 @@ status bars, prompt redraws, and most TUI updates actually produce."
               (eat-term-delete term))))
         ;; term
         (when ghostel-bench-include-term
-          (with-temp-buffer
-            (let* ((static (ghostel-bench--encode-for-backend static-frame 'term))
+          (ghostel-bench--with-bench-buffer
+			(let* ((static (ghostel-bench--encode-for-backend static-frame 'term))
                    (proc (ghostel-bench--make-term rows cols))
                    (inhibit-read-only t)
                    (counter 0))
@@ -1030,7 +1135,7 @@ When RENDER-P is non-nil, also call redraw after write-input."
     ;; When rendering, prefix each iteration with a unique line so that
     ;; dirty tracking cannot optimize away the redraw.
     ;; ghostel incremental
-    (with-temp-buffer
+    (ghostel-bench--with-bench-buffer
       (let ((data (ghostel-bench--encode-for-backend raw-data 'ghostel))
             (term (ghostel-bench--make-ghostel rows cols))
             (inhibit-read-only t)
@@ -1047,8 +1152,8 @@ When RENDER-P is non-nil, also call redraw after write-input."
            (lambda () (ghostel--write-input term data))))))
     ;; ghostel full
     (when render-p
-      (with-temp-buffer
-        (let ((data (ghostel-bench--encode-for-backend raw-data 'ghostel))
+      (ghostel-bench--with-bench-buffer
+		(let ((data (ghostel-bench--encode-for-backend raw-data 'ghostel))
               (term (ghostel-bench--make-ghostel rows cols))
               (inhibit-read-only t)
               (counter 0))
@@ -1062,8 +1167,8 @@ When RENDER-P is non-nil, also call redraw after write-input."
              (ghostel--redraw term t))))))
     ;; vterm
     (when ghostel-bench-include-vterm
-      (with-temp-buffer
-        (let ((data (ghostel-bench--encode-for-backend raw-data 'vterm))
+      (ghostel-bench--with-bench-buffer
+		(let ((data (ghostel-bench--encode-for-backend raw-data 'vterm))
               (term (ghostel-bench--make-vterm rows cols))
               (counter 0))
           (ghostel-bench--measure
@@ -1078,8 +1183,8 @@ When RENDER-P is non-nil, also call redraw after write-input."
              (lambda () (vterm--write-input term data)))))))
     ;; eat
     (when ghostel-bench-include-eat
-      (with-temp-buffer
-        (let ((data (ghostel-bench--encode-for-backend raw-data 'eat))
+      (ghostel-bench--with-bench-buffer
+		(let ((data (ghostel-bench--encode-for-backend raw-data 'eat))
               (term (ghostel-bench--make-eat rows cols))
               (inhibit-read-only t)
               (counter 0))
@@ -1098,8 +1203,8 @@ When RENDER-P is non-nil, also call redraw after write-input."
           (eat-term-delete term))))
     ;; term
     (when ghostel-bench-include-term
-      (with-temp-buffer
-        (let* ((data (ghostel-bench--encode-for-backend raw-data 'term))
+      (ghostel-bench--with-bench-buffer
+		(let* ((data (ghostel-bench--encode-for-backend raw-data 'term))
                (proc (ghostel-bench--make-term rows cols))
                (inhibit-read-only t)
                (counter 0))
@@ -1127,7 +1232,8 @@ real-world performance (see PTY and streaming benchmarks for that)."
   (let ((scenarios
          `(("plain"   . ghostel-bench--gen-plain-ascii)
            ("styled"  . ghostel-bench--gen-sgr-styled)
-           ("unicode" . ghostel-bench--gen-unicode))))
+           ("unicode" . ghostel-bench--gen-unicode)
+           ("mixed"   . ghostel-bench--gen-mixed-emoji-cjk-ascii))))
     (dolist (scenario scenarios)
       (let* ((name (car scenario))
              (gen-fn (cdr scenario))
