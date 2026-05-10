@@ -72,3 +72,13 @@ Any function with `callconv(.c)` is part of a fixed ABI contract with libghostty
 After editing any `.zig` file:
 1. `zig build` — must pass before moving on
 2. Format via Emacs: `(with-current-buffer (find-file-noselect "/path/to/file.zig") (indent-region (point-min) (point-max)) (save-buffer))`
+
+## Logging and Formatting
+
+- **Logging Format:** Always prefix log and signal messages with `ghostel: ` and follow the pattern `ghostel: [function_name] failed: {s}` where `{s}` is the error name.
+- **Line Length:** Keep logic lines within the **80-100 column** range.
+- **Wrapping Logging Calls:** When a `catch` block with logging exceeds the line length, wrap it consistently:
+  ```zig
+  term.setColorForeground(&default_fg) catch |err|
+      env.logErrorf("ghostel: setColorForeground failed: {s}", .{@errorName(err)});
+  ```
