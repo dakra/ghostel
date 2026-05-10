@@ -13,6 +13,10 @@
   - `GHOSTTY_NO_VALUE` → always means "optional absence" — map to `null` via `getOpt`.
   - `GHOSTTY_INVALID_VALUE` → usually a programmer error, but some cell-level keys use it to mean "no per-cell value, use terminal default" — check the libghostty header comment for the specific key. When it means absence, use `catch |err| switch (err) { gt.Error.InvalidValue => null, else => return err }`.
 
+## Calling Emacs functions
+
+Prefer `Env` convenience wrappers (`env.insert(...)`, `env.list(...)`, `env.set(...)`, etc.) over calling Emacs functions directly. When no wrapper exists, use `env.f("function-name", .{arg1, arg2})` — the function name must be in the intern cache (`sym` in `emacs.zig`). Arguments are auto-converted from Zig types.
+
 ## C ABI boundary (module.zig callbacks)
 
 Functions with `callconv(.c)` cannot propagate Zig errors — handle them explicitly at the call site:
@@ -21,25 +25,25 @@ Functions with `callconv(.c)` cannot propagate Zig errors — handle them explic
 // For paths that can fail deep in the call stack (redraw, encode, emitPlacements):
 something.deepWork() catch |err| {
     env.logStackTrace(@errorReturnTrace());
-    env.signalErrorf("ghostel: deepWork failed: {s}", .{@errorName(err)});
+    env.signalError("deepWork failed: %s", .{@errorName(err)});
     return env.nil();
 };
 
-// For simple one-call getters (getTitle, getScrollbar, getTotalRows, etc.):
+// For simple one-call getters:
 const val = term.getSomething() catch |err| {
-    env.signalErrorf("ghostel: getSomething failed: {s}", .{@errorName(err)});
+    env.signalError("getSomething failed: %s", .{@errorName(err)});
     return env.nil();
 };
 
-// For void C callbacks (callconv(.c) returning void), use logErrorf instead of signalErrorf:
+// For void C callbacks (callconv(.c) returning void), use logError instead of signalError:
 const val = term.getSomething() catch |err| {
-    env.logErrorf("ghostel: getSomething failed: {s}", .{@errorName(err)});
+    env.logError("getSomething failed: %s", .{@errorName(err)});
     return;
 };
 
 // For per-item errors inside a loop where items are independent, log and continue:
 const val = term.getSomething() catch |err| {
-    env.logErrorf("ghostel: getSomething failed: {s}", .{@errorName(err)});
+    env.logError("getSomething failed: %s", .{@errorName(err)});
     continue;
 };
 ```
@@ -73,8 +77,13 @@ Do not add new functions with out-pointer + bool/null return patterns. Always re
 
 Any function with `callconv(.c)` is part of a fixed ABI contract with libghostty or Emacs. Do not change its signature, calling convention, or return type without understanding the ABI contract on both sides.
 
+## Logging
+
+- `signalError` and `logError` automatically prepend `ghostel: ` — do not include it in the message.
+- Format strings use Emacs format syntax (`%s`, `%d`) not Zig format syntax (`{s}`, `{d}`).
+
 ## Build and format workflow
 
 After editing any `.zig` file:
 1. `zig build` — must pass before moving on
-2. Format via Emacs: `(with-current-buffer (find-file-noselect "/path/to/file.zig") (indent-region (point-min) (point-max)) (save-buffer))`
+2. `zig fmt <file>` — format before committing
