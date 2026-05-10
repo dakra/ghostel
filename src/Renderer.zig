@@ -212,10 +212,10 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool
 
 fn updateFontInfo(self: *Self, env: emacs.Env) bool {
     const new_font = getDefaultFont(env);
-    const current_font = env.f("symbol-value", .{emacs.sym.@"ghostel--rendered-font"});
+    const current_font = env.symbolValue("ghostel--rendered-font");
     if (env.eq(new_font, current_font)) return false;
 
-    _ = env.f("set", .{ emacs.sym.@"ghostel--rendered-font", new_font });
+    _ = env.set("ghostel--rendered-font", new_font);
 
     if (env.isNil(new_font)) {
         self.font_info = null;
@@ -407,7 +407,7 @@ fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps, default_co
     if (props.hyperlink) {
         env.putTextProperty(start_val, end_val, s.@"help-echo", s.@"ghostel--native-link-help-echo");
         env.putTextProperty(start_val, end_val, s.@"mouse-face", s.highlight);
-        env.putTextProperty(start_val, end_val, s.keymap, env.f("symbol-value", .{s.@"ghostel-link-map"}));
+        env.putTextProperty(start_val, end_val, s.keymap, env.symbolValue("ghostel-link-map"));
     }
 
     if (props.prompt) {
@@ -705,9 +705,9 @@ fn adjustGlyphs(self: *Self, env: emacs.Env, row_start: i64) void {
         const scale_height = @as(f64, @floatFromInt(default_font_info.height)) / @as(f64, @floatFromInt(height + 1));
         const scale = @min(scale_width, scale_height);
 
-        const min_width_spec = env.f("list", .{ s.@"min-width", env.f("list", .{num_cells}) });
-        const scale_spec = env.f("list", .{ s.height, scale });
-        const display_spec = env.f("list", .{ min_width_spec, scale_spec });
+        const min_width_spec = env.list(.{ s.@"min-width", env.list(.{num_cells}) });
+        const scale_spec = env.list(.{ s.height, scale });
+        const display_spec = env.list(.{ min_width_spec, scale_spec });
         _ = env.f("put-text-property", .{ start_val, end_val, s.display, display_spec });
     }
 }
@@ -892,11 +892,11 @@ fn renderCursor(self: *Self, env: emacs.Env) !void {
             env.moveToColumn(@as(i64, cx));
         }
 
-        _ = env.f("set", .{ emacs.sym.@"ghostel--cursor-pos", env.f("cons", .{ cx, cy }) });
-        _ = env.f("set", .{ emacs.sym.@"ghostel--cursor-char-pos", env.point() });
+        _ = env.set("ghostel--cursor-pos", env.cons(cx, cy));
+        _ = env.set("ghostel--cursor-char-pos", env.point());
     } else {
-        _ = env.f("set", .{ emacs.sym.@"ghostel--cursor-pos", env.nil() });
-        _ = env.f("set", .{ emacs.sym.@"ghostel--cursor-char-pos", env.nil() });
+        _ = env.set("ghostel--cursor-pos", env.nil());
+        _ = env.set("ghostel--cursor-char-pos", env.nil());
     }
 
     _ = env.f("ghostel--set-cursor-style", .{

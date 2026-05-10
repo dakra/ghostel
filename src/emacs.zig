@@ -39,10 +39,20 @@ pub const Env = struct {
         return self.funcall(@field(sym, func), &self.makeValues(args));
     }
 
+    // --- Accessing values ---
+
+    pub fn set(self: Env, comptime symbol: []const u8, value: anytype) void {
+        _ = self.f("set", .{ @field(sym, symbol), value });
+    }
+
+    pub fn symbolValue(self: Env, comptime symbol: []const u8) Value {
+        return self.f("symbol-value", .{@field(sym, symbol)});
+    }
+
     // --- Type constructors ---
 
-    pub fn makeList(self: Env, items: []const Value) Value {
-        return self.funcall(sym.list, @constCast(items));
+    pub fn list(self: Env, items: anytype) Value {
+        return self.f("list", items);
     }
 
     pub fn makeInteger(self: Env, n: i64) Value {
@@ -86,6 +96,10 @@ pub const Env = struct {
         }
 
         @compileError(std.fmt.comptimePrint("Non-supported type: {}", .{T}));
+    }
+
+    pub fn cons(self: Env, car: anytype, cdr: anytype) Value {
+        return self.f("cons", .{ car, cdr });
     }
 
     pub fn getUserPtr(self: Env, comptime T: type, val: Value) ?*T {
