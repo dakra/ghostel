@@ -145,8 +145,10 @@ fn fnNew(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*any
     // Set default colors (light gray on black)
     const default_fg = gt.ColorRgb{ .r = 204, .g = 204, .b = 204 };
     const default_bg = gt.ColorRgb{ .r = 0, .g = 0, .b = 0 };
-    term.setColorForeground(&default_fg) catch {};
-    term.setColorBackground(&default_bg) catch {};
+    term.setColorForeground(&default_fg) catch |err|
+        env.logErrorf("ghostel: setColorForeground failed: {s}", .{@errorName(err)});
+    term.setColorBackground(&default_bg) catch |err|
+        env.logErrorf("ghostel: setColorBackground failed: {s}", .{@errorName(err)});
 
     // Enable kitty graphics protocol if storage limit > 0.
     if (kitty_storage_limit > 0) {
@@ -155,7 +157,8 @@ fn fnNew(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*any
             (kitty_mediums & 0x1) != 0,
             (kitty_mediums & 0x2) != 0,
             (kitty_mediums & 0x4) != 0,
-        ) catch {};
+        ) catch |err|
+            env.logErrorf("ghostel: enableKittyGraphics failed: {s}", .{@errorName(err)});
     }
 
     return env.makeUserPtr(&Terminal.emacsFinalize, term);
@@ -350,7 +353,8 @@ fn dispatchPostWriteOscs(env: emacs.Env, term: *Terminal, data: []const u8) void
             7 => {
                 if (osc.payload.len == 0) continue;
                 const gs = gt.GhosttyString{ .ptr = osc.payload.ptr, .len = osc.payload.len };
-                term.setPwd(&gs) catch {};
+                term.setPwd(&gs) catch |err|
+                    env.logErrorf("ghostel: setPwd failed: {s}", .{@errorName(err)});
             },
             // OSC 51;E: whitelisted Elisp eval (ghostel extension).
             51 => {
@@ -443,7 +447,8 @@ fn dispatchOsc9(env: emacs.Env, term: *Terminal, payload: []const u8) void {
             const path = rest[1..];
             if (path.len > 0) {
                 const gs = gt.GhosttyString{ .ptr = path.ptr, .len = path.len };
-                term.setPwd(&gs) catch {};
+                term.setPwd(&gs) catch |err|
+                    env.logErrorf("ghostel: setPwd failed: {s}", .{@errorName(err)});
             }
             return;
         }
@@ -951,8 +956,8 @@ fn fnSetPalette(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*
         pos += 7;
     }
 
-    term.setColorPalette(&palette) catch {
-        env.signalError("ghostel: failed to set color palette");
+    term.setColorPalette(&palette) catch |err| {
+        env.signalErrorf("ghostel: failed to set color palette: {s}", .{@errorName(err)});
         return env.nil();
     };
     return env.t();
@@ -1009,12 +1014,12 @@ fn fnSetDefaultColors(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value,
         return env.nil();
     };
 
-    term.setColorForeground(&fg) catch {
-        env.signalError("ghostel: failed to set foreground color");
+    term.setColorForeground(&fg) catch |err| {
+        env.signalErrorf("ghostel: failed to set foreground color: {s}", .{@errorName(err)});
         return env.nil();
     };
-    term.setColorBackground(&bg) catch {
-        env.signalError("ghostel: failed to set background color");
+    term.setColorBackground(&bg) catch |err| {
+        env.signalErrorf("ghostel: failed to set background color: {s}", .{@errorName(err)});
         return env.nil();
     };
     return env.t();

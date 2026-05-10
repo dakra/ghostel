@@ -506,7 +506,9 @@ pub fn render(env: emacs.Env, term: *Terminal, skip: usize, force_full: bool) !v
         while (gt.rs_row_next(term.row_iterator)) : (row_count += 1) {
             defer {
                 // Clear per-row dirty flag
-                gt.rs_row.set(term.row_iterator, gt.RS_ROW_OPT_DIRTY, false) catch {};
+                gt.rs_row.set(term.row_iterator, gt.RS_ROW_OPT_DIRTY, false) catch |err| {
+                    env.logErrorf("ghostel: rs_row.set(DIRTY, false) failed: {s}", .{@errorName(err)});
+                };
             }
 
             if (row_count < skip) continue;
