@@ -77,16 +77,16 @@ fn fnNew(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*any
     const env = emacs.Env.init(raw_env.?);
     // Reject out-of-range row/col counts rather than wrapping/panicking.
     const rows = std.math.cast(u16, env.extractInteger(args[0])) orelse {
-        env.signalError("ghostel: rows out of range");
+        env.signalError("rows out of range", .{});
         return env.nil();
     };
     const cols = std.math.cast(u16, env.extractInteger(args[1])) orelse {
-        env.signalError("ghostel: cols out of range");
+        env.signalError("cols out of range", .{});
         return env.nil();
     };
     const max_scrollback: usize = if (nargs > 2 and env.isNotNil(args[2]))
         (std.math.cast(usize, env.extractInteger(args[2])) orelse {
-            env.signalError("ghostel: max-scrollback out of range");
+            env.signalError("max-scrollback out of range", .{});
             return env.nil();
         })
     else
@@ -96,7 +96,7 @@ fn fnNew(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*any
     // (skips the storage allocation in libghostty's screen state).
     const kitty_storage_limit: usize = if (nargs > 3 and env.isNotNil(args[3]))
         (std.math.cast(usize, env.extractInteger(args[3])) orelse {
-            env.signalError("ghostel: kitty-storage-limit out of range");
+            env.signalError("kitty-storage-limit out of range", .{});
             return env.nil();
         })
     else
@@ -112,13 +112,13 @@ fn fnNew(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*any
         0;
 
     const term = std.heap.c_allocator.create(Terminal) catch {
-        env.signalError("ghostel: out of memory");
+        env.signalError("out of memory", .{});
         return env.nil();
     };
 
     term.* = Terminal.init(cols, rows, max_scrollback) catch {
         std.heap.c_allocator.destroy(term);
-        env.signalError("ghostel: failed to create terminal");
+        env.signalError("failed to create terminal", .{});
         return env.nil();
     };
 
@@ -135,7 +135,7 @@ fn fnNew(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*any
     if (!setup_ok) {
         term.deinit();
         std.heap.c_allocator.destroy(term);
-        env.signalError("ghostel: failed to configure terminal callbacks");
+        env.signalError("failed to configure terminal callbacks", .{});
         return env.nil();
     }
 
@@ -143,9 +143,9 @@ fn fnNew(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*any
     const default_fg = gt.ColorRgb{ .r = 204, .g = 204, .b = 204 };
     const default_bg = gt.ColorRgb{ .r = 0, .g = 0, .b = 0 };
     term.setColorForeground(&default_fg) catch |err|
-        env.logErrorf("ghostel: setColorForeground failed: {s}", .{@errorName(err)});
+        env.logError("setColorForeground failed: %s", .{@errorName(err)});
     term.setColorBackground(&default_bg) catch |err|
-        env.logErrorf("ghostel: setColorBackground failed: {s}", .{@errorName(err)});
+        env.logError("setColorBackground failed: %s", .{@errorName(err)});
 
     // Enable kitty graphics protocol if storage limit > 0.
     if (kitty_storage_limit > 0) {
@@ -155,7 +155,7 @@ fn fnNew(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*any
             (kitty_mediums & 0x2) != 0,
             (kitty_mediums & 0x4) != 0,
         ) catch |err|
-            env.logErrorf("ghostel: enableKittyGraphics failed: {s}", .{@errorName(err)});
+            env.logError("enableKittyGraphics failed: %s", .{@errorName(err)});
     }
 
     return env.makeUserPtr(&Terminal.emacsFinalize, term);
@@ -165,7 +165,7 @@ fn fnNew(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*any
 fn fnWriteInput(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*anyopaque) callconv(.c) c.emacs_value {
     const env = emacs.Env.init(raw_env.?);
     const term = env.getUserPtr(Terminal, args[0]) orelse {
-        env.signalError("ghostel: invalid terminal handle");
+        env.signalError("invalid terminal handle", .{});
         return env.nil();
     };
 
@@ -351,7 +351,7 @@ fn dispatchPostWriteOscs(env: emacs.Env, term: *Terminal, data: []const u8) void
                 if (osc.payload.len == 0) continue;
                 const gs = gt.GhosttyString{ .ptr = osc.payload.ptr, .len = osc.payload.len };
                 term.setPwd(&gs) catch |err|
-                    env.logErrorf("ghostel: setPwd failed: {s}", .{@errorName(err)});
+                    env.logError("setPwd failed: %s", .{@errorName(err)});
             },
             // OSC 51;E: whitelisted Elisp eval (ghostel extension).
             51 => {
@@ -434,7 +434,7 @@ fn dispatchOsc9(env: emacs.Env, term: *Terminal, payload: []const u8) void {
             if (path.len > 0) {
                 const gs = gt.GhosttyString{ .ptr = path.ptr, .len = path.len };
                 term.setPwd(&gs) catch |err|
-                    env.logErrorf("ghostel: setPwd failed: {s}", .{@errorName(err)});
+                    env.logError("setPwd failed: %s", .{@errorName(err)});
             }
             return;
         }
@@ -613,7 +613,7 @@ fn extractOscColorQueries(env: emacs.Env, term: *Terminal, data: []const u8) voi
             10 => {
                 if (!std.mem.eql(u8, osc.payload, "?")) continue;
                 const fg = term.getColorForeground() catch |err| {
-                    env.logErrorf("ghostel: getColorForeground failed: {s}", .{@errorName(err)});
+                    env.logError("getColorForeground failed: %s", .{@errorName(err)});
                     continue;
                 };
                 if (fg) |color| sendDynamicColorReply(env, 10, color, osc.terminator);
@@ -621,7 +621,7 @@ fn extractOscColorQueries(env: emacs.Env, term: *Terminal, data: []const u8) voi
             11 => {
                 if (!std.mem.eql(u8, osc.payload, "?")) continue;
                 const bg = term.getColorBackground() catch |err| {
-                    env.logErrorf("ghostel: getColorBackground failed: {s}", .{@errorName(err)});
+                    env.logError("getColorBackground failed: %s", .{@errorName(err)});
                     continue;
                 };
                 if (bg) |color| sendDynamicColorReply(env, 11, color, osc.terminator);
@@ -637,7 +637,7 @@ fn extractOscColorQueries(env: emacs.Env, term: *Terminal, data: []const u8) voi
                     if (idx >= 256) continue;
                     if (!palette_loaded) {
                         palette = term.getColorPalette() catch |err| {
-                            env.logErrorf("ghostel: getColorPalette failed: {s}", .{@errorName(err)});
+                            env.logError("getColorPalette failed: %s", .{@errorName(err)});
                             break;
                         };
                         palette_loaded = true;
@@ -654,16 +654,16 @@ fn extractOscColorQueries(env: emacs.Env, term: *Terminal, data: []const u8) voi
 fn fnSetSize(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*anyopaque) callconv(.c) c.emacs_value {
     const env = emacs.Env.init(raw_env.?);
     const term = env.getUserPtr(Terminal, args[0]) orelse {
-        env.signalError("ghostel: invalid terminal handle");
+        env.signalError("invalid terminal handle", .{});
         return env.nil();
     };
 
     const rows = std.math.cast(u16, env.extractInteger(args[1])) orelse {
-        env.signalError("ghostel: rows out of range");
+        env.signalError("rows out of range", .{});
         return env.nil();
     };
     const cols = std.math.cast(u16, env.extractInteger(args[2])) orelse {
-        env.signalError("ghostel: cols out of range");
+        env.signalError("cols out of range", .{});
         return env.nil();
     };
 
@@ -693,7 +693,7 @@ fn fnGetTitle(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*an
     const term = env.getUserPtr(Terminal, args[0]) orelse return env.nil();
 
     const title = term.getTitle() catch |err| {
-        env.signalErrorf("ghostel: getTitle failed: {s}", .{@errorName(err)});
+        env.signalError("getTitle failed: %s", .{@errorName(err)});
         return env.nil();
     };
     return if (title) |t| env.makeString(t) else env.nil();
@@ -713,7 +713,7 @@ fn fnGetPwd(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*anyo
     const term = env.getUserPtr(Terminal, args[0]) orelse return env.nil();
 
     const pwd = term.getPwd() catch |err| {
-        env.signalErrorf("ghostel: getPwd failed: {s}", .{@errorName(err)});
+        env.signalError("getPwd failed: %s", .{@errorName(err)});
         return env.nil();
     };
     return if (pwd) |p| env.makeString(p) else env.nil();
@@ -733,7 +733,7 @@ fn fnRedraw(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*
 
     term.renderer.redraw(env, term, force_full) catch |err| {
         env.logStackTrace(@errorReturnTrace());
-        env.signalErrorf("Redraw failed: {s}", .{@errorName(err)});
+        env.signalError("Redraw failed: %s", .{@errorName(err)});
         return env.nil();
     };
 
@@ -756,7 +756,7 @@ fn fnRedraw(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*
     _ = env.f("ghostel--kitty-clear", .{});
     kitty_graphics.emitPlacements(env, term) catch |err| {
         env.logStackTrace(@errorReturnTrace());
-        env.logErrorf("ghostel: emitPlacements failed: {s}", .{@errorName(err)});
+        env.logError("emitPlacements failed: %s", .{@errorName(err)});
     };
 
     return env.nil();
@@ -791,7 +791,7 @@ fn fnEncodeKey(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _:
 
     const sent = input.encodeAndSend(env, term, key, mods, utf8) catch |err| {
         env.logStackTrace(@errorReturnTrace());
-        env.signalErrorf("ghostel: encodeAndSend failed: {s}", .{@errorName(err)});
+        env.signalError("encodeAndSend failed: %s", .{@errorName(err)});
         return env.nil();
     };
     return if (sent) env.t() else env.nil();
@@ -814,7 +814,7 @@ fn fnMouseEvent(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*
 
     const sent = input.encodeAndSendMouse(env, term, action, button, row, col, mods) catch |err| {
         env.logStackTrace(@errorReturnTrace());
-        env.signalErrorf("ghostel: encodeAndSendMouse failed: {s}", .{@errorName(err)});
+        env.signalError("encodeAndSendMouse failed: %s", .{@errorName(err)});
         return env.nil();
     };
     return if (sent) env.t() else env.nil();
@@ -831,7 +831,7 @@ fn fnFocusEvent(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*
     // Construct mode value manually: DEC private mode 1004 = value & 0x7FFF, ansi=false (bit 15=0)
     const focus_mode: gt.c.GhosttyMode = 1004;
     const focus_enabled = term.isModeEnabled(focus_mode) catch |err| {
-        env.signalErrorf("ghostel: isModeEnabled failed: {s}", .{@errorName(err)});
+        env.signalError("isModeEnabled failed: %s", .{@errorName(err)});
         return env.nil();
     };
     if (!focus_enabled) {
@@ -862,7 +862,7 @@ fn fnModeEnabled(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?
     const term = env.getUserPtr(Terminal, args[0]) orelse return env.nil();
     const mode: gt.c.GhosttyMode = @intCast(env.extractInteger(args[1]));
     const enabled = term.isModeEnabled(mode) catch |err| {
-        env.signalErrorf("ghostel: isModeEnabled failed: {s}", .{@errorName(err)});
+        env.signalError("isModeEnabled failed: %s", .{@errorName(err)});
         return env.nil();
     };
     return if (enabled) env.t() else env.nil();
@@ -874,7 +874,7 @@ fn fnAltScreen(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*a
     const env = emacs.Env.init(raw_env.?);
     const term = env.getUserPtr(Terminal, args[0]) orelse return env.nil();
     const alt = term.isAltScreen() catch |err| {
-        env.signalErrorf("ghostel: isAltScreen failed: {s}", .{@errorName(err)});
+        env.signalError("isAltScreen failed: %s", .{@errorName(err)});
         return env.nil();
     };
     return if (alt) env.t() else env.nil();
@@ -886,19 +886,19 @@ fn fnAltScreen(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*a
 fn fnSetPalette(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*anyopaque) callconv(.c) c.emacs_value {
     const env = emacs.Env.init(raw_env.?);
     const term = env.getUserPtr(Terminal, args[0]) orelse {
-        env.signalError("ghostel: invalid terminal handle");
+        env.signalError("invalid terminal handle", .{});
         return env.nil();
     };
 
     var str_buf: [2048]u8 = undefined;
     const colors_str = env.extractString(args[1], &str_buf) orelse {
-        env.signalError("ghostel: invalid palette string");
+        env.signalError("invalid palette string", .{});
         return env.nil();
     };
 
     // Get current palette as base (keeps entries 16-255)
     var palette = term.getColorPalette() catch |err| {
-        env.signalErrorf("ghostel: getColorPalette failed: {s}", .{@errorName(err)});
+        env.signalError("getColorPalette failed: %s", .{@errorName(err)});
         return env.nil();
     };
 
@@ -931,7 +931,7 @@ fn fnSetPalette(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*
     }
 
     term.setColorPalette(&palette) catch |err| {
-        env.signalErrorf("ghostel: failed to set color palette: {s}", .{@errorName(err)});
+        env.signalError("failed to set color palette: %s", .{@errorName(err)});
         return env.nil();
     };
     return env.t();
@@ -964,36 +964,36 @@ fn parseHexColor(s: []const u8) ?gt.ColorRgb {
 fn fnSetDefaultColors(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*anyopaque) callconv(.c) c.emacs_value {
     const env = emacs.Env.init(raw_env.?);
     const term = env.getUserPtr(Terminal, args[0]) orelse {
-        env.signalError("ghostel: invalid terminal handle");
+        env.signalError("invalid terminal handle", .{});
         return env.nil();
     };
 
     var fg_buf: [16]u8 = undefined;
     var bg_buf: [16]u8 = undefined;
     const fg_str = env.extractString(args[1], &fg_buf) orelse {
-        env.signalError("ghostel: invalid foreground color");
+        env.signalError("invalid foreground color", .{});
         return env.nil();
     };
     const bg_str = env.extractString(args[2], &bg_buf) orelse {
-        env.signalError("ghostel: invalid background color");
+        env.signalError("invalid background color", .{});
         return env.nil();
     };
 
     const fg = parseHexColor(fg_str) orelse {
-        env.signalError("ghostel: cannot parse foreground color");
+        env.signalError("cannot parse foreground color", .{});
         return env.nil();
     };
     const bg = parseHexColor(bg_str) orelse {
-        env.signalError("ghostel: cannot parse background color");
+        env.signalError("cannot parse background color", .{});
         return env.nil();
     };
 
     term.setColorForeground(&fg) catch |err| {
-        env.signalErrorf("ghostel: failed to set foreground color: {s}", .{@errorName(err)});
+        env.signalError("failed to set foreground color: %s", .{@errorName(err)});
         return env.nil();
     };
     term.setColorBackground(&bg) catch |err| {
-        env.signalErrorf("ghostel: failed to set background color: {s}", .{@errorName(err)});
+        env.signalError("failed to set background color: %s", .{@errorName(err)});
         return env.nil();
     };
     return env.t();
@@ -1011,7 +1011,7 @@ fn fnDebugState(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*
 
     // Preserve viewport position
     const saved_offset = (term.getScrollbar() catch |err| {
-        env.signalErrorf("ghostel: getScrollbar failed: {s}", .{@errorName(err)});
+        env.signalError("getScrollbar failed: %s", .{@errorName(err)});
         return env.nil();
     }).offset;
     defer {
@@ -1083,7 +1083,7 @@ fn fnDebugFeed(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*a
 
     // Preserve viewport position
     const saved_offset = (term.getScrollbar() catch |err| {
-        env.signalErrorf("ghostel: getScrollbar failed: {s}", .{@errorName(err)});
+        env.signalError("getScrollbar failed: %s", .{@errorName(err)});
         return env.nil();
     }).offset;
     defer {
@@ -1160,7 +1160,7 @@ fn fnCopyAllText(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?
 
     var formatter: gt.Formatter = undefined;
     if (gt.c.ghostty_formatter_terminal_new(null, &formatter, term.terminal, options) != gt.SUCCESS) {
-        env.signalError("ghostel: failed to create formatter");
+        env.signalError("failed to create formatter", .{});
         return env.nil();
     }
     defer gt.c.ghostty_formatter_free(formatter);
@@ -1168,7 +1168,7 @@ fn fnCopyAllText(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?
     var ptr: [*c]u8 = undefined;
     var len: usize = 0;
     if (gt.c.ghostty_formatter_format_alloc(formatter, null, &ptr, &len) != gt.SUCCESS) {
-        env.signalError("ghostel: formatter failed");
+        env.signalError("formatter failed", .{});
         return env.nil();
     }
 
@@ -1247,7 +1247,7 @@ fn titleChangedCallback(_: gt.Terminal, userdata: ?*anyopaque) callconv(.c) void
     const env = term.env orelse return;
 
     const title = term.getTitle() catch |err| {
-        env.logErrorf("ghostel: getTitle failed in titleChangedCallback: {s}", .{@errorName(err)});
+        env.logError("getTitle failed in titleChangedCallback: %s", .{@errorName(err)});
         return;
     };
     if (title) |t| {
@@ -1334,7 +1334,7 @@ fn fnUriAt(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*anyop
     const row_from_bottom = env.extractInteger(args[1]);
     const col = env.extractInteger(args[2]);
     const total_rows = term.getTotalRows() catch |err| {
-        env.signalErrorf("ghostel: getTotalRows failed: {s}", .{@errorName(err)});
+        env.signalError("getTotalRows failed: %s", .{@errorName(err)});
         return env.nil();
     };
 

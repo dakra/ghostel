@@ -304,32 +304,29 @@ pub const Env = struct {
     // --- Logging and debugging ---
 
     /// Signal an error with a message string.
-    pub fn signalError(self: Env, msg: []const u8) void {
+    pub fn signalError(self: Env, comptime msg: []const u8, objects: anytype) void {
         self.nonLocalExitSignal(
-            self.intern("error"),
-            self.f("list", .{msg}),
+            sym.@"error",
+            self.f("list", .{self.format("ghostel: " ++ msg, objects)}),
         );
     }
 
-    /// Signal an error with a formatted message string.
-    pub fn signalErrorf(self: Env, comptime fmt: []const u8, args: anytype) void {
-        callFmt(self, Env.signalError, fmt, args);
+    pub fn message(self: Env, msg: []const u8, objects: anytype) void {
+        const all_args = [1]Value{self.makeString(msg)} ++ self.makeValues(objects);
+        _ = self.funcall(sym.message, &all_args);
     }
 
-    pub fn message(self: Env, msg: []const u8) void {
-        _ = self.call1(sym.message, self.makeString(msg));
+    pub fn format(self: Env, msg: []const u8, objects: anytype) Value {
+        const all_args = [1]Value{self.makeString(msg)} ++ self.makeValues(objects);
+        return self.funcall(sym.format, &all_args);
     }
 
-    pub fn messagef(self: Env, comptime fmt: []const u8, args: anytype) void {
-        callFmt(self, Env.message, fmt, args);
-    }
-
-    pub fn logError(self: Env, msg: []const u8) void {
-        _ = self.f("display-warning", .{ sym.ghostel, msg, sym.@":error" });
-    }
-
-    pub fn logErrorf(self: Env, comptime fmt: []const u8, args: anytype) void {
-        callFmt(self, Env.logError, fmt, args);
+    pub fn logError(self: Env, comptime msg: []const u8, objects: anytype) void {
+        _ = self.f("display-warning", .{
+            sym.ghostel,
+            self.format("ghostel: " ++ msg, objects),
+            sym.@":error",
+        });
     }
 
     /// Writes stack trace as Emacs messages if in debug mode
@@ -339,23 +336,16 @@ pub const Env = struct {
                 var buffer: [4096]u8 = undefined;
                 var writer = std.Io.Writer.fixed(&buffer);
                 const debug_info = std.debug.getSelfDebugInfo() catch |err| {
-                    self.logErrorf("Unable to get debug info: {s}", .{@errorName(err)});
+                    self.logError("Unable to get debug info: %s", .{@errorName(err)});
                     return;
                 };
                 std.debug.writeStackTrace(trace.*, &writer, debug_info, .no_color) catch |err| {
-                    self.logErrorf("Unable to print stack trace: {s}", .{@errorName(err)});
+                    self.logError("Unable to print stack trace: %s", .{@errorName(err)});
                     return;
                 };
-                self.logError(buffer[0..writer.end]);
+                self.logError("%s", .{buffer[0..writer.end]});
             }
         }
-    }
-
-    fn callFmt(self: Env, func: anytype, comptime fmt: []const u8, args: anytype) void {
-        var buffer: [1024]u8 = undefined;
-        var writer = std.Io.Writer.fixed(&buffer);
-        writer.print(fmt, args) catch {};
-        @call(.auto, func, .{ self, buffer[0..writer.end] });
     }
 
     fn isStringLike(comptime ty: std.builtin.Type.Pointer) bool {
@@ -403,6 +393,8 @@ pub const Sym = struct {
 
     // Built-in functions
     cons: Value,
+    @"error": Value,
+    format: Value,
     list: Value,
     set: Value,
     @"symbol-value": Value,

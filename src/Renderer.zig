@@ -844,7 +844,7 @@ pub fn render(self: *Self, env: emacs.Env, term: *Terminal, skip: usize, force_f
             row_count += 1;
             // Clear per-row dirty flag
             gt.rs_row.set(self.row_iterator, gt.RS_ROW_OPT_DIRTY, false) catch |err| {
-                env.logErrorf("ghostel: rs_row.set(DIRTY, false) failed: {s}", .{@errorName(err)});
+                env.logError("rs_row.set(DIRTY, false) failed: %s", .{@errorName(err)});
             };
         }) {
             if (row_count < skip) continue;
