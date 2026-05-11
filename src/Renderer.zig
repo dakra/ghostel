@@ -138,6 +138,7 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool
         // Commit any pending resize since we're doing a rebuild anyway.
         try self.commitResize(term.alloc, &term.terminal);
         self.rows_in_buffer = 0;
+        self.render_state.dirty = .full;
     }
 
     // Unpark the viewport. When we have scrollback the viewport is sitting at
@@ -153,7 +154,7 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool
         env.gotoChar(env.pointMin());
     }
 
-    const rendered_rows = try self.renderToEnd(env, term, force_full);
+    const rendered_rows = try self.renderToEnd(env, term);
     // Now that we rendered, even if we cleared the buffer above, we now have at
     // least the rows in the active area:
     self.rows_in_buffer = @max(self.rows_in_buffer, self.size.rows);
@@ -171,7 +172,7 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool
         try self.commitResize(term.alloc, &term.terminal);
         term.terminal.scrollViewport(.bottom);
         self.gotoActiveStart(env);
-        try self.render(env, term, 0, false);
+        try self.render(env, term, 0);
         // There is now at least self.size.rows number of rows
         self.rows_in_buffer = @max(self.rows_in_buffer, self.size.rows);
     }
@@ -757,15 +758,10 @@ fn positionCursorByCell(self: *Self, env: emacs.Env, cx: u16, cy: u16) !bool {
     return true;
 }
 
-const BgFg = struct {
-    bg: gt.color.RGB,
-    fg: gt.color.RGB,
-};
-
-pub fn render(self: *Self, env: emacs.Env, term: *Terminal, skip: usize, force_full: bool) !void {
+pub fn render(self: *Self, env: emacs.Env, term: *Terminal, skip: usize) !void {
     try self.render_state.update(term.alloc, &term.terminal);
 
-    if (self.render_state.dirty != .false or force_full) {
+    if (self.render_state.dirty != .false) {
         // Set buffer default face
         var fg_hex: [7]u8 = undefined;
         var bg_hex: [7]u8 = undefined;
@@ -776,7 +772,6 @@ pub fn render(self: *Self, env: emacs.Env, term: *Terminal, skip: usize, force_f
 
         // Incremental redraw: only update dirty rows when possible.
         // force_full bypasses partial mode to avoid stale rows after scrolls.
-        const dirty_full = force_full or self.render_state.dirty == .full;
         var i: u16 = 0;
         const row_dirty = self.render_state.row_data.items(.dirty);
 
@@ -788,7 +783,7 @@ pub fn render(self: *Self, env: emacs.Env, term: *Terminal, skip: usize, force_f
             if (i < skip) continue;
 
             // Only process dirty rows
-            const dirty_row = dirty_full or row_dirty[i];
+            const dirty_row = self.render_state.dirty == .full or row_dirty[i];
             if (dirty_row) {
                 env.deleteRegion(env.point(), env.lineBeginningPosition2());
                 const row = self.render_state.row_data.get(i);
@@ -836,7 +831,7 @@ fn renderCursor(self: *Self, env: emacs.Env) !void {
 
 // Render content from the current viewport scroll position all the way to
 // the active area at the current Emacs point.
-fn renderToEnd(self: *Self, env: emacs.Env, term: *Terminal, force_full: bool) !usize {
+fn renderToEnd(self: *Self, env: emacs.Env, term: *Terminal) !usize {
     const scrollbar = term.terminal.screens.active.pages.scrollbar();
     if (scrollbar.len == 0) return 0;
     const offset_max = scrollbar.total - scrollbar.len;
@@ -852,7 +847,7 @@ fn renderToEnd(self: *Self, env: emacs.Env, term: *Terminal, force_full: bool) !
     var rendered_rows: usize = 0;
     var current_offset = scrollbar.offset;
     for (0..num_viewports) |_| {
-        try self.render(env, term, skip, force_full);
+        try self.render(env, term, skip);
         rendered_rows += (scrollbar.len - skip);
 
         const max_step = offset_max - current_offset;
