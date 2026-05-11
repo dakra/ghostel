@@ -30,6 +30,8 @@ export fn emacs_module_init(runtime: *c.struct_emacs_runtime) callconv(.c) c_int
     const raw_env = runtime.get_environment.?(runtime);
     const env = emacs.Env.init(raw_env);
 
+    emacs.initSymbols(env);
+
     // Register functions
     env.bindFunction("ghostel--new", 2, 5, &fnNew,
         \\Create a new ghostel terminal.
@@ -141,8 +143,6 @@ export fn emacs_module_init(runtime: *c.struct_emacs_runtime) callconv(.c) c_int
         \\
         \\(ghostel--pty-password-input-p PATH)
     );
-
-    emacs.initSymbols(env);
 
     // Install system callbacks (PNG decoder for kitty graphics, logging).
     sys.init();

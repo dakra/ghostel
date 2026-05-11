@@ -44,8 +44,7 @@ pub fn encodeAndSend(env: emacs.Env, term: *Terminal, key: Key, mods: Mods, utf8
     if (written == 0) return false;
 
     // Send encoded bytes to the PTY via Elisp
-    const str = env.makeString(buf[0..written]);
-    _ = env.f("ghostel--flush-output", .{str});
+    _ = env.f("ghostel--flush-output", .{buf[0..written]});
 
     return true;
 }

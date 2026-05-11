@@ -234,12 +234,12 @@ pub const Env = struct {
     pub fn bindFunction(self: Env, name: [*:0]const u8, min_arity: i32, max_arity: i32, func: *const fn (?*c.emacs_env, isize, [*c]c.emacs_value, ?*anyopaque) callconv(.c) c.emacs_value, docstring: [*:0]const u8) void {
         const fun = self.makeFunction(min_arity, max_arity, func, docstring, null);
         const name_sym = self.intern(name);
-        _ = self.funcall(self.intern("fset"), &[_]Value{ name_sym, fun });
+        _ = self.funcall(sym.fset, &[_]Value{ name_sym, fun });
     }
 
     /// Call (provide 'feature).
     pub fn provide(self: Env, feature: [*:0]const u8) void {
-        _ = self.funcall(self.intern("provide"), &[_]Value{self.intern(feature)});
+        _ = self.funcall(sym.provide, &[_]Value{self.intern(feature)});
     }
 
     // --- Buffer helpers ---
@@ -412,6 +412,7 @@ const interned_symbols = [_][:0]const u8{
     "fontp",
     "format",
     "forward-line",
+    "fset",
     "ghostel",
     "ghostel--cursor-char-pos",
     "ghostel--cursor-pos",
@@ -458,6 +459,7 @@ const interned_symbols = [_][:0]const u8{
     "point",
     "point-max",
     "point-min",
+    "provide",
     "put-text-property",
     "query-font",
     "selected-window",
