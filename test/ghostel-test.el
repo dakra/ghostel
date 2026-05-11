@@ -10161,6 +10161,51 @@ by the input-mode refactor)."
   ;; ghostel--send-event instead of global backward-kill-word.
   (should (eq (lookup-key ghostel-semi-char-mode-map (kbd "M-DEL")) #'ghostel--send-event)))
 
+(ert-deftest ghostel-test-yank-remap-bindings ()
+  "Alternative paste keys all route to `ghostel-yank'.
+Regression test for issue #263.  `C-y' is bound explicitly so user
+rebinds of the global `yank' key cannot break ghostel paste.
+`S-<insert>' is bound explicitly in `ghostel-semi-char-mode-map'
+because `ghostel--define-terminal-keys' otherwise routes it through
+`ghostel--send-event' as part of the `<insert>' modifier expansion.
+The `<remap> <yank>' entry catches everything else that Emacs binds
+to `yank' globally — `s-v' on macOS, plus any user rebinds.  In
+char mode all paste keys go to the terminal; line mode keeps
+Emacs's regular `yank' so paste lands in the input region."
+  ;; The remap entry itself in the maps that want ghostel-yank.
+  (should (eq (lookup-key ghostel-semi-char-mode-map [remap yank])
+              #'ghostel-yank))
+  (should (eq (lookup-key ghostel-readonly-mode-map [remap yank])
+              #'ghostel-yank))
+  ;; Line mode must NOT remap yank — regular yank into the input
+  ;; region is the right behavior there.
+  (should-not (lookup-key ghostel-line-mode-map [remap yank]))
+  ;; Char mode has no parent and no remap — every key is sent to
+  ;; the terminal.
+  (should-not (lookup-key ghostel-char-mode-map [remap yank]))
+  (should (eq (lookup-key ghostel-char-mode-map (kbd "S-<insert>"))
+              #'ghostel--send-event))
+  ;; End-to-end: with a ghostel buffer active, `key-binding' walks
+  ;; the active maps and follows the remap chain.
+  (let ((buf (generate-new-buffer " *ghostel-test-yank-remap*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          ;; Default mode is semi-char.
+          (should (eq (key-binding (kbd "C-y")) #'ghostel-yank))
+          (should (eq (key-binding (kbd "S-<insert>")) #'ghostel-yank))
+          ;; `s-v' relies on `term/ns-win.el' binding `[?\s-v]' to
+          ;; `yank' globally, which only happens when an NS window
+          ;; system loads.  On macOS batch builds without that
+          ;; binding (e.g. CI's Emacs) the remap has nothing to ride
+          ;; on, so only assert when the prerequisite is actually
+          ;; present.
+          (when (and (eq system-type 'darwin)
+                     (eq (lookup-key (current-global-map) (kbd "s-v"))
+                         'yank))
+            (should (eq (key-binding (kbd "s-v")) #'ghostel-yank))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-control-meta-key-bindings ()
   "Every non-exception Control-Meta letter chord routes to `ghostel--send-event'.
 Regression test for issue #239: these chords must reach the shell as ESC +

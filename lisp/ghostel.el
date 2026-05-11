@@ -1613,13 +1613,13 @@ Most keys are sent to the terminal.  Keys in
 \\`C-c' prefix from `ghostel-mode-map'."
   :parent ghostel-mode-map)
 (ghostel--define-terminal-keys ghostel-semi-char-mode-map)
-;; Yank bindings layer on top of the helper's `M-y' →
-;; `ghostel--send-event' default so the kill ring wins.
+;; Yank bindings layer on top of the helper's defaults so the kill
+;; ring wins over `ghostel--send-event' for `M-y', `S-<insert>', etc.
 (define-keymap :keymap ghostel-semi-char-mode-map
-  "C-y" #'ghostel-yank
-  "M-y" #'ghostel-yank-pop)
-(when (eq system-type 'darwin)
-  (define-key ghostel-semi-char-mode-map (kbd "s-v") #'ghostel-yank))
+  "C-y"            #'ghostel-yank
+  "S-<insert>"     #'ghostel-yank
+  "<remap> <yank>" #'ghostel-yank
+  "M-y"            #'ghostel-yank-pop)
 
 ;; No parent — char mode captures everything, including C-c.
 (defvar-keymap ghostel-char-mode-map
@@ -1666,17 +1666,16 @@ When `ghostel-readonly-fast-exit' is non-nil, the additional
 bindings in `ghostel-readonly-fast-exit-mode-map' are layered on
 top so that \\`q', \\`C-g', or any self-insert key exits."
   :parent ghostel-mode-map
-  "C-a"      #'ghostel-beginning-of-input-or-line
-  "C-y"      #'ghostel-yank
-  "M-w"      #'ghostel-readonly-copy
-  "C-w"      #'ghostel-readonly-copy
-  "M->"      #'ghostel-readonly-end-of-buffer
-  "C-e"      #'ghostel-readonly-end-of-line
-  "C-l"      #'ghostel-readonly-recenter
-  "RET"      #'ghostel-open-link-at-point
-  "<return>" #'ghostel-open-link-at-point)
-(when (eq system-type 'darwin)
-  (define-key ghostel-readonly-mode-map (kbd "s-v") #'ghostel-yank))
+  "C-a"            #'ghostel-beginning-of-input-or-line
+  "C-y"            #'ghostel-yank
+  "<remap> <yank>" #'ghostel-yank
+  "M-w"            #'ghostel-readonly-copy
+  "C-w"            #'ghostel-readonly-copy
+  "M->"            #'ghostel-readonly-end-of-buffer
+  "C-e"            #'ghostel-readonly-end-of-line
+  "C-l"            #'ghostel-readonly-recenter
+  "RET"            #'ghostel-open-link-at-point
+  "<return>"       #'ghostel-open-link-at-point)
 
 (defvar-keymap ghostel-readonly-fast-exit-mode-map
   :doc "Keymap layered on `ghostel-readonly-mode-map' when fast exit is on.
