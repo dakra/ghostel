@@ -634,7 +634,7 @@ When nil, falls back to `tramp-default-method'."
                  string))
 
 (defcustom ghostel-keymap-exceptions
-  '("C-c" "C-x" "C-u" "C-h" "M-x" "M-o" "M-:" "C-\\")
+  '("C-c" "C-x" "C-u" "C-h" "M-x" "M-o" "M-:" "C-\\" "S-<prior>" "S-<next>")
   "Key sequences that should not be sent to the terminal.
 These keys pass through to Emacs instead."
   :type '(repeat string))
@@ -1560,6 +1560,9 @@ Input modes (`ghostel-semi-char-mode-map', `ghostel-char-mode-map',
   "C-c C-y"          #'ghostel-paste
   "C-c M-l"          #'ghostel-clear-scrollback
   "C-c C-q"          #'ghostel-send-next-key
+  ;; Scrolling
+  "S-<prior>"        #'scroll-down-command
+  "S-<next>"         #'scroll-up-command
   ;; Hyperlink navigation (OSC 8, auto-detected URLs, file:line refs)
   "C-c C-n"          #'ghostel-next-hyperlink
   "C-c C-p"          #'ghostel-previous-hyperlink

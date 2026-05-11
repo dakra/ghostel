@@ -10173,6 +10173,22 @@ instead of running Emacs commands like `forward-sexp'."
           (should-not (eq binding #'ghostel--send-event))
         (should (eq binding #'ghostel--send-event))))))
 
+(ert-deftest ghostel-test-shift-page-up-down-bindings ()
+  "S-<prior> and S-<next> should be bound to scrolling commands.
+They are excluded from terminal-key definitions by `ghostel-keymap-exceptions'
+and inherited from `ghostel-mode-map'."
+  (should (eq (lookup-key ghostel-mode-map (kbd "S-<prior>")) #'scroll-down-command))
+  (should (eq (lookup-key ghostel-mode-map (kbd "S-<next>")) #'scroll-up-command))
+  ;; Inherited in semi-char mode
+  (should (eq (lookup-key ghostel-semi-char-mode-map (kbd "S-<prior>")) #'scroll-down-command))
+  (should (eq (lookup-key ghostel-semi-char-mode-map (kbd "S-<next>")) #'scroll-up-command)))
+
+(ert-deftest ghostel-test-char-mode-shift-page-up-down-bindings ()
+  "In char-mode, S-<prior> and S-<next> SHOULD be sent to the terminal.
+Char mode ignores exceptions and binds everything to `ghostel--send-event'."
+  (should (eq (lookup-key ghostel-char-mode-map (kbd "S-<prior>")) #'ghostel--send-event))
+  (should (eq (lookup-key ghostel-char-mode-map (kbd "S-<next>")) #'ghostel--send-event)))
+
 (ert-deftest ghostel-test-encode-key-legacy-control-meta ()
   "Control-Meta letter chords encode to ESC + control byte in legacy mode.
 Regression test for issue #239: these byte sequences match readline
