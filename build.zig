@@ -1,4 +1,5 @@
 const std = @import("std");
+const module_version = @import("src/version.zig").version;
 
 const vendored_emacs_module_dir = "vendor";
 
@@ -59,6 +60,15 @@ pub fn build(b: *std.Build) void {
         moduleOutputName(target_os),
     );
     b.getInstallStep().dependOn(&copy_step.step);
+
+    // Sidecar version file sitting next to the binary.  The elisp loader
+    // reads this before `module-load` to detect a stale module without
+    // mapping it into the process.  Mirrors the path of the .so/.dylib
+    // produced above.
+    const version_wf = b.addWriteFiles();
+    const version_file = version_wf.add("ghostel-module.version", module_version ++ "\n");
+    const copy_version_step = b.addInstallFile(version_file, "../ghostel-module.version");
+    b.getInstallStep().dependOn(&copy_version_step.step);
 
     // ----------------------------------------------------------------
     // `zig build test` — pure-Zig unit tests for the decoder helpers.

@@ -925,10 +925,20 @@ When VERSION is nil, use the latest release download URL."
         (format "%s/latest/download/%s"
                 ghostel-github-release-url asset-name)))))
 
+(defun ghostel--release-version-from-url (url)
+  "Return the release version embedded in URL, or nil.
+GitHub's `/releases/latest/download/<asset>' redirect resolves to
+`/releases/download/v<X.Y.Z>/<asset>'; extract the X.Y.Z segment."
+  (when (and url
+             (string-match "/releases/download/v\\([0-9]+\\.[0-9]+\\.[0-9]+\\)/"
+                           url))
+    (match-string 1 url)))
+
 (defun ghostel--download-module (dir &optional version latest-release)
   "Download a pre-built module into DIR.
 When VERSION is non-nil, download that release tag.
 When LATEST-RELEASE is non-nil, use the latest release asset URL.
+On success, also writes the sidecar version file alongside the module.
 Returns non-nil on success."
   (condition-case err
       (let* ((requested-version (unless latest-release
@@ -939,9 +949,24 @@ Returns non-nil on success."
             (error "Refusing non-HTTPS download URL: %s" url))
           (make-directory dir t)
           (let ((dest (expand-file-name
-                       (concat "ghostel-module" module-file-suffix) dir)))
+                       (concat "ghostel-module" module-file-suffix) dir))
+                (sidecar (ghostel--module-sidecar-path dir)))
+            ;; Drop any pre-existing sidecar so that, if the download or the
+            ;; subsequent sidecar write fails partway, the loader sees `absent'
+            ;; rather than `stale' (refuse to map a fresh module).
+            (when (file-exists-p sidecar)
+              (delete-file sidecar))
             (message "ghostel: downloading native module from %s..." url)
-            (when (ghostel--download-file url dest)
+            (when-let* ((final-url (ghostel--download-file url dest)))
+              ;; Resolve the version that was actually fetched.  For an
+              ;; explicit version we trust the request; for `latest' we
+              ;; parse the URL the server redirected us to.  If parsing
+              ;; fails we fall back to the minimum so the sidecar still
+              ;; reflects a safe lower bound.
+              (let ((resolved (or requested-version
+                                  (ghostel--release-version-from-url final-url)
+                                  ghostel--minimum-module-version)))
+                (ghostel--write-module-sidecar-version dir resolved))
               (message "ghostel: native module downloaded successfully")
               t))))
     (error
@@ -951,7 +976,7 @@ Returns non-nil on success."
 (defun ghostel--compile-module (dest-dir)
   "Compile the native module from source and install it in DEST-DIR.
 The build runs in `ghostel--resource-root' (which holds build.zig);
-on success the produced module is renamed into DEST-DIR."
+on success the produced module and its sidecar are moved into DEST-DIR."
   (let* ((source-dir (ghostel--resource-root))
          (default-directory source-dir))
     (message "ghostel: compiling native module with zig build (this may take a moment)...")
@@ -972,8 +997,10 @@ on success the produced module is renamed into DEST-DIR."
                ((equal built final)
                 (message "ghostel: native module compiled successfully"))
                (t
-                (make-directory dest-dir t)
-                (rename-file built final t)
+                (ghostel--install-module-pair
+                 built final
+                 (expand-file-name "ghostel-module.version" source-dir)
+                 (expand-file-name "ghostel-module.version" dest-dir))
                 (message "ghostel: native module compiled successfully"))))))
       (file-missing
        (display-warning 'ghostel
@@ -1024,17 +1051,19 @@ Choice: " url)
       (?s nil))))
 
 (defun ghostel--download-file (url dest)
-  "Download URL to DEST atomically.  Return non-nil on success.
-Writes to a sibling temp file in the same directory and renames it
-into place once the download succeeds.  Renaming swaps the directory
-entry to a new inode, so any process (notably a running Emacs) that
-has the previous DEST file mmap'd keeps a valid mapping to the old
-file content.  Writing to DEST directly would truncate the existing
-inode and corrupt that mapping."
+  "Download URL to DEST atomically.  Return the final URL on success, else nil.
+The returned URL reflects any HTTP redirects followed during the
+fetch, which lets callers resolve a `latest' alias to the actual
+release tag.  Writes to a sibling temp file in the same directory
+and renames it into place once the download succeeds.  Renaming
+swaps the directory entry to a new inode, so any process (notably
+a running Emacs) that has the previous DEST file mmap'd keeps a
+valid mapping to the old file content.  Writing to DEST directly
+would truncate the existing inode and corrupt that mapping."
   (let* ((url-request-method "GET")
          (url-show-status nil)
          (tmp (make-temp-name (concat dest ".tmp.")))
-         (ok nil))
+         (final-url nil))
     (unwind-protect
         (let ((buf (url-retrieve-synchronously url t t 30)))
           (when buf
@@ -1050,13 +1079,20 @@ inode and corrupt that mapping."
                           (write-region start (point-max) tmp nil 'silent)
                           (set-file-modes tmp #o755)
                           (rename-file tmp dest t)
-                          (setq ok t))))))
+                          ;; `url-current-object' tracks the URL of the
+                          ;; final response after redirect-following, so
+                          ;; latest-asset URLs resolve to /download/vX.Y.Z/.
+                          (setq final-url
+                                (or (and (boundp 'url-current-object)
+                                         url-current-object
+                                         (url-recreate-url url-current-object))
+                                    url)))))))
               (when (buffer-live-p buf)
                 (kill-buffer buf)))))
-      (unless ok
+      (unless final-url
         (when (file-exists-p tmp)
           (ignore-errors (delete-file tmp)))))
-    ok))
+    final-url))
 
 (defun ghostel--package-directory ()
   "Return the directory ghostel is loaded from, or nil."
@@ -1090,6 +1126,52 @@ the shipped resource root."
                        (ghostel--resource-root))))
     (file-name-as-directory (expand-file-name dir))))
 
+(defun ghostel--module-sidecar-path (dir)
+  "Return the path of the module version sidecar inside DIR.
+The sidecar is a one-line file holding the version string of the
+neighbouring native module.  It is written by `build.zig' at compile
+time and by `ghostel--download-module' after a successful download,
+so the loader can check the on-disk version without `module-load'."
+  (expand-file-name "ghostel-module.version" dir))
+
+(defun ghostel--read-module-sidecar-version (dir)
+  "Return the version string recorded in DIR's sidecar, or nil.
+A missing or empty file returns nil; the result is otherwise trimmed."
+  (let ((path (ghostel--module-sidecar-path dir)))
+    (when (file-readable-p path)
+      (let ((s (with-temp-buffer
+                 (insert-file-contents path)
+                 (string-trim (buffer-string)))))
+        (and (not (string-empty-p s)) s)))))
+
+(defun ghostel--write-module-sidecar-version (dir version)
+  "Write VERSION to DIR's sidecar atomically."
+  (make-directory dir t)
+  (let* ((dest (ghostel--module-sidecar-path dir))
+         (tmp (make-temp-name (concat dest ".tmp."))))
+    (unwind-protect
+        (let ((coding-system-for-write 'utf-8-unix))
+          (write-region (concat version "\n") nil tmp nil 'silent)
+          (rename-file tmp dest t)
+          (setq tmp nil))
+      (when (and tmp (file-exists-p tmp))
+        (ignore-errors (delete-file tmp))))))
+
+(defun ghostel--install-module-pair (built-mod final-mod
+                                               built-sidecar final-sidecar)
+  "Move BUILT-MOD and BUILT-SIDECAR into FINAL-MOD and FINAL-SIDECAR.
+The destination sidecar is removed before the module is moved, so every
+failure path ends in `sidecar absent' rather than `sidecar stale'.
+The loader treats the former as backward-compat (load and run a live
+version check); the latter as `refuse to map', which would leave the
+user stuck with a fresh module they cannot load."
+  (make-directory (file-name-directory final-mod) t)
+  (when (file-exists-p final-sidecar)
+    (delete-file final-sidecar))
+  (rename-file built-mod final-mod t)
+  (when (file-exists-p built-sidecar)
+    (rename-file built-sidecar final-sidecar t)))
+
 (defun ghostel-download-module (&optional prompt-for-version)
   "Interactively download the pre-built native module for this platform.
 With PROMPT-FOR-VERSION, prompt for a release tag to download.
@@ -1115,8 +1197,11 @@ Leaving the prompt empty downloads the latest release."
   "Move the built module from SOURCE-DIR into DEST-DIR when COMPILE-BUF finishes.
 Registers a one-shot `compilation-finish-functions' handler that
 filters on COMPILE-BUF and removes itself on first match.  Used so the
-interactive `ghostel-module-compile' honours `ghostel-module-directory'."
+interactive `ghostel-module-compile' honours `ghostel-module-directory'.
+The sidecar version file written by `build.zig' is moved alongside the
+module."
   (let* ((file-name (concat "ghostel-module" module-file-suffix))
+         (sidecar "ghostel-module.version")
          handler)
     (setq handler
           (lambda (buf status)
@@ -1124,18 +1209,20 @@ interactive `ghostel-module-compile' honours `ghostel-module-directory'."
               (remove-hook 'compilation-finish-functions handler)
               (when (string-match-p "finished" status)
                 (let ((built (expand-file-name file-name source-dir))
-                      (final (expand-file-name file-name dest-dir)))
+                      (final (expand-file-name file-name dest-dir))
+                      (built-sidecar (expand-file-name sidecar source-dir))
+                      (final-sidecar (expand-file-name sidecar dest-dir)))
                   (when (file-exists-p built)
                     (condition-case err
                         (progn
-                          (make-directory dest-dir t)
-                          (rename-file built final t)
+                          (ghostel--install-module-pair
+                           built final built-sidecar final-sidecar)
                           (message "ghostel: module installed at %s" final))
                       (error
                        (display-warning
                         'ghostel
-                        (format "Build succeeded but moving %s to %s failed: %s"
-                                built final (error-message-string err)))))))))))
+                        (format "Build succeeded but installing into %s failed: %s"
+                                dest-dir (error-message-string err)))))))))))
     (add-hook 'compilation-finish-functions handler)))
 
 (defun ghostel-module-compile ()
@@ -1175,31 +1262,81 @@ triggers an interactive prompt."
 (defun ghostel--load-module (&optional prompt-user)
   "Ensure the ghostel native module is loaded.
 When PROMPT-USER is non-nil (called from an interactive command like
-`ghostel'), missing modules trigger `ghostel-module-auto-install' and
-load failures signal `user-error' so the calling flow aborts.
-Otherwise (load time, including byte-compilation and Emacs 31's
-`user-lisp/' auto-compile), this function never prompts, downloads,
-or compiles - it only loads an existing module file and warns if one
-is missing.  Module installation only happens on an explicit user
-action: `M-x ghostel', `M-x ghostel-download-module', or
-`M-x ghostel-module-compile'.
+`ghostel'), missing or stale modules trigger
+`ghostel-module-auto-install' and load failures signal `user-error'
+so the calling flow aborts.  Otherwise (load time, including
+byte-compilation and Emacs 31's `user-lisp/' auto-compile), this
+function never prompts, downloads, or compiles - it only loads an
+existing module file and warns if one is missing or stale.  Module
+installation only happens on an explicit user action: `M-x ghostel',
+`M-x ghostel-download-module', or `M-x ghostel-module-compile'.
+
+Before calling `module-load' the sidecar file
+`ghostel-module.version' (written by `build.zig' and the downloader)
+is consulted.  When the sidecar reports a version older than
+`ghostel--minimum-module-version' the .so is NOT mapped into this
+process — that lets the freshly installed module be loaded in
+place after a subsequent `ghostel--ensure-module' call, avoiding an
+extra restart.
 
 The guard also honours `ghostel--new' being already `fboundp', which
 covers the pure-Elisp test path where `cl-letf' stubs the native
 entry points so tests run without the module present."
-  (unless (or (featurep 'ghostel-module)
-              (fboundp 'ghostel--new))
-    (let* ((dir (ghostel--module-directory))
-           (mod (expand-file-name
-                 (concat "ghostel-module" module-file-suffix) dir)))
-      (when (and prompt-user (not (file-exists-p mod)))
-        (ghostel--ensure-module dir))
+  (let* ((dir (ghostel--module-directory))
+         (mod (expand-file-name
+               (concat "ghostel-module" module-file-suffix) dir))
+         (sidecar-ver (ghostel--read-module-sidecar-version dir)))
+    (unless (or (featurep 'ghostel-module)
+                (fboundp 'ghostel--new))
       (cond
-       ((file-exists-p mod)
+       ;; Sidecar tells us the on-disk module is too old.  Refuse to map
+       ;; it so a subsequent install can `module-load' the fresh file in
+       ;; this same Emacs process.
+       ((and sidecar-ver
+             (version< sidecar-ver ghostel--minimum-module-version))
+        (display-warning
+         'ghostel
+         (format "Module version %s on disk is older than required %s"
+                 sidecar-ver ghostel--minimum-module-version))
+        (when prompt-user
+          (ghostel--ensure-module dir)
+          (let ((new-ver (ghostel--read-module-sidecar-version dir)))
+            (when (and (file-exists-p mod)
+                       new-ver
+                       (not (version< new-ver
+                                      ghostel--minimum-module-version)))
+              (condition-case err
+                  (module-load mod)
+                (error
+                 (user-error "Failed to load ghostel native module: %s"
+                             (error-message-string err))))))))
+       ;; Module file missing.
+       ((not (file-exists-p mod))
+        (cond
+         (prompt-user
+          (ghostel--ensure-module dir)
+          (when (file-exists-p mod)
+            (condition-case err
+                (module-load mod)
+              (error
+               (user-error "Failed to load ghostel native module: %s"
+                           (error-message-string err))))))
+         (t
+          (display-warning
+           'ghostel
+           (concat "Native module not found: " mod
+                   "\nRun M-x ghostel-download-module or M-x ghostel-module-compile")))))
+       ;; File exists and the sidecar (when present) is fresh.  Load it.
+       ;; When the sidecar is absent (existing installs predating it),
+       ;; fall back to a live version check post-load.  We skip the live
+       ;; check here when PROMPT-USER is non-nil; the tail below runs it
+       ;; instead, avoiding a double prompt.
+       (t
         (condition-case err
             (progn
               (module-load mod)
-              (ghostel--check-module-version dir prompt-user))
+              (unless prompt-user
+                (ghostel--check-module-version dir nil)))
           (error
            (if prompt-user
                (user-error "Failed to load ghostel native module: %s"
@@ -1207,15 +1344,13 @@ entry points so tests run without the module present."
              (display-warning
               'ghostel
               (format "Failed to load native module: %s\nTry M-x ghostel-module-compile to rebuild"
-                      (error-message-string err)))))))
-       (prompt-user
-        (user-error "Ghostel native module not found: %s.  Run M-x ghostel-download-module or M-x ghostel-module-compile"
-                    mod))
-       (t
-        (display-warning
-         'ghostel
-         (concat "Native module not found: " mod
-                 "\nRun M-x ghostel-download-module or M-x ghostel-module-compile")))))))
+                      (error-message-string err)))))))))
+    ;; Surface the version check at every interactive entry point — not
+    ;; just when this call loaded the module.  Otherwise a stale .so
+    ;; mapped in by an earlier load (e.g. sidecar absent at startup) is
+    ;; silently kept and the user only ever sees the bare warning.
+    (when (and prompt-user (featurep 'ghostel-module))
+      (ghostel--check-module-version dir t))))
 
 ;; Load the native module now so the rest of this file (declare-function,
 ;; feature consumers) sees it.  Failure is non-fatal at load time.

@@ -8798,9 +8798,14 @@ temp-file write under that directory errored out."
         (should-not warnings)))))
 
 (ert-deftest ghostel-test-compile-module-moves-to-dest-dir ()
-  "Compilation moves the produced module into DEST-DIR when it differs."
+  "Compilation moves the produced module and sidecar into DEST-DIR.
+The sync `ghostel--compile-module' path goes through
+`ghostel--install-module-pair', which pre-deletes any stale dest
+sidecar so a partially-completed install never leaves a fresh
+module beside a stale sidecar (issue #256 follow-up B1)."
   (let ((rename-args nil)
         (made-dirs nil)
+        (deleted nil)
         (warnings nil))
     (let ((native-comp-enable-subr-trampolines nil))
       (cl-letf (((symbol-function 'ghostel--resource-root)
@@ -8809,6 +8814,8 @@ temp-file write under that directory errored out."
                  (lambda (_) t))
                 ((symbol-function 'make-directory)
                  (lambda (dir &rest _) (push dir made-dirs)))
+                ((symbol-function 'delete-file)
+                 (lambda (path) (push path deleted)))
                 ((symbol-function 'rename-file)
                  (lambda (from to &optional _ok)
                    (push (list from to) rename-args)))
@@ -8819,16 +8826,30 @@ temp-file write under that directory errored out."
                  (lambda (&rest _) 0)))
         (ghostel--compile-module "/custom/dir/")
         (should-not warnings)
-        (should (equal 1 (length rename-args)))
-        (let ((args (car rename-args)))
+        (should (equal 1 (length deleted)))
+        (should (equal (downcase (expand-file-name
+                                  "ghostel-module.version"
+                                  "/custom/dir/"))
+                       (downcase (car deleted))))
+        (should (equal 2 (length rename-args)))
+        (let ((module-args (cadr rename-args))
+              (sidecar-args (car rename-args)))
           (should (equal (downcase (expand-file-name
                                     (concat "ghostel-module" module-file-suffix)
                                     "/src/ghostel/"))
-                         (downcase (nth 0 args))))
+                         (downcase (nth 0 module-args))))
           (should (equal (downcase (expand-file-name
                                     (concat "ghostel-module" module-file-suffix)
                                     "/custom/dir/"))
-                         (downcase (nth 1 args)))))
+                         (downcase (nth 1 module-args))))
+          (should (equal (downcase (expand-file-name
+                                    "ghostel-module.version"
+                                    "/src/ghostel/"))
+                         (downcase (nth 0 sidecar-args))))
+          (should (equal (downcase (expand-file-name
+                                    "ghostel-module.version"
+                                    "/custom/dir/"))
+                         (downcase (nth 1 sidecar-args)))))
         (should (member "/custom/dir/" made-dirs))))))
 
 (ert-deftest ghostel-test-compile-module-warns-when-build-missing ()
@@ -8868,11 +8889,13 @@ temp-file write under that directory errored out."
 
 (ert-deftest ghostel-test-module-compile-installs-when-dest-differs ()
   "Interactive compile installs the built module into `ghostel-module-directory'.
-A `compilation-finish-functions' handler renames the artifact when
-the dest directory differs from the source root."
+A `compilation-finish-functions' handler runs
+`ghostel--install-module-pair', which pre-deletes any existing dest
+sidecar and then renames the module and sidecar into place."
   (let* ((compile-buf (generate-new-buffer " *ghostel-test-compile*"))
          (compilation-finish-functions nil)
          (rename-args nil)
+         (deleted nil)
          (made-dirs nil)
          (default-directory nil)
          (ghostel-module-directory "/custom/dir/"))
@@ -8886,6 +8909,8 @@ the dest directory differs from the source root."
                      (lambda (_) t))
                     ((symbol-function 'make-directory)
                      (lambda (dir &rest _) (push dir made-dirs)))
+                    ((symbol-function 'delete-file)
+                     (lambda (path) (push path deleted)))
                     ((symbol-function 'rename-file)
                      (lambda (from to &optional _ok)
                        (push (list from to) rename-args)))
@@ -8895,16 +8920,32 @@ the dest directory differs from the source root."
             ;; Simulate compilation completion.
             (funcall (car compilation-finish-functions) compile-buf "finished\n")
             (should (null compilation-finish-functions))
-            (should (equal 1 (length rename-args)))
-            (let ((args (car rename-args)))
+            ;; Pre-existing dest sidecar must be removed before any rename.
+            (should (equal 1 (length deleted)))
+            (should (equal (downcase (expand-file-name
+                                      "ghostel-module.version"
+                                      "/custom/dir/"))
+                           (downcase (car deleted))))
+            (should (equal 2 (length rename-args)))
+            ;; rename-args is push-order (newest first): sidecar, then module.
+            (let ((module-args (cadr rename-args))
+                  (sidecar-args (car rename-args)))
               (should (equal (downcase (expand-file-name
                                         (concat "ghostel-module" module-file-suffix)
                                         "/src/ghostel/"))
-                             (downcase (nth 0 args))))
+                             (downcase (nth 0 module-args))))
               (should (equal (downcase (expand-file-name
                                         (concat "ghostel-module" module-file-suffix)
                                         "/custom/dir/"))
-                             (downcase (nth 1 args)))))))
+                             (downcase (nth 1 module-args))))
+              (should (equal (downcase (expand-file-name
+                                        "ghostel-module.version"
+                                        "/src/ghostel/"))
+                             (downcase (nth 0 sidecar-args))))
+              (should (equal (downcase (expand-file-name
+                                        "ghostel-module.version"
+                                        "/custom/dir/"))
+                             (downcase (nth 1 sidecar-args)))))))
       (when (buffer-live-p compile-buf)
         (kill-buffer compile-buf)))))
 
@@ -9013,6 +9054,287 @@ missing-file code path, then restores them."
                (lambda (&rest _) (setq warned t))))
       (ghostel--check-module-version "/tmp")
       (should-not warned))))
+
+;; -----------------------------------------------------------------------
+;; Test: sidecar version file round-trip and pre-load gating
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-sidecar-read-missing ()
+  "Reading a missing sidecar returns nil."
+  (let ((tmp (make-temp-file "ghostel-test-sidecar" t)))
+    (unwind-protect
+        (should (null (ghostel--read-module-sidecar-version tmp)))
+      (delete-directory tmp t))))
+
+(ert-deftest ghostel-test-sidecar-read-empty ()
+  "Reading an empty sidecar returns nil."
+  (let ((tmp (make-temp-file "ghostel-test-sidecar" t)))
+    (unwind-protect
+        (progn
+          (with-temp-file (ghostel--module-sidecar-path tmp))
+          (should (null (ghostel--read-module-sidecar-version tmp))))
+      (delete-directory tmp t))))
+
+(ert-deftest ghostel-test-sidecar-round-trip ()
+  "Writing then reading the sidecar returns the same version string."
+  (let ((tmp (make-temp-file "ghostel-test-sidecar" t)))
+    (unwind-protect
+        (progn
+          (ghostel--write-module-sidecar-version tmp "1.2.3")
+          (should (equal "1.2.3" (ghostel--read-module-sidecar-version tmp))))
+      (delete-directory tmp t))))
+
+(ert-deftest ghostel-test-sidecar-trims-whitespace ()
+  "Trailing whitespace in the sidecar is trimmed by the reader."
+  (let ((tmp (make-temp-file "ghostel-test-sidecar" t)))
+    (unwind-protect
+        (progn
+          (with-temp-file (ghostel--module-sidecar-path tmp)
+            (insert "  0.9.1  \n\n"))
+          (should (equal "0.9.1" (ghostel--read-module-sidecar-version tmp))))
+      (delete-directory tmp t))))
+
+(ert-deftest ghostel-test-release-version-from-url ()
+  "Parsing a /releases/download/vX.Y.Z/asset URL extracts the version."
+  (should (equal
+           "0.25.0"
+           (ghostel--release-version-from-url
+            "https://github.com/owner/repo/releases/download/v0.25.0/ghostel-module-x86_64-linux.so")))
+  ;; latest-style URL (server hasn't redirected) — no version embedded.
+  (should (null
+           (ghostel--release-version-from-url
+            "https://github.com/owner/repo/releases/latest/download/ghostel-module-x86_64-linux.so")))
+  (should (null (ghostel--release-version-from-url nil))))
+
+(ert-deftest ghostel-test-load-module-skips-stale-sidecar-at-load-time ()
+  "When the sidecar reports a stale version, `module-load' must NOT run.
+At load time PROMPT-USER is nil so we only warn and skip — no
+prompt, no install, no `module-load' of the stale binary."
+  (let* ((tmp (make-temp-file "ghostel-test-load-stale" t))
+         (mod (expand-file-name (concat "ghostel-module" module-file-suffix)
+                                tmp))
+         (ghostel--minimum-module-version "0.25.0")
+         (load-calls nil)
+         (ensure-calls nil)
+         (warned nil)
+         (had-feat (featurep 'ghostel-module))
+         (saved-new (and (fboundp 'ghostel--new)
+                         (symbol-function 'ghostel--new))))
+    (unwind-protect
+        (progn
+          (when had-feat
+            (setq features (delq 'ghostel-module features)))
+          (when saved-new
+            (fmakunbound 'ghostel--new))
+          (with-temp-file mod (insert "stub"))
+          (ghostel--write-module-sidecar-version tmp "0.20.0")
+          (cl-letf (((symbol-function 'ghostel--module-directory)
+                     (lambda () (file-name-as-directory tmp)))
+                    ((symbol-function 'module-load)
+                     (lambda (path) (push path load-calls)))
+                    ((symbol-function 'ghostel--ensure-module)
+                     (lambda (dir) (push dir ensure-calls)))
+                    ((symbol-function 'display-warning)
+                     (lambda (&rest _) (setq warned t))))
+            (ghostel--load-module)
+            (should warned)
+            (should (null load-calls))
+            (should (null ensure-calls))))
+      (delete-directory tmp t)
+      (when saved-new
+        (fset 'ghostel--new saved-new))
+      (when had-feat
+        (cl-pushnew 'ghostel-module features)))))
+
+(ert-deftest ghostel-test-load-module-prompts-on-stale-sidecar ()
+  "Interactive entry with a stale sidecar runs `ghostel--ensure-module'.
+After install refreshes the sidecar, the fresh module is loaded
+in-process so no Emacs restart is needed."
+  (let* ((tmp (make-temp-file "ghostel-test-load-stale-i" t))
+         (mod (expand-file-name (concat "ghostel-module" module-file-suffix)
+                                tmp))
+         (ghostel--minimum-module-version "0.25.0")
+         (load-calls nil)
+         (ensure-calls nil)
+         (had-feat (featurep 'ghostel-module))
+         (saved-new (and (fboundp 'ghostel--new)
+                         (symbol-function 'ghostel--new))))
+    (unwind-protect
+        (progn
+          (when had-feat
+            (setq features (delq 'ghostel-module features)))
+          (when saved-new
+            (fmakunbound 'ghostel--new))
+          (with-temp-file mod (insert "stub"))
+          (ghostel--write-module-sidecar-version tmp "0.20.0")
+          (cl-letf (((symbol-function 'ghostel--module-directory)
+                     (lambda () (file-name-as-directory tmp)))
+                    ((symbol-function 'module-load)
+                     (lambda (path) (push path load-calls)))
+                    ;; Simulate a successful install: rewrite the sidecar
+                    ;; to the current minimum, leaving the .so in place.
+                    ((symbol-function 'ghostel--ensure-module)
+                     (lambda (dir)
+                       (push dir ensure-calls)
+                       (ghostel--write-module-sidecar-version
+                        dir ghostel--minimum-module-version)))
+                    ((symbol-function 'display-warning)
+                     (lambda (&rest _) nil)))
+            (ghostel--load-module t)
+            (should (equal 1 (length ensure-calls)))
+            (should (equal (list mod) load-calls))))
+      (delete-directory tmp t)
+      (when saved-new
+        (fset 'ghostel--new saved-new))
+      (when had-feat
+        (cl-pushnew 'ghostel-module features)))))
+
+(ert-deftest ghostel-test-load-module-prompts-when-loaded-but-stale ()
+  "Stale already-loaded module triggers a prompt at interactive entry.
+Issue #256: when no sidecar existed at startup the elisp loader
+still mapped the stale .so, and the previous version check ran
+with PROMPT-USER nil so only a bare warning was surfaced.  After
+the fix `M-x ghostel' must offer the install dialog."
+  (let* ((tmp (make-temp-file "ghostel-test-loaded-stale" t))
+         (ghostel--minimum-module-version "0.25.0")
+         (warned nil)
+         (ensure-calls nil)
+         (had-feat (featurep 'ghostel-module)))
+    (unwind-protect
+        (progn
+          ;; Pretend the (stale) module is already loaded.
+          (cl-pushnew 'ghostel-module features)
+          (cl-letf (((symbol-function 'ghostel--module-directory)
+                     (lambda () (file-name-as-directory tmp)))
+                    ((symbol-function 'ghostel--module-version)
+                     (lambda () "0.20.0"))
+                    ((symbol-function 'ghostel--ensure-module)
+                     (lambda (dir) (push dir ensure-calls)))
+                    ((symbol-function 'display-warning)
+                     (lambda (&rest _) (setq warned t))))
+            (ghostel--load-module t)
+            (should warned)
+            (should (equal 1 (length ensure-calls)))))
+      (delete-directory tmp t)
+      (unless had-feat
+        (setq features (delq 'ghostel-module features))))))
+
+(ert-deftest ghostel-test-load-module-no-prompt-on-loaded-stale-at-load-time ()
+  "Even with a stale loaded module, the load-time call must NOT prompt.
+The interactive prompt is gated on PROMPT-USER; load-time
+auto-execution (e.g. byte-compile) only warns."
+  (let* ((tmp (make-temp-file "ghostel-test-loaded-stale-load" t))
+         (ghostel--minimum-module-version "0.25.0")
+         (ensure-calls nil)
+         (had-feat (featurep 'ghostel-module)))
+    (unwind-protect
+        (progn
+          (cl-pushnew 'ghostel-module features)
+          (cl-letf (((symbol-function 'ghostel--module-directory)
+                     (lambda () (file-name-as-directory tmp)))
+                    ((symbol-function 'ghostel--module-version)
+                     (lambda () "0.20.0"))
+                    ((symbol-function 'ghostel--ensure-module)
+                     (lambda (dir) (push dir ensure-calls)))
+                    ((symbol-function 'display-warning)
+                     (lambda (&rest _) nil)))
+            (ghostel--load-module)
+            (should (null ensure-calls))))
+      (delete-directory tmp t)
+      (unless had-feat
+        (setq features (delq 'ghostel-module features))))))
+
+(ert-deftest ghostel-test-install-module-pair-deletes-stale-sidecar ()
+  "Existing dest sidecar is removed before the new module is moved.
+`ghostel--install-module-pair' keeps the invariant that a fresh
+module is never paired with a stale sidecar."
+  (let* ((src (make-temp-file "ghostel-test-pair-src" t))
+         (dst (make-temp-file "ghostel-test-pair-dst" t))
+         (built-mod (expand-file-name "ghostel-module.so" src))
+         (final-mod (expand-file-name "ghostel-module.so" dst))
+         (built-sidecar (expand-file-name "ghostel-module.version" src))
+         (final-sidecar (expand-file-name "ghostel-module.version" dst)))
+    (unwind-protect
+        (progn
+          (with-temp-file built-mod (insert "new-so"))
+          (with-temp-file built-sidecar (insert "0.99.0\n"))
+          (with-temp-file final-sidecar (insert "0.10.0\n"))
+          (ghostel--install-module-pair built-mod final-mod
+                                        built-sidecar final-sidecar)
+          (should (file-exists-p final-mod))
+          (should (equal "new-so" (with-temp-buffer
+                                    (insert-file-contents final-mod)
+                                    (buffer-string))))
+          (should (equal "0.99.0" (ghostel--read-module-sidecar-version dst)))
+          (should-not (file-exists-p built-mod))
+          (should-not (file-exists-p built-sidecar)))
+      (delete-directory src t)
+      (delete-directory dst t))))
+
+(ert-deftest ghostel-test-install-module-pair-sidecar-failure-leaves-absent ()
+  "A sidecar rename failure leaves the dest in `absent' state.
+The pre-delete in `ghostel--install-module-pair' guarantees that if
+the second rename fails, the destination has a fresh module but
+NO sidecar — which the loader treats as backward-compat live check,
+not as `refuse to map'."
+  (let* ((src (make-temp-file "ghostel-test-pair-fail-src" t))
+         (dst (make-temp-file "ghostel-test-pair-fail-dst" t))
+         (built-mod (expand-file-name "ghostel-module.so" src))
+         (final-mod (expand-file-name "ghostel-module.so" dst))
+         (built-sidecar (expand-file-name "ghostel-module.version" src))
+         (final-sidecar (expand-file-name "ghostel-module.version" dst))
+         (real-rename (symbol-function 'rename-file)))
+    (unwind-protect
+        (progn
+          (with-temp-file built-mod (insert "new-so"))
+          (with-temp-file built-sidecar (insert "0.99.0\n"))
+          (with-temp-file final-sidecar (insert "0.10.0\n"))
+          (cl-letf (((symbol-function 'rename-file)
+                     (lambda (from to &optional ok)
+                       (if (string-suffix-p ".version" from)
+                           (signal 'file-error '("simulated sidecar rename failure"))
+                         (funcall real-rename from to ok)))))
+            (should-error
+             (ghostel--install-module-pair built-mod final-mod
+                                           built-sidecar final-sidecar)
+             :type 'file-error))
+          ;; Fresh module landed.
+          (should (file-exists-p final-mod))
+          (should (equal "new-so" (with-temp-buffer
+                                    (insert-file-contents final-mod)
+                                    (buffer-string))))
+          ;; Stale sidecar was pre-deleted, new sidecar rename failed —
+          ;; net result is `absent', not `stale'.
+          (should-not (file-exists-p final-sidecar)))
+      (delete-directory src t)
+      (delete-directory dst t))))
+
+(ert-deftest ghostel-test-download-module-deletes-stale-sidecar-on-failure ()
+  "A failed download leaves no stale sidecar behind.
+The download path pre-deletes the dest sidecar so that even if
+`ghostel--download-file' fails, the loader falls back to the live
+version check on whatever module is on disk instead of refusing
+to map it based on stale sidecar metadata."
+  (let* ((dir (make-temp-file "ghostel-test-dl-fail" t))
+         (sidecar (ghostel--module-sidecar-path dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file sidecar (insert "0.10.0\n"))
+          (cl-letf (((symbol-function 'ghostel--download-file)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'message) (lambda (&rest _))))
+            (should-not (ghostel--download-module dir)))
+          (should-not (file-exists-p sidecar)))
+      (delete-directory dir t))))
+
+(ert-deftest ghostel-test-build-emits-sidecar-version ()
+  "`zig build' writes a sidecar matching the live module version.
+Runs in the native test suite so the build has already produced
+both the .so/.dylib and ghostel-module.version next to it."
+  (let* ((dir (ghostel--module-directory))
+         (sidecar (ghostel--read-module-sidecar-version dir)))
+    (should (stringp sidecar))
+    (should (equal sidecar (ghostel--module-version)))))
 
 ;; -----------------------------------------------------------------------
 ;; Test: platform tag arch normalization
@@ -14453,6 +14775,18 @@ slip past the unit tests."
     ghostel-test-module-version-mismatch
     ghostel-test-module-version-newer-than-minimum
     ghostel-test-load-module-no-prompt-at-load-time
+    ghostel-test-sidecar-read-missing
+    ghostel-test-sidecar-read-empty
+    ghostel-test-sidecar-round-trip
+    ghostel-test-sidecar-trims-whitespace
+    ghostel-test-release-version-from-url
+    ghostel-test-load-module-skips-stale-sidecar-at-load-time
+    ghostel-test-load-module-prompts-on-stale-sidecar
+    ghostel-test-load-module-prompts-when-loaded-but-stale
+    ghostel-test-load-module-no-prompt-on-loaded-stale-at-load-time
+    ghostel-test-install-module-pair-deletes-stale-sidecar
+    ghostel-test-install-module-pair-sidecar-failure-leaves-absent
+    ghostel-test-download-module-deletes-stale-sidecar-on-failure
     ghostel-test-platform-tag-normalizes-arch
     ghostel-test-title-does-not-overwrite-manual-rename
     ghostel-test-title-tracking-disabled

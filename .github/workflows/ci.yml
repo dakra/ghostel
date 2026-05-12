@@ -165,7 +165,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ghostel-module-${{ matrix.platform }}
-          path: ghostel-module${{ matrix.suffix }}
+          path: |
+            ghostel-module${{ matrix.suffix }}
+            ghostel-module.version
 
   test-native:
     needs: build-native
