@@ -11315,9 +11315,86 @@ native module."
   (ghostel-test--with-input-fixture "$ " "ls -la"
     (should (= 3 (ghostel-input-start-point)))))
 
-(ert-deftest ghostel-test-input-start-point-without-prop-uses-cursor ()
-  "Without `ghostel-prompt' on the cursor row, returns the cursor position."
+(ert-deftest ghostel-test-input-start-point-without-prop-or-regex-uses-cursor ()
+  "When neither prop nor regex finds a prompt, returns the cursor position.
+The cursor is the final fallback so empty / non-shell lines still
+have a usable input boundary."
   (let ((buf (generate-new-buffer " *ghostel-test-input-nocursor*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((inhibit-read-only t))
+            ;; Line has no prompt prefix and no prompt char anywhere —
+            ;; `ghostel-prompt-regexp' can't match, so the cursor wins.
+            (insert "plain text line"))
+          (setq ghostel--term 'fake)
+          (setq ghostel--term-rows 1)
+          (setq ghostel--cursor-char-pos (point))
+          (setq ghostel--cursor-pos (cons (current-column) 0))
+          (should (= (point) (ghostel-input-start-point))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-input-start-point-regex-fallback-python ()
+  "Regex fallback detects `>>> ' prompt when OSC 133 isn't available."
+  (let ((buf (generate-new-buffer " *ghostel-test-input-regex-py*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((inhibit-read-only t))
+            ;; Python REPL line — no prop, but `>>> ' matches the regex.
+            (insert ">>> hello"))
+          (setq ghostel--term 'fake)
+          (setq ghostel--term-rows 1)
+          (setq ghostel--cursor-char-pos (point))
+          (setq ghostel--cursor-pos (cons (current-column) 0))
+          ;; Regex matches `>>> ' ending at pos 5 → input starts at 5.
+          (should (= 5 (ghostel-input-start-point))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-input-start-point-regex-fallback-lambda ()
+  "Regex fallback detects `λ ' prompts."
+  (let ((buf (generate-new-buffer " *ghostel-test-input-regex-lambda*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((inhibit-read-only t))
+            (insert "λ ls"))
+          (setq ghostel--term 'fake)
+          (setq ghostel--term-rows 1)
+          (setq ghostel--cursor-char-pos (point))
+          (setq ghostel--cursor-pos (cons (current-column) 0))
+          ;; `λ ' is 2 chars (λ + space) so input-start at 3.
+          (should (= 3 (ghostel-input-start-point))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-input-start-point-prop-wins-over-regex ()
+  "When both `ghostel-prompt' prop and the regex match, prop wins.
+Constructs a fixture where the two methods disagree: the prop is
+set only on the `$' (position 1), so the walk-back returns position
+2; the regex still matches `$ ' and would return position 3.  The
+result must be 2 to prove the prop branch is consulted first."
+  (let ((buf (generate-new-buffer " *ghostel-test-input-prop-wins*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((inhibit-read-only t))
+            ;; Prop ONLY on the `$' — not the space.  The walk-back in
+            ;; `ghostel-input-start-point' stops as soon as it finds any
+            ;; `ghostel-prompt' char, so it returns the position right after
+            ;; the `$' (= 2).  The regex would match `$ ' (end = 3).
+            ;; Different answers → precedence matters.
+            (insert (propertize "$" 'ghostel-prompt t))
+            (insert " ls"))
+          (setq ghostel--term 'fake)
+          (setq ghostel--term-rows 1)
+          (setq ghostel--cursor-char-pos (point))
+          (setq ghostel--cursor-pos (cons (current-column) 0))
+          (should (= 2 (ghostel-input-start-point))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-input-start-point-regex-disabled-falls-back-to-cursor ()
+  "Setting `ghostel-prompt-regexp' to nil disables the regex fallback."
+  (let ((buf (generate-new-buffer " *ghostel-test-input-regex-off*")))
     (unwind-protect
         (with-current-buffer buf
           (ghostel-mode)
@@ -11327,7 +11404,9 @@ native module."
           (setq ghostel--term-rows 1)
           (setq ghostel--cursor-char-pos (point))
           (setq ghostel--cursor-pos (cons (current-column) 0))
-          (should (= (point) (ghostel-input-start-point))))
+          ;; With regex off, the only fallback is the cursor — pos 10.
+          (let ((ghostel-prompt-regexp nil))
+            (should (= 10 (ghostel-input-start-point)))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-cursor-point-tracks-cursor-char-pos ()
@@ -11980,6 +12059,109 @@ back to the active prompt's input area."
                 (ghostel-beginning-of-input-or-line)
                 (should (= (point) expected-bol))))))
       (kill-buffer buf))))
+
+(ert-deftest ghostel-test-beginning-of-input-or-line-regex-python ()
+  "Regex fallback finds the prompt prefix on a `>>> ' line.
+With no OSC 133 prop, `C-a' should still jump past the prompt
+prefix on a Python REPL line."
+  (let ((buf (generate-new-buffer " *ghostel-test-c-a-regex-py*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          ;; No prop — the line just looks like a Python REPL line.
+          (insert ">>> import os")
+          (let ((ghostel--term 'fake)
+                (ghostel--process 'fake-proc))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore))
+              (ghostel-emacs-mode)
+              (goto-char (point-max))
+              (ghostel-beginning-of-input-or-line)
+              ;; `>>> ' is 4 chars (positions 1-4), input starts at 5.
+              (should (= (point) 5)))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-beginning-of-input-or-line-regex-lambda ()
+  "Regex fallback recognizes `λ ' as a prompt prefix."
+  (let ((buf (generate-new-buffer " *ghostel-test-c-a-regex-lambda*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (insert "λ ls")
+          (let ((ghostel--term 'fake)
+                (ghostel--process 'fake-proc))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore))
+              (ghostel-emacs-mode)
+              (goto-char (point-max))
+              (ghostel-beginning-of-input-or-line)
+              ;; `λ ' is 2 chars; input starts at position 3.
+              (should (= (point) 3)))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-beginning-of-input-or-line-regex-disabled ()
+  "Setting `ghostel-prompt-regexp' to nil disables the regex fallback.
+Without prop, marker, or regex, the command falls through to BOL."
+  (let ((buf (generate-new-buffer " *ghostel-test-c-a-regex-off*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (insert ">>> import os")
+          (let ((ghostel--term 'fake)
+                (ghostel--process 'fake-proc)
+                (ghostel-prompt-regexp nil))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore))
+              (ghostel-emacs-mode)
+              (goto-char (point-max))
+              (ghostel-beginning-of-input-or-line)
+              ;; No detection → BOL → point at column 0.
+              (should (= (current-column) 0)))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-beginning-of-input-or-line-regex-ps2-continuation ()
+  "`C-a' on an empty PS2 continuation row lands past the prefix.
+The helper's `<=' check enables this — every fresh `RET' the user
+types produces a row like `> ' with no trailing input, and pressing
+`C-a' should put point where input would start, not at column 0."
+  (let ((buf (generate-new-buffer " *ghostel-test-c-a-ps2*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          ;; Empty continuation row — bash/zsh PS2 default is `> '.
+          ;; No `ghostel-prompt' prop, no trailing input.
+          (insert "> ")
+          (let ((ghostel--term 'fake)
+                (ghostel--process 'fake-proc))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore))
+              (ghostel-emacs-mode)
+              (goto-char (point-min))
+              (ghostel-beginning-of-input-or-line)
+              ;; `> ' is 2 chars; input would start at position 3.
+              (should (= (point) 3)))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-regex-prompt-end-empty-prompt-returns-match ()
+  "Helper returns the regex match end even on an empty prompt line.
+A fresh `$ ' with no input typed yet should still report
+input-start at position 3 — pressing `C-a' on a blank prompt row
+should land past the prefix, not at column 0.  (Bug: an earlier
+draft used `<' here and rejected all-prompt lines, breaking `C-a'
+on every empty prompt the user pressed `RET' to.)"
+  (with-temp-buffer
+    (insert "$ ")
+    (should (= 3 (ghostel--regex-prompt-end 1)))))
+
+(ert-deftest ghostel-test-regex-prompt-end-matches-content ()
+  "Helper returns the match end when there's input past the prompt."
+  (with-temp-buffer
+    (insert "$ ls")
+    ;; `$ ' is 2 chars, `ls' starts at position 3.
+    (should (= 3 (ghostel--regex-prompt-end 1)))))
+
+(ert-deftest ghostel-test-regex-prompt-end-nil-regex-returns-nil ()
+  "When `ghostel-prompt-regexp' is nil the helper returns nil."
+  (with-temp-buffer
+    (insert "$ ls")
+    (let ((ghostel-prompt-regexp nil))
+      (should (null (ghostel--regex-prompt-end 1))))))
 
 (ert-deftest ghostel-test-line-mode-interrupt ()
   "Line-mode interrupt discards input, sends SIGINT, and exits."
@@ -14948,7 +15130,11 @@ slip past the unit tests."
     ghostel-test-input-start-point-prefers-cursor-over-stale-prompt
     ghostel-test-input-start-point-osc133-on-cursor-row
     ghostel-test-input-start-point-returns-after-prompt-prop
-    ghostel-test-input-start-point-without-prop-uses-cursor
+    ghostel-test-input-start-point-without-prop-or-regex-uses-cursor
+    ghostel-test-input-start-point-regex-fallback-python
+    ghostel-test-input-start-point-regex-fallback-lambda
+    ghostel-test-input-start-point-prop-wins-over-regex
+    ghostel-test-input-start-point-regex-disabled-falls-back-to-cursor
     ghostel-test-cursor-point-tracks-cursor-char-pos
     ghostel-test-point-on-cursor-row-p-true
     ghostel-test-point-on-cursor-row-p-false-on-other-row
@@ -14970,6 +15156,13 @@ slip past the unit tests."
     ghostel-test-line-mode-history
     ghostel-test-beginning-of-input-or-line-on-prompt-row
     ghostel-test-beginning-of-input-or-line-in-scrollback
+    ghostel-test-beginning-of-input-or-line-regex-python
+    ghostel-test-beginning-of-input-or-line-regex-lambda
+    ghostel-test-beginning-of-input-or-line-regex-disabled
+    ghostel-test-beginning-of-input-or-line-regex-ps2-continuation
+    ghostel-test-regex-prompt-end-empty-prompt-returns-match
+    ghostel-test-regex-prompt-end-matches-content
+    ghostel-test-regex-prompt-end-nil-regex-returns-nil
     ghostel-test-line-mode-interrupt
     ghostel-test-line-mode-exit-sends-pending
     ghostel-test-line-mode-eof-on-empty

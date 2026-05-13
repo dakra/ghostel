@@ -766,6 +766,36 @@ Has no effect when `ghostel-line-mode-use-bash-completion' is nil
 or when the `bash-completion' package is not installed."
   :type 'boolean)
 
+(defcustom ghostel-prompt-regexp
+  "^[^#$%>λ❯→➜\n]*[#$%>λ❯→➜]+ *"
+  "Regexp matching a prompt prefix at the beginning of a line.
+Consulted as a fallback by `ghostel-input-start-point' and
+`ghostel-beginning-of-input-or-line' when the row has no
+`ghostel-prompt' text property (i.e. no OSC 133 shell integration).
+
+The default recognizes:
+- Standard shell prompts: `$ ', `# ', `% ', `> '
+- Python and similar REPLs: `>>> '
+- Themed prompts: `λ ', `❯ ' (Starship/Pure/Powerlevel10k),
+  `➜ ' (oh-my-zsh robbyrussell), `→ '
+
+The negated character class `[^#$%>λ❯→➜\\n]*' forces the match to
+stop at the *first* prompt character on the line, so command lines
+echoed into scrollback (e.g. `$ echo $foo') are detected by their
+leading prompt prefix rather than a `$' deeper in the line.
+
+Trade-off: any line that *starts* with one of these characters is
+treated as a prompt line.  Diff output (`> excluded'), markdown
+headings (`# Heading'), and lines like `5 > 3' will yield false
+positives for column-aware motions.  OSC 133 integration is the
+robust fix - see the README's shell-integration section.
+
+Customize this variable to add or replace prompt characters for
+prompts the default doesn't catch (e.g., `▶ ', `» ', `🦀 ').  Set
+to nil to disable the regex fallback entirely (OSC 133 only)."
+  :type '(choice (const :tag "Disable" nil)
+                 (regexp :tag "Regexp")))
+
 
 ;;; ANSI color faces
 
@@ -2974,6 +3004,20 @@ renderer (chars typed via the PTY in a previous mode).  Cleared to
 many backspaces to erase them — keeps a subsequent send from
 duplicating the prefix when the shell echoes our line back.")
 
+(defun ghostel--regex-prompt-end (pos)
+  "Return position past the prompt prefix on POS's line, or nil.
+Matches `ghostel-prompt-regexp' anchored at BOL of POS's line.
+Returns nil when the regexp is nil or doesn't match."
+  (when ghostel-prompt-regexp
+    (save-excursion
+      (goto-char pos)
+      (let ((bol (line-beginning-position))
+            (eol (line-end-position)))
+        (goto-char bol)
+        (when (looking-at ghostel-prompt-regexp)
+          (let ((end (match-end 0)))
+            (and (<= end eol) end)))))))
+
 (defun ghostel-input-start-point ()
   "Return the buffer position where the current input begins.
 The cursor's buffer position is the source of truth — whatever the
@@ -2983,9 +3027,10 @@ cursor not yet positioned), fall back to the rightmost
 `ghostel-prompt' text-property character.  When the cursor IS
 available and the cursor's row carries `ghostel-prompt' characters
 \(OSC 133 shell integration), return the position right after the
-last contiguous `ghostel-prompt' char on that row; otherwise
-return the cursor position itself.  Returns nil when neither path
-can locate a position (no cursor and no prompt prop)."
+last contiguous `ghostel-prompt' char on that row.  Without the
+prop, consult `ghostel-prompt-regexp' as a fallback; if neither
+detects a prompt, return the cursor position itself.  Returns nil
+when nothing can locate a position (no cursor and no detection)."
 
   (let ((cursor-pos ghostel--cursor-char-pos))
     (cond
@@ -2997,22 +3042,22 @@ can locate a position (no cursor and no prompt prop)."
         ;; Walk back from the cursor on its row, looking for the
         ;; rightmost `ghostel-prompt' character.  The first prompt
         ;; char we hit (scanning right-to-left) is the end of the
-        ;; prompt prefix — so its position+1, which is the current
+        ;; prompt prefix - so its position+1, which is the current
         ;; `pos' when we stop, is the input boundary.
         (while (and (> pos row-start)
                     (not (get-text-property (1- pos) 'ghostel-prompt)))
           (setq pos (1- pos)))
-        (if (and (> pos row-start)
-                 (get-text-property (1- pos) 'ghostel-prompt))
-            pos
-          ;; No prompt prop on the cursor's row — REPL with no shell
-          ;; integration, or a non-shell program that printed a
-          ;; prompt.  Cursor itself is the boundary.
-          cursor-pos)))
+        (cond
+         ((and (> pos row-start)
+               (get-text-property (1- pos) 'ghostel-prompt))
+          pos)
+         ;; No OSC 133 prop - try the regex fallback.
+         ((ghostel--regex-prompt-end cursor-pos))
+         ;; Neither prop nor regex - the cursor itself is the boundary
+         (t cursor-pos))))
      (t
-      ;; No live terminal — fall back to the OSC 133 walk-back so
-      ;; the helper stays useful in unit tests that exercise prompt
-      ;; markers in isolation.
+      ;; No live terminal - fall back to the OSC 133 walk-back so the helper
+      ;; stays useful in unit tests that exercise prompt markers in isolation.
       (let ((pos (point-max))
             (pmin (point-min)))
         (while (and (> pos pmin)
@@ -3586,6 +3631,10 @@ begins on that prompt row.  In line mode the active input marker
 \(`ghostel--line-input-start') wins over the property scan so an
 empty fresh prompt still goes to the marker position.
 
+Without the property (no OSC 133 shell integration), consult
+`ghostel-prompt-regexp' so the command still finds the prompt
+prefix on lines from raw shells, Python REPL, and similar.
+
 On any other line — scrollback, output, a prompt-continuation row
 that has no content past the prefix — falls through to
 `move-beginning-of-line', so navigating up into history and
@@ -3613,10 +3662,15 @@ pressing \\`C-a' gives the standard column-0 behaviour."
                 (while (and (< pos eol)
                             (get-text-property pos 'ghostel-prompt))
                   (setq pos (1+ pos)))
-                (and (> pos bol) (< pos eol) pos))))))
+                (and (> pos bol) (< pos eol) pos)))))
+         ;; Regex fallback for shells/REPLs without OSC 133.
+         (regex-target
+          (unless (or line-mode-target prop-target)
+            (ghostel--regex-prompt-end bol))))
     (cond
      (line-mode-target (goto-char line-mode-target))
      (prop-target      (goto-char prop-target))
+     (regex-target     (goto-char regex-target))
      (t                (move-beginning-of-line 1)))))
 
 
