@@ -1815,7 +1815,8 @@ Most keys are sent to the terminal.  Keys in
   "C-y"            #'ghostel-yank
   "S-<insert>"     #'ghostel-yank
   "<remap> <yank>" #'ghostel-yank
-  "M-y"            #'ghostel-yank-pop)
+  "M-y"            #'ghostel-yank-pop
+  "C-<backspace>"  #'ghostel-backward-kill-word)
 
 ;; No parent — char mode captures everything, including C-c.
 (defvar-keymap ghostel-char-mode-map
@@ -3621,6 +3622,12 @@ marker."
         (when (and ghostel--process (process-live-p ghostel--process))
           (process-send-string ghostel--process "\C-d"))
       (delete-char 1))))
+
+(defun ghostel-backward-kill-word ()
+  "Send C-w to the terminal process."
+  (interactive)
+  (ghostel--snap-to-input)
+  (ghostel--send-string "\C-w"))
 
 (defun ghostel-beginning-of-input-or-line ()
   "Move point to the start of input on a prompt row, else `beginning-of-line'.

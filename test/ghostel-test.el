@@ -12163,6 +12163,23 @@ on every empty prompt the user pressed `RET' to.)"
     (let ((ghostel-prompt-regexp nil))
       (should (null (ghostel--regex-prompt-end 1))))))
 
+(ert-deftest ghostel-test-backward-kill-word-bindings ()
+  "`C-<backspace>' are bound to `ghostel-backward-kill-word'."
+  (should (eq (lookup-key ghostel-semi-char-mode-map (kbd "C-<backspace>"))
+              #'ghostel-backward-kill-word)))
+
+(ert-deftest ghostel-test-backward-kill-word-semi-char-sends-c-w ()
+  "`ghostel-backward-kill-word' snaps to input and sends C-w."
+  (let ((sent nil)
+        (snapped nil))
+    (cl-letf (((symbol-function 'ghostel--snap-to-input)
+               (lambda () (setq snapped t)))
+              ((symbol-function 'ghostel--send-string)
+               (lambda (s) (setq sent s))))
+      (ghostel-backward-kill-word)
+      (should snapped)
+      (should (equal sent "\C-w")))))
+
 (ert-deftest ghostel-test-line-mode-interrupt ()
   "Line-mode interrupt discards input, sends SIGINT, and exits."
   (let ((buf (generate-new-buffer " *ghostel-test-line-interrupt*"))
@@ -15163,6 +15180,8 @@ slip past the unit tests."
     ghostel-test-regex-prompt-end-empty-prompt-returns-match
     ghostel-test-regex-prompt-end-matches-content
     ghostel-test-regex-prompt-end-nil-regex-returns-nil
+    ghostel-test-backward-kill-word-bindings
+    ghostel-test-backward-kill-word-semi-char-sends-c-w
     ghostel-test-line-mode-interrupt
     ghostel-test-line-mode-exit-sends-pending
     ghostel-test-line-mode-eof-on-empty
