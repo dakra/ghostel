@@ -42,6 +42,30 @@ export fn emacs_module_init(runtime: *c.struct_emacs_runtime) callconv(.c) c_int
         \\KITTY-STORAGE-LIMIT is the kitty graphics image storage cap in bytes (default 320 MiB); 0 disables kitty graphics entirely.
         \\KITTY-MEDIUMS is a bitfield: bit 0 = file medium, bit 1 = temp-file medium, bit 2 = shared-memory medium (default 0 = direct only).
     );
+    env.bindFunction("ghostel--new-anchored", 4, 5, &fnNewAnchored,
+        \\Create a new anchored ghostel terminal.
+        \\
+        \\(ghostel--new-anchored START END ROWS COLS &optional MAX-SCROLLBACK)
+        \\
+        \\The renderer writes only between buffer positions START and END;
+        \\text outside that region is left untouched across redraws.  END
+        \\moves forward as new content is inserted (insertion-type t) so
+        \\the writable region grows naturally with output.
+        \\
+        \\Multiple anchored terminals may coexist in a single buffer:
+        \\their `(start . end)' marker pairs are stored in a
+        \\buffer-local `ghostel--anchored-terminals' hash table keyed
+        \\by the terminal's user-pointer.  Markers from a buffer killed
+        \\while a terminal is alive simply detach (the renderer then
+        \\falls back to `point-min' / `point-max' of whatever buffer is
+        \\current — caller should kill the terminal handle alongside
+        \\the buffer).
+        \\
+        \\Anchored mode is a prototype for inline TUI overlays and
+        \\for ghostel-comint integration; kitty graphics, scrollback
+        \\materialization, alt-screen, and incremental dirty-row
+        \\rendering are not wired up here.
+    );
     env.bindFunction("ghostel--write-input", 2, 2, &fnWriteInput,
         \\Write raw bytes to the terminal.
         \\
@@ -245,7 +269,102 @@ fn fnNew(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*any
             env.logError("enableKittyGraphics failed: %s", .{@errorName(err)});
     }
 
+    // Regular ghostel terminals own the whole buffer.  The renderer's
+    // `regionStart' / `regionEnd' fall back to `point-min' / `point-max'
+    // and the hard-rebuild path keeps the `erase-buffer' fast path.
+    term.markers_span_buffer = true;
+
     return env.makeUserPtr(&Terminal.emacsFinalize, term);
+}
+
+/// (ghostel--new-anchored START END ROWS COLS &optional MAX-SCROLLBACK)
+///
+/// Create an anchored terminal that renders only between buffer
+/// positions START and END.  Surrounding text is untouched across
+/// redraws.  Mirrors `ghostel--new` for the remaining arguments;
+/// kitty graphics, alt-screen, scrollback materialization, and
+/// incremental dirty-row redraws are not supported in anchored mode.
+fn fnNewAnchored(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*anyopaque) callconv(.c) c.emacs_value {
+    const env = emacs.Env.init(raw_env.?);
+    const start_pos = args[0];
+    const end_pos = args[1];
+    const rows = std.math.cast(u16, env.extractInteger(args[2])) orelse {
+        env.signalError("rows out of range", .{});
+        return env.nil();
+    };
+    const cols = std.math.cast(u16, env.extractInteger(args[3])) orelse {
+        env.signalError("cols out of range", .{});
+        return env.nil();
+    };
+    const max_scrollback: usize = if (nargs > 4 and env.isNotNil(args[4]))
+        (std.math.cast(usize, env.extractInteger(args[4])) orelse {
+            env.signalError("max-scrollback out of range", .{});
+            return env.nil();
+        })
+    else
+        5 * 1024 * 1024;
+
+    const term = std.heap.c_allocator.create(Terminal) catch {
+        env.signalError("out of memory", .{});
+        return env.nil();
+    };
+
+    term.* = Terminal.init(cols, rows, max_scrollback) catch {
+        std.heap.c_allocator.destroy(term);
+        env.signalError("failed to create terminal", .{});
+        return env.nil();
+    };
+
+    const setup_ok = blk: {
+        term.setUserdata(term) catch break :blk false;
+        term.setWritePty(&writePtyCallback) catch break :blk false;
+        term.setBell(&bellCallback) catch break :blk false;
+        term.setTitleChanged(&titleChangedCallback) catch break :blk false;
+        term.setDeviceAttributes(&deviceAttributesCallback) catch break :blk false;
+        term.setSize(&sizeCallback) catch break :blk false;
+        break :blk true;
+    };
+    if (!setup_ok) {
+        term.deinit();
+        std.heap.c_allocator.destroy(term);
+        env.signalError("failed to configure terminal callbacks", .{});
+        return env.nil();
+    }
+
+    const default_fg = gt.ColorRgb{ .r = 204, .g = 204, .b = 204 };
+    const default_bg = gt.ColorRgb{ .r = 0, .g = 0, .b = 0 };
+    term.setColorForeground(&default_fg) catch |err|
+        env.logError("setColorForeground failed: %s", .{@errorName(err)});
+    term.setColorBackground(&default_bg) catch |err|
+        env.logError("setColorBackground failed: %s", .{@errorName(err)});
+
+    // Anchored mode: the renderer's writable region is bounded by two
+    // markers stored as buffer-local elisp values.  Emacs's GC owns
+    // their lifetime — releasing global refs from `emacsFinalize'
+    // isn't possible because no env is available there.
+    //
+    // `start' marker has insertion-type nil (stays put when text is
+    // inserted at its position).  `end' has insertion-type t so it
+    // advances with renderer insertions and the writable region grows
+    // as rows arrive.
+    term.markers_span_buffer = false;
+    const start_marker = env.f("copy-marker", .{ start_pos, env.nil() });
+    const end_marker = env.f("copy-marker", .{ end_pos, env.t() });
+    const term_val = env.makeUserPtr(&Terminal.emacsFinalize, term);
+
+    // Buffer-local `ghostel--anchored-terminals' is a hash table
+    // keyed by terminal user-pointer (with `eq' test for identity).
+    // Each entry maps to `(start-marker . end-marker)'.  Lazy-init
+    // here so callers don't need to set up the table; multiple
+    // anchored terminals in the same buffer share one table.
+    var tbl = env.symbolValue("ghostel--anchored-terminals");
+    if (!env.isNotNil(tbl)) {
+        tbl = env.f("make-hash-table", .{ emacs.sym.@":test", emacs.sym.eq });
+        env.set("ghostel--anchored-terminals", tbl);
+    }
+    _ = env.f("puthash", .{ term_val, env.cons(start_marker, end_marker), tbl });
+
+    return term_val;
 }
 
 /// (ghostel--write-input TERM DATA)
@@ -818,7 +937,7 @@ fn fnRedraw(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*
         defer vt_log_env = null;
     }
 
-    term.renderer.redraw(env, term, force_full) catch |err| {
+    term.renderer.redraw(env, term, args[0], force_full) catch |err| {
         env.logStackTrace(@errorReturnTrace());
         env.signalError("Redraw failed: %s", .{@errorName(err)});
         return env.nil();

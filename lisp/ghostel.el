@@ -939,6 +939,8 @@ Used when `cursor-in-non-selected-windows' resolves to box.")
 (declare-function ghostel--module-version "ghostel-module")
 (declare-function ghostel--mouse-event "ghostel-module")
 (declare-function ghostel--new "ghostel-module")
+(declare-function ghostel--new-anchored "ghostel-module"
+                  (start end rows cols &optional max-scrollback))
 (declare-function ghostel--redraw "ghostel-module" (term &optional full))
 (declare-function ghostel--set-bold-config "ghostel-module")
 (declare-function ghostel--set-default-colors "ghostel-module")
@@ -1499,6 +1501,18 @@ One of `semi-char', `char', `copy', `emacs', or `line'.  See
 
 (defvar-local ghostel--force-next-redraw nil
   "When non-nil, redraw regardless of synchronized output mode.")
+
+(defvar-local ghostel--anchored-terminals nil
+  "Hash table of anchored terminals living in this buffer.
+Keys are terminal user-pointer values returned by `ghostel--new-anchored';
+values are cons cells `(START-MARKER . END-MARKER)' bounding each
+terminal's writable region.  Lazy-initialized by `ghostel--new-anchored'
+with `eq' as the test (user-pointer identity).
+
+A buffer may host multiple anchored terminals, one per entry.  Nil in
+regular ghostel buffers \(i.e. bottom-anchored, where the renderer owns
+the whole buffer).  Read by the Zig renderer's `regionStart' / `regionEnd'
+helpers, which look up the markers for the active terminal on each redraw.")
 
 (defvar ghostel--redraw-resize-active nil
   "Dynamically bound to t inside a resize-triggered `ghostel--delayed-redraw'.
