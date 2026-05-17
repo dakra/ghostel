@@ -84,6 +84,236 @@ succeeds."
     result))
 
 ;; -----------------------------------------------------------------------
+;; Test: anchored render path (Shape-B prototype)
+;; -----------------------------------------------------------------------
+
+(ert-deftest ghostel-test-anchored-renders-inside-marker-region ()
+  "`ghostel--new-anchored' writes only between START/END markers.
+
+Shape-B parallel render path: an anchored terminal must paint into the
+region between two markers and leave surrounding buffer content alone."
+  (let ((buf (generate-new-buffer " *ghostel-test-anchored*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((inhibit-read-only t))
+            ;; Lay out the buffer: BEFORE / anchor gap / AFTER.
+            (insert "BEFORE\n")
+            (let ((start (point)))
+              ;; Reserve an empty line for the anchored region so the
+              ;; renderer has somewhere to write into.
+              (insert "\n")
+              (let ((end (point)))
+                (insert "AFTER\n")
+                (let ((term (ghostel--new-anchored start end 3 20 1000)))
+                  (should term)
+                  (ghostel--write-input term "hello")
+                  (ghostel--redraw term t)
+                  (let ((contents (buffer-substring-no-properties
+                                   (point-min) (point-max))))
+                    ;; Surrounding text survives untouched.
+                    (should (string-match-p "\\`BEFORE\n" contents))
+                    (should (string-match-p "AFTER\n\\'" contents))
+                    ;; Rendered output landed between the markers.
+                    (should (string-match-p "hello" contents))
+                    (let ((hello-pos (string-match "hello" contents))
+                          (after-pos (string-match "AFTER" contents))
+                          (before-end (length "BEFORE\n")))
+                      (should (>= hello-pos before-end))
+                      (should (< hello-pos after-pos)))
+                    ;; Markers still bracket the rendered region.
+                    (let ((pair (gethash term ghostel--anchored-terminals)))
+                      (should (consp pair))
+                      (should (markerp (car pair)))
+                      (should (markerp (cdr pair)))
+                      (should (< (marker-position (car pair))
+                                 (marker-position (cdr pair)))))))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-anchored-multi-redraw-overwrites-grid ()
+  "Successive anchored redraws update the grid in place.
+CR (\\r) returns the cursor to column 0; the second write must
+overwrite the start of the existing line rather than appending,
+and surrounding text must still survive."
+  (let ((buf (generate-new-buffer " *ghostel-test-anchored-multi*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((inhibit-read-only t))
+            (insert "TOP\n")
+            (let ((start (point)))
+              (insert (make-string 3 ?\n))
+              (let ((end (point)))
+                (insert "BOTTOM\n")
+                (let ((term (ghostel--new-anchored start end 3 20 1000)))
+                  (ghostel--write-input term "hello")
+                  (ghostel--redraw term t)
+                  (let ((c (buffer-substring-no-properties (point-min) (point-max))))
+                    (should (string-match-p "hello" c)))
+                  ;; CR back to column 0, overwrite first three chars.
+                  (ghostel--write-input term "\rwor")
+                  (ghostel--redraw term t)
+                  (let ((c (buffer-substring-no-properties (point-min) (point-max))))
+                    ;; "hello" + "\rwor" → "worlo" on row 0.
+                    (should (string-match-p "worlo" c))
+                    (should (string-prefix-p "TOP\n" c))
+                    (should (string-suffix-p "BOTTOM\n" c))))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-anchored-multi-terminal-per-buffer ()
+  "Two anchored terminals coexist in the same buffer.
+
+Each terminal owns its own (start . end) marker pair via the
+buffer-local `ghostel--anchored-terminals' hash table; redraws to
+one terminal must not affect the other terminal's region or the
+surrounding buffer text."
+  (let ((buf (generate-new-buffer " *ghostel-test-anchored-multi-term*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((inhibit-read-only t))
+            (insert "BEFORE\n")
+            (let ((s1 (point)))
+              (insert "\n")            ; region 1 — one line of slack
+              (let ((e1 (point)))
+                (insert "MIDDLE\n")
+                (let ((s2 (point)))
+                  (insert "\n")        ; region 2
+                  (let ((e2 (point)))
+                    (insert "AFTER\n")
+                    (let ((t1 (ghostel--new-anchored s1 e1 3 20 1000))
+                          (t2 (ghostel--new-anchored s2 e2 3 20 1000)))
+                      ;; Both registered in the same table, distinct entries.
+                      (should (hash-table-p ghostel--anchored-terminals))
+                      (should (= 2 (hash-table-count ghostel--anchored-terminals)))
+                      (should (consp (gethash t1 ghostel--anchored-terminals)))
+                      (should (consp (gethash t2 ghostel--anchored-terminals)))
+                      ;; Feed each independently.
+                      (ghostel--write-input t1 "ONE")
+                      (ghostel--redraw t1 t)
+                      (ghostel--write-input t2 "TWO")
+                      (ghostel--redraw t2 t)
+                      (let ((c (buffer-substring-no-properties
+                                (point-min) (point-max))))
+                        ;; Surrounding text intact.
+                        (should (string-prefix-p "BEFORE\n" c))
+                        (should (string-match-p "\nMIDDLE\n" c))
+                        (should (string-suffix-p "AFTER\n" c))
+                        ;; Both regions rendered correctly.
+                        (should (string-match-p "ONE" c))
+                        (should (string-match-p "TWO" c))
+                        ;; Order: BEFORE < ONE < MIDDLE < TWO < AFTER.
+                        (let ((p-before (string-match "BEFORE" c))
+                              (p-one    (string-match "ONE" c))
+                              (p-middle (string-match "MIDDLE" c))
+                              (p-two    (string-match "TWO" c))
+                              (p-after  (string-match "AFTER" c)))
+                          (should (< p-before p-one))
+                          (should (< p-one p-middle))
+                          (should (< p-middle p-two))
+                          (should (< p-two p-after))))
+                      ;; Redrawing one does not corrupt the other:
+                      ;; rewrite t1 (CR + overwrite), check t2 region intact.
+                      (ghostel--write-input t1 "\rXY")
+                      (ghostel--redraw t1 t)
+                      (let ((c (buffer-substring-no-properties
+                                (point-min) (point-max))))
+                        (should (string-match-p "XYE" c))   ; "ONE"[0..1]="XY"
+                        (should (string-match-p "TWO" c))   ; t2 untouched
+                        (should (string-prefix-p "BEFORE\n" c))
+                        (should (string-suffix-p "AFTER\n" c))))))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-anchored-scrollback-grows-region ()
+  "Anchored terminal with MAX-SCROLLBACK > 0 materializes rows.
+
+Feeds more lines than the active grid can hold; libghostty rotates
+older rows into scrollback.  The anchored renderer must materialize
+those rows into the buffer, growing the region downward while the
+surrounding text (BEFORE / AFTER) stays intact (but gets pushed
+down by the growth)."
+  (let ((buf (generate-new-buffer " *ghostel-test-anchored-scrollback*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((inhibit-read-only t))
+            (insert "BEFORE\n")
+            (let ((start (point)))
+              (insert "\n")
+              (let ((end (point)))
+                (insert "AFTER\n")
+                ;; 3 rows of active, generous scrollback cap.
+                (let ((term (ghostel--new-anchored start end 3 20 (* 50 1024))))
+                  ;; Feed 10 distinguishable lines.  The active area holds
+                  ;; the last 3; the older 7 must end up in scrollback and
+                  ;; be materialized into the region.
+                  (dotimes (i 10)
+                    (ghostel--write-input term (format "line%d\n" i)))
+                  (ghostel--redraw term t)
+                  (let ((c (buffer-substring-no-properties
+                            (point-min) (point-max))))
+                    ;; Surrounding text intact, BEFORE still at top.
+                    (should (string-prefix-p "BEFORE\n" c))
+                    (should (string-suffix-p "AFTER\n" c))
+                    ;; All 10 lines materialized in the region.
+                    (dotimes (i 10)
+                      (should (string-match-p (format "line%d" i) c)))
+                    ;; Order: BEFORE < line0 < line9 < AFTER.
+                    (let ((p-before (string-match "BEFORE" c))
+                          (p0       (string-match "line0" c))
+                          (p9       (string-match "line9" c))
+                          (p-after  (string-match "AFTER" c)))
+                      (should (< p-before p0))
+                      (should (< p0 p9))
+                      (should (< p9 p-after))))
+                  ;; Markers still valid and still bracket the region.
+                  (let ((pair (gethash term ghostel--anchored-terminals)))
+                    (should (markerp (car pair)))
+                    (should (markerp (cdr pair)))
+                    (should (eq (marker-buffer (car pair)) buf))
+                    (should (eq (marker-buffer (cdr pair)) buf))
+                    (should (< (marker-position (car pair))
+                               (marker-position (cdr pair))))))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-anchored-no-scrollback-bounded ()
+  "MAX-SCROLLBACK = 0 keeps the anchored region at active-grid size.
+
+When libghostty has no scrollback, rows that scroll off are gone.
+The anchored renderer must NOT grow the region beyond `rows'."
+  (let ((buf (generate-new-buffer " *ghostel-test-anchored-bounded*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((inhibit-read-only t))
+            (insert "BEFORE\n")
+            (let ((start (point)))
+              (insert "\n")
+              (let ((end (point)))
+                (insert "AFTER\n")
+                ;; 3 rows of active, NO scrollback.
+                (let ((term (ghostel--new-anchored start end 3 20 0)))
+                  (dotimes (i 10)
+                    (ghostel--write-input term (format "line%d\n" i)))
+                  (ghostel--redraw term t)
+                  (let* ((c (buffer-substring-no-properties
+                             (point-min) (point-max)))
+                         (pair (gethash term ghostel--anchored-terminals))
+                         (region (buffer-substring-no-properties
+                                  (car pair) (cdr pair))))
+                    ;; Surrounding text intact.
+                    (should (string-prefix-p "BEFORE\n" c))
+                    (should (string-suffix-p "AFTER\n" c))
+                    ;; Only the last few lines survive (active grid is 3
+                    ;; rows; libghostty keeps the latest content there).
+                    (should (string-match-p "line9" region))
+                    ;; The earliest lines should NOT appear anywhere.
+                    (should-not (string-match-p "line0" c))
+                    (should-not (string-match-p "line1" c))
+                    ;; Region must not grow past `rows' newlines.
+                    ;; Three rows render as at most three lines (each
+                    ;; ending with \n), so the region's char count
+                    ;; should be bounded.
+                    (let ((nl-count (cl-count ?\n region)))
+                      (should (<= nl-count 3)))))))))
+      (kill-buffer buf))))
+
+;; -----------------------------------------------------------------------
 ;; Test: terminal creation
 ;; -----------------------------------------------------------------------
 

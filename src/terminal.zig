@@ -52,6 +52,23 @@ renderer: Renderer,
 /// Cached Emacs env pointer — only valid during a callback from Emacs.
 env: ?emacs.Env = null,
 
+/// Render mode — see `Mode` below.  Set by `module.zig`'s `fnNew`
+/// (default) or `fnNewAnchored` (`.anchored`).
+mode: Mode = .bottom_anchored,
+
+/// Render mode. `.bottom_anchored` is the original ghostel behavior where
+/// the renderer owns the bottom of the buffer (see `Renderer.redraw`).
+/// `.anchored` writes only into the region between the markers held in
+/// the buffer-local `ghostel--anchored-start` / `ghostel--anchored-end`
+/// variables, leaving anything outside that region alone (see
+/// `Renderer.redrawAnchored`).  Shape-B parallel render path — additive,
+/// not a refactor of the existing path.
+///
+/// The markers themselves are stashed as buffer-local Elisp values rather
+/// than as Zig fields so we don't have to free global refs from the GC
+/// finalizer (where no Emacs env is available).
+pub const Mode = enum { bottom_anchored, anchored };
+
 /// Create a new terminal with the given dimensions and scrollback.
 pub fn init(cols: u16, rows: u16, max_scrollback: usize) !Self {
     var terminal: gt.Terminal = undefined;

@@ -219,6 +219,284 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool
     term.scrollViewport(gt.SCROLL_DELTA, -1);
 }
 
+// ---------------------------------------------------------------------------
+// Shape-B parallel render path: anchored rendering.
+//
+// `redrawAnchored` mirrors `redraw` but writes only into the region between
+// two Emacs markers, looked up via the buffer-local hash table
+// `ghostel--anchored-terminals` keyed by the terminal user-ptr.  The
+// existing render path (above) is left untouched so that bottom-anchored
+// ghostel remains bit-identical.
+//
+// Feature parity with `redraw`:
+//   - Scrollback materialization: rows that libghostty rotates into its
+//     scrollback area are materialized into the buffer ABOVE the active
+//     viewport, growing the region downward.  When libghostty drops rows
+//     at the scrollback cap, the corresponding rows are evicted from the
+//     start of the region.
+//   - Parking trick at MAX - 1 for scrollback-clear detection on next
+//     redraw.
+//   - Honors `force_full_arg` for the hard-rebuild branch.
+//
+// Prototype scope (intentionally unimplemented):
+//   - Incremental dirty-row rendering — always full region repaint.
+//   - Alt-screen / kitty graphics.
+//   - Buffer-wide face / cursor mutation — `ghostel--set-buffer-face` and
+//     `ghostel--set-cursor-style` are deliberately NOT called from the
+//     anchored path: they would bleed into surrounding text outside the
+//     region.  Per-cell faces from `applyProps` still apply inside the
+//     region.
+//
+// `redrawAnchored` shares the low-level helpers (`insertRow`, `RowContent`,
+// `applyProps`, color formatting, `commitResize`) with `redraw` — those
+// are pure with respect to current point, so they're safe to reuse without
+// modification.
+// ---------------------------------------------------------------------------
+
+/// Markers bounding an anchored terminal's render region.
+const AnchoredMarkers = struct {
+    start: emacs.Value,
+    end: emacs.Value,
+};
+
+/// Look up the (start, end) marker pair for `term_val` in the buffer-local
+/// `ghostel--anchored-terminals` hash table.
+fn lookupAnchoredMarkers(env: emacs.Env, term_val: emacs.Value) ?AnchoredMarkers {
+    const table = env.symbolValue("ghostel--anchored-terminals");
+    if (env.isNil(table)) return null;
+    const pair = env.f("gethash", .{ term_val, table });
+    if (env.isNil(pair)) return null;
+    return .{
+        .start = env.f("car", .{pair}),
+        .end = env.f("cdr", .{pair}),
+    };
+}
+
+/// Redraw the terminal into the region bounded by its paired markers.
+///
+/// Markers are looked up in the buffer-local hash table
+/// `ghostel--anchored-terminals' keyed by `term_val' (the user-ptr Emacs
+/// value returned by `ghostel--new-anchored').  Content outside the
+/// region is preserved.
+///
+/// `force_full_arg` triggers the hard-rebuild branch (wipes the region
+/// and rebuilds from libghostty's full scrollback + active area).
+///
+/// Preconditions:
+///   - The renderer's host buffer must be current (`with-current-buffer'
+///     in elisp).  The buffer-local table lookup is implicitly scoped
+///     to the current buffer.
+pub fn redrawAnchored(self: *Self, env: emacs.Env, term: *Terminal, term_val: emacs.Value, force_full_arg: bool) !void {
+    const markers = lookupAnchoredMarkers(env, term_val) orelse return error.AnchoredMarkersMissing;
+    const start_val = markers.start;
+    const end_val = markers.end;
+
+    // Preserve mark across destructive region edits, same rationale as
+    // in `redraw`.
+    const saved_mark: ?i64 = blk: {
+        const pos = env.markerPosition(env.markMarker());
+        if (!env.isNotNil(pos)) break :blk null;
+        break :blk env.extractInteger(pos);
+    };
+    defer {
+        if (saved_mark) |pos| {
+            const pmax = env.extractInteger(env.pointMax());
+            const clamped: i64 = if (pos > pmax) pmax else pos;
+            _ = env.setMarker(env.markMarker(), env.makeInteger(clamped));
+        }
+    }
+
+    const scrollbar = try term.getScrollbar();
+
+    // Cols change forces a full rebuild (matches `redraw`).
+    const cols_changed = if (self.pending_resize) |rz| rz.cols != self.size.cols else false;
+
+    // Parked-viewport detection (mirrors `redraw`).  On the previous
+    // redraw we parked at MAX - 1, so when libghostty clears its
+    // scrollback the viewport snaps to the bottom (offset+len==total)
+    // and we treat that as a rebuild signal.  Likewise scrollback hit
+    // cap (offset==0 after having had scrollback) means we lost track
+    // and must rebuild.
+    const had_scrollback = self.rows_in_buffer > scrollbar.len;
+    const scrollbar_reset = had_scrollback and scrollbar.len + scrollbar.offset == scrollbar.total;
+    const scrollbar_hit_cap = had_scrollback and scrollbar.offset == 0;
+
+    var force_full = false;
+    if (force_full_arg or cols_changed or scrollbar_reset or scrollbar_hit_cap) {
+        env.deleteRegion(start_val, end_val);
+        self.commitResize(term);
+        self.rows_in_buffer = 0;
+        force_full = true;
+    }
+
+    // Unpark.  When we have materialized scrollback, advancing by 1 lands
+    // at the old active area, which is the last `scrollbar.len' rows of
+    // the region.  Position point there.  When we have no scrollback
+    // (fresh region, first redraw, or just-rebuilt), go to the top.
+    if (self.rows_in_buffer > self.size.rows) {
+        term.scrollViewport(gt.SCROLL_DELTA, 1);
+        env.gotoChar(end_val);
+        _ = env.forwardLine(-@as(i64, @intCast(scrollbar.len)));
+    } else {
+        term.scrollViewport(gt.SCROLL_TOP, 0);
+        env.gotoChar(start_val);
+    }
+
+    const rendered_rows = try self.renderToEndAnchored(env, term, end_val, force_full);
+    self.rows_in_buffer = @max(self.rows_in_buffer, self.size.rows);
+    if (rendered_rows > self.size.rows) {
+        self.rows_in_buffer += rendered_rows - self.size.rows;
+    }
+
+    // Handle pending resize (matches `redraw`): commit, scroll to bottom,
+    // re-render the active area only.
+    if (self.pending_resize != null) {
+        self.commitResize(term);
+        term.scrollViewport(gt.SCROLL_BOTTOM, 0);
+        // Active area starts size.rows lines back from end_val.
+        env.gotoChar(end_val);
+        _ = env.forwardLine(-@as(i64, @intCast(self.size.rows)));
+        try self.renderAnchored(env, term, end_val, 0, false);
+        self.rows_in_buffer = @max(self.rows_in_buffer, self.size.rows);
+    }
+
+    // Evict scrollback evicted by libghostty (rows dropped at cap).
+    const libghostty_rows = try term.getTotalRows();
+    if (libghostty_rows < self.rows_in_buffer) {
+        env.gotoChar(start_val);
+        _ = env.forwardLine(@as(i64, @intCast(self.rows_in_buffer - libghostty_rows)));
+        env.deleteRegion(start_val, env.point());
+        self.rows_in_buffer = libghostty_rows;
+    }
+
+    try self.renderCursorAnchored(env, end_val);
+
+    // Update working directory from OSC 7 (matches `redraw`).
+    if (try term.getPwd()) |pwd| {
+        _ = env.f("ghostel--update-directory", .{pwd});
+    }
+
+    // Park the viewport one row above the bottom for next-call
+    // scrollback-clear detection (mirrors `redraw`).
+    term.scrollViewport(gt.SCROLL_BOTTOM, 0);
+    term.scrollViewport(gt.SCROLL_DELTA, -1);
+}
+
+/// Render libghostty's viewport into the anchored region, advancing the
+/// viewport `len` rows at a time until the active area is reached.
+/// Returns the total number of rows rendered (for `rows_in_buffer`
+/// bookkeeping).  Mirrors `renderToEnd` but the per-viewport call uses
+/// `renderAnchored` instead of `render` (no buffer-face, end-marker
+/// trailing cleanup).
+fn renderToEndAnchored(self: *Self, env: emacs.Env, term: *Terminal, end_marker: emacs.Value, force_full: bool) !usize {
+    const scrollbar = try term.getScrollbar();
+    if (scrollbar.len == 0) return 0;
+    const offset_max = scrollbar.total - scrollbar.len;
+    const total_range = scrollbar.total - scrollbar.offset;
+    const num_viewports = (total_range + scrollbar.len - 1) / scrollbar.len;
+    var skip: usize = 0;
+    var rendered_rows: usize = 0;
+    var current_offset = scrollbar.offset;
+    for (0..num_viewports) |_| {
+        try self.renderAnchored(env, term, end_marker, skip, force_full);
+        rendered_rows += (scrollbar.len - skip);
+
+        const max_step = offset_max - current_offset;
+        const step = @min(max_step, scrollbar.len);
+        skip = scrollbar.len - step;
+
+        current_offset += step;
+        term.scrollViewport(gt.SCROLL_DELTA, @intCast(step));
+    }
+
+    return rendered_rows;
+}
+
+/// Per-row render loop for the anchored path.  Mirrors `render` but:
+///   - Uses `end_marker` as the trailing-cleanup boundary instead of
+///     `pointMax`.
+///   - Per-row deletion is clamped to `end_marker` so we never delete
+///     content past our region.
+///   - Always does a full repaint when `force_full' is true (anchored
+///     mode never uses the incremental dirty-row path otherwise).
+///   - Does NOT call `ghostel--set-buffer-face': that would recolor
+///     surrounding text outside the region.
+fn renderAnchored(self: *Self, env: emacs.Env, term: *Terminal, end_marker: emacs.Value, skip: usize, force_full: bool) !void {
+    try gt.renderStateUpdate(self.render_state, term.terminal);
+    const default_colors = try self.getDefaultColors();
+
+    const dirty = try gt.rs.get(c_int, self.render_state, gt.RS_DATA_DIRTY);
+    if (dirty == gt.DIRTY_FALSE and !force_full) {
+        // No dirty rows and no force — leave region untouched and
+        // walk past `skip' rows that the caller has already accounted
+        // for in `renderToEndAnchored'.
+        var row_count: usize = 0;
+        try gt.rs.read(self.render_state, gt.RS_DATA_ROW_ITERATOR, &self.row_iterator);
+        while (gt.rs_row_next(self.row_iterator)) : (row_count += 1) {
+            if (row_count >= skip) _ = env.forwardLine(1);
+        }
+        return;
+    }
+
+    var row_count: usize = 0;
+    try gt.rs.read(self.render_state, gt.RS_DATA_ROW_ITERATOR, &self.row_iterator);
+    while (gt.rs_row_next(self.row_iterator)) : ({
+        row_count += 1;
+        gt.rs_row.set(self.row_iterator, gt.RS_ROW_OPT_DIRTY, false) catch |err| {
+            env.logError("rs_row.set(DIRTY, false) failed: %s", .{@errorName(err)});
+        };
+    }) {
+        if (row_count < skip) continue;
+
+        // Delete the existing line content up to the start of the next
+        // line (or the end marker, whichever comes first).  This caps
+        // the delete so we never reach into content past our region.
+        const line_end = env.extractInteger(env.lineBeginningPosition2());
+        const end_pos = env.extractInteger(env.markerPosition(end_marker));
+        const cap = @min(line_end, end_pos);
+        env.deleteRegion(env.point(), env.makeInteger(cap));
+
+        try self.insertRow(env, term, &default_colors);
+    }
+
+    // Trailing cleanup: clear any leftover content between point and
+    // end_marker.  In a freshly-wiped region this is a no-op; otherwise
+    // it trims rows from a previous, longer render.
+    env.deleteRegion(env.point(), end_marker);
+
+    try gt.rs.set(self.render_state, gt.RS_OPT_DIRTY, gt.DIRTY_FALSE);
+}
+
+/// Anchored variant of `renderCursor`: positions point at the TUI cursor
+/// relative to the active-area start (which is `end_marker' minus
+/// `self.size.rows' lines).  Does NOT call `ghostel--set-cursor-style':
+/// that mutates the buffer-local `cursor-type', and an anchored terminal
+/// is a guest in the host buffer.  TUI cursor visibility/style is still
+/// reported via `ghostel--cursor-pos' / `ghostel--cursor-char-pos'.
+fn renderCursorAnchored(self: *Self, env: emacs.Env, end_marker: emacs.Value) !void {
+    env.gotoChar(end_marker);
+    _ = env.forwardLine(-@as(i64, @intCast(self.size.rows)));
+    const active_start_int = env.extractInteger(env.point());
+
+    const cursor_has_value = try gt.rs.get(bool, self.render_state, gt.RS_DATA_CURSOR_VIEWPORT_HAS_VALUE);
+    if (cursor_has_value) {
+        const cx = try gt.rs.get(u16, self.render_state, gt.RS_DATA_CURSOR_VIEWPORT_X);
+        const cy = try gt.rs.get(u16, self.render_state, gt.RS_DATA_CURSOR_VIEWPORT_Y);
+
+        env.gotoCharN(active_start_int);
+        _ = env.forwardLine(@as(i64, cy));
+        if (!try self.positionCursorByCell(env, cx, cy)) {
+            env.moveToColumn(@as(i64, cx));
+        }
+
+        _ = env.set("ghostel--cursor-pos", env.cons(cx, cy));
+        _ = env.set("ghostel--cursor-char-pos", env.point());
+    } else {
+        _ = env.set("ghostel--cursor-pos", env.nil());
+        _ = env.set("ghostel--cursor-char-pos", env.nil());
+    }
+}
+
 fn updateFontInfo(self: *Self, env: emacs.Env) bool {
     const new_font = getDefaultFont(env);
     const current_font = env.symbolValue("ghostel--rendered-font");

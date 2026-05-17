@@ -42,6 +42,32 @@ export fn emacs_module_init(runtime: *c.struct_emacs_runtime) callconv(.c) c_int
         \\KITTY-STORAGE-LIMIT is the kitty graphics image storage cap in bytes (default 320 MiB); 0 disables kitty graphics entirely.
         \\KITTY-MEDIUMS is a bitfield: bit 0 = file medium, bit 1 = temp-file medium, bit 2 = shared-memory medium (default 0 = direct only).
     );
+    env.bindFunction("ghostel--new-anchored", 4, 5, &fnNewAnchored,
+        \\Create a new ghostel terminal anchored between two buffer positions.
+        \\
+        \\(ghostel--new-anchored START END ROWS COLS &optional MAX-SCROLLBACK)
+        \\
+        \\Creates markers at START and END (insertion-type nil and t
+        \\respectively) and registers them in the buffer-local hash table
+        \\`ghostel--anchored-terminals', keyed by the returned terminal
+        \\user-ptr.  Subsequent `ghostel--redraw' calls on the returned
+        \\terminal render into the region between its paired markers and
+        \\leave the surrounding buffer content alone.
+        \\
+        \\Multiple anchored terminals per buffer are supported: each
+        \\terminal owns its own (START . END) marker pair via the hash
+        \\table.  Killing a terminal (GC) does NOT remove its entry from
+        \\the hash table — callers that recycle terminals should `remhash'
+        \\the old key.
+        \\
+        \\Shape-B parallel path: kitty graphics, alt-screen, and
+        \\incremental dirty-row rendering are not wired up.  The anchored
+        \\path always does a full region repaint, but does materialize
+        \\libghostty scrollback into the region (growing it downward as
+        \\scrollback accumulates).  The FULL arg to `ghostel--redraw' is
+        \\honored for the hard-rebuild branch but does not enable the
+        \\dirty-row path.
+    );
     env.bindFunction("ghostel--write-input", 2, 2, &fnWriteInput,
         \\Write raw bytes to the terminal.
         \\
@@ -256,6 +282,92 @@ fn fnNew(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*any
     }
 
     return env.makeUserPtr(&Terminal.emacsFinalize, term);
+}
+
+/// (ghostel--new-anchored START END ROWS COLS &optional MAX-SCROLLBACK)
+///
+/// Shape-B parallel render path: creates a terminal that renders into
+/// the region between two markers instead of owning the bottom of the
+/// buffer.  Stashes the markers in buffer-local variables.
+fn fnNewAnchored(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*anyopaque) callconv(.c) c.emacs_value {
+    const env = emacs.Env.init(raw_env.?);
+
+    // Build start marker (insertion-type nil — stays put as text is
+    // inserted at it) and end marker (insertion-type t — pushes right as
+    // text is inserted before it).  This is what makes the markers
+    // bracket the rendered region correctly across edits.
+    const start_pos = args[0];
+    const end_pos = args[1];
+    const start_marker = env.f("copy-marker", .{ start_pos, env.nil() });
+    const end_marker = env.f("copy-marker", .{ end_pos, env.t() });
+
+    const rows = std.math.cast(u16, env.extractInteger(args[2])) orelse {
+        env.signalError("rows out of range", .{});
+        return env.nil();
+    };
+    const cols = std.math.cast(u16, env.extractInteger(args[3])) orelse {
+        env.signalError("cols out of range", .{});
+        return env.nil();
+    };
+    const max_scrollback: usize = if (nargs > 4 and env.isNotNil(args[4]))
+        (std.math.cast(usize, env.extractInteger(args[4])) orelse {
+            env.signalError("max-scrollback out of range", .{});
+            return env.nil();
+        })
+    else
+        5 * 1024 * 1024;
+
+    const term = std.heap.c_allocator.create(Terminal) catch {
+        env.signalError("out of memory", .{});
+        return env.nil();
+    };
+
+    term.* = Terminal.init(cols, rows, max_scrollback) catch {
+        std.heap.c_allocator.destroy(term);
+        env.signalError("failed to create terminal", .{});
+        return env.nil();
+    };
+
+    term.mode = .anchored;
+
+    // Minimal callback wiring — enough for the renderer and write_pty.
+    const setup_ok = blk: {
+        term.setUserdata(term) catch break :blk false;
+        term.setWritePty(&writePtyCallback) catch break :blk false;
+        term.setBell(&bellCallback) catch break :blk false;
+        term.setTitleChanged(&titleChangedCallback) catch break :blk false;
+        term.setDeviceAttributes(&deviceAttributesCallback) catch break :blk false;
+        term.setSize(&sizeCallback) catch break :blk false;
+        break :blk true;
+    };
+    if (!setup_ok) {
+        term.deinit();
+        std.heap.c_allocator.destroy(term);
+        env.signalError("failed to configure terminal callbacks", .{});
+        return env.nil();
+    }
+
+    const default_fg = gt.ColorRgb{ .r = 204, .g = 204, .b = 204 };
+    const default_bg = gt.ColorRgb{ .r = 0, .g = 0, .b = 0 };
+    term.setColorForeground(&default_fg) catch |err|
+        env.logError("setColorForeground failed: %s", .{@errorName(err)});
+    term.setColorBackground(&default_bg) catch |err|
+        env.logError("setColorBackground failed: %s", .{@errorName(err)});
+
+    // Construct the user-ptr now so we have a stable key for the hash
+    // table.  Then register (START . END) keyed by that user-ptr in the
+    // buffer-local `ghostel--anchored-terminals' table.  Lazy-init the
+    // table if this is the first anchored terminal in the buffer.
+    const term_val = env.makeUserPtr(&Terminal.emacsFinalize, term);
+
+    var table = env.symbolValue("ghostel--anchored-terminals");
+    if (env.isNil(table)) {
+        table = env.f("make-hash-table", .{ emacs.sym.@":test", emacs.sym.eq });
+        _ = env.set("ghostel--anchored-terminals", table);
+    }
+    _ = env.f("puthash", .{ term_val, env.cons(start_marker, end_marker), table });
+
+    return term_val;
 }
 
 /// (ghostel--write-input TERM DATA)
@@ -828,11 +940,30 @@ fn fnRedraw(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*
         defer vt_log_env = null;
     }
 
-    term.renderer.redraw(env, term, force_full) catch |err| {
-        env.logStackTrace(@errorReturnTrace());
-        env.signalError("Redraw failed: %s", .{@errorName(err)});
-        return env.nil();
-    };
+    // Shape-B parallel render path: dispatch on mode.  Bottom-anchored
+    // terminals go through the original `redraw` (unchanged).  Anchored
+    // terminals use the new `redrawAnchored` (Renderer.zig).
+    switch (term.mode) {
+        .bottom_anchored => {
+            term.renderer.redraw(env, term, force_full) catch |err| {
+                env.logStackTrace(@errorReturnTrace());
+                env.signalError("Redraw failed: %s", .{@errorName(err)});
+                return env.nil();
+            };
+        },
+        .anchored => {
+            term.renderer.redrawAnchored(env, term, args[0], force_full) catch |err| {
+                env.logStackTrace(@errorReturnTrace());
+                env.signalError("Anchored redraw failed: %s", .{@errorName(err)});
+                return env.nil();
+            };
+            // Kitty overlay handling below only makes sense for the
+            // bottom-anchored case, so early-return.  `redrawAnchored'
+            // parks the viewport at MAX - 1 itself for next-call
+            // scrollback-clear detection.
+            return env.nil();
+        },
+    }
 
     // `redraw' parks the libghostty viewport one row above the active
     // area for the next-redraw incremental change detection.  Kitty
