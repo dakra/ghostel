@@ -107,15 +107,37 @@ pub fn resize(self: *Self, cols: u16, rows: u16) void {
 ///
 /// When `force_full` is true, the viewport region is fully re-rendered
 /// instead of using the incremental dirty-row path.
-pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool) !void {
-    // Snapshot the buffer's mark across the destructive ops below.  Both
-    // paths — full (eraseBuffer / deleteRegion over the viewport) and
-    // partial (per-row deleteRegion + insert) — move every marker in the
-    // buffer by standard Emacs marker rules.  Point is owned by the
-    // renderer and is placed at the TUI cursor on exit, but mark is user
-    // state (C-SPC, region commands) and must survive the redraw.  Other
-    // markers (e.g. evil's visual-beginning/end) remain the caller's
-    // responsibility to preserve in elisp.
+///
+/// The renderer writes only between the start and end of its writable
+/// region.  For a regular ghostel terminal that region is the whole
+/// buffer (`point-min' / `point-max').  For anchored terminals the
+/// region is bounded by two buffer-local elisp markers looked up via
+/// the buffer-local `ghostel--anchored-terminals' hash table, keyed
+/// by `term_val' (the user-pointer Value the caller used to reach
+/// this redraw — passed through unchanged so multiple anchored
+/// terminals in the same buffer can each find their own markers).
+/// `regionStart' / `regionEnd' below are the only places those bounds
+/// are looked up during a redraw; everything else uses cached i64
+/// positions.
+pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, term_val: emacs.Value, force_full_arg: bool) !void {
+    // Snapshot the buffer's mark across the destructive ops below.
+    // Markers inside the renderer's writable region get moved by
+    // standard Emacs marker rules when we `delete-region' + `insert'.
+    // Point is owned by the renderer and is placed at the TUI cursor
+    // on exit, but mark is user state (C-SPC, region commands) and
+    // must survive the redraw.  Other markers (e.g. evil's
+    // visual-beginning/end) remain the caller's responsibility to
+    // preserve in elisp.
+    //
+    // Clamp the saved mark to the buffer's real `point-max' rather
+    // than to the renderer's `regionEnd'.  For anchored terminals the
+    // user's mark may legitimately sit past the renderer's region (in
+    // surrounding text the renderer does not own); clamping it to
+    // `regionEnd' would silently pull it backward into the renderer's
+    // region.  Clamping to `point-max' protects against the rare case
+    // where a destructive op truncates the buffer below the saved
+    // position, without touching marks that the renderer's region
+    // doesn't cover.
     const saved_mark: ?i64 = blk: {
         const pos = env.markerPosition(env.markMarker());
         if (!env.isNotNil(pos)) break :blk null;
@@ -150,7 +172,20 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool
 
     var force_full = false;
     if (force_full_arg or font_changed or cols_changed or scrollbar_reset or scrollbar_hit_cap) {
-        env.eraseBuffer();
+        // Fast path: when the markers span the entire buffer (the
+        // default for regular ghostel terminals) `erase-buffer' is
+        // faster than `delete-region' and avoids touching the
+        // current-buffer mark.  Anchored terminals fall through to
+        // `delete-region' over the marker range so surrounding text
+        // is preserved.
+        if (term.markers_span_buffer) {
+            env.eraseBuffer();
+        } else {
+            env.deleteRegion(
+                env.makeInteger(regionStart(env, term, term_val)),
+                env.makeInteger(regionEnd(env, term, term_val)),
+            );
+        }
         // Commit any pending resize since we're doing a rebuild anyway.
         self.commitResize(term);
 
@@ -164,14 +199,14 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool
     // there was no parking, so go to the top instead.
     if (self.rows_in_buffer > self.size.rows) {
         term.scrollViewport(gt.SCROLL_DELTA, 1);
-        env.gotoChar(env.pointMax());
+        env.gotoCharN(regionEnd(env, term, term_val));
         _ = env.forwardLine(-@as(i64, @intCast(scrollbar.len)));
     } else {
         term.scrollViewport(gt.SCROLL_TOP, 0);
-        env.gotoChar(env.pointMin());
+        env.gotoCharN(regionStart(env, term, term_val));
     }
 
-    const rendered_rows = try self.renderToEnd(env, term, force_full);
+    const rendered_rows = try self.renderToEnd(env, term, term_val, force_full);
     // Now that we rendered, even if we cleared the buffer above, we now have at
     // least the rows in the active area:
     self.rows_in_buffer = @max(self.rows_in_buffer, self.size.rows);
@@ -188,8 +223,8 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool
     if (self.pending_resize != null) {
         self.commitResize(term);
         term.scrollViewport(gt.SCROLL_BOTTOM, 0);
-        self.gotoActiveStart(env);
-        try self.render(env, term, 0, false);
+        self.gotoActiveStart(env, term, term_val);
+        try self.render(env, term, term_val, 0, false);
         // There is now at least self.size.rows number of rows
         self.rows_in_buffer = @max(self.rows_in_buffer, self.size.rows);
     }
@@ -197,13 +232,14 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool
     // Evict old scrollback if libghostty also did
     const libghostty_rows = try term.getTotalRows();
     if (libghostty_rows < self.rows_in_buffer) {
-        env.gotoChar(env.pointMin());
+        const region_start = regionStart(env, term, term_val);
+        env.gotoCharN(region_start);
         _ = env.forwardLine(@as(i64, @intCast(self.rows_in_buffer - libghostty_rows)));
-        env.deleteRegion(env.pointMin(), env.point());
+        env.deleteRegion(env.makeInteger(region_start), env.point());
         self.rows_in_buffer = libghostty_rows;
     }
 
-    try self.renderCursor(env);
+    try self.renderCursor(env, term, term_val);
 
     // Update working directory from OSC 7
     if (try term.getPwd()) |pwd| {
@@ -843,7 +879,7 @@ fn getDefaultColors(self: *Self) !BgFg {
     return BgFg{ .fg = fg, .bg = bg };
 }
 
-pub fn render(self: *Self, env: emacs.Env, term: *Terminal, skip: usize, force_full: bool) !void {
+pub fn render(self: *Self, env: emacs.Env, term: *Terminal, term_val: emacs.Value, skip: usize, force_full: bool) !void {
     try gt.renderStateUpdate(self.render_state, term.terminal);
     const default_colors = try self.getDefaultColors();
 
@@ -854,13 +890,19 @@ pub fn render(self: *Self, env: emacs.Env, term: *Terminal, skip: usize, force_f
     const dirty = try gt.rs.get(c_int, self.render_state, gt.RS_DATA_DIRTY);
 
     if (dirty != gt.DIRTY_FALSE or force_full) {
-        // Set buffer default face
-        var fg_hex: [7]u8 = undefined;
-        var bg_hex: [7]u8 = undefined;
-        _ = env.f("ghostel--set-buffer-face", .{
-            formatColor(default_colors.fg, &fg_hex),
-            formatColor(default_colors.bg, &bg_hex),
-        });
+        // Set buffer default face — only for whole-buffer terminals.
+        // `ghostel--set-buffer-face' applies a buffer-wide face-remap,
+        // which for an anchored terminal would recolor surrounding
+        // text outside the renderer's region.  Per-cell faces from
+        // `applyProps' still take effect inside the region.
+        if (term.markers_span_buffer) {
+            var fg_hex: [7]u8 = undefined;
+            var bg_hex: [7]u8 = undefined;
+            _ = env.f("ghostel--set-buffer-face", .{
+                formatColor(default_colors.fg, &fg_hex),
+                formatColor(default_colors.bg, &bg_hex),
+            });
+        }
 
         // Incremental redraw: only update dirty rows when possible.
         // force_full bypasses partial mode to avoid stale rows after scrolls.
@@ -880,24 +922,40 @@ pub fn render(self: *Self, env: emacs.Env, term: *Terminal, skip: usize, force_f
             // Only process dirty rows
             const dirty_row = dirty_full or try gt.rs_row.get(bool, self.row_iterator, gt.RS_ROW_DATA_DIRTY);
             if (dirty_row) {
-                env.deleteRegion(env.point(), env.lineBeginningPosition2());
+                // Per-row delete-then-insert.  For whole-buffer
+                // terminals (`markers_span_buffer = true`)
+                // `lineBeginningPosition2` is always ≤ point-max, so
+                // the clamp would be a no-op — skip it to keep the
+                // hot path free of an extra funcall per dirty row.
+                // Anchored terminals clamp to `regionEnd` so the
+                // delete doesn't scoop up text past the writable
+                // region.
+                if (term.markers_span_buffer) {
+                    env.deleteRegion(env.point(), env.lineBeginningPosition2());
+                } else {
+                    const next_line = env.extractInteger(env.lineBeginningPosition2());
+                    const row_end = @min(next_line, regionEnd(env, term, term_val));
+                    env.deleteRegion(env.point(), env.makeInteger(row_end));
+                }
                 try self.insertRow(env, term, &default_colors);
             } else {
                 _ = env.forwardLine(1);
             }
         }
 
-        // If there's anything left below the viewport, delete it
-        env.deleteRegion(env.point(), env.pointMax());
+        // If there's anything left below the viewport (up to our
+        // end marker — surrounding text past it is left untouched
+        // for anchored terminals), delete it.
+        env.deleteRegion(env.point(), env.makeInteger(regionEnd(env, term, term_val)));
 
         // Reset dirty state
         try gt.rs.set(self.render_state, gt.RS_OPT_DIRTY, gt.DIRTY_FALSE);
     }
 }
 
-fn renderCursor(self: *Self, env: emacs.Env) !void {
+fn renderCursor(self: *Self, env: emacs.Env, term: *Terminal, term_val: emacs.Value) !void {
     // Walk to the current viewport start
-    self.gotoActiveStart(env);
+    self.gotoActiveStart(env, term, term_val);
     const active_start_int = env.extractInteger(env.point());
 
     // Batch-fetch cursor style/visibility (always available).
@@ -927,15 +985,23 @@ fn renderCursor(self: *Self, env: emacs.Env) !void {
         _ = env.set("ghostel--cursor-char-pos", env.nil());
     }
 
-    _ = env.f("ghostel--set-cursor-style", .{
-        cursor_style,
-        if (cursor_visible) env.t() else env.nil(),
-    });
+    // `ghostel--set-cursor-style' mutates the buffer-local
+    // `cursor-type'.  For an anchored terminal the host buffer
+    // (e.g. comint) owns cursor presentation; skip the call so we
+    // don't clobber the host's choice.  The TUI cursor position
+    // and visibility are still reported via `ghostel--cursor-pos' /
+    // `ghostel--cursor-char-pos' for the host's use.
+    if (term.markers_span_buffer) {
+        _ = env.f("ghostel--set-cursor-style", .{
+            cursor_style,
+            if (cursor_visible) env.t() else env.nil(),
+        });
+    }
 }
 
 // Render content from the current viewport scroll position all the way to
 // the active area at the current Emacs point.
-fn renderToEnd(self: *Self, env: emacs.Env, term: *Terminal, force_full: bool) !usize {
+fn renderToEnd(self: *Self, env: emacs.Env, term: *Terminal, term_val: emacs.Value, force_full: bool) !usize {
     const scrollbar = try term.getScrollbar();
     if (scrollbar.len == 0) return 0;
     const offset_max = scrollbar.total - scrollbar.len;
@@ -951,7 +1017,7 @@ fn renderToEnd(self: *Self, env: emacs.Env, term: *Terminal, force_full: bool) !
     var rendered_rows: usize = 0;
     var current_offset = scrollbar.offset;
     for (0..num_viewports) |_| {
-        try self.render(env, term, skip, force_full);
+        try self.render(env, term, term_val, skip, force_full);
         rendered_rows += (scrollbar.len - skip);
 
         const max_step = offset_max - current_offset;
@@ -980,8 +1046,63 @@ fn commitResize(self: *Self, term: *Terminal) void {
 }
 
 /// Position the Emacs point at the start of the active area: `self.size.rows`
-/// lines back from `point-max`.
-fn gotoActiveStart(self: *Self, env: emacs.Env) void {
-    env.gotoChar(env.pointMax());
+/// lines back from the end of the renderer's writable region.
+fn gotoActiveStart(self: *Self, env: emacs.Env, term: *Terminal, term_val: emacs.Value) void {
+    env.gotoCharN(regionEnd(env, term, term_val));
     _ = env.forwardLine(-@as(i64, @intCast(self.size.rows)));
+}
+
+/// Look up the `(start-marker . end-marker)' pair for `term_val' in
+/// the buffer-local `ghostel--anchored-terminals' hash table.  Returns
+/// nil if the buffer has no table, or no entry for this terminal.
+/// Same buffer-currency precondition as `regionStart' / `regionEnd'.
+fn lookupMarkerPair(env: emacs.Env, term_val: emacs.Value) emacs.Value {
+    const tbl = env.symbolValue("ghostel--anchored-terminals");
+    if (!env.isNotNil(tbl)) return env.nil();
+    return env.f("gethash", .{ term_val, tbl });
+}
+
+/// Read the start of the renderer's writable region.  For regular
+/// (whole-buffer) terminals this is `point-min'.  For anchored
+/// terminals the position comes from the start marker of this
+/// terminal's `(start . end)' entry in the buffer-local
+/// `ghostel--anchored-terminals' hash table.
+///
+/// PRECONDITION: the renderer's host buffer must be current when this
+/// is called.  All elisp call sites wrap `ghostel--redraw' in
+/// `with-current-buffer', so this is satisfied today.  If a future
+/// caller forgets, the hash-table lookup silently returns nil from
+/// the wrong buffer and the region falls back to `point-min' — the
+/// failure mode is the renderer drawing in the wrong place, not a
+/// crash.
+fn regionStart(env: emacs.Env, term: *Terminal, term_val: emacs.Value) i64 {
+    if (term.markers_span_buffer) {
+        return env.extractInteger(env.pointMin());
+    }
+    const pair = lookupMarkerPair(env, term_val);
+    if (env.isNotNil(pair)) {
+        const marker = env.f("car", .{pair});
+        const pos = env.markerPosition(marker);
+        if (env.isNotNil(pos)) return env.extractInteger(pos);
+    }
+    return env.extractInteger(env.pointMin());
+}
+
+/// Read the end of the renderer's writable region.  For regular
+/// (whole-buffer) terminals this is `point-max'.  For anchored
+/// terminals the position comes from the end marker of this
+/// terminal's `(start . end)' entry in the buffer-local
+/// `ghostel--anchored-terminals' hash table.  Same buffer-currency
+/// precondition as `regionStart'.
+fn regionEnd(env: emacs.Env, term: *Terminal, term_val: emacs.Value) i64 {
+    if (term.markers_span_buffer) {
+        return env.extractInteger(env.pointMax());
+    }
+    const pair = lookupMarkerPair(env, term_val);
+    if (env.isNotNil(pair)) {
+        const marker = env.f("cdr", .{pair});
+        const pos = env.markerPosition(marker);
+        if (env.isNotNil(pos)) return env.extractInteger(pos);
+    }
+    return env.extractInteger(env.pointMax());
 }

@@ -52,6 +52,21 @@ renderer: Renderer,
 /// Cached Emacs env pointer — only valid during a callback from Emacs.
 env: ?emacs.Env = null,
 
+/// True when the renderer's writable region spans the whole buffer
+/// (regular ghostel terminals).  False for anchored terminals, where
+/// the writable region is bounded by buffer-local markers looked up
+/// in the buffer-local `ghostel--anchored-terminals' hash table
+/// (keyed by the terminal's user-pointer Value).
+///
+/// Discriminator for the renderer's fast-path: when true, hard
+/// rebuilds use `erase-buffer' and the per-row delete skips the
+/// end-marker clamp.  When false, the renderer reads the markers
+/// from elisp at redraw time.  Storing the markers in elisp (rather
+/// than as global refs on this struct) lets Emacs's GC own their
+/// lifetime — there's no env in `emacsFinalize' to release a global
+/// ref with.
+markers_span_buffer: bool = false,
+
 /// Create a new terminal with the given dimensions and scrollback.
 pub fn init(cols: u16, rows: u16, max_scrollback: usize) !Self {
     var terminal: gt.Terminal = undefined;
