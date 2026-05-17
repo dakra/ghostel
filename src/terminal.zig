@@ -13,15 +13,6 @@ const Self = @This();
 /// The libghostty terminal handle.
 terminal: gt.Terminal,
 
-/// Render state for incremental screen updates.
-render_state: gt.RenderState,
-
-/// Reusable row iterator (populated during redraw).
-row_iterator: gt.RenderStateRowIterator,
-
-/// Reusable row cells handle (populated during redraw).
-row_cells: gt.RenderStateRowCells,
-
 /// Key encoder for translating key events to escape sequences.
 key_encoder: gt.c.GhosttyKeyEncoder,
 
@@ -66,24 +57,6 @@ pub fn init(cols: u16, rows: u16, max_scrollback: usize) !Self {
     }
     errdefer gt.c.ghostty_terminal_free(terminal);
 
-    var render_state: gt.RenderState = undefined;
-    if (gt.c.ghostty_render_state_new(null, &render_state) != gt.SUCCESS) {
-        return error.RenderStateCreateFailed;
-    }
-    errdefer gt.c.ghostty_render_state_free(render_state);
-
-    var row_iterator: gt.RenderStateRowIterator = undefined;
-    if (gt.c.ghostty_render_state_row_iterator_new(null, &row_iterator) != gt.SUCCESS) {
-        return error.RowIteratorCreateFailed;
-    }
-    errdefer gt.c.ghostty_render_state_row_iterator_free(row_iterator);
-
-    var row_cells: gt.RenderStateRowCells = undefined;
-    if (gt.c.ghostty_render_state_row_cells_new(null, &row_cells) != gt.SUCCESS) {
-        return error.RowCellsCreateFailed;
-    }
-    errdefer gt.c.ghostty_render_state_row_cells_free(row_cells);
-
     var key_encoder: gt.c.GhosttyKeyEncoder = undefined;
     if (gt.c.ghostty_key_encoder_new(null, &key_encoder) != gt.SUCCESS) {
         return error.KeyEncoderCreateFailed;
@@ -104,9 +77,6 @@ pub fn init(cols: u16, rows: u16, max_scrollback: usize) !Self {
 
     return .{
         .terminal = terminal,
-        .render_state = render_state,
-        .row_iterator = row_iterator,
-        .row_cells = row_cells,
         .key_encoder = key_encoder,
         .mouse_encoder = mouse_encoder,
         .renderer = try .init(cols, rows),
@@ -118,9 +88,6 @@ pub fn deinit(self: *Self) void {
     self.renderer.deinit();
     gt.c.ghostty_mouse_encoder_free(self.mouse_encoder);
     gt.c.ghostty_key_encoder_free(self.key_encoder);
-    gt.c.ghostty_render_state_row_cells_free(self.row_cells);
-    gt.c.ghostty_render_state_row_iterator_free(self.row_iterator);
-    gt.c.ghostty_render_state_free(self.render_state);
     gt.c.ghostty_terminal_free(self.terminal);
 }
 

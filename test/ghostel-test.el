@@ -52,18 +52,14 @@ The `ghostel-test-clean' property is placed by
     (get-text-property (point) 'ghostel-test-clean)))
 
 (defun ghostel-test--row0 (term)
-  "Return the first row text from the render state of TERM."
-  (let ((state (ghostel--debug-state term)))
-    (when (string-match "row0=\"\\([^\"]*\\)\"" state)
-      ;; Trim trailing spaces
-      (string-trim-right (match-string 1 state)))))
+  "Return the first row text from TERM's scrollback."
+  (let ((text (or (ghostel--copy-all-text term) "")))
+    (string-trim-right (car (split-string text "\n")))))
 
 (defun ghostel-test--cursor (term)
-  "Return (COL . ROW) cursor position from debug-feed for TERM."
-  (let ((info (ghostel--debug-feed term "")))
-    (when (string-match "cur=(\\([0-9]+\\),\\([0-9]+\\))" info)
-      (cons (string-to-number (match-string 1 info))
-            (string-to-number (match-string 2 info))))))
+  "Return (COL . ROW) cursor position for TERM via redraw."
+  (ghostel--redraw term)
+  ghostel--cursor-pos)
 
 (defun ghostel-test--wait-for (proc pred &optional timeout)
   "Poll PROC until PRED returns non-nil, or TIMEOUT seconds (default 5).
@@ -108,7 +104,7 @@ succeeds."
 
     ;; Newline (CRLF — the Zig module normalizes bare LF)
     (ghostel--write-input term " world\nline2")
-    (let ((state (ghostel--debug-state term)))
+    (let ((state (ghostel--copy-all-text term)))
       (should (string-match-p "hello world" state))  ; row0 has full first line
       (should (string-match-p "line2" state)))))      ; row1 has line2
 
@@ -234,7 +230,7 @@ either of which would snap every marker in the buffer to `point-min'."
     ;; Write long text to verify new width
     (ghostel--write-input term "\r\n")
     (ghostel--write-input term (make-string 40 ?x))
-    (let ((state (ghostel--debug-state term)))
+    (let ((state (ghostel--copy-all-text term)))
       (should (string-match-p "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" state))))) ; 40 x's on row
 
 ;; -----------------------------------------------------------------------
@@ -1336,7 +1332,7 @@ than the full terminal `cols'."
   "Test that bare LF is normalized to CRLF by the Zig module."
   (let ((term (ghostel--new 25 80 1000)))
     (ghostel--write-input term "first\nsecond")
-    (let ((state (ghostel--debug-state term)))
+    (let ((state (ghostel--copy-all-text term)))
       (should (string-match-p "first" state))              ; first line
       (should (string-match-p "second" state)))             ; second line
     (let ((cur (ghostel-test--cursor term)))
@@ -1515,30 +1511,30 @@ through without cross-call munging.)"
             (set-process-query-on-exit-flag proc nil)
             ;; Wait for shell init
             (ghostel-test--wait-for proc
-                                    (lambda () (not (equal "" (ghostel--debug-state ghostel--term)))) 10)
+                                    (lambda () (ghostel--copy-all-text ghostel--term)) 10)
             (should (process-live-p proc))                ; shell process alive
 
             ;; Run a command
             (process-send-string proc "echo GHOSTEL_TEST_OK\n")
             (ghostel-test--wait-for proc
                                     (lambda () (string-match-p "GHOSTEL_TEST_OK"
-                                                               (ghostel--debug-state ghostel--term))))
-            (let ((state (ghostel--debug-state ghostel--term)))
+                                                               (ghostel--copy-all-text ghostel--term))))
+            (let ((state (ghostel--copy-all-text ghostel--term)))
               (should (string-match-p "GHOSTEL_TEST_OK" state))) ; command output visible
 
             ;; Test typing + backspace via PTY echo
             (process-send-string proc "abc")
             (ghostel-test--wait-for proc
                                     (lambda () (string-match-p "abc"
-                                                               (ghostel--debug-state ghostel--term))))
-            (let ((state (ghostel--debug-state ghostel--term)))
+                                                               (ghostel--copy-all-text ghostel--term))))
+            (let ((state (ghostel--copy-all-text ghostel--term)))
               (should (string-match-p "abc" state)))      ; typed text visible
 
             (process-send-string proc "\x7f")
             (ghostel-test--wait-for proc
                                     (lambda () (not (string-match-p "abc"
-                                                                    (ghostel--debug-state ghostel--term)))))
-            (let ((state (ghostel--debug-state ghostel--term)))
+                                                                    (ghostel--copy-all-text ghostel--term)))))
+            (let ((state (ghostel--copy-all-text ghostel--term)))
               (should (string-match-p "ab" state))        ; backspace removed char
               (should-not (string-match-p "abc" state)))  ; no abc after BS
 
@@ -1637,24 +1633,24 @@ Mirrors the real zsh case where the directory still contains a
             (set-process-query-on-exit-flag proc nil)
             ;; Wait for fish init (may need longer for DA query handshake)
             (ghostel-test--wait-for proc
-                                    (lambda () (not (equal "" (ghostel--debug-state ghostel--term)))) 10)
+                                    (lambda () (ghostel--copy-all-text ghostel--term)) 10)
             (should (process-live-p proc))
 
             ;; Type "abc" then backspace
             (process-send-string proc "abc")
             (ghostel-test--wait-for proc
                                     (lambda () (string-match-p "abc"
-                                                               (ghostel--debug-state ghostel--term))))
-            (let ((state (ghostel--debug-state ghostel--term)))
+                                                               (ghostel--copy-all-text ghostel--term))))
+            (let ((state (ghostel--copy-all-text ghostel--term)))
               (should (string-match-p "abc" state)))
 
             ;; Send backspace (\x7f) and verify it works
             (process-send-string proc "\x7f")
             (ghostel-test--wait-for proc
                                     (lambda () (not (string-match-p "abc"
-                                                                    (ghostel--debug-state ghostel--term)))))
+                                                                    (ghostel--copy-all-text ghostel--term)))))
             (ghostel--flush-pending-output)
-            (let ((state (ghostel--debug-state ghostel--term)))
+            (let ((state (ghostel--copy-all-text ghostel--term)))
               (should (string-match-p "ab" state))
               (should-not (string-match-p "abc" state)))
 
