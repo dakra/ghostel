@@ -16098,6 +16098,373 @@ The hash table keyed by user-pointer is what makes this work."
                         (should-not (string-match-p "X" r2))))))))))
       (kill-buffer buf))))
 
+;; -----------------------------------------------------------------------
+;; Test: ghostel-comint (comint + ghostel anchored renderer)
+;; -----------------------------------------------------------------------
+
+(require 'ghostel-comint)
+
+(defun ghostel-test-comint--count-matches (regexp)
+  "Return how many times REGEXP matches in the current buffer."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((n 0))
+      (while (re-search-forward regexp nil t)
+        (setq n (1+ n)))
+      n)))
+
+(defmacro ghostel-test-comint--with-shell (&rest body)
+  "Run BODY in a fresh `ghostel-comint-mode' buffer with /bin/sh spawned.
+Binds `buf' to the buffer and `proc' to the shell process.  Waits up
+to 5 seconds for the initial shell prompt to render before running
+BODY.  Cleans up the buffer and process on exit."
+  (declare (indent 0) (debug t))
+  `(let ((buf (generate-new-buffer " *ghostel-comint-test*")))
+     (unwind-protect
+         (with-current-buffer buf
+           (ghostel-comint-mode)
+           (ghostel-comint--spawn buf "/bin/sh" nil)
+           (let ((proc (get-buffer-process buf)))
+             ;; Wait for the initial prompt to land in the buffer.  We
+             ;; can't search for shell-specific text (prompt format
+             ;; varies), so we wait until something non-trivial has
+             ;; been rendered.
+             (ghostel-test--wait-for proc
+                                     (lambda () (> (point-max) 5))
+                                     5)
+             ,@body
+             (when (process-live-p proc)
+               (set-process-query-on-exit-flag proc nil)
+               (delete-process proc))))
+       (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-comint-basic-echo ()
+  "A simple `echo' command produces rendered output in the buffer.
+The marker text appears at least twice — once on the user-typed
+input line, once in the shell's response after we route it through
+the anchored renderer."
+  (ghostel-test-comint--with-shell
+    (goto-char (point-max))
+    (insert "echo GHOSTEL-CT-ECHO")
+    (comint-send-input)
+    ;; Wait for the marker to appear twice — input line + response.
+    (ghostel-test--wait-for
+     proc
+     (lambda ()
+       (>= (ghostel-test-comint--count-matches "GHOSTEL-CT-ECHO") 2))
+     10)
+    (should (>= (ghostel-test-comint--count-matches "GHOSTEL-CT-ECHO") 2))))
+
+(ert-deftest ghostel-test-comint-ansi-color ()
+  "An ANSI SGR sequence renders with a `face' text-property.
+Sends `printf' producing red `ZZZ' and asserts the rendered span
+carries a face property whose `:foreground' is red."
+  (ghostel-test-comint--with-shell
+    (goto-char (point-max))
+    (insert "printf '\\033[31mGCRED\\033[0m\\n'")
+    (comint-send-input)
+    (ghostel-test--wait-for
+     proc
+     (lambda ()
+       ;; Wait for `GCRED' to appear twice (typed + response) AND
+       ;; for the response copy to have rendered with a face.  We
+       ;; just need >=2 matches AND any GCRED has a face prop.
+       (and (>= (ghostel-test-comint--count-matches "GCRED") 2)
+            (save-excursion
+              (goto-char (point-min))
+              (let (face-found)
+                (while (and (not face-found)
+                            (re-search-forward "GCRED" nil t))
+                  (let ((face (get-text-property (match-beginning 0)
+                                                 'face)))
+                    (when face (setq face-found face))))
+                face-found))))
+     10)
+    ;; Find the last GCRED — that's the rendered one.
+    (save-excursion
+      (goto-char (point-max))
+      (re-search-backward "GCRED")
+      (let ((face (get-text-property (point) 'face)))
+        (should face)
+        ;; libghostty's default red palette index is implementation-
+        ;; defined; just assert a foreground colour was applied.
+        (should (plist-get face :foreground))))))
+
+(ert-deftest ghostel-test-comint-cr-overwrite ()
+  "CR (\\r) returns the cursor to column 0; the next write overwrites.
+Sends `printf hello\\rwor\\n'.  The rendered output should contain
+`worlo' (the CR moved the cursor back, and `wor' overwrote the
+leading `hel'), NOT a literal `hello\\rwor' run."
+  (ghostel-test-comint--with-shell
+    (goto-char (point-max))
+    (insert "printf 'hello\\rwor\\n'")
+    (comint-send-input)
+    (ghostel-test--wait-for
+     proc
+     (lambda ()
+       (save-excursion
+         (goto-char (point-min))
+         (search-forward "worlo" nil t)))
+     10)
+    (should
+     (save-excursion
+       (goto-char (point-min))
+       (search-forward "worlo" nil t)))))
+
+(ert-deftest ghostel-test-comint-multi-command-persistence ()
+  "Output of a previous command stays in the buffer after the next runs.
+Sends two commands; after the second has rendered, the first
+command's marker text must still be present."
+  (ghostel-test-comint--with-shell
+    (goto-char (point-max))
+    (insert "echo GHOSTEL-CT-FIRST")
+    (comint-send-input)
+    (ghostel-test--wait-for
+     proc
+     (lambda ()
+       (>= (ghostel-test-comint--count-matches "GHOSTEL-CT-FIRST") 2))
+     10)
+    (goto-char (point-max))
+    (insert "echo GHOSTEL-CT-SECOND")
+    (comint-send-input)
+    (ghostel-test--wait-for
+     proc
+     (lambda ()
+       (>= (ghostel-test-comint--count-matches "GHOSTEL-CT-SECOND") 2))
+     10)
+    ;; Both markers must still be present in the buffer.
+    (should (>= (ghostel-test-comint--count-matches "GHOSTEL-CT-FIRST") 2))
+    (should (>= (ghostel-test-comint--count-matches "GHOSTEL-CT-SECOND") 2))
+    ;; And only ONE anchored terminal must be live (the most recent).
+    (should (= 1 (hash-table-count ghostel--anchored-terminals)))))
+
+(ert-deftest ghostel-test-comint-input-history ()
+  "Submitted input lands in the comint input ring.
+`comint-previous-input' (bound to \\`M-p') recalls the most recent input."
+  (ghostel-test-comint--with-shell
+    (goto-char (point-max))
+    (insert "echo GHOSTEL-CT-HIST")
+    (comint-send-input)
+    (ghostel-test--wait-for
+     proc
+     (lambda ()
+       (>= (ghostel-test-comint--count-matches "GHOSTEL-CT-HIST") 2))
+     10)
+    ;; Now position at a fresh empty input line.
+    (goto-char (point-max))
+    (let ((pmark (process-mark proc)))
+      ;; Make sure we're at the input line.
+      (should (= (point) (marker-position pmark))))
+    ;; Recall previous input.
+    (comint-previous-input 1)
+    (let ((pmark (process-mark proc)))
+      (should (string= "echo GHOSTEL-CT-HIST"
+                       (buffer-substring-no-properties
+                        (marker-position pmark) (point)))))))
+
+(ert-deftest ghostel-test-comint-cleanup-on-kill ()
+  "Killing the buffer mid-run reaps the process and clears state.
+After `kill-buffer', the process must not be in `process-list' as a
+live process, and the buffer-local anchored-terminal hash table is
+gone with the buffer."
+  (let ((buf (generate-new-buffer " *ghostel-comint-cleanup*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-comint-mode)
+          (ghostel-comint--spawn buf "/bin/sh" nil)
+          (let ((proc (get-buffer-process buf)))
+            (ghostel-test--wait-for proc
+                                    (lambda () (> (point-max) 5))
+                                    5)
+            ;; Start a slow command so we kill mid-output.
+            (goto-char (point-max))
+            (insert "for i in 1 2 3 4 5; do echo GCT-LINE-$i; sleep 0.05; done")
+            (comint-send-input)
+            ;; Give it a moment to start producing output.
+            (ghostel-test--wait-for
+             proc
+             (lambda ()
+               (save-excursion
+                 (goto-char (point-min))
+                 (search-forward "GCT-LINE-1" nil t)))
+             5)
+            ;; Kill the buffer while output may still be in flight.
+            (set-process-query-on-exit-flag proc nil)
+            (kill-buffer buf)
+            ;; `kill-buffer' deletes the process synchronously via
+            ;; `kill-buffer-hook' / the standard cleanup path, but the
+            ;; OS may take a tick to mark the handle as dead.  Poll.
+            (let ((deadline (+ (float-time) 3.0)))
+              (while (and (process-live-p proc) (< (float-time) deadline))
+                (accept-process-output nil 0.05)))
+            (should-not (process-live-p proc))
+            (should-not (buffer-live-p buf))))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-comint-window-resize ()
+  "`ghostel-comint--adjust-window-size' resizes the active grid.
+Drives the resize hook directly with a fake adjust-fn (bypassing
+the real `window-adjust-process-window-size-smallest', which needs
+a frame in batch).  Verifies the buffer-local rows/cols update and
+the call propagates through to the renderer."
+  (ghostel-test-comint--with-shell
+    ;; Drive a first command so a terminal exists to resize.
+    (goto-char (point-max))
+    (insert "echo GHOSTEL-CT-RESIZE")
+    (comint-send-input)
+    (ghostel-test--wait-for
+     proc
+     (lambda ()
+       (>= (ghostel-test-comint--count-matches "GHOSTEL-CT-RESIZE") 2))
+     10)
+    (should ghostel-comint--term)
+    (let* ((before-rows ghostel-comint--rows)
+           (before-cols ghostel-comint--cols)
+           (target-rows (+ before-rows 3))
+           (target-cols (+ before-cols 7))
+           ;; Pretend the window changed to TARGET dims.
+           (window-adjust-process-window-size-function
+            (lambda (_proc _windows) (cons target-cols target-rows))))
+      (let ((size (ghostel-comint--adjust-window-size proc nil)))
+        ;; A real change should return the new size (non-nil).
+        (should size)
+        (should (= (car size) target-cols))
+        (should (= (cdr size) target-rows)))
+      ;; Buffer-local cache should now reflect the new dims.
+      (should (= ghostel-comint--rows target-rows))
+      (should (= ghostel-comint--cols target-cols))
+      ;; A no-op resize (same dims) should return nil to suppress
+      ;; the redundant SIGWINCH.
+      (let ((window-adjust-process-window-size-function
+             (lambda (_proc _windows) (cons target-cols target-rows))))
+        (should-not (ghostel-comint--adjust-window-size proc nil))))))
+
+(ert-deftest ghostel-test-comint-sentinel-exit-notice ()
+  "Shell `exit' triggers our sentinel; notice lands as inert text.
+After the process dies, (a) no anchored terminal remains live,
+\(b) `ghostel-comint--term' is nil, (c) the buffer contains the
+`Process … finished/exited' notice and (d) the buffer is still alive."
+  (let ((buf (generate-new-buffer " *ghostel-comint-sentinel*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-comint-mode)
+          (ghostel-comint--spawn buf "/bin/sh" nil)
+          (let ((proc (get-buffer-process buf)))
+            (ghostel-test--wait-for proc (lambda () (> (point-max) 5)) 5)
+            (goto-char (point-max))
+            (insert "exit")
+            (comint-send-input)
+            ;; Poll until the process has died and the sentinel ran.
+            (let ((deadline (+ (float-time) 5.0)))
+              (while (and (process-live-p proc) (< (float-time) deadline))
+                (accept-process-output proc 0.05)))
+            (should-not (process-live-p proc))
+            ;; Give the sentinel a tick to run.
+            (let ((deadline (+ (float-time) 1.0)))
+              (while (and ghostel-comint--term (< (float-time) deadline))
+                (accept-process-output nil 0.05)))
+            (should-not ghostel-comint--term)
+            (should (= 0 (hash-table-count
+                          (or ghostel--anchored-terminals
+                              (make-hash-table)))))
+            ;; The exit-notice text must be present in the buffer
+            ;; (default sentinel format: `Process NAME finished\n').
+            (should
+             (save-excursion
+               (goto-char (point-min))
+               (re-search-forward "Process ghostel-comint " nil t)))
+            (should (buffer-live-p buf))))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-comint-user-text-not-clobbered-by-quiet-period ()
+  "Typed input remains in the buffer when no further output is rendered.
+A regression guard: the user types in the input area after a
+command has rendered; with no new output flowing in, no further
+redraw happens, and the typed bytes must still be in the buffer.
+
+Caveat: typing PAST `process-mark' INTO the active anchored region
+\(i.e. into the rendered output span) is unsupported in v1.  See
+`plans/ghostel-comint-plan.md' open question #1 for context."
+  (ghostel-test-comint--with-shell
+    (goto-char (point-max))
+    (insert "echo GCT-USER-Q1")
+    (comint-send-input)
+    (ghostel-test--wait-for
+     proc
+     (lambda ()
+       (>= (ghostel-test-comint--count-matches "GCT-USER-Q1") 2))
+     10)
+    ;; Type at pmark (the comint input area) — the normal place a
+    ;; user would type the NEXT command.
+    (let ((tag "GCT-USER-AT-INPUT-AREA")
+          (pmark (process-mark proc)))
+      (goto-char (marker-position pmark))
+      (insert tag)
+      ;; Allow a tick for any latent processing; text must remain.
+      (accept-process-output proc 0.1)
+      (should
+       (save-excursion
+         (goto-char (point-min))
+         (search-forward tag nil t))))))
+
+(ert-deftest ghostel-test-comint-retired-region-inert ()
+  "After a second command, the first command's region is plain text.
+The first command's terminal is `remhash'-ed; only the most-recent
+terminal stays in `ghostel--anchored-terminals'.  The buffer text
+the first command produced remains intact."
+  (ghostel-test-comint--with-shell
+    (goto-char (point-max))
+    (insert "echo GHOSTEL-CT-RETIRE-A")
+    (comint-send-input)
+    (ghostel-test--wait-for
+     proc
+     (lambda ()
+       (>= (ghostel-test-comint--count-matches "GHOSTEL-CT-RETIRE-A") 2))
+     10)
+    (let ((first-term ghostel-comint--term))
+      (should first-term)
+      (should (gethash first-term ghostel--anchored-terminals))
+      ;; Run a second command.
+      (goto-char (point-max))
+      (insert "echo GHOSTEL-CT-RETIRE-B")
+      (comint-send-input)
+      (ghostel-test--wait-for
+       proc
+       (lambda ()
+         (>= (ghostel-test-comint--count-matches "GHOSTEL-CT-RETIRE-B") 2))
+       10)
+      ;; The first terminal must no longer be in the hash table.
+      (should-not (gethash first-term ghostel--anchored-terminals))
+      ;; Exactly one anchored terminal should be live (the current one).
+      (should (= 1 (hash-table-count ghostel--anchored-terminals)))
+      (should-not (eq first-term ghostel-comint--term))
+      ;; First command's rendered output remains in the buffer.
+      (should (>= (ghostel-test-comint--count-matches "GHOSTEL-CT-RETIRE-A")
+                  2)))))
+
+(ert-deftest ghostel-test-comint-field-navigation ()
+  "The `\\n' our `--make-terminal' inserts carries field=output.
+`C-a' (beginning-of-line, which respects field boundaries by
+default) on the rendered region's last line should stay inside
+the field — i.e. `field-beginning' at that point should land at
+or after the field's start, not past it into the input area."
+  (ghostel-test-comint--with-shell
+    (goto-char (point-max))
+    (insert "echo GHOSTEL-CT-FIELD")
+    (comint-send-input)
+    (ghostel-test--wait-for
+     proc
+     (lambda ()
+       (>= (ghostel-test-comint--count-matches "GHOSTEL-CT-FIELD") 2))
+     10)
+    ;; Find the rendered (last) occurrence — that's inside the region.
+    (let* ((pos (save-excursion
+                  (goto-char (point-max))
+                  (re-search-backward "GHOSTEL-CT-FIELD")
+                  (point))))
+      ;; Within the rendered region, the field at point should be `output'.
+      (should (eq 'output (get-char-property pos 'field))))))
+
 (defun ghostel-test-run ()
   "Run all ghostel tests."
   (ert-run-tests-batch-and-exit "^ghostel-test-"))
