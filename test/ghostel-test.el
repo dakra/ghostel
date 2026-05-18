@@ -15341,6 +15341,391 @@ slip past the unit tests."
               (should (= (nth 7 args) 1)))))               ; pixel-h = 1
       (kill-buffer buf))))
 
+;;; Bold color palette
+
+(defun ghostel-test--bold-color-palette ()
+  "Return a 256-entry hex palette string with index 1 red and 9 green.
+Used by bold-color tests so palette mapping is observable."
+  (concat "#000000"                                ;; 0
+          "#ff0000"                                ;; 1 (red)
+          (apply #'concat (make-list 7 "#000000")) ;; 2..8
+          "#00ff00"                                ;; 9 (bright red, distinguishable)
+          (apply #'concat (make-list 246 "#000000"))))
+
+(ert-deftest ghostel-test-bold-is-bright ()
+  "Test that bold text uses bright colors when ghostel-bold-color is 'bright."
+  (let ((buf (generate-new-buffer " *ghostel-test-bold*"))
+        (ghostel-bold-color 'bright))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--set-palette term (ghostel-test--bold-color-palette))
+            (ghostel--apply-bold-config term)
+
+            ;; Write bold red text
+            (ghostel--write-input term "\e[1;31mBOLD\e[0m")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should (equal "#00ff00" (plist-get face :foreground)))
+              (should (eq 'bold (plist-get face :weight))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-bold-fixed-color ()
+  "Test that bold text uses a fixed color when ghostel-bold-color is a hex string."
+  (let ((buf (generate-new-buffer " *ghostel-test-bold-fixed*"))
+        (ghostel-bold-color "#abcdef"))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--apply-bold-config term)
+
+            ;; Write bold text without color
+            (ghostel--write-input term "\e[1mBOLD\e[0m")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should (equal "#abcdef" (plist-get face :foreground)))
+              (should (eq 'bold (plist-get face :weight))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-bold-color-nil-leaves-fg-alone ()
+  "Test that bold text keeps its original color when `ghostel-bold-color' is nil."
+  (let ((buf (generate-new-buffer " *ghostel-test-bold-nil*"))
+        (ghostel-bold-color nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--set-palette term (ghostel-test--bold-color-palette))
+            (ghostel--apply-bold-config term)
+            ;; Bold red (palette 1) must stay red — no brightening to palette 9.
+            (ghostel--write-input term "\e[1;31mBOLD\e[0m")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should (equal "#ff0000" (plist-get face :foreground)))
+              (should (eq 'bold (plist-get face :weight))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-bold-fixed-also-brightens-palette ()
+  "Test that fixed-color bold still maps palette 0-7 to 8-15.
+The fixed color only applies to default-fg cells; palette colors take
+the bright variant just like in `bright' mode."
+  (let ((buf (generate-new-buffer " *ghostel-test-bold-fixed-palette*"))
+        (ghostel-bold-color "#abcdef"))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--set-palette term (ghostel-test--bold-color-palette))
+            (ghostel--apply-bold-config term)
+            ;; Bold red (palette 1) → bright red (palette 9 = #00ff00),
+            ;; NOT the fixed color #abcdef.
+            (ghostel--write-input term "\e[1;31mBOLD\e[0m")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should (equal "#00ff00" (plist-get face :foreground))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-bold-leaves-bright-palette-alone ()
+  "Test that bold on palette 8-15 is not re-mapped (no overflow into 16-23)."
+  (let ((buf (generate-new-buffer " *ghostel-test-bold-bright-palette*"))
+        (ghostel-bold-color 'bright))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--set-palette term (ghostel-test--bold-color-palette))
+            (ghostel--apply-bold-config term)
+            ;; SGR 91 selects palette 9 directly; bold must not shift it further.
+            (ghostel--write-input term "\e[1;91mBOLD\e[0m")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should (equal "#00ff00" (plist-get face :foreground)))
+              (should (eq 'bold (plist-get face :weight))))))
+      (kill-buffer buf))))
+
+;;; glyph adjustment
+
+;; These tests validate the `adjustGlyph' logic in src/Renderer.zig.
+;; Because `adjustGlyph' is called during the native redraw path, the
+;; tests create a terminal, write a character, mock Emacs' font-query
+;; functions, call `ghostel--redraw', and inspect the resulting
+;; `display' text properties.
+;;
+;; Glyph adjustment only fires when:
+;;   1. `font_info' is non-nil (a default font was detected).
+;;   2. The cell is a grapheme cluster OR its codepoint is above the
+;;      `adjustment_threshold' (the coverage probe value).
+;;   3. `selected-window' returns non-nil.
+;;
+;; In batch mode there is no display, so we mock:
+;;   - `face-attribute'   → returns a synthetic default-font object
+;;   - `fontp'            → returns t for our synthetic fonts
+;;   - `query-font'       → returns a fake font-info vector
+;;   - `font-at'          → returns a synthetic glyph-font object
+;;   - `font-get-glyphs'  → returns a fake glyph-metrics vector
+;;   - `selected-window'  → returns a dummy window value
+;;   - `char-after'       → returns controlled values for claim tests
+
+(defun ghostel-test--mock-font-p (font)
+  "Return non-nil if FONT is a mock created by `ghostel-test--make-font'."
+  (and (consp font) (eq (car font) 'mock-font)))
+
+(defun ghostel-test--make-font (metrics &optional glyphs)
+  "Make a mock font carrying METRICS and optionally GLYPHS.
+METRICS is a `query-font'-style vector.  GLYPHS is a vector of glyph
+info vectors as returned by `font-get-glyphs'."
+  (list 'mock-font :metrics metrics :glyphs glyphs))
+
+(defmacro ghostel-test--with-glyph-mocks (specs &rest body)
+  "Bind font functions to mock implementations described by SPECS, then eval BODY.
+SPECS is a plist with these keys:
+  :default-font  -- mock font (from `ghostel-test--make-font') returned by
+                    `face-attribute' for the default face; its :metrics is
+                    used by the `query-font' mock.
+  :glyph-font    -- mock font returned by `font-at'; its :metrics and :glyphs
+                    are used by `query-font' and `font-get-glyphs'."
+  (declare (indent 1))
+  `(let* ((--orig-face-attribute (symbol-function 'face-attribute))
+          (--orig-fontp (symbol-function 'fontp))
+          (--orig-font-at (symbol-function 'font-at))
+          (--orig-query-font (symbol-function 'query-font))
+          (--orig-font-get-glyphs (symbol-function 'font-get-glyphs)))
+     (cl-letf (,@(when-let ((df (plist-get specs :default-font)))
+                   `(((symbol-function 'face-attribute)
+                      (lambda (face attr &rest args)
+                        (if (and (eq face 'default) (eq attr :font))
+                            ,df
+                          (apply --orig-face-attribute face attr args))))
+                     ((symbol-function 'fontp)
+                      (lambda (font &rest args)
+                        (or (ghostel-test--mock-font-p font)
+                            (apply --orig-fontp font args))))
+                     ((symbol-function 'font-has-char-p)
+                      (lambda (_font _char) nil))
+                     ((symbol-function 'query-font)
+                      (lambda (font)
+                        (or (and (ghostel-test--mock-font-p font)
+                                 (plist-get (cdr font) :metrics))
+                            (funcall --orig-query-font font))))))
+               ,@(when-let ((gf (plist-get specs :glyph-font)))
+                   `(((symbol-function 'font-at)
+                      (lambda (pos &optional window)
+                        (if (>= pos (point-min))
+                            ,gf
+                          (funcall --orig-font-at pos window))))
+                     ((symbol-function 'font-get-glyphs)
+                      (lambda (font from to)
+                        (or (and (ghostel-test--mock-font-p font)
+                                 (plist-get (cdr font) :glyphs))
+                            (funcall --orig-font-get-glyphs font from to)))))))
+       ,@body)))
+
+;; Default cell: 10px wide x 20px tall (ascent 10 + descent 10)
+(defconst ghostel-test--default-font-info
+  ["MockDefault" "mock.ttf" 12 120 10 10 10 10 0])
+
+(ert-deftest ghostel-test-glyph-adjust-single-width-small ()
+  "An oversized single-width glyph gets a scale < 1.0 to fit the cell."
+  (let ((buf (generate-new-buffer " *ghostel-test-glyph-1*")))
+    (unwind-protect
+        (save-window-excursion
+          (with-selected-window (display-buffer buf)
+            (ghostel-mode)
+            (let* ((term (ghostel--new 5 80 1000))
+                   (ghostel--term term)
+                   (ghostel--term-rows 5)
+                   (inhibit-read-only t)
+                   (df (ghostel-test--make-font ghostel-test--default-font-info))
+                   ;; Glyph: 12px wide x 25px tall (larger than 10x20 cell)
+                   (glyph-font (ghostel-test--make-font
+                                ["MockGlyph" "mock.ttf" 12 120 12 13 12 12 0]
+                                [[0 1 ?\u0100 0 12 0 0 12 13 0]])))
+              ;; Write a character above the coverage threshold.
+              (ghostel--write-input term "\u0100")
+              (ghostel-test--with-glyph-mocks
+               (:default-font df
+                              :glyph-font glyph-font)
+               (ghostel--redraw term t)
+               (goto-char (point-min))
+               (let ((disp (get-text-property (point) 'display)))
+                 (should disp)
+                 (let ((scale (cadr (assq 'height disp))))
+                   (should scale)
+                   (should (< scale 1.0))))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-glyph-adjust-double-width-small ()
+  "A double-width glyph with narrower aspect than its slot gets min-width of 2."
+  (let ((buf (generate-new-buffer " *ghostel-test-glyph-2*")))
+    (unwind-protect
+        (save-window-excursion
+          (with-selected-window (display-buffer buf)
+            (ghostel-mode)
+            (let* ((term (ghostel--new 5 80 1000))
+                   (ghostel--term term)
+                   (ghostel--term-rows 5)
+                   (inhibit-read-only t)
+                   (df (ghostel-test--make-font ghostel-test--default-font-info))
+                   ;; Glyph: 18px wide x 20px tall; narrower aspect breaks claim loop
+                   (glyph-font (ghostel-test--make-font
+                                ["MockGlyph" "mock.ttf" 12 120 10 10 18 18 0]
+                                [[0 1 ?あ 0 18 0 0 10 10 0]])))
+              ;; Write a CJK character (double-width).
+              (ghostel--write-input term "あ")
+              (ghostel-test--with-glyph-mocks
+               (:default-font df
+                              :glyph-font glyph-font)
+               (ghostel--redraw term t)
+               (goto-char (point-min))
+               (let ((disp (get-text-property (point) 'display)))
+                 (should disp)
+                 (let ((min-w (cadr (assq 'min-width disp))))
+                   (should (equal min-w '(2)))))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-glyph-adjust-identical-metrics ()
+  "A glyph whose pixel size matches the cell perfectly is not adjusted."
+  (let ((buf (generate-new-buffer " *ghostel-test-glyph-3*")))
+    (unwind-protect
+        (save-window-excursion
+          (with-selected-window (display-buffer buf)
+            (ghostel-mode)
+            (let* ((term (ghostel--new 5 80 1000))
+                   (ghostel--term term)
+                   (ghostel--term-rows 5)
+                   (inhibit-read-only t)
+                   (df (ghostel-test--make-font ghostel-test--default-font-info))
+                   ;; Glyph: exactly 10px wide x 20px tall
+                   (glyph-font (ghostel-test--make-font
+                                ["MockGlyph" "mock.ttf" 12 120 10 10 10 10 0]
+                                [[0 1 ?\u0100 0 10 0 0 10 10 0]])))
+              (ghostel--write-input term "\u0100")
+              (ghostel-test--with-glyph-mocks
+               (:default-font df
+                              :glyph-font glyph-font)
+               (ghostel--redraw term t)
+               (goto-char (point-min))
+               (should-not (get-text-property (point) 'display))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-glyph-adjust-claims-following-space ()
+  "A wide glyph claims an adjacent space by giving it :width 0."
+  (let ((buf (generate-new-buffer " *ghostel-test-glyph-4*")))
+    (unwind-protect
+        (save-window-excursion
+          (with-selected-window (display-buffer buf)
+            (ghostel-mode)
+            (let* ((term (ghostel--new 5 80 1000))
+                   (ghostel--term term)
+                   (ghostel--term-rows 5)
+                   (inhibit-read-only t)
+                   (df (ghostel-test--make-font ghostel-test--default-font-info))
+                   ;; Glyph: 12px wide x 20px tall \u2014 wider than 10px cell but aspect
+                   ;; ratio 0.6 < 1.0, so one claimed space (2 cells) is sufficient.
+                   (glyph-font (ghostel-test--make-font
+                                ["MockGlyph" "mock.ttf" 12 120 10 10 12 12 0]
+                                [[0 1 ?\u0100 0 12 0 0 10 10 0]])))
+              ;; Write: [wide-glyph][space]
+              (ghostel--write-input term "\u0100 ")
+              (ghostel-test--with-glyph-mocks
+               (:default-font df
+                              :glyph-font glyph-font)
+               (ghostel--redraw term t)
+               (goto-char (point-min))
+               (let ((glyph-disp (get-text-property (point) 'display)))
+                 (should (equal (cadr (assq 'min-width glyph-disp)) '(2))))
+               (forward-char 1)
+               (should (equal (get-text-property (point) 'display) '(space :width 0)))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-glyph-adjust-claims-past-eol ()
+  "A wide glyph claims trailing empty space past the written text."
+  (let ((buf (generate-new-buffer " *ghostel-test-glyph-5*")))
+    (unwind-protect
+        (save-window-excursion
+          (with-selected-window (display-buffer buf)
+            (ghostel-mode)
+            (let* ((term (ghostel--new 5 80 1000))
+                   (ghostel--term term)
+                   (ghostel--term-rows 5)
+                   (inhibit-read-only t)
+                   (df (ghostel-test--make-font ghostel-test--default-font-info))
+                   ;; Glyph: 25px wide x 10px tall (needs >2 cells)
+                   (glyph-font (ghostel-test--make-font
+                                ["MockGlyph" "mock.ttf" 12 120 5 5 25 25 0]
+                                [[0 1 ?\u0100 0 25 0 0 5 5 0]])))
+              (ghostel--write-input term "\u0100")
+              (ghostel-test--with-glyph-mocks
+               (:default-font df
+                              :glyph-font glyph-font)
+               (ghostel--redraw term t)
+               (goto-char (point-min))
+               (let ((disp (get-text-property (point) 'display)))
+                 (should disp)
+                 (let ((min-w (cadr (assq 'min-width disp))))
+                   (should (>= (car min-w) 2))))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-glyph-adjust-last-column-no-claim ()
+  "When the glyph is at the last column, claiming loop never runs."
+  (let ((buf (generate-new-buffer " *ghostel-test-glyph-6*")))
+    (unwind-protect
+        (save-window-excursion
+          (with-selected-window (display-buffer buf)
+            (ghostel-mode)
+            (let* ((term (ghostel--new 5 10 1000)) ;; only 10 columns!
+                   (ghostel--term term)
+                   (ghostel--term-rows 5)
+                   (inhibit-read-only t)
+                   (df (ghostel-test--make-font ghostel-test--default-font-info))
+                   (glyph-font (ghostel-test--make-font
+                                ["MockGlyph" "mock.ttf" 12 120 5 5 15 15 0]
+                                [[0 1 ?\u0100 0 15 0 0 5 5 0]])))
+              (ghostel--write-input term "\e[1;10H")
+              (ghostel--write-input term "\u0100")
+              (ghostel-test--with-glyph-mocks
+               (:default-font df
+                              :glyph-font glyph-font)
+               (ghostel--redraw term t)
+               (goto-char (point-min))
+               (end-of-line)
+               ;; cell.col + char_width < cols is 9 + 1 < 10 = false
+               (let ((disp (get-text-property (1- (point)) 'display)))
+                 (should disp)
+                 (let ((min-w (cadr (assq 'min-width disp))))
+                   (should (equal min-w '(1)))))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-glyph-adjust-covered-by-main-font ()
+  "A codepoint below the coverage threshold is not registered in adjust_cells."
+  (let ((buf (generate-new-buffer " *ghostel-test-glyph-7*")))
+    (unwind-protect
+        (save-window-excursion
+          (with-selected-window (display-buffer buf)
+            (ghostel-mode)
+            (let* ((term (ghostel--new 5 80 1000))
+                   (ghostel--term term)
+                   (ghostel--term-rows 5)
+                   (inhibit-read-only t)
+                   (df (ghostel-test--make-font ghostel-test--default-font-info)))
+              (ghostel--write-input term "a")
+              ;; No :glyph-font — if the code incorrectly tried to adjust this
+              ;; glyph, `font-at' would be unbound and the test would fail.
+              (ghostel-test--with-glyph-mocks
+               (:default-font df)
+               (ghostel--redraw term t)
+               (goto-char (point-min))
+               (should (equal (char-after) ?a))
+               (should-not (get-text-property (point) 'display))))))
+      (kill-buffer buf))))
+
 
 (defconst ghostel-test--elisp-tests
   '(ghostel-test-focus-window-selection
@@ -15754,113 +16139,6 @@ slip past the unit tests."
   (ert-run-tests-batch-and-exit
    `(and "^ghostel-test-"
          (not (member ,@ghostel-test--elisp-tests)))))
-
-(defun ghostel-test--bold-color-palette ()
-  "Return a 256-entry hex palette string with index 1 red and 9 green.
-Used by bold-color tests so palette mapping is observable."
-  (concat "#000000"                                ;; 0
-          "#ff0000"                                ;; 1 (red)
-          (apply #'concat (make-list 7 "#000000")) ;; 2..8
-          "#00ff00"                                ;; 9 (bright red, distinguishable)
-          (apply #'concat (make-list 246 "#000000"))))
-
-(ert-deftest ghostel-test-bold-is-bright ()
-  "Test that bold text uses bright colors when ghostel-bold-color is 'bright."
-  (let ((buf (generate-new-buffer " *ghostel-test-bold*"))
-        (ghostel-bold-color 'bright))
-    (unwind-protect
-        (with-current-buffer buf
-          (let* ((term (ghostel--new 5 40 100))
-                 (inhibit-read-only t))
-            (ghostel--set-palette term (ghostel-test--bold-color-palette))
-            (ghostel--apply-bold-config term)
-
-            ;; Write bold red text
-            (ghostel--write-input term "\e[1;31mBOLD\e[0m")
-            (ghostel--redraw term)
-            (goto-char (point-min))
-            (let ((face (get-text-property (point) 'face)))
-              (should (equal "#00ff00" (plist-get face :foreground)))
-              (should (eq 'bold (plist-get face :weight))))))
-      (kill-buffer buf))))
-
-(ert-deftest ghostel-test-bold-fixed-color ()
-  "Test that bold text uses a fixed color when ghostel-bold-color is a hex string."
-  (let ((buf (generate-new-buffer " *ghostel-test-bold-fixed*"))
-        (ghostel-bold-color "#abcdef"))
-    (unwind-protect
-        (with-current-buffer buf
-          (let* ((term (ghostel--new 5 40 100))
-                 (inhibit-read-only t))
-            (ghostel--apply-bold-config term)
-
-            ;; Write bold text without color
-            (ghostel--write-input term "\e[1mBOLD\e[0m")
-            (ghostel--redraw term)
-            (goto-char (point-min))
-            (let ((face (get-text-property (point) 'face)))
-              (should (equal "#abcdef" (plist-get face :foreground)))
-              (should (eq 'bold (plist-get face :weight))))))
-      (kill-buffer buf))))
-
-(ert-deftest ghostel-test-bold-color-nil-leaves-fg-alone ()
-  "Test that bold text keeps its original color when `ghostel-bold-color' is nil."
-  (let ((buf (generate-new-buffer " *ghostel-test-bold-nil*"))
-        (ghostel-bold-color nil))
-    (unwind-protect
-        (with-current-buffer buf
-          (let* ((term (ghostel--new 5 40 100))
-                 (inhibit-read-only t))
-            (ghostel--set-palette term (ghostel-test--bold-color-palette))
-            (ghostel--apply-bold-config term)
-            ;; Bold red (palette 1) must stay red — no brightening to palette 9.
-            (ghostel--write-input term "\e[1;31mBOLD\e[0m")
-            (ghostel--redraw term)
-            (goto-char (point-min))
-            (let ((face (get-text-property (point) 'face)))
-              (should (equal "#ff0000" (plist-get face :foreground)))
-              (should (eq 'bold (plist-get face :weight))))))
-      (kill-buffer buf))))
-
-(ert-deftest ghostel-test-bold-fixed-also-brightens-palette ()
-  "Test that fixed-color bold still maps palette 0-7 to 8-15.
-The fixed color only applies to default-fg cells; palette colors take
-the bright variant just like in `bright' mode."
-  (let ((buf (generate-new-buffer " *ghostel-test-bold-fixed-palette*"))
-        (ghostel-bold-color "#abcdef"))
-    (unwind-protect
-        (with-current-buffer buf
-          (let* ((term (ghostel--new 5 40 100))
-                 (inhibit-read-only t))
-            (ghostel--set-palette term (ghostel-test--bold-color-palette))
-            (ghostel--apply-bold-config term)
-            ;; Bold red (palette 1) → bright red (palette 9 = #00ff00),
-            ;; NOT the fixed color #abcdef.
-            (ghostel--write-input term "\e[1;31mBOLD\e[0m")
-            (ghostel--redraw term)
-            (goto-char (point-min))
-            (let ((face (get-text-property (point) 'face)))
-              (should (equal "#00ff00" (plist-get face :foreground))))))
-      (kill-buffer buf))))
-
-(ert-deftest ghostel-test-bold-leaves-bright-palette-alone ()
-  "Test that bold on palette 8-15 is not re-mapped (no overflow into 16-23)."
-  (let ((buf (generate-new-buffer " *ghostel-test-bold-bright-palette*"))
-        (ghostel-bold-color 'bright))
-    (unwind-protect
-        (with-current-buffer buf
-          (let* ((term (ghostel--new 5 40 100))
-                 (inhibit-read-only t))
-            (ghostel--set-palette term (ghostel-test--bold-color-palette))
-            (ghostel--apply-bold-config term)
-            ;; SGR 91 selects palette 9 directly; bold must not shift it further.
-            (ghostel--write-input term "\e[1;91mBOLD\e[0m")
-            (ghostel--redraw term)
-            (goto-char (point-min))
-            (let ((face (get-text-property (point) 'face)))
-              (should (equal "#00ff00" (plist-get face :foreground)))
-              (should (eq 'bold (plist-get face :weight))))))
-      (kill-buffer buf))))
 
 (defun ghostel-test-run ()
   "Run all ghostel tests."
