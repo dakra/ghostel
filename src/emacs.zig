@@ -437,6 +437,7 @@ const interned_symbols = [_][:0]const u8{
     "ghostel--osc133-marker",
     "ghostel--osc51-eval",
     "ghostel--osc52-handle",
+    "ghostel--query-font-cached",
     "ghostel--rendered-font",
     "ghostel--set-buffer-face",
     "ghostel--set-cursor-style",

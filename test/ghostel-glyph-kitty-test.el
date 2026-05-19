@@ -87,6 +87,20 @@ SPECS is a plist with these keys:
 (defconst ghostel-test--default-font-info
   ["MockDefault" "mock.ttf" 12 120 10 10 10 10 0])
 
+(ert-deftest ghostel-test-query-font-cached-reuses-font-info ()
+  "`ghostel--query-font-cached' reuses metrics inside one redraw cache."
+  (let ((font (list 'mock-font))
+        (metrics ["Mock" "mock.ttf" 12 120 10 10 10 10 0])
+        (calls 0)
+        (ghostel--query-font-cache (make-hash-table :test 'eq)))
+    (cl-letf (((symbol-function 'query-font)
+               (lambda (_font)
+                 (cl-incf calls)
+                 metrics)))
+      (should (eq (ghostel--query-font-cached font) metrics))
+      (should (eq (ghostel--query-font-cached font) metrics))
+      (should (= calls 1)))))
+
 (ert-deftest ghostel-test-detect-cell-pixel-scale-standard-dpi ()
   "96 DPI display resolves to ~1.0 (no scaling)."
   (cl-letf (((symbol-function 'display-graphic-p) (lambda () t))

@@ -230,7 +230,7 @@ fn updateFontInfo(self: *Self, env: emacs.Env) bool {
     if (env.isNil(new_font)) {
         self.font_info = null;
     } else {
-        const default_font_info = env.f("query-font", .{new_font});
+        const default_font_info = env.f("ghostel--query-font-cached", .{new_font});
         // The value is a vector:
         // [ NAME FILENAME PIXEL-SIZE SIZE ASCENT DESCENT SPACE-WIDTH AVERAGE-WIDTH
         //   CAPABILITY ]
@@ -723,7 +723,7 @@ fn adjustGlyph(
     //       Most chars are covered by SOME font on the system.
     if (env.isNil(font)) return;
 
-    const font_info = env.f("query-font", .{font});
+    const font_info = env.f("ghostel--query-font-cached", .{font});
     const ascent = env.extractInteger(env.vecGet(font_info, 4));
     const descent = env.extractInteger(env.vecGet(font_info, 5));
     const height = ascent + descent;

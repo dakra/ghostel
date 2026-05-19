@@ -1494,6 +1494,9 @@ Matches Ghostty 1.2.0's `bold-color' configuration."
 (defvar-local ghostel--rendered-font nil
   "The font last used for rendering. Internally used by native code.")
 
+(defvar ghostel--query-font-cache nil
+  "Dynamically bound cache for `query-font' during one native redraw.")
+
 (defvar-local ghostel--input-mode 'semi-char
   "Current input mode.
 One of `semi-char', `char', `copy', `emacs', or `line'.  See
@@ -6157,6 +6160,14 @@ frame after idle to improve interactive responsiveness."
                             #'ghostel--delayed-redraw
                             (current-buffer))))))
 
+(defun ghostel--query-font-cached (font)
+  "Return `query-font' metrics for FONT, caching during native redraw.
+When `ghostel--query-font-cache' is nil, call `query-font' directly."
+  (if ghostel--query-font-cache
+      (or (gethash font ghostel--query-font-cache)
+          (puthash font (query-font font) ghostel--query-font-cache))
+    (query-font font)))
+
 (defconst ghostel--line-context-lines 3
   "Number of lines (including the target) used as a disambiguation key.
 `ghostel--line-key' captures this many consecutive lines starting at a
@@ -6482,10 +6493,14 @@ new output arrives."
                        (ghostel--line-mode-snapshot)))
                  (inhibit-read-only t)
                  (inhibit-redisplay t)
-                 (inhibit-modification-hooks t))
+                 (inhibit-modification-hooks t)
+                 ;; Raise GC threshold to defer GC during redraw.
+                 (gc-cons-threshold (min most-positive-fixnum
+                                         (* gc-cons-threshold 3))))
             (when render-win
-              (with-selected-window render-win
-                (ghostel--redraw ghostel--term ghostel-full-redraw)))
+              (let ((ghostel--query-font-cache (make-hash-table :test 'eq)))
+                (with-selected-window render-win
+                  (ghostel--redraw ghostel--term ghostel-full-redraw))))
             (let ((line-restored
                    (and line-snapshot
                         (ghostel--line-mode-restore line-snapshot))))
