@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-05-19
+
+### Added
+- Multi-terminal navigation commands: `ghostel-next`,
+  `ghostel-previous`, `ghostel-list-buffers`, plus project-scoped
+  variants `ghostel-project-next`, `ghostel-project-previous`, and
+  `ghostel-project-list-buffers` for cycling and picking among
+  ghostel buffers.  Project membership is configurable via the new
+  `ghostel-project-buffer-scope` defcustom.
+
+### Changed
+- Font metrics are now cached during redraw, avoiding repeated
+  font-attribute lookups per frame.
+
+### Internal
+- Tests run in parallel via per-file Make targets, with stamps
+  under `.build/tests/`.  Recommended invocation:
+  `make -j$(nproc) all` (or `-j$(sysctl -n hw.ncpu)` on macOS).
+  Wall-clock improvements on a warm cache: `test` 12.5s → 6.6s,
+  `test-native` 11.2s → 7.8s, `all` 10.4s → 8.4s.  New
+  `EMACSFLAGS` variable lets callers inject load paths.
+- The monolithic `ghostel-test.el` was split into 16
+  per-topic `ghostel-*-test.el` files plus a shared
+  `ghostel-test-helpers.el`.  Native-only tests carry
+  `:tags '(native)`; the runner selects via `(tag native)` /
+  `(not (tag native))` instead of a hand-maintained whitelist.
+- A review pass over the split fixed ~30 tests that were passing
+  for the wrong reasons (tautological assertions, mocks of the
+  function under test, references to symbols that no longer exist).
+
 ## [0.27.0] — 2026-05-18
 
 ### Added
