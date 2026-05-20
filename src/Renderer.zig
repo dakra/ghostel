@@ -239,12 +239,6 @@ fn probeCoverage(env: emacs.Env, font: emacs.Value) u32 {
 
 const ViewportSize = struct { cols: u16, rows: u16, cell_w: u32, cell_h: u32 };
 
-fn colorEql(a: ?gt.color.RGB, b: ?gt.color.RGB) bool {
-    if (a == null and b == null) return true;
-    if (a == null or b == null) return false;
-    return a.?.r == b.?.r and a.?.g == b.?.g and a.?.b == b.?.b;
-}
-
 /// Blend a foreground color toward a background color to produce a "dim" effect.
 /// Uses ~65% foreground / ~35% background weighting.
 fn dimColor(fg: gt.color.RGB, bg: gt.color.RGB) gt.color.RGB {
@@ -269,11 +263,7 @@ fn formatColor(color: gt.color.RGB, buf: *[7]u8) []const u8 {
 }
 
 /// Read the style for the current cell from the render state.
-fn readCellProps(
-    self: *Self,
-    cell: *const gt.RenderState.Cell,
-    key: CellPropKey,
-) ?CellProps {
+fn readCellProps(self: *Self, cell: *const gt.RenderState.Cell) ?CellProps {
     var props: CellProps = .{};
 
     const style: gt.Style = if (cell.raw.hasStyling()) cell.style else .{};
@@ -292,9 +282,8 @@ fn readCellProps(
     props.strikethrough = style.flags.strikethrough;
     props.inverse = style.flags.inverse;
     props.underline_color = style.underlineColor(&self.render_state.colors.palette);
-    props.hyperlink = key.hyperlink;
-    props.prompt = key.prompt;
-    props.input = key.input;
+    props.hyperlink = cell.raw.hyperlink;
+    props.semantic_content = cell.raw.semantic_content;
 
     return if (props.isDefault(
         self.render_state.colors.foreground,
@@ -391,12 +380,10 @@ fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps) !void {
         env.putTextProperty(start_val, end_val, "keymap", env.symbolValue("ghostel-link-map"));
     }
 
-    if (props.prompt) {
-        env.putTextProperty(start_val, end_val, "ghostel-prompt", env.t());
-    }
-
-    if (props.input) {
-        env.putTextProperty(start_val, end_val, "ghostel-input", env.t());
+    switch (props.semantic_content) {
+        .prompt => env.putTextProperty(start_val, end_val, "ghostel-prompt", env.t()),
+        .input => env.putTextProperty(start_val, end_val, "ghostel-input", env.t()),
+        else => {},
     }
 }
 
@@ -412,8 +399,7 @@ const CellProps = struct {
     strikethrough: bool = false,
     inverse: bool = false,
     hyperlink: bool = false,
-    prompt: bool = false,
-    input: bool = false,
+    semantic_content: gt.page.Cell.SemanticContent = .output,
 
     fn isDefault(self: CellProps, default_fg: gt.color.RGB, default_bg: gt.color.RGB) bool {
         return std.meta.eql(self, .{ .fg = default_fg, .bg = default_bg });
@@ -423,13 +409,20 @@ const CellProps = struct {
 /// Unique identifier that is cheaper to read and compare relative to `CellProps`.
 /// We read this first and if it differs from the previous cell, we read the full
 /// `CellProps`.
-const CellPropKey = struct {
+const CellPropKey = packed struct {
     // TODO: Style ID type is not exported from ghostty-vt for some reason.
     //       We should file an issue.
-    style_id: ?@FieldType(gt.page.Cell, "style_id"),
+    style_id: @FieldType(gt.page.Cell, "style_id"),
     hyperlink: bool,
-    prompt: bool,
-    input: bool,
+    semantic_content: gt.page.Cell.SemanticContent,
+
+    fn fromCell(cell: gt.page.Cell) CellPropKey {
+        return .{
+            .style_id = cell.style_id,
+            .hyperlink = cell.hyperlink,
+            .semantic_content = cell.semantic_content,
+        };
+    }
 };
 
 pub const RowContent = struct {
@@ -487,8 +480,6 @@ pub const RowContent = struct {
         var trim_byte_len: usize = 0;
         var trim_char_len: usize = 0;
 
-        const row_hints = readRowHints(row.raw);
-
         var current_prop_key: ?CellPropKey = null;
         var col: usize = 0;
         while (col < row.cells.len) : (col += 1) {
@@ -499,32 +490,12 @@ pub const RowContent = struct {
             // read and compare to detect style run breaks. Only when we detect a
             // break do we read the cell style, which is a more expensive operation
             // in such a tight loop.
-            var prop_key = CellPropKey{
-                .style_id = null,
-                .hyperlink = false,
-                .prompt = false,
-                .input = false,
-            };
-
-            if (row_hints.row_semantic_prompt != .none) {
-                const semantic_prompt = cell.raw.semantic_content;
-                prop_key.prompt = semantic_prompt == .prompt;
-                prop_key.input = semantic_prompt == .input;
-            }
-
-            if (row_hints.may_have_style) {
-                prop_key.style_id = cell.raw.style_id;
-            }
-
-            if (row_hints.may_have_hyperlink) {
-                prop_key.hyperlink = cell.raw.hyperlink;
-            }
-
-            if (!std.meta.eql(@as(?CellPropKey, prop_key), current_prop_key)) {
+            const prop_key = CellPropKey.fromCell(cell.raw);
+            if (prop_key != current_prop_key) {
                 try self.runs.append(RowContent.allocator, .{
                     .start_char = self.char_len,
                     .end_char = self.char_len,
-                    .props = readCellProps(&term.renderer, &cell, prop_key),
+                    .props = readCellProps(&term.renderer, &cell),
                 });
                 current_prop_key = prop_key;
             }
@@ -599,20 +570,6 @@ pub const RowContent = struct {
         }
     }
 };
-
-const RowHints = struct {
-    row_semantic_prompt: gt.page.Row.SemanticPrompt,
-    may_have_hyperlink: bool,
-    may_have_style: bool,
-};
-
-fn readRowHints(row: gt.page.Row) RowHints {
-    return .{
-        .row_semantic_prompt = row.semantic_prompt,
-        .may_have_hyperlink = row.hyperlink,
-        .may_have_style = row.styled,
-    };
-}
 
 fn adjustGlyphs(self: *Self, env: emacs.Env, row_start: i64, row_end: i64) void {
     if (self.row.adjust_cells.items.len == 0) return;
