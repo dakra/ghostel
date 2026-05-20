@@ -841,6 +841,41 @@ the bright variant just like in `bright' mode."
                    (should (equal min-w '(1)))))))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-glyph-scale-floor-clamps-scale ()
+  "A non-zero `ghostel-glyph-scale-floor' prevents shrinking below the floor.
+Sets floor to 1.0 and feeds a glyph larger than the cell.  With floor
+0.0 the glyph would be scaled to ~0.8; with floor 1.0 it stays at 1.0."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-glyph-floor*")))
+    (unwind-protect
+        (save-window-excursion
+          (with-selected-window (display-buffer buf)
+            (ghostel-mode)
+            (let* ((term (ghostel--new 5 80 1000))
+                   (ghostel--term term)
+                   (ghostel--term-rows 5)
+                   (ghostel-glyph-scale-floor 1.0)   ; clamp: never shrink
+                   (inhibit-read-only t)
+                   (df (ghostel-test--make-font ghostel-test--default-font-info))
+                   ;; Glyph: 12px wide x 25px tall (larger than 10x20 cell);
+                   ;; without floor this would scale to ~0.8.
+                   (glyph-font (ghostel-test--make-font
+                                ["MockGlyph" "mock.ttf" 12 120 12 13 12 12 0]
+                                [[0 1 ?\u0100 0 12 0 0 12 13 0]])))
+              (ghostel--write-input term "\u0100")
+              (ghostel-test--with-glyph-mocks
+               (:default-font df
+                              :glyph-font glyph-font)
+               (ghostel--redraw term t)
+               (goto-char (point-min))
+               (let ((disp (get-text-property (point) 'display)))
+                 (should disp)
+                 (let ((scale (cadr (assq 'height disp))))
+                   (should scale)
+                   ;; Floor 1.0 clamps the scale so the glyph is NOT shrunk.
+                   (should (>= scale 1.0))))))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-glyph-adjust-covered-by-main-font ()
   "A codepoint below the coverage threshold is not registered in adjust_cells."
   :tags '(native)

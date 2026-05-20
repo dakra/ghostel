@@ -278,6 +278,15 @@ or backing scale factor."
   :type '(choice (const :tag "Auto-detect from display DPI" auto)
                  (number :tag "Explicit ratio")))
 
+(defcustom ghostel-glyph-scale-floor 0.0
+  "Minimum scale for glyphs whose font metrics don't fit the cell.
+0.0 (default) preserves strict grid alignment.  1.0 disables
+shrinking entirely so CJK and other fallback glyphs render at
+natural size, potentially making rows slightly taller and cells slightly wider."
+  :type '(float 0.0 1.0)
+  :local t
+  :group 'ghostel)
+
 (defcustom ghostel-kitty-graphics-storage-limit (* 320 1024 1024)  ; 320 MiB
   "Kitty graphics image storage cap, in bytes, per terminal.
 
@@ -4185,8 +4194,8 @@ mis-rendering is visible as an error instead of silent."
             (list src-x src-y src-w src-h pixel-w pixel-h))))
 
 (defun ghostel--kitty-apply-row-slice (row cw ch img
-                                            vp-col-clamped visible-cols
-                                            slice-x slice-w)
+                                           vp-col-clamped visible-cols
+                                           slice-x slice-w)
   "Apply one row of the sliced image at point.
 ROW is the slice index (0-based) into the image's grid of cells.
 CW / CH are the cell pixel dimensions.  IMG is the Emacs image object.
@@ -5755,69 +5764,69 @@ Returns nil on failure."
              (tinfo (and (ghostel--ssh-install-enabled-p)
                          (ghostel--push-remote-terminfo remote-prefix)))
              (base (pcase shell-type
-          ;; Bash: --rcfile replaces normal rc loading, so we source
-          ;; startup files explicitly before the integration.
-          ('bash
-           (let* ((temp (make-temp-file
-                         (concat remote-prefix "ghostel-") nil ".bash"))
-                  (path (file-remote-p temp 'localname)))
-             (ghostel--write-remote-file temp
-                                         (concat
-                                          "# Source standard startup files\n"
-                                          "if shopt -q login_shell 2>/dev/null; then\n"
-                                          "  [ -r /etc/profile ] && . /etc/profile\n"
-                                          "  for __gf in ~/.bash_profile ~/.bash_login ~/.profile; do\n"
-                                          "    [ -r \"$__gf\" ] && { . \"$__gf\"; break; }; done\n"
-                                          "  unset __gf\n"
-                                          "else\n"
-                                          "  for __gf in /etc/bash.bashrc /etc/bash/bashrc /etc/bashrc; do\n"
-                                          "    [ -r \"$__gf\" ] && { . \"$__gf\"; break; }; done\n"
-                                          "  unset __gf\n"
-                                          "  [ -r ~/.bashrc ] && . ~/.bashrc\n"
-                                          "fi\n"
-                                          integration))
-             (list :env nil :args (list "--rcfile" path)
-                   :stty ghostel--default-stty :temp-files (list temp))))
-          ;; Zsh: ZDOTDIR replaces .zshenv search, so we restore it,
-          ;; source the user's .zshenv, then load integration.
-          ('zsh
-           (let* ((temp-dir (make-temp-file
-                             (concat remote-prefix "ghostel-") t))
-                  (temp-zshenv (concat (file-name-as-directory temp-dir)
-                                       ".zshenv"))
-                  (remote-dir (file-remote-p temp-dir 'localname)))
-             (ghostel--write-remote-file temp-zshenv
-                                         (concat
-                                          "if [[ -n \"${GHOSTEL_ZSH_ZDOTDIR+X}\" ]]; then\n"
-                                          "    'builtin' 'export' ZDOTDIR=\"$GHOSTEL_ZSH_ZDOTDIR\"\n"
-                                          "    'builtin' 'unset' 'GHOSTEL_ZSH_ZDOTDIR'\n"
-                                          "else\n"
-                                          "    'builtin' 'unset' 'ZDOTDIR'\n"
-                                          "fi\n"
-                                          "{\n"
-                                          "    'builtin' 'typeset' _ghostel_file="
-                                          "\"${ZDOTDIR-$HOME}/.zshenv\"\n"
-                                          "    [[ ! -r \"$_ghostel_file\" ]] || "
-                                          "'builtin' 'source' '--' \"$_ghostel_file\"\n"
-                                          "} always {\n"
-                                          "    if [[ -o 'interactive' ]]; then\n"
-                                          integration "\n"
-                                          "    fi\n"
-                                          "    'builtin' 'unset' '_ghostel_file'\n"
-                                          "}\n"))
-             (list :env (list (format "ZDOTDIR=%s" remote-dir))
-                   :args nil :stty ghostel--default-stty
-                   :temp-dirs (list temp-dir))))
-          ;; Fish: -C runs after config, so just source the script.
-          ('fish
-           (let* ((temp (make-temp-file
-                         (concat remote-prefix "ghostel-") nil ".fish"))
-                  (path (file-remote-p temp 'localname)))
-             (ghostel--write-remote-file temp integration)
-             (list :env nil
-                   :args (list "-C" (format "source %s"
-                                            (shell-quote-argument path)))
-                   :stty ghostel--default-stty :temp-files (list temp)))))))
+					 ;; Bash: --rcfile replaces normal rc loading, so we source
+					 ;; startup files explicitly before the integration.
+					 ('bash
+					  (let* ((temp (make-temp-file
+									(concat remote-prefix "ghostel-") nil ".bash"))
+							 (path (file-remote-p temp 'localname)))
+						(ghostel--write-remote-file temp
+													(concat
+													 "# Source standard startup files\n"
+													 "if shopt -q login_shell 2>/dev/null; then\n"
+													 "  [ -r /etc/profile ] && . /etc/profile\n"
+													 "  for __gf in ~/.bash_profile ~/.bash_login ~/.profile; do\n"
+													 "    [ -r \"$__gf\" ] && { . \"$__gf\"; break; }; done\n"
+													 "  unset __gf\n"
+													 "else\n"
+													 "  for __gf in /etc/bash.bashrc /etc/bash/bashrc /etc/bashrc; do\n"
+													 "    [ -r \"$__gf\" ] && { . \"$__gf\"; break; }; done\n"
+													 "  unset __gf\n"
+													 "  [ -r ~/.bashrc ] && . ~/.bashrc\n"
+													 "fi\n"
+													 integration))
+						(list :env nil :args (list "--rcfile" path)
+							  :stty ghostel--default-stty :temp-files (list temp))))
+					 ;; Zsh: ZDOTDIR replaces .zshenv search, so we restore it,
+					 ;; source the user's .zshenv, then load integration.
+					 ('zsh
+					  (let* ((temp-dir (make-temp-file
+										(concat remote-prefix "ghostel-") t))
+							 (temp-zshenv (concat (file-name-as-directory temp-dir)
+												  ".zshenv"))
+							 (remote-dir (file-remote-p temp-dir 'localname)))
+						(ghostel--write-remote-file temp-zshenv
+													(concat
+													 "if [[ -n \"${GHOSTEL_ZSH_ZDOTDIR+X}\" ]]; then\n"
+													 "    'builtin' 'export' ZDOTDIR=\"$GHOSTEL_ZSH_ZDOTDIR\"\n"
+													 "    'builtin' 'unset' 'GHOSTEL_ZSH_ZDOTDIR'\n"
+													 "else\n"
+													 "    'builtin' 'unset' 'ZDOTDIR'\n"
+													 "fi\n"
+													 "{\n"
+													 "    'builtin' 'typeset' _ghostel_file="
+													 "\"${ZDOTDIR-$HOME}/.zshenv\"\n"
+													 "    [[ ! -r \"$_ghostel_file\" ]] || "
+													 "'builtin' 'source' '--' \"$_ghostel_file\"\n"
+													 "} always {\n"
+													 "    if [[ -o 'interactive' ]]; then\n"
+													 integration "\n"
+													 "    fi\n"
+													 "    'builtin' 'unset' '_ghostel_file'\n"
+													 "}\n"))
+						(list :env (list (format "ZDOTDIR=%s" remote-dir))
+							  :args nil :stty ghostel--default-stty
+							  :temp-dirs (list temp-dir))))
+					 ;; Fish: -C runs after config, so just source the script.
+					 ('fish
+					  (let* ((temp (make-temp-file
+									(concat remote-prefix "ghostel-") nil ".fish"))
+							 (path (file-remote-p temp 'localname)))
+						(ghostel--write-remote-file temp integration)
+						(list :env nil
+							  :args (list "-C" (format "source %s"
+													   (shell-quote-argument path)))
+							  :stty ghostel--default-stty :temp-files (list temp)))))))
         (if tinfo
             (ghostel--merge-integration-plists base tinfo)
           base))

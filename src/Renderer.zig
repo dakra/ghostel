@@ -30,7 +30,8 @@ pending_resize: ?ViewportSize = null,
 /// Reusable instance of RowContent to reduce allocations
 row: RowContent = .{},
 
-/// Cached information about font metrics, used for glyph scaling
+/// Cached font metrics and rendering parameters that affect glyph layout.
+/// When any field changes between redraws the viewport is fully invalidated.
 font_info: ?FontInfo = null,
 
 /// Bold text coloring configuration.
@@ -40,6 +41,7 @@ const FontInfo = struct {
     width: i64,
     height: i64,
     coverage: u32,
+    glyph_scale_floor: f64,
 };
 
 pub fn init(term: *gt.Terminal) !Self {
@@ -106,8 +108,9 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool
 
     const scrollbar = term.terminal.screens.active.pages.scrollbar();
 
-    // If the font changed, the font metrics are no longer valid, so we rebuild.
-    const font_changed = self.updateFontInfo(env);
+    // If the font metrics or related parameters changed, the cached metrics
+    // are no longer valid, so we rebuild.
+    const font_info_changed = self.updateFontInfo(env);
 
     // We always reset scrollback if the number of columns changed
     const cols_changed = if (self.pending_resize) |rz| rz.cols != self.size.cols else false;
@@ -123,14 +126,17 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool
     // cap and do not know how much we missed.
     const scrollbar_hit_cap = had_scrollback and scrollbar.offset == 0;
 
-    var force_full = false;
-    if (force_full_arg or font_changed or cols_changed or scrollbar_reset or scrollbar_hit_cap) {
+    const force_full =
+        force_full_arg or
+        font_info_changed or
+        cols_changed or
+        scrollbar_reset or
+        scrollbar_hit_cap;
+    if (force_full) {
         env.eraseBuffer();
         // Commit any pending resize since we're doing a rebuild anyway.
         try self.commitResize(&term.terminal);
-
         self.rows_in_buffer = 0;
-        force_full = true;
     }
 
     // Unpark the viewport. When we have scrollback the viewport is sitting at
@@ -194,10 +200,26 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool
     term.terminal.scrollViewport(.{ .delta = -1 });
 }
 
+/// Read the default font and rendering parameters from Emacs, compare
+/// against the cached values, and signal whether a full invalidation is
+/// required.
 fn updateFontInfo(self: *Self, env: emacs.Env) bool {
     const new_font = getDefaultFont(env);
     const current_font = env.symbolValue("ghostel--rendered-font");
-    if (env.eq(new_font, current_font)) return false;
+
+    const raw_floor = env.symbolValue("ghostel-glyph-scale-floor");
+    const floor = std.math.clamp(env.asFloat(raw_floor, 0.0), 0.0, 1.0);
+
+    // Fast path: nothing changed since last redraw.
+    if (env.eq(new_font, current_font)) {
+        if (self.font_info) |cached| {
+            const old_bits: u64 = @bitCast(cached.glyph_scale_floor);
+            const new_bits: u64 = @bitCast(floor);
+            if (old_bits == new_bits) return false;
+        } else {
+            return false; // no font before, no font now
+        }
+    }
 
     _ = env.set("ghostel--rendered-font", new_font);
 
@@ -215,6 +237,7 @@ fn updateFontInfo(self: *Self, env: emacs.Env) bool {
             .width = env.extractInteger(env.vecGet(default_font_info, 6)),
             .height = cell_ascent + cell_descent,
             .coverage = probeCoverage(env, new_font),
+            .glyph_scale_floor = floor,
         };
     }
     return true;
@@ -697,7 +720,8 @@ fn adjustGlyph(
     // We add a fudge factor of +1 to the denominator to ensure fit
     const scale_width = @as(f64, @floatFromInt(slot_width)) / @as(f64, @floatFromInt(width + 1));
     const scale_height = @as(f64, @floatFromInt(default_font_info.height)) / @as(f64, @floatFromInt(height + 1));
-    const scale = @min(scale_width, scale_height);
+    const computed_scale = @min(scale_width, scale_height);
+    const scale = @max(computed_scale, default_font_info.glyph_scale_floor);
 
     const min_width_spec = env.list(.{ s.@"min-width", env.list(.{char_width}) });
     const scale_spec = env.list(.{ s.height, scale });

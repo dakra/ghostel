@@ -117,6 +117,14 @@ pub const Env = struct {
         return self.raw.extract_float.?(self.raw, val);
     }
 
+    /// Extract val as f64, coercing Emacs integers to floats.
+    /// Returns default if val is not a number, avoiding a wrong-type-argument
+    /// signal that would corrupt the env's non-local exit state.
+    pub fn asFloat(self: Env, val: Value, default: f64) f64 {
+        if (self.isNil(self.f("numberp", .{val}))) return default;
+        return self.extractFloat(self.f("float", .{val}));
+    }
+
     pub fn extractString(self: Env, val: Value, buf: []u8) ?[]const u8 {
         var len: isize = @intCast(buf.len);
         if (self.raw.copy_string_contents.?(self.raw, val, buf.ptr, &len)) {
@@ -414,6 +422,7 @@ const interned_symbols = [_][:0]const u8{
     "error",
     "face",
     "face-attribute",
+    "float",
     "font-at",
     "font-get-glyphs",
     "font-has-char-p",
@@ -439,6 +448,7 @@ const interned_symbols = [_][:0]const u8{
     "ghostel--osc52-handle",
     "ghostel--query-font-cached",
     "ghostel--rendered-font",
+    "ghostel-glyph-scale-floor",
     "ghostel--set-buffer-face",
     "ghostel--set-cursor-style",
     "ghostel--set-title",
@@ -466,6 +476,7 @@ const interned_symbols = [_][:0]const u8{
     "mouse-face",
     "move-to-column",
     "nil",
+    "numberp",
     "point",
     "point-max",
     "point-min",
