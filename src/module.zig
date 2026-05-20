@@ -327,6 +327,11 @@ fn fnWriteInput(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*
     // chunking (that's how the process filter already works), so no
     // scratch buffer, no allocation, no truncation fallback.
     //
+    // Skip normalization on the alternate screen.  Apps that use the
+    // alt screen (tmux, vim, less) send VT-correct sequences where bare
+    // \n is LF (cursor down, column preserved); normalizing to \r\n
+    // breaks their layout.
+    //
     // `prev_was_cr` is seeded from `term.last_input_was_cr` so a CRLF
     // pair split across two writes — chunk A ending with \r, chunk B
     // starting with \n — is not mis-normalized into \r\r\n.  The final
@@ -336,22 +341,27 @@ fn fnWriteInput(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*
     // All standard OSC sequences (4, 7, 9, 10, 11, 52, 133, 777) are
     // intercepted by `GhostelHandler` inside the stream itself — no
     // post-write byte scan is needed for them.
-    var seg_start: usize = 0;
-    var prev_was_cr: bool = term.last_input_was_cr;
-    for (raw, 0..) |ch, i| {
-        if (ch == '\n' and !prev_was_cr) {
-            if (i > seg_start) term.vtWrite(raw[seg_start..i]);
-            term.vtWrite("\r\n");
-            seg_start = i + 1;
-            prev_was_cr = false;
-        } else {
-            prev_was_cr = (ch == '\r');
+    if (term.terminal.screens.active_key == .alternate) {
+        term.vtWrite(raw);
+        if (raw.len > 0) term.last_input_was_cr = raw[raw.len - 1] == '\r';
+    } else {
+        var seg_start: usize = 0;
+        var prev_was_cr: bool = term.last_input_was_cr;
+        for (raw, 0..) |ch, i| {
+            if (ch == '\n' and !prev_was_cr) {
+                if (i > seg_start) term.vtWrite(raw[seg_start..i]);
+                term.vtWrite("\r\n");
+                seg_start = i + 1;
+                prev_was_cr = false;
+            } else {
+                prev_was_cr = (ch == '\r');
+            }
         }
+        if (seg_start < raw.len) {
+            term.vtWrite(raw[seg_start..]);
+        }
+        term.last_input_was_cr = prev_was_cr;
     }
-    if (seg_start < raw.len) {
-        term.vtWrite(raw[seg_start..]);
-    }
-    term.last_input_was_cr = prev_was_cr;
 
     // OSC 51;E (ghostel's elisp-eval extension) is not a standard OSC,
     // so ghostty's parser drops it without firing an action.  Scan the

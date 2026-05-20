@@ -31,6 +31,55 @@
       (should (string-match-p "hello world" state))  ; row0 has full first line
       (should (string-match-p "line2" state)))))      ; row1 has line2
 
+(ert-deftest ghostel-test-write-input-normalizes-bare-lf-on-primary ()
+  "On the primary screen, bare LF is normalized to CRLF.
+Emacs PTYs lack ONLCR, so a bare \\n from subprocess output needs an
+inserted \\r to land at column 0 of the next row."
+  :tags '(native)
+  (let ((term (ghostel--new 25 80 1000)))
+    (ghostel--write-input term "abc\ndef")
+    ;; Inserted \r resets the column; "def" lands at (3 . 1), not (6 . 1).
+    (should (equal '(3 . 1) (ghostel-test--cursor term)))))
+
+(ert-deftest ghostel-test-write-input-preserves-bare-lf-on-alt-screen-1049 ()
+  "On the alternate screen (DECSET 1049), bare LF preserves the column.
+Apps that target the alt screen (tmux, vim, less) emit VT-correct LF
+that moves the cursor down with the column preserved; prepending CR
+would corrupt their layout, e.g. tmux pane border erasure misfires."
+  :tags '(native)
+  (let ((term (ghostel--new 25 80 1000)))
+    (ghostel--write-input term "\e[?1049h")
+    (ghostel--write-input term "abc\ndef")
+    ;; Bare LF: column preserved, so "def" lands at (6 . 1).
+    (should (equal '(6 . 1) (ghostel-test--cursor term)))))
+
+(ert-deftest ghostel-test-write-input-preserves-bare-lf-on-alt-screen-1047 ()
+  "Alt-screen detection covers DECSET 1047 as well as 1049."
+  :tags '(native)
+  (let ((term (ghostel--new 25 80 1000)))
+    (ghostel--write-input term "\e[?1047h")
+    (ghostel--write-input term "abc\ndef")
+    (should (equal '(6 . 1) (ghostel-test--cursor term)))))
+
+(ert-deftest ghostel-test-write-input-preserves-bare-lf-on-alt-screen-47 ()
+  "Alt-screen detection covers the legacy DECSET 47 mode.
+Detection is via `screens.active_key', so the three alt-screen entry
+modes (47 / 1047 / 1049) are handled uniformly."
+  :tags '(native)
+  (let ((term (ghostel--new 25 80 1000)))
+    (ghostel--write-input term "\e[?47h")
+    (ghostel--write-input term "abc\ndef")
+    (should (equal '(6 . 1) (ghostel-test--cursor term)))))
+
+(ert-deftest ghostel-test-write-input-renormalizes-after-leaving-alt-screen ()
+  "Leaving the alternate screen restores CRLF normalization on primary."
+  :tags '(native)
+  (let ((term (ghostel--new 25 80 1000)))
+    (ghostel--write-input term "\e[?1049h")
+    (ghostel--write-input term "\e[?1049l") ; back to primary
+    (ghostel--write-input term "abc\ndef")
+    (should (equal '(3 . 1) (ghostel-test--cursor term)))))
+
 (ert-deftest ghostel-test-backspace ()
   "Test backspace (BS) processing by the terminal."
   :tags '(native)
