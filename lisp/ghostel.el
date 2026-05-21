@@ -989,6 +989,8 @@ Used when `cursor-in-non-selected-windows' resolves to box.")
 (declare-function ghostel--module-version "ghostel-module")
 (declare-function ghostel--mouse-event "ghostel-module")
 (declare-function ghostel--new "ghostel-module")
+(declare-function ghostel--new-anchored "ghostel-module"
+                  (start end rows cols &optional max-scrollback))
 (declare-function ghostel--redraw "ghostel-module" (term &optional full))
 (declare-function ghostel--set-bold-config "ghostel-module")
 (declare-function ghostel--set-default-colors "ghostel-module")
@@ -1003,6 +1005,60 @@ Used when `cursor-in-non-selected-windows' resolves to box.")
 (declare-function spinner-stop "spinner")
 
 
+;;; Anchored terminals
+
+;; Anchored terminals live between two buffer markers and let the renderer
+;; share a buffer with arbitrary surrounding text — used by `ghostel-comint'
+;; for per-command output rendering, and available to any caller that wants
+;; ghostel rendering inside a region.
+;;
+;; Lifecycle: `ghostel--new-anchored' (in module.zig) creates the markers and
+;; calls back into `ghostel--register-anchored-terminal' below to stash them
+;; in this hash table.  The Renderer looks up the pair on every redraw to
+;; bound its destructive operations.  When the caller is done with a terminal
+;; it removes the entry (`remhash') and the markers become garbage; the text
+;; the terminal produced stays in the buffer as inert content.
+
+(defvar-local ghostel--anchored-terminals nil
+  "Hash table of anchored terminals living in this buffer.
+Keys are terminal user-pointer values returned by `ghostel--new-anchored'.
+Values are `(START-MARKER . END-MARKER)' cons cells delimiting each
+terminal's writable region.  Nil in regular ghostel buffers (the
+renderer treats `point-min'/`point-max' as the region instead).
+
+A buffer may host multiple anchored terminals simultaneously; each
+entry is independent.")
+
+(defun ghostel--make-anchored-start-marker (pos)
+  "Build the start-marker of an anchored terminal region at POS.
+Insertion-type nil: the marker stays put when the renderer inserts
+content at its position so the region grows downward, not upward."
+  (let ((m (make-marker)))
+    (set-marker m pos)
+    (set-marker-insertion-type m nil)
+    m))
+
+(defun ghostel--make-anchored-end-marker (pos)
+  "Build the end-marker of an anchored terminal region at POS.
+Insertion-type t: the marker advances when the renderer inserts
+content at its position, so the writable region grows to include
+freshly-rendered rows."
+  (let ((m (make-marker)))
+    (set-marker m pos)
+    (set-marker-insertion-type m t)
+    m))
+
+(defun ghostel--register-anchored-terminal (term-val markers)
+  "Record that TERM-VAL owns the (START . END) MARKERS in this buffer.
+Lazy-initializes `ghostel--anchored-terminals' on first call.  Called
+from `ghostel--new-anchored' immediately after the user-pointer is
+allocated.  Subsequent redraws find the marker pair via `gethash'."
+  (unless (hash-table-p ghostel--anchored-terminals)
+    (setq ghostel--anchored-terminals (make-hash-table :test 'eq)))
+  (puthash term-val markers ghostel--anchored-terminals)
+  markers)
+
+
 ;;; Automatic download and compilation of native module
 
 (defconst ghostel--minimum-module-version "0.28.0"
