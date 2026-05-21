@@ -4,6 +4,7 @@
 /// It exports emacs_module_init (the C entry point Emacs calls on load)
 /// and registers all Elisp-callable functions.
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const emacs = @import("emacs.zig");
 const GhostelTerm = @import("terminal.zig");
@@ -15,11 +16,13 @@ const pty = @import("pty.zig");
 
 const c = emacs.c;
 
-/// Allocator for all module-owned allocations (string extraction, formatting
-/// scratch buffers, and Terminal instances).  c_allocator is the right choice
-/// for a C-ABI .dylib: it wraps libc malloc/free, which is stable across the
-/// Emacs ↔ module boundary and appropriate for long-lived objects.
-const alloc: Allocator = std.heap.c_allocator;
+/// In debug builds, all allocations go through DebugAllocator for corruption
+/// detection (double-free, use-after-free, overflow canaries).  An atexit
+/// handler calls deinit() on process exit, which fires on both Linux and macOS
+/// when Emacs calls exit().  Reports may include false positives if Emacs has
+/// not finalized all user-ptrs (terminals) before exit().
+var debug_alloc: std.heap.DebugAllocator(.{}) = .init;
+var alloc: Allocator = std.heap.c_allocator;
 
 /// Module version — see src/version.zig.  Keep in sync with ghostel.el
 /// and build.zig.zon.
@@ -34,6 +37,8 @@ export fn emacs_module_init(runtime: *c.struct_emacs_runtime) callconv(.c) c_int
     if (runtime.size < @sizeOf(c.struct_emacs_runtime)) {
         return 1; // ABI mismatch
     }
+
+    if (builtin.mode == .Debug) alloc = debug_alloc.allocator();
 
     const raw_env = runtime.get_environment.?(runtime);
     const env = emacs.Env.init(raw_env);
@@ -152,8 +157,18 @@ export fn emacs_module_init(runtime: *c.struct_emacs_runtime) callconv(.c) c_int
     // Install system callbacks (PNG decoder for kitty graphics, logging).
     sys.init();
 
+    if (builtin.mode == .Debug) _ = atexit(&debugAtExit);
+
     env.provide("ghostel-module");
     return 0;
+}
+
+extern fn atexit(func: *const fn () callconv(.c) void) c_int;
+
+fn debugAtExit() callconv(.c) void {
+    if (debug_alloc.deinit() == .leak) {
+        std.debug.print("ghostel: memory leak detected at exit\n", .{});
+    }
 }
 
 // ---------------------------------------------------------------------------
