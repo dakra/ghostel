@@ -40,6 +40,15 @@ renderer: Renderer,
 /// Cached Emacs env pointer — only valid during a callback from Emacs.
 env: ?emacs.Env = null,
 
+/// When true (the default), the renderer treats the buffer's entire
+/// extent as its writable region and uses the `erase-buffer' fast path
+/// on full redraws.  When false, the renderer looks up a buffer-local
+/// marker pair in `ghostel--anchored-terminals' keyed by the terminal
+/// user-pointer Value, and confines all destructive operations to that
+/// region — surrounding buffer text is never touched.  This is what
+/// powers `ghostel--new-anchored' / `ghostel-comint-mode'.
+markers_span_buffer: bool = true,
+
 /// Create a new terminal with the given dimensions and scrollback.
 pub fn init(alloc: Allocator, cols: u16, rows: u16, max_scrollback: usize, effects: gt.TerminalStream.Handler.Effects) !*Self {
     if (cols == 0 or rows == 0) return error.InvalidSize;

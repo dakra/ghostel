@@ -8,7 +8,7 @@ MELPAZOID_DIR  ?= $(XDG_CACHE_HOME)/melpazoid
 EVIL_DIR       ?= $(XDG_CACHE_HOME)/evil
 
 ELC := lisp/ghostel.elc lisp/ghostel-debug.elc lisp/ghostel-compile.elc \
-       lisp/ghostel-eshell.elc \
+       lisp/ghostel-comint.elc lisp/ghostel-eshell.elc \
        extensions/evil-ghostel/evil-ghostel.elc
 
 # Native module artifact (kept in sync with `clean').  Listed as a real
@@ -112,7 +112,7 @@ checkdoc:
 		              (checkdoc-proper-noun-list nil) \
 		              (checkdoc-verb-check-experimental-flag nil) \
 		              (ok t)) \
-		  (dolist (f (append '(\"lisp/ghostel.el\" \"lisp/ghostel-debug.el\" \"lisp/ghostel-compile.el\" \"lisp/ghostel-eshell.el\" \"extensions/evil-ghostel/evil-ghostel.el\" \"test/ghostel-test-helpers.el\") \
+		  (dolist (f (append '(\"lisp/ghostel.el\" \"lisp/ghostel-debug.el\" \"lisp/ghostel-compile.el\" \"lisp/ghostel-comint.el\" \"lisp/ghostel-eshell.el\" \"extensions/evil-ghostel/evil-ghostel.el\" \"test/ghostel-test-helpers.el\") \
 		                     (file-expand-wildcards \"test/ghostel-*-test.el\"))) \
 		    (ignore-errors (kill-buffer \"*Warnings*\")) \
 		    (let ((inhibit-message t)) \
@@ -130,7 +130,7 @@ checkdoc:
 docquotes:
 	$(EMACS) --batch $(EMACSFLAGS) -Q \
 		--eval "(let ((ok t)) \
-		  (dolist (f '(\"lisp/ghostel.el\" \"lisp/ghostel-debug.el\" \"lisp/ghostel-compile.el\" \"lisp/ghostel-eshell.el\" \"extensions/evil-ghostel/evil-ghostel.el\")) \
+		  (dolist (f '(\"lisp/ghostel.el\" \"lisp/ghostel-debug.el\" \"lisp/ghostel-compile.el\" \"lisp/ghostel-comint.el\" \"lisp/ghostel-eshell.el\" \"extensions/evil-ghostel/evil-ghostel.el\")) \
 		    (with-temp-buffer \
 		      (insert-file-contents f) \
 		      (setq case-fold-search nil) \
