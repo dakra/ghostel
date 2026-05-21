@@ -4,6 +4,7 @@
 /// It exports emacs_module_init (the C entry point Emacs calls on load)
 /// and registers all Elisp-callable functions.
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const emacs = @import("emacs.zig");
 const GhostelTerm = @import("terminal.zig");
 const gt = @import("ghostty-vt");
@@ -13,6 +14,12 @@ const sys = @import("sys.zig");
 const pty = @import("pty.zig");
 
 const c = emacs.c;
+
+/// Allocator for all module-owned allocations (string extraction, formatting
+/// scratch buffers, and Terminal instances).  c_allocator is the right choice
+/// for a C-ABI .dylib: it wraps libc malloc/free, which is stable across the
+/// Emacs ↔ module boundary and appropriate for long-lived objects.
+const alloc: Allocator = std.heap.c_allocator;
 
 /// Module version — see src/version.zig.  Keep in sync with ghostel.el
 /// and build.zig.zon.
@@ -205,7 +212,7 @@ fn fnNew(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*any
     effects.title_changed = &titleChangedCallback;
     effects.size = &sizeCallback;
 
-    const term = GhostelTerm.init(cols, rows, max_scrollback, effects) catch {
+    const term = GhostelTerm.init(alloc, cols, rows, max_scrollback, effects) catch {
         env.signalError("failed to create terminal", .{});
         return env.nil();
     };
@@ -239,10 +246,10 @@ fn fnWriteInput(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*
     // Extract string data — try stack buffer first, fall back to alloc
     var stack_buf: [65536]u8 = undefined;
     var heap_buf: ?[]const u8 = null;
-    defer if (heap_buf) |hb| std.heap.c_allocator.free(hb);
+    defer if (heap_buf) |hb| alloc.free(hb);
 
     const data = env.extractString(args[1], &stack_buf) orelse blk: {
-        heap_buf = env.extractStringAlloc(args[1], std.heap.c_allocator);
+        heap_buf = env.extractStringAlloc(args[1], alloc);
         break :blk heap_buf;
     };
 
@@ -733,7 +740,7 @@ fn fnCopyAllText(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?
     };
 
     var formatter = gt.formatter.TerminalFormatter.init(&term.terminal, options);
-    var writer = std.io.Writer.Allocating.init(std.heap.c_allocator);
+    var writer = std.io.Writer.Allocating.init(alloc);
     defer writer.deinit();
     formatter.format(&writer.writer) catch {
         env.signalError("formatter failed", .{});

@@ -5,6 +5,7 @@
 /// Emacs buffer.  See `redraw' below for the per-redraw algorithm
 /// (viewport parking, scrollback sync, dirty-row reuse).
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const emacs = @import("emacs.zig");
 const gt = @import("ghostty-vt");
 const Terminal = @import("terminal.zig");
@@ -44,19 +45,19 @@ const FontInfo = struct {
     glyph_scale_floor: f64,
 };
 
-pub fn init(term: *gt.Terminal) !Self {
+pub fn init(alloc: Allocator, term: *gt.Terminal) !Self {
     var renderer = Self{
         .render_state = gt.RenderState.empty,
         .size = undefined,
         .pending_resize = .{ .cols = term.cols, .rows = term.rows, .cell_w = 1, .cell_h = 1 },
     };
-    try renderer.commitResize(term);
+    try renderer.commitResize(alloc, term);
     return renderer;
 }
 
-pub fn deinit(self: *Self) void {
-    self.render_state.deinit(std.heap.c_allocator);
-    self.row.deinit();
+pub fn deinit(self: *Self, alloc: Allocator) void {
+    self.render_state.deinit(alloc);
+    self.row.deinit(alloc);
 }
 
 pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) void {
@@ -135,7 +136,7 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool
     if (force_full) {
         env.eraseBuffer();
         // Commit any pending resize since we're doing a rebuild anyway.
-        try self.commitResize(&term.terminal);
+        try self.commitResize(term.alloc, &term.terminal);
         self.rows_in_buffer = 0;
     }
 
@@ -167,7 +168,7 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool
     // If we have a pending resize, commit it now and just rerender the active
     // since the scrollback is already up to date.
     if (self.pending_resize != null) {
-        try self.commitResize(&term.terminal);
+        try self.commitResize(term.alloc, &term.terminal);
         term.terminal.scrollViewport(.bottom);
         self.gotoActiveStart(env);
         try self.render(env, term, 0, false);
@@ -449,8 +450,6 @@ const CellPropKey = packed struct {
 };
 
 pub const RowContent = struct {
-    const allocator = std.heap.c_allocator;
-
     const Run = struct {
         start_char: usize,
         end_char: usize,
@@ -491,6 +490,7 @@ pub const RowContent = struct {
     /// styled blanks are preserved.
     pub fn build(
         self: *RowContent,
+        alloc: Allocator,
         term: *Terminal,
         row: *const gt.RenderState.Row,
         adjustment_threshold: u32,
@@ -515,7 +515,7 @@ pub const RowContent = struct {
             // in such a tight loop.
             const prop_key = CellPropKey.fromCell(cell.raw);
             if (prop_key != current_prop_key) {
-                try self.runs.append(RowContent.allocator, .{
+                try self.runs.append(alloc, .{
                     .start_char = self.char_len,
                     .end_char = self.char_len,
                     .props = readCellProps(&term.renderer, &cell),
@@ -527,16 +527,16 @@ pub const RowContent = struct {
             const char_start = self.char_len;
 
             const codepoint: u21 = if (cell.raw.hasText()) cell.raw.codepoint() else ' ';
-            try self.appendCodepoints(&[1]u21{codepoint});
+            try self.appendCodepoints(alloc, &[1]u21{codepoint});
             if (cell.raw.hasGrapheme()) {
-                try self.appendCodepoints(cell.grapheme);
+                try self.appendCodepoints(alloc, cell.grapheme);
             }
 
             // If this is a grapheme cluster, or if the char is not covered by
             // the default font, we register it as needing font glyph adjustment
             // to fit into the monospace grid.
             if (cell.raw.hasGrapheme() or codepoint >= adjustment_threshold) {
-                try self.adjust_cells.append(RowContent.allocator, .{
+                try self.adjust_cells.append(alloc, .{
                     .col = @intCast(col),
                     .byte_start = @intCast(byte_start),
                     .byte_end = @intCast(self.text.items.len),
@@ -566,13 +566,13 @@ pub const RowContent = struct {
             self.runs.items[self.runs.items.len - 1].end_char = trim_char_len;
         }
 
-        try self.text.append(RowContent.allocator, '\n');
+        try self.text.append(alloc, '\n');
     }
 
-    pub fn deinit(self: *RowContent) void {
-        self.text.deinit(allocator);
-        self.adjust_cells.deinit(allocator);
-        self.runs.deinit(allocator);
+    pub fn deinit(self: *RowContent, alloc: Allocator) void {
+        self.text.deinit(alloc);
+        self.adjust_cells.deinit(alloc);
+        self.runs.deinit(alloc);
     }
 
     fn clear(self: *RowContent) !void {
@@ -582,10 +582,10 @@ pub const RowContent = struct {
         self.char_len = 0;
     }
 
-    fn appendCodepoints(self: *RowContent, cluster: []const u21) !void {
+    fn appendCodepoints(self: *RowContent, alloc: Allocator, cluster: []const u21) !void {
         for (cluster) |cp| {
             const slice = try self.text.addManyAsSlice(
-                allocator,
+                alloc,
                 try std.unicode.utf8CodepointSequenceLength(cp),
             );
             _ = try std.unicode.utf8Encode(cp, slice);
@@ -694,6 +694,7 @@ fn insertRow(
     row: *const gt.RenderState.Row,
 ) !void {
     try self.row.build(
+        term.alloc,
         term,
         row,
         if (self.font_info) |f| f.coverage else std.math.maxInt(u32),
@@ -762,7 +763,7 @@ const BgFg = struct {
 };
 
 pub fn render(self: *Self, env: emacs.Env, term: *Terminal, skip: usize, force_full: bool) !void {
-    try self.render_state.update(std.heap.c_allocator, &term.terminal);
+    try self.render_state.update(term.alloc, &term.terminal);
 
     if (self.render_state.dirty != .false or force_full) {
         // Set buffer default face
@@ -865,9 +866,9 @@ fn renderToEnd(self: *Self, env: emacs.Env, term: *Terminal, force_full: bool) !
     return rendered_rows;
 }
 
-fn commitResize(self: *Self, term: *gt.Terminal) !void {
+fn commitResize(self: *Self, alloc: Allocator, term: *gt.Terminal) !void {
     if (self.pending_resize) |rz| {
-        try term.resize(std.heap.c_allocator, rz.cols, rz.rows);
+        try term.resize(alloc, rz.cols, rz.rows);
         term.width_px = std.math.mul(u32, rz.cols, rz.cell_w) catch std.math.maxInt(u32);
         term.height_px = std.math.mul(u32, rz.rows, rz.cell_h) catch std.math.maxInt(u32);
         self.size = rz;

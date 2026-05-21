@@ -3,6 +3,7 @@
 /// Holds the resources for a single instance of a Ghostel terminal
 ///
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 
 const emacs = @import("emacs.zig");
 const gt = @import("ghostty-vt");
@@ -10,6 +11,9 @@ const GhostelHandler = @import("GhostelHandler.zig");
 const Renderer = @import("Renderer.zig");
 
 const Self = @This();
+
+/// Allocator used for all owned allocations; injected at init time.
+alloc: Allocator,
 
 /// The libghostty Terminal.
 terminal: gt.Terminal,
@@ -37,7 +41,7 @@ renderer: Renderer,
 env: ?emacs.Env = null,
 
 /// Create a new terminal with the given dimensions and scrollback.
-pub fn init(cols: u16, rows: u16, max_scrollback: usize, effects: gt.TerminalStream.Handler.Effects) !*Self {
+pub fn init(alloc: Allocator, cols: u16, rows: u16, max_scrollback: usize, effects: gt.TerminalStream.Handler.Effects) !*Self {
     if (cols == 0 or rows == 0) return error.InvalidSize;
 
     const opts = gt.Terminal.Options{
@@ -50,32 +54,33 @@ pub fn init(cols: u16, rows: u16, max_scrollback: usize, effects: gt.TerminalStr
         },
     };
 
-    const term = try std.heap.c_allocator.create(Self);
-    errdefer std.heap.c_allocator.destroy(term);
+    const term = try alloc.create(Self);
+    errdefer alloc.destroy(term);
 
     term.* = Self{
-        .terminal = try .init(std.heap.c_allocator, opts),
+        .alloc = alloc,
+        .terminal = try .init(alloc, opts),
         .renderer = undefined,
         .stream = undefined,
     };
-    errdefer term.terminal.deinit(std.heap.c_allocator);
+    errdefer term.terminal.deinit(alloc);
 
     var handler = GhostelHandler.init(&term.terminal);
     handler.inner.effects = effects;
-    term.stream = .initAlloc(std.heap.c_allocator, handler);
+    term.stream = .initAlloc(alloc, handler);
     errdefer term.stream.deinit();
 
-    term.renderer = try .init(&term.terminal);
+    term.renderer = try .init(alloc, &term.terminal);
 
     return term;
 }
 
 /// Free all ghostty resources.
 pub fn deinit(self: *Self) void {
-    self.renderer.deinit();
+    self.renderer.deinit(self.alloc);
     self.stream.deinit();
-    self.terminal.deinit(std.heap.c_allocator);
-    std.heap.c_allocator.destroy(self);
+    self.terminal.deinit(self.alloc);
+    self.alloc.destroy(self);
 }
 
 /// Set default foreground color.

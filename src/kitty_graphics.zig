@@ -4,6 +4,7 @@
 /// each redraw cycle, converts pixel data to PPM for Emacs display,
 /// and calls into Elisp to apply image overlays.
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const emacs = @import("emacs.zig");
 const Terminal = @import("terminal.zig");
 const gt = @import("ghostty-vt");
@@ -37,8 +38,8 @@ fn emitOnePlacement(
     const image = storage.images.getPtr(key.image_id) orelse return error.ImageNotFound;
     switch (placement.location) {
         .virtual => {
-            const emacs_data = try getImageData(image);
-            defer if (emacs_data.allocated) std.heap.c_allocator.free(emacs_data.data);
+            const emacs_data = try getImageData(term.alloc, image);
+            defer if (emacs_data.allocated) term.alloc.free(emacs_data.data);
 
             // Virtual placements (yazi-style U+10EEEE unicode placeholders).
             // The API doesn't provide viewport positions — Elisp searches
@@ -67,8 +68,8 @@ fn emitOnePlacement(
             // Non-virtual: get render info for viewport position.
             if (!visible) return error.NotVisible;
 
-            const emacs_data = try getImageData(image);
-            defer if (emacs_data.allocated) std.heap.c_allocator.free(emacs_data.data);
+            const emacs_data = try getImageData(term.alloc, image);
+            defer if (emacs_data.allocated) term.alloc.free(emacs_data.data);
 
             const img_val = env.makeUnibyteString(emacs_data.data) orelse return error.MakeString;
             // viewport_row is relative to the visible viewport; ghostel materializes
@@ -102,15 +103,15 @@ fn emitOnePlacement(
 /// (e.g. an evicting transmit, a delete command, or storage trimming).
 /// Use it synchronously — copy via `makeUnibyteString` and drop the
 /// reference before yielding control back to libghostty.  When
-/// `allocated` is true, `data` is owned by `c_allocator` and the caller
-/// must free it.
+/// `allocated` is true, `data` is owned by the caller's allocator and the
+/// caller must free it.
 const ImageData = struct {
     data: []const u8,
     is_png: bool,
     allocated: bool,
 };
 
-fn getImageData(image: *const gt.kitty.graphics.Image) !ImageData {
+fn getImageData(alloc: Allocator, image: *const gt.kitty.graphics.Image) !ImageData {
     // libghostty decompresses images at transmit time, so by the time
     // we read out the data here it should always be in the .none state.
     // Refuse explicitly so a future libghostty change that defers
@@ -125,26 +126,25 @@ fn getImageData(image: *const gt.kitty.graphics.Image) !ImageData {
     // transmit time, so format arrives as RGBA and we go through the
     // PPM path with channels=4.  The PNG branch stays for the case
     // where the decode hook is uninstalled or rejected the payload.
-    const ppm_alloc = std.heap.c_allocator;
     return switch (image.format) {
         .png => .{ .data = image.data, .is_png = true, .allocated = false },
         .rgba => .{
-            .data = ppm.createPpm(ppm_alloc, image.data, image.width, image.height, 4) orelse return error.PpmConvert,
+            .data = ppm.createPpm(alloc, image.data, image.width, image.height, 4) orelse return error.PpmConvert,
             .is_png = false,
             .allocated = true,
         },
         .rgb => .{
-            .data = ppm.createPpm(ppm_alloc, image.data, image.width, image.height, 3) orelse return error.PpmConvert,
+            .data = ppm.createPpm(alloc, image.data, image.width, image.height, 3) orelse return error.PpmConvert,
             .is_png = false,
             .allocated = true,
         },
         .gray_alpha => .{
-            .data = ppm.createPpm(ppm_alloc, image.data, image.width, image.height, 2) orelse return error.PpmConvert,
+            .data = ppm.createPpm(alloc, image.data, image.width, image.height, 2) orelse return error.PpmConvert,
             .is_png = false,
             .allocated = true,
         },
         .gray => .{
-            .data = ppm.createPpm(ppm_alloc, image.data, image.width, image.height, 1) orelse return error.PpmConvert,
+            .data = ppm.createPpm(alloc, image.data, image.width, image.height, 1) orelse return error.PpmConvert,
             .is_png = false,
             .allocated = true,
         },
