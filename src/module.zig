@@ -500,7 +500,7 @@ fn fnRedraw(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*
         defer vt_log_env = null;
     }
 
-    term.renderer.redraw(env, term, force_full) catch |err| {
+    term.renderer.redraw(term.alloc, env, force_full) catch |err| {
         env.logStackTrace(@errorReturnTrace());
         env.signalError("Redraw failed: %s", .{@errorName(err)});
         return env.nil();
