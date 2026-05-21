@@ -15,6 +15,9 @@ const FixedArrayList = @import("fixed_array_list.zig").FixedArrayList;
 const Self = @This();
 
 /// Render state for incremental screen updates.
+term: *gt.Terminal,
+
+/// Render state for incremental screen updates.
 render_state: gt.RenderState,
 
 /// Number of libghostty rows already materialized into the Emacs buffer. Polled
@@ -47,11 +50,12 @@ const FontInfo = struct {
 
 pub fn init(alloc: Allocator, term: *gt.Terminal) !Self {
     var renderer = Self{
+        .term = term,
         .render_state = gt.RenderState.empty,
         .size = undefined,
         .pending_resize = .{ .cols = term.cols, .rows = term.rows, .cell_w = 1, .cell_h = 1 },
     };
-    try renderer.commitResize(alloc, term);
+    try renderer.commitResize(alloc);
     return renderer;
 }
 
@@ -85,7 +89,7 @@ pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) void 
 ///
 /// When `force_full` is true, the viewport region is fully re-rendered
 /// instead of using the incremental dirty-row path.
-pub fn redraw(self: *Self, env: emacs.Env, term: *GhostelTerm, force_full_arg: bool) !void {
+pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: bool) !void {
     // Snapshot the buffer's mark across the destructive ops below.  Both
     // paths — full (eraseBuffer / deleteRegion over the viewport) and
     // partial (per-row deleteRegion + insert) — move every marker in the
@@ -107,7 +111,7 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *GhostelTerm, force_full_arg: b
         }
     }
 
-    const scrollbar = term.terminal.screens.active.pages.scrollbar();
+    const scrollbar = self.term.screens.active.pages.scrollbar();
 
     // If the font metrics or related parameters changed, the cached metrics
     // are no longer valid, so we rebuild.
@@ -136,7 +140,7 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *GhostelTerm, force_full_arg: b
     if (force_full) {
         env.eraseBuffer();
         // Commit any pending resize since we're doing a rebuild anyway.
-        try self.commitResize(term.alloc, &term.terminal);
+        try self.commitResize(alloc);
         self.rows_in_buffer = 0;
         self.render_state.dirty = .full;
     }
@@ -146,15 +150,15 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *GhostelTerm, force_full_arg: b
     // also where the Emacs buffer currently ends. When we have no scrollback
     // there was no parking, so go to the top instead.
     if (self.rows_in_buffer > self.size.rows) {
-        term.terminal.scrollViewport(.{ .delta = 1 });
+        self.term.scrollViewport(.{ .delta = 1 });
         env.gotoChar(env.pointMax());
         _ = env.forwardLine(-@as(i64, @intCast(scrollbar.len)));
     } else {
-        term.terminal.scrollViewport(.top);
+        self.term.scrollViewport(.top);
         env.gotoChar(env.pointMin());
     }
 
-    const rendered_rows = try self.renderToEnd(env, term);
+    const rendered_rows = try self.renderToEnd(alloc, env);
     // Now that we rendered, even if we cleared the buffer above, we now have at
     // least the rows in the active area:
     self.rows_in_buffer = @max(self.rows_in_buffer, self.size.rows);
@@ -169,16 +173,16 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *GhostelTerm, force_full_arg: b
     // If we have a pending resize, commit it now and just rerender the active
     // since the scrollback is already up to date.
     if (self.pending_resize != null) {
-        try self.commitResize(term.alloc, &term.terminal);
-        term.terminal.scrollViewport(.bottom);
+        try self.commitResize(alloc);
+        self.term.scrollViewport(.bottom);
         self.gotoActiveStart(env);
-        try self.render(env, term, 0);
+        try self.render(alloc, env, 0);
         // There is now at least self.size.rows number of rows
         self.rows_in_buffer = @max(self.rows_in_buffer, self.size.rows);
     }
 
     // Evict old scrollback if libghostty also did
-    const libghostty_rows = term.terminal.screens.active.pages.total_rows;
+    const libghostty_rows = self.term.screens.active.pages.total_rows;
     if (libghostty_rows < self.rows_in_buffer) {
         env.gotoChar(env.pointMin());
         _ = env.forwardLine(@as(i64, @intCast(self.rows_in_buffer - libghostty_rows)));
@@ -189,7 +193,7 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *GhostelTerm, force_full_arg: b
     try self.renderCursor(env);
 
     // Update working directory from OSC 7
-    if (term.terminal.getPwd()) |pwd| {
+    if (self.term.getPwd()) |pwd| {
         _ = env.f("ghostel--update-directory", .{pwd});
     }
 
@@ -198,8 +202,8 @@ pub fn redraw(self: *Self, env: emacs.Env, term: *GhostelTerm, force_full_arg: b
     // to the bottom (`offset + len == total`), which we treat as the rebuild
     // signal. If scrollback only grew, the parked position naturally points at
     // the old active area, and advancing by 1 reaches the new one.
-    term.terminal.scrollViewport(.bottom);
-    term.terminal.scrollViewport(.{ .delta = -1 });
+    self.term.scrollViewport(.bottom);
+    self.term.scrollViewport(.{ .delta = -1 });
 }
 
 /// Read the default font and rendering parameters from Emacs, compare
@@ -492,7 +496,7 @@ pub const RowContent = struct {
     pub fn build(
         self: *RowContent,
         alloc: Allocator,
-        term: *GhostelTerm,
+        renderer: *Self,
         row: *const gt.RenderState.Row,
         adjustment_threshold: u32,
     ) !void {
@@ -519,7 +523,7 @@ pub const RowContent = struct {
                 try self.runs.append(alloc, .{
                     .start_char = self.char_len,
                     .end_char = self.char_len,
-                    .props = readCellProps(&term.renderer, &cell),
+                    .props = readCellProps(renderer, &cell),
                 });
                 current_prop_key = prop_key;
             }
@@ -688,15 +692,10 @@ fn adjustGlyph(
 }
 
 /// Insert row text and apply property runs.
-fn insertRow(
-    self: *Self,
-    env: emacs.Env,
-    term: *GhostelTerm,
-    row: *const gt.RenderState.Row,
-) !void {
+fn insertRow(self: *Self, alloc: Allocator, env: emacs.Env, row: *const gt.RenderState.Row) !void {
     try self.row.build(
-        term.alloc,
-        term,
+        alloc,
+        self,
         row,
         if (self.font_info) |f| f.coverage else std.math.maxInt(u32),
     );
@@ -758,8 +757,8 @@ fn positionCursorByCell(self: *Self, env: emacs.Env, cx: u16, cy: u16) !bool {
     return true;
 }
 
-pub fn render(self: *Self, env: emacs.Env, term: *GhostelTerm, skip: usize) !void {
-    try self.render_state.update(term.alloc, &term.terminal);
+pub fn render(self: *Self, alloc: Allocator, env: emacs.Env, skip: usize) !void {
+    try self.render_state.update(alloc, self.term);
 
     if (self.render_state.dirty != .false) {
         // Set buffer default face
@@ -787,7 +786,7 @@ pub fn render(self: *Self, env: emacs.Env, term: *GhostelTerm, skip: usize) !voi
             if (dirty_row) {
                 env.deleteRegion(env.point(), env.lineBeginningPosition2());
                 const row = self.render_state.row_data.get(i);
-                try self.insertRow(env, term, &row);
+                try self.insertRow(alloc, env, &row);
             } else {
                 _ = env.forwardLine(1);
             }
@@ -831,8 +830,8 @@ fn renderCursor(self: *Self, env: emacs.Env) !void {
 
 // Render content from the current viewport scroll position all the way to
 // the active area at the current Emacs point.
-fn renderToEnd(self: *Self, env: emacs.Env, term: *GhostelTerm) !usize {
-    const scrollbar = term.terminal.screens.active.pages.scrollbar();
+fn renderToEnd(self: *Self, alloc: Allocator, env: emacs.Env) !usize {
+    const scrollbar = self.term.screens.active.pages.scrollbar();
     if (scrollbar.len == 0) return 0;
     const offset_max = scrollbar.total - scrollbar.len;
     // Walk from the current viewport position to offset_max in viewport-sized
@@ -847,7 +846,7 @@ fn renderToEnd(self: *Self, env: emacs.Env, term: *GhostelTerm) !usize {
     var rendered_rows: usize = 0;
     var current_offset = scrollbar.offset;
     for (0..num_viewports) |_| {
-        try self.render(env, term, skip);
+        try self.render(alloc, env, skip);
         rendered_rows += (scrollbar.len - skip);
 
         const max_step = offset_max - current_offset;
@@ -855,17 +854,17 @@ fn renderToEnd(self: *Self, env: emacs.Env, term: *GhostelTerm) !usize {
         skip = scrollbar.len - step;
 
         current_offset += step;
-        term.terminal.scrollViewport(.{ .delta = @intCast(step) });
+        self.term.scrollViewport(.{ .delta = @intCast(step) });
     }
 
     return rendered_rows;
 }
 
-fn commitResize(self: *Self, alloc: Allocator, term: *gt.Terminal) !void {
+fn commitResize(self: *Self, alloc: Allocator) !void {
     if (self.pending_resize) |rz| {
-        try term.resize(alloc, rz.cols, rz.rows);
-        term.width_px = std.math.mul(u32, rz.cols, rz.cell_w) catch std.math.maxInt(u32);
-        term.height_px = std.math.mul(u32, rz.rows, rz.cell_h) catch std.math.maxInt(u32);
+        try self.term.resize(alloc, rz.cols, rz.rows);
+        self.term.width_px = std.math.mul(u32, rz.cols, rz.cell_w) catch std.math.maxInt(u32);
+        self.term.height_px = std.math.mul(u32, rz.rows, rz.cell_h) catch std.math.maxInt(u32);
         self.size = rz;
         self.pending_resize = null;
     }
