@@ -144,11 +144,3 @@ pub fn vtWrite(self: *Self, data: []const u8) void {
 pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) void {
     self.renderer.resize(cols, rows, cell_w, cell_h);
 }
-
-/// Emacs finalizer — called when the user-ptr is garbage collected.
-pub fn emacsFinalize(ptr: ?*anyopaque) callconv(.c) void {
-    if (ptr) |p| {
-        const self: *Self = @ptrCast(@alignCast(p));
-        self.deinit();
-    }
-}

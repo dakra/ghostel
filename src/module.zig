@@ -17,12 +17,18 @@ const pty = @import("pty.zig");
 const c = emacs.c;
 
 /// In debug builds, all allocations go through DebugAllocator for corruption
-/// detection (double-free, use-after-free, overflow canaries).  An atexit
-/// handler calls deinit() on process exit, which fires on both Linux and macOS
-/// when Emacs calls exit().  Reports may include false positives if Emacs has
-/// not finalized all user-ptrs (terminals) before exit().
+/// detection (double-free, use-after-free, overflow canaries).  A debug-only
+/// kill-emacs-hook explicitly deinits all live terminals before process exit so
+/// atexit can call deinit() on a clean slate.
 var debug_alloc: std.heap.DebugAllocator(.{}) = .init;
 var alloc: Allocator = std.heap.c_allocator;
+
+/// Tracks all live terminals in debug builds so the kill-emacs-hook can
+/// explicitly free them before atexit fires.
+var debug_terminals: std.ArrayList(*GhostelTerm) = .{};
+/// Set by the kill-emacs hook once all tracked terminals are freed; makes
+/// debugTerminalFinalize a no-op for any subsequent GC-driven callbacks.
+var debug_cleanup_done: bool = false;
 
 /// Module version — see src/version.zig.  Keep in sync with ghostel.el
 /// and build.zig.zon.
@@ -157,7 +163,11 @@ export fn emacs_module_init(runtime: *c.struct_emacs_runtime) callconv(.c) c_int
     // Install system callbacks (PNG decoder for kitty graphics, logging).
     sys.init();
 
-    if (builtin.mode == .Debug) _ = atexit(&debugAtExit);
+    if (builtin.mode == .Debug) {
+        const cleanup_fn = env.makeFunction(0, 0, &debugKillEmacsHook, "Explicitly destroy all ghostel terminals for leak detection.", null);
+        _ = env.funcall(env.intern("add-hook"), &[_]emacs.Value{ env.intern("kill-emacs-hook"), cleanup_fn });
+        _ = atexit(&debugAtExit);
+    }
 
     env.provide("ghostel-module");
     return 0;
@@ -168,6 +178,31 @@ extern fn atexit(func: *const fn () callconv(.c) void) c_int;
 fn debugAtExit() callconv(.c) void {
     if (debug_alloc.deinit() == .leak) {
         std.debug.print("ghostel: memory leak detected at exit\n", .{});
+    }
+}
+
+fn debugKillEmacsHook(_: ?*c.emacs_env, _: isize, _: [*c]c.emacs_value, _: ?*anyopaque) callconv(.c) c.emacs_value {
+    for (debug_terminals.items) |term| {
+        term.deinit();
+    }
+    debug_terminals.deinit(alloc);
+    debug_cleanup_done = true;
+    return emacs.sym.nil;
+}
+
+fn terminalFinalize(ptr: ?*anyopaque) callconv(.c) void {
+    if (ptr) |p| {
+        const term: *GhostelTerm = @ptrCast(@alignCast(p));
+        if (builtin.mode == .Debug) {
+            if (debug_cleanup_done) return;
+            for (debug_terminals.items, 0..) |t, i| {
+                if (t == term) {
+                    _ = debug_terminals.swapRemove(i);
+                    break;
+                }
+            }
+        }
+        term.deinit();
     }
 }
 
@@ -247,7 +282,10 @@ fn fnNew(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*any
             env.logError("enableKittyGraphics failed: %s", .{@errorName(err)});
     }
 
-    return env.makeUserPtr(&GhostelTerm.emacsFinalize, term);
+    if (builtin.mode == .Debug) {
+        debug_terminals.append(alloc, term) catch {};
+    }
+    return env.makeUserPtr(&terminalFinalize, term);
 }
 
 /// (ghostel--write-input TERM DATA)
