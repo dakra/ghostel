@@ -6,7 +6,7 @@
 const std = @import("std");
 const gt = @import("ghostty-vt");
 const emacs = @import("emacs.zig");
-const GhostelTerm = @import("terminal.zig");
+const GhostelTerm = @import("GhostelTerm.zig");
 
 const Key = gt.input.Key;
 const Mods = gt.input.KeyMods;

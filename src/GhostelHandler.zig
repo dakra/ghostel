@@ -6,7 +6,7 @@ const std = @import("std");
 
 const emacs = @import("emacs.zig");
 const gt = @import("ghostty-vt");
-const GhostelTerm = @import("terminal.zig");
+const GhostelTerm = @import("GhostelTerm.zig");
 
 const Self = @This();
 

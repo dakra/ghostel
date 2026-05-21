@@ -6,14 +6,14 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const emacs = @import("emacs.zig");
-const Terminal = @import("terminal.zig");
+const GhostelTerm = @import("GhostelTerm.zig");
 const gt = @import("ghostty-vt");
 const ppm = @import("ppm.zig");
 
 /// Query all visible kitty graphics placements from libghostty and
 /// emit them to Elisp for display.  Called after render_state_update()
 /// during each redraw.
-pub fn emitPlacements(env: emacs.Env, term: *Terminal) !void {
+pub fn emitPlacements(env: emacs.Env, term: *GhostelTerm) !void {
     const storage = &term.terminal.screens.active.kitty_images;
     var iterator = storage.placements.iterator();
     // Iterate over all placements. Per-placement errors skip that placement only.
@@ -30,7 +30,7 @@ pub fn emitPlacements(env: emacs.Env, term: *Terminal) !void {
 
 fn emitOnePlacement(
     env: emacs.Env,
-    term: *Terminal,
+    term: *GhostelTerm,
     storage: *const gt.kitty.graphics.ImageStorage,
     key: *const gt.kitty.graphics.ImageStorage.PlacementKey,
     placement: *const gt.kitty.graphics.ImageStorage.Placement,

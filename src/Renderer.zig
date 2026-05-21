@@ -8,7 +8,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const emacs = @import("emacs.zig");
 const gt = @import("ghostty-vt");
-const Terminal = @import("terminal.zig");
+const GhostelTerm = @import("GhostelTerm.zig");
 
 const FixedArrayList = @import("fixed_array_list.zig").FixedArrayList;
 
@@ -85,7 +85,7 @@ pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) void 
 ///
 /// When `force_full` is true, the viewport region is fully re-rendered
 /// instead of using the incremental dirty-row path.
-pub fn redraw(self: *Self, env: emacs.Env, term: *Terminal, force_full_arg: bool) !void {
+pub fn redraw(self: *Self, env: emacs.Env, term: *GhostelTerm, force_full_arg: bool) !void {
     // Snapshot the buffer's mark across the destructive ops below.  Both
     // paths — full (eraseBuffer / deleteRegion over the viewport) and
     // partial (per-row deleteRegion + insert) — move every marker in the
@@ -492,7 +492,7 @@ pub const RowContent = struct {
     pub fn build(
         self: *RowContent,
         alloc: Allocator,
-        term: *Terminal,
+        term: *GhostelTerm,
         row: *const gt.RenderState.Row,
         adjustment_threshold: u32,
     ) !void {
@@ -691,7 +691,7 @@ fn adjustGlyph(
 fn insertRow(
     self: *Self,
     env: emacs.Env,
-    term: *Terminal,
+    term: *GhostelTerm,
     row: *const gt.RenderState.Row,
 ) !void {
     try self.row.build(
@@ -758,7 +758,7 @@ fn positionCursorByCell(self: *Self, env: emacs.Env, cx: u16, cy: u16) !bool {
     return true;
 }
 
-pub fn render(self: *Self, env: emacs.Env, term: *Terminal, skip: usize) !void {
+pub fn render(self: *Self, env: emacs.Env, term: *GhostelTerm, skip: usize) !void {
     try self.render_state.update(term.alloc, &term.terminal);
 
     if (self.render_state.dirty != .false) {
@@ -831,7 +831,7 @@ fn renderCursor(self: *Self, env: emacs.Env) !void {
 
 // Render content from the current viewport scroll position all the way to
 // the active area at the current Emacs point.
-fn renderToEnd(self: *Self, env: emacs.Env, term: *Terminal) !usize {
+fn renderToEnd(self: *Self, env: emacs.Env, term: *GhostelTerm) !usize {
     const scrollbar = term.terminal.screens.active.pages.scrollbar();
     if (scrollbar.len == 0) return 0;
     const offset_max = scrollbar.total - scrollbar.len;
