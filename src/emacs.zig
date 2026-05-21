@@ -3,6 +3,7 @@
 /// Provides type-safe access to emacs_env functions, cached symbol
 /// interning, and helper methods for common operations.
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 
 pub const c = @cImport({
@@ -14,6 +15,24 @@ pub const c = @cImport({
 
 /// Emacs value type alias for convenience.
 pub const Value = c.emacs_value;
+
+const UserPtr = ?*anyopaque;
+const Finalizer = fn (?*anyopaque) callconv(.c) void;
+
+const DebugUserPtr = struct {
+    ptr: UserPtr,
+    finalizer: *const Finalizer,
+};
+
+/// Tracks all live userptrs in debug builds so the kill-emacs-hook can
+/// explicitly free them before atexit fires. This allows us to check for
+/// memory leaks on exit.
+var debug_userptrs: std.ArrayList(DebugUserPtr) = .{};
+/// Set by the kill-emacs hook once all tracked userpts are freed; makes
+/// finalizers a no-op for any subsequent GC-driven callbacks.
+var debug_cleanup_done: bool = false;
+
+var alloc: Allocator = undefined;
 
 /// Emacs environment wrapper providing typed access to the module API.
 pub const Env = struct {
@@ -67,8 +86,22 @@ pub const Env = struct {
         return self.raw.make_string.?(self.raw, str.ptr, @intCast(str.len));
     }
 
-    pub fn makeUserPtr(self: Env, finalizer: ?*const fn (?*anyopaque) callconv(.c) void, ptr: ?*anyopaque) Value {
-        return self.raw.make_user_ptr.?(self.raw, finalizer, ptr);
+    pub fn makeUserPtr(self: Env, finalizer: Finalizer, ptr: UserPtr) Value {
+        if (builtin.mode == .Debug) {
+            if (debug_userptrs.append(alloc, .{ .ptr = ptr, .finalizer = &finalizer })) |_| {
+                const debugFinalizer = struct {
+                    fn debugFinalize(p: ?*anyopaque) callconv(.c) void {
+                        if (debug_cleanup_done) return;
+                        finalizer(p);
+                    }
+                }.debugFinalize;
+                return self.raw.make_user_ptr.?(self.raw, &debugFinalizer, ptr);
+            } else |_| {
+                std.log.err("Failed to allocate for debug userptr storage", .{});
+            }
+        }
+
+        return self.raw.make_user_ptr.?(self.raw, &finalizer, ptr);
     }
 
     pub fn makeValues(self: Env, args: anytype) [std.meta.fields(@TypeOf(args)).len]Value {
@@ -515,8 +548,31 @@ pub var sym: SymbolCache(&interned_symbols) = undefined;
 
 /// Initialize the global symbol cache.  Must be called once from
 /// emacs_module_init with the environment provided by Emacs.
-pub fn initSymbols(env: Env) void {
+pub fn initModule(allocator: Allocator, raw: *c.emacs_env) void {
+    alloc = allocator;
+
+    const env = Env.init(raw);
     inline for (std.meta.fields(@TypeOf(sym))) |field| {
         @field(sym, field.name) = env.makeGlobalRef(env.intern(field.name));
     }
+
+    if (builtin.mode == .Debug) {
+        const cleanup_fn = env.makeFunction(
+            0,
+            0,
+            &debugKillEmacsHook,
+            "Explicitly destroy all ghostel terminals for leak detection.",
+            null,
+        );
+        _ = env.funcall(env.intern("add-hook"), &[_]Value{ env.intern("kill-emacs-hook"), cleanup_fn });
+    }
+}
+
+fn debugKillEmacsHook(_: ?*c.emacs_env, _: isize, _: [*c]c.emacs_value, _: ?*anyopaque) callconv(.c) c.emacs_value {
+    for (debug_userptrs.items) |user_ptr| {
+        user_ptr.finalizer(user_ptr.ptr);
+    }
+    debug_userptrs.deinit(alloc);
+    debug_cleanup_done = true;
+    return sym.nil;
 }
