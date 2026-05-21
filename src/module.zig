@@ -854,7 +854,10 @@ fn titleChangedCallback(handler: *gt.TerminalStream.Handler) void {
 // zig log callback
 // ---------------------------------------------------------------------------
 
-pub const std_options: std.Options = .{ .logFn = logFn };
+pub const std_options: std.Options = .{
+    .logFn = logFn,
+    .log_level = if (builtin.mode == .Debug) .debug else .warn,
+};
 
 /// Global Emacs env stashed during any Elisp→Zig call where logging is
 /// active.  Only valid on the main thread while a Zig function is
@@ -875,6 +878,8 @@ fn logFn(
     comptime format: []const u8,
     args: anytype,
 ) void {
+    std.log.defaultLog(message_level, scope, format, args);
+
     if (!vt_log_active) return;
     const env = vt_log_env orelse return;
     const level_str: []const u8 = switch (message_level) {
