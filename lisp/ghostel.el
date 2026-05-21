@@ -1523,6 +1523,13 @@ Matches Ghostty 1.2.0's `bold-color' configuration."
 (defvar-local ghostel--cursor-char-pos nil
   "The position of the terminal cursor in the buffer.")
 
+(defvar-local ghostel--cursor-visible nil
+  "Last VISIBLE value passed to `ghostel--set-cursor-style'.
+Mirrors the terminal's DECTCEM (show/hide cursor) state.  Consumed
+by `ghostel--maybe-suppress-cursor' so the redisplay-time hook can
+keep `cursor-type' off when the terminal has hidden the cursor,
+even if something else has reset `cursor-type' in the meantime.")
+
 (defvar-local ghostel--rendered-font nil
   "The font last used for rendering. Internally used by native code.")
 
@@ -5294,13 +5301,72 @@ Only acts when the buffer has not been manually renamed by the user."
   (when ghostel-set-title-function
     (funcall ghostel-set-title-function title)))
 
+(defun ghostel--cell-face-background (pos)
+  "Return the effective background color string of the face at POS.
+Walks the `face' text property in its various shapes (symbol,
+anonymous plist, or list of either) and returns the first
+explicit background found, or nil."
+  (cl-labels
+      ((bg-of (f)
+         (cond
+          ((null f) nil)
+          ((symbolp f)
+           (let ((bg (face-attribute f :background nil t)))
+             (and (stringp bg) bg)))
+          ((and (listp f) (keywordp (car f)))
+           (plist-get f :background))
+          ((listp f) (seq-some #'bg-of f)))))
+    (bg-of (get-text-property pos 'face))))
+
+(defun ghostel--cursor-cell-conflicts-p ()
+  "Return non-nil when the cursor cell's face background equals the cursor color.
+Emacs's GUI ports (X11, mac-port, w32, pgtk) share a `set_cursor_gc'
+distinct-swap fallback that silently swaps the cursor's fg/bg with
+the cell's fg/bg whenever they match (e.g. xterm.c:8017,
+macterm.c:1042).  The swap result coincides with the surrounding
+non-inverse cells, so the cursor becomes visually indistinguishable
+from normal text.  When this returns non-nil, callers suppress
+`cursor-type' so the cell's own inverse video face represents the
+cursor position."
+  (when-let* ((pos ghostel--cursor-char-pos)
+              ((< pos (point-max)))
+              (cell-bg (ghostel--cell-face-background pos))
+              (cursor-color (frame-parameter nil 'cursor-color))
+              (cell-rgb (color-values cell-bg))
+              (cursor-rgb (color-values cursor-color)))
+    (equal cell-rgb cursor-rgb)))
+
+(defun ghostel--maybe-suppress-cursor (&optional _window)
+  "Force `cursor-type' to nil when the cursor should be hidden.
+
+Two conditions trigger suppression:
+- The terminal sent DECTCEM hide (\\='\\=e[?25l), captured in
+  `ghostel--cursor-visible'.  Without this branch, TUI menus that
+  hide the cursor would still show Emacs's box cursor on top of
+  whatever cell is at the saved cursor position.
+- The cursor cell's face background collides with the cursor color;
+  see `ghostel--cursor-cell-conflicts-p' for why that hides the cursor.
+
+Installed as a buffer-local `pre-redisplay-functions' entry because
+`ghostel--set-cursor-style' alone is not enough: `cursor-type' is
+restored to its default between module render passes, and this hook
+reapplies the suppression just before each redisplay."
+  (when (and (derived-mode-p 'ghostel-mode)
+             cursor-type
+             (or (not ghostel--cursor-visible)
+                 (ghostel--cursor-cell-conflicts-p)))
+    (setq cursor-type nil)))
+
 (defun ghostel--set-cursor-style (style visible)
   "Set the cursor style based on terminal state.
 STYLE is one of: 0=bar, 1=block, 2=underline, 3=hollow-block.
 VISIBLE is t or nil.
 Skipped in read-only input modes (copy, Emacs, line) where the
 user-facing cursor is managed by Emacs for navigation, or when
-`ghostel-ignore-cursor-change' is non-nil."
+`ghostel-ignore-cursor-change' is non-nil.
+Face-background conflict suppression is handled separately by
+`ghostel--maybe-suppress-cursor', which runs on each redisplay."
+  (setq ghostel--cursor-visible (and visible t))
   (when (and (ghostel--buffer-editable-p)
              (not ghostel-ignore-cursor-change))
     (setq cursor-type
@@ -6760,6 +6826,7 @@ output is arriving."
   (add-hook 'window-buffer-change-functions #'ghostel--focus-change)
   (add-hook 'window-buffer-change-functions #'ghostel--reshow-snap nil t)
   (add-hook 'window-buffer-change-functions #'ghostel--sync-tty-composition nil t)
+  (add-hook 'pre-redisplay-functions #'ghostel--maybe-suppress-cursor nil t)
   (ghostel--suppress-interfering-modes)
   (ghostel-imenu-setup)
   (setq ghostel--scroll-intercept-active t)

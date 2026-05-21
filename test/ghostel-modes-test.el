@@ -3,7 +3,7 @@
 ;;; Commentary:
 
 ;; Input mode state + char/emacs/copy mode transitions, fake cursor,
-;; copy-mode cursor + hl-line.
+;; copy-mode cursor + hl-line, cursor suppression on bg conflict.
 
 ;;; Code:
 
@@ -711,6 +711,70 @@ Otherwise the window stays where the user navigated."
               ;; Read-only flag is consistently off after returning.
               (should-not buffer-read-only))))
       (kill-buffer buf))))
+
+(ert-deftest ghostel-test-cell-face-background-shapes ()
+  "`ghostel--cell-face-background' resolves the bg across face-property shapes."
+  (defface ghostel-test--no-bg '((t :foreground "#00ff00"))
+    "Test face without a background.")
+  (defface ghostel-test--with-bg '((t :background "#0000ff"))
+    "Test face with a background.")
+  (defface ghostel-test--inherits '((t :inherit ghostel-test--with-bg))
+    "Test face inheriting a background.")
+  (with-temp-buffer
+    ;; Anonymous plist with an explicit background.
+    (insert (propertize "x" 'face '(:background "#ff0000")))
+    (should (equal "#ff0000" (ghostel--cell-face-background (point-min))))
+    ;; Plist without :background resolves to nil.
+    (erase-buffer)
+    (insert (propertize "y" 'face '(:foreground "#00ff00")))
+    (should (null (ghostel--cell-face-background (point-min))))
+    ;; No face property at all.
+    (erase-buffer)
+    (insert "z")
+    (should (null (ghostel--cell-face-background (point-min))))
+    ;; Named face with an explicit background.
+    (erase-buffer)
+    (insert (propertize "a" 'face 'ghostel-test--with-bg))
+    (should (equal "#0000ff" (ghostel--cell-face-background (point-min))))
+    ;; List of faces: a leading face without a background must not mask the
+    ;; later face that supplies one.
+    (erase-buffer)
+    (insert (propertize "b" 'face '(ghostel-test--no-bg ghostel-test--with-bg)))
+    (should (equal "#0000ff" (ghostel--cell-face-background (point-min))))
+    ;; The :inherit chain is followed when the face has no direct background.
+    (erase-buffer)
+    (insert (propertize "c" 'face 'ghostel-test--inherits))
+    (should (equal "#0000ff" (ghostel--cell-face-background (point-min))))))
+
+(ert-deftest ghostel-test-cursor-cell-conflicts ()
+  "`ghostel--cursor-cell-conflicts-p' compares cursor/cell colors by value.
+Stub `color-values' and `frame-parameter' so the result is independent
+of the display (color names do not resolve on a display-less batch run)."
+  (with-temp-buffer
+    (insert (propertize "x" 'face '(:background "#ffffff")))
+    (let ((cursor "white"))
+      (cl-letf (((symbol-function 'color-values)
+                 (lambda (c)
+                   (pcase (downcase c)
+                     ((or "white" "#ffffff") '(65535 65535 65535))
+                     ((or "black" "#000000") '(0 0 0))
+                     (_ nil))))
+                ((symbol-function 'frame-parameter)
+                 (lambda (_frame param)
+                   (when (eq param 'cursor-color) cursor))))
+        (setq-local ghostel--cursor-char-pos (point-min))
+        ;; Named "white" cursor vs "#ffffff" cell — same color, conflict.
+        (should (ghostel--cursor-cell-conflicts-p))
+        ;; Distinct colors — no conflict.
+        (setq cursor "black")
+        (should-not (ghostel--cursor-cell-conflicts-p))
+        ;; Cursor position at point-max is out of range — no conflict.
+        (setq cursor "white")
+        (setq-local ghostel--cursor-char-pos (point-max))
+        (should-not (ghostel--cursor-cell-conflicts-p))
+        ;; No saved cursor position — no conflict.
+        (setq-local ghostel--cursor-char-pos nil)
+        (should-not (ghostel--cursor-cell-conflicts-p))))))
 
 (provide 'ghostel-modes-test)
 ;;; ghostel-modes-test.el ends here
