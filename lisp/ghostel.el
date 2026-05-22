@@ -3014,16 +3014,22 @@ press anywhere else exits and forwards a CR to the terminal."
 (defun ghostel--filter-soft-wraps (text)
   "Remove newlines from TEXT that were inserted by soft line wrapping.
 These are newlines with the `ghostel-wrap' text property."
-  (let ((result "")
-        (pos 0)
-        (len (length text)))
+      (let ((chunks nil)
+          (pos 0)
+          (len (length text))
+          (chunk-start 0))
     (while (< pos len)
       (if (and (eq (aref text pos) ?\n)
                (get-text-property pos 'ghostel-wrap text))
-          (setq pos (1+ pos))
-        (setq result (concat result (substring text pos (1+ pos)))
-              pos (1+ pos))))
-    result))
+          (progn
+            (when (< chunk-start pos)
+              (push (substring text chunk-start pos) chunks))
+            (setq pos (1+ pos))
+            (setq chunk-start pos))
+        (setq pos (1+ pos))))
+    (when (< chunk-start len)
+      (push (substring text chunk-start len) chunks))
+    (apply #'concat (nreverse chunks))))
 
 (defun ghostel--clean-copy-text (text)
   "Clean TEXT for copying: remove soft-wrap newlines, strip trailing whitespace."
