@@ -913,6 +913,7 @@ omit it when the connection itself is the suspected fault."
                                  ("backspace" "meta"      "M-Backspace")
                                  ("f"         "meta"      "M-f")
                                  ("b"         "meta"      "M-b")
+                                 ("."         "meta"      "M-.")
                                  ("f"         "ctrl,meta" "C-M-f")
                                  ("v"         "ctrl,meta" "C-M-v")
                                  ("h"         "ctrl"      "C-h")))

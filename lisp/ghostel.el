@@ -2128,9 +2128,10 @@ Returns the sequence string, or nil for unknown keys."
            (<= ?a (aref key-name 0)) (<= (aref key-name 0) ?z)
            (> (logand mod-num 4) 0))        ; ctrl bit
       (string (- (aref key-name 0) 96)))    ; ctrl-a=1, ctrl-z=26
-     ;; Meta + single letter → ESC + char
+     ;; Meta + printable ASCII → ESC + char (legacy alt encoding)
      ((and (= (length key-name) 1)
-           (<= ?a (aref key-name 0)) (<= (aref key-name 0) ?z)
+           (let ((c (aref key-name 0)))
+             (and (>= c 32) (<= c 126)))
            (> (logand mod-num 2) 0))        ; alt/meta bit
       (format "\e%c" (aref key-name 0)))
      ;; Simple special keys (CSI u encoding for modified variants)

@@ -39,6 +39,17 @@
   ;; Unknown key
   (should (equal nil (ghostel--raw-key-sequence "xyzzy" ""))))        ; unknown
 
+(ert-deftest ghostel-test-raw-key-meta-printable ()
+  "Meta + any printable ASCII char encodes as ESC followed by that char.
+Covers punctuation, digits, uppercase, space, and lowercase letters."
+  (should (equal "\e." (ghostel--raw-key-sequence "." "meta")))
+  (should (equal "\e," (ghostel--raw-key-sequence "," "meta")))
+  (should (equal "\e1" (ghostel--raw-key-sequence "1" "meta")))
+  (should (equal "\eA" (ghostel--raw-key-sequence "A" "meta")))
+  (should (equal "\e " (ghostel--raw-key-sequence " " "meta")))
+  ;; Lowercase letters still work (existing behavior)
+  (should (equal "\eb" (ghostel--raw-key-sequence "b" "meta"))))
+
 (ert-deftest ghostel-test-modifier-number ()
   "Test modifier bitmask parsing."
   (should (equal 0 (ghostel--modifier-number "")))            ; no mods
@@ -79,6 +90,8 @@
         (sim (aref (kbd "M-<left>") 0)    "left"      "meta")
         (sim (aref (kbd "S-<f5>") 0)      "f5"        "shift")
         (sim (aref (kbd "C-S-<return>") 0) "return"   "ctrl,shift")
+        (sim (aref (kbd "M-.") 0)  "."  "meta")
+        (sim (aref (kbd "M-1") 0)  "1"  "meta")
         ;; backtab (Emacs's name for S-TAB)
         (sim (aref (kbd "<backtab>") 0)   "tab"       "shift")))))
 
@@ -483,6 +496,19 @@ Regression test for issue #239: these byte sequences match readline
       (should (ghostel--encode-key term "v" "ctrl,meta" nil))
       (should (equal "\e\x16" sent)))))
 
+(ert-deftest ghostel-test-send-encoded-meta-period ()
+  "M-. sends ESC + period via raw fallback (legacy alt encoding)."
+  :tags '(native)
+  (let* ((term (ghostel--new 25 80 1000))
+         (sent nil))
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
+              ((symbol-function 'process-send-string)
+               (lambda (_proc str) (setq sent str))))
+      (setq ghostel--term term
+            ghostel--process 'fake)
+      (ghostel--send-encoded "." "meta")
+      (should (equal "\e." sent)))))
+
 (ert-deftest ghostel-test-special-key-modifier-bindings ()
   "Modified special keys are bound unless in `ghostel-keymap-exceptions'.
 Covers e.g. C-<return>, C-M-<down>, S-<f1>.
@@ -550,6 +576,8 @@ but `this-command-keys-vector' retains the ESC prefix."
         (sim-tty (vector 27 ?b)   ?b  "b" "meta")
         (sim-tty (vector 27 ?f)   ?f  "f" "meta")
         (sim-tty (vector 27 ?d)   ?d  "d" "meta")
+        (sim-tty (vector 27 ?.)  ?.  "." "meta")
+        (sim-tty (vector 27 ?1)  ?1  "1" "meta")
         ;; M-DEL in TTY: ESC then 127 → backspace + meta
         (sim-tty (vector 27 127)  127 "backspace" "meta")
         ;; Already-meta event (shouldn't double-add meta)
