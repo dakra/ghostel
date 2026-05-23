@@ -3,7 +3,7 @@
 /// Reads rows/cells from the ghostty render state, extracts text and
 /// style attributes, and inserts propertized text into the current
 /// Emacs buffer.  See `redraw' below for the per-redraw algorithm
-/// (viewport parking, scrollback sync, dirty-row reuse).
+/// (pin-based scrollback sync, dirty-row reuse).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const emacs = @import("emacs.zig");
@@ -22,13 +22,17 @@ term: *gt.Terminal,
 /// Render state for incremental screen updates.
 render_state: gt.RenderState,
 
-/// Number of libghostty rows already materialized into the Emacs buffer. Polled
-/// on each redraw; kept in sync by appending newly-scrolled-off rows and
-/// trimming rows evicted by libghostty's scrollback cap.
+/// Tracked pin of the active region.
+active_pin: *gt.Pin,
+
+/// The screen that is currently rendered into the buffer.
+rendered_screen: *gt.Screen,
+
+/// Number of libghostty rows already materialized into the Emacs buffer.
 rows_in_buffer: usize = 0,
 
-/// Terminal viewport dimensions.
-size: ViewportSize,
+/// List of pages materialized in buffer
+pages_in_buffer: std.DoublyLinkedList = .{},
 
 /// Any pending resize as `.{cols, rows}`. Resizes are comitted on next redraw.
 pending_resize: ?ViewportSize = null,
@@ -43,6 +47,15 @@ font_info: ?FontInfo = null,
 /// Bold text coloring configuration.
 bold_config: ?gt.Style.BoldColor = null,
 
+const PageSerial = @FieldType(gt.PageList.List.Node, "serial");
+
+const MaterializedPage = struct {
+    node: std.DoublyLinkedList.Node = .{},
+    serial: PageSerial,
+    char_len: usize = 0,
+    rows: usize = 0,
+};
+
 const FontInfo = struct {
     width: i64,
     height: i64,
@@ -54,7 +67,10 @@ pub fn init(alloc: Allocator, term: *gt.Terminal) !Self {
     var renderer = Self{
         .term = term,
         .render_state = gt.RenderState.empty,
-        .size = undefined,
+        .active_pin = try term.screens.active.pages.trackPin(
+            term.screens.active.pages.getTopLeft(.screen),
+        ),
+        .rendered_screen = term.screens.active,
         .pending_resize = .{ .cols = term.cols, .rows = term.rows, .cell_w = 1, .cell_h = 1 },
     };
     try renderer.commitResize(alloc);
@@ -64,6 +80,8 @@ pub fn init(alloc: Allocator, term: *gt.Terminal) !Self {
 pub fn deinit(self: *Self, alloc: Allocator) void {
     self.render_state.deinit(alloc);
     self.row.deinit(alloc);
+    self.clearPages(alloc);
+    self.rendered_screen.pages.untrackPin(self.active_pin);
 }
 
 pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) void {
@@ -77,19 +95,12 @@ pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) void 
 
 /// Redraw the terminal into the current Emacs buffer.
 ///
-/// The Emacs buffer is a permanent record: all materialized scrollback sits
-/// above the active viewport and is never evicted, even when libghostty
-/// rotates rows out at the scrollback cap.
+/// The Emacs buffer is a permanent record: materialized scrollback sits
+/// above the active area. `active_pin` tracks the top-left of the active
+/// area across redraws; `pages_in_buffer` mirrors libghostty's page list
+/// so scrollback eviction can be applied precisely by character count.
 ///
-/// Detection relies on parking the libghostty viewport at `max_offset - 1`
-/// at the end of every render (see bottom of this function).  On the next
-/// call the parked position tells us two things:
-///   - If scrollback was cleared, the viewport will have snapped back to the
-///     bottom (`offset + len == total`), so we erase and rebuild.
-///   - Otherwise, advancing the viewport by 1 lands exactly at the new
-///     active area, and `total - offset` tells us how many rows to render.
-///
-/// When `force_full` is true, the viewport region is fully re-rendered
+/// When `force_full_arg` is true, the buffer is cleared and fully rebuilt
 /// instead of using the incremental dirty-row path.
 pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: bool) !void {
     // Snapshot the buffer's mark across the destructive ops below.  Both
@@ -113,84 +124,35 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
         }
     }
 
-    const scrollbar = self.term.screens.active.pages.scrollbar();
-
     // If the font metrics or related parameters changed, the cached metrics
     // are no longer valid, so we rebuild.
     const font_info_changed = self.updateFontInfo(env);
 
     // We always reset scrollback if the number of columns changed
-    const cols_changed = if (self.pending_resize) |rz| rz.cols != self.size.cols else false;
+    const cols_changed = if (self.pending_resize) |rz|
+        rz.cols != self.term.cols
+    else
+        false;
 
-    // If we had some scrollback but the scrollbar was reset from the parked
-    // MAX - 1 position, that indicates that libghostty cleared its scrollback
-    // and we follow after by clearing too.
-    const had_scrollback = self.rows_in_buffer > scrollbar.len;
-    const scrollbar_reset = had_scrollback and scrollbar.len + scrollbar.offset == scrollbar.total;
+    // If the active screen changes, we reset scrollback
+    const screen_changed = self.rendered_screen != self.term.screens.active;
 
-    // If we had some scrollback but the scrollbar ended up at offset == 0, that
-    // means that we got so much scrolling that we scrolled all the way up to the
-    // cap and do not know how much we missed.
-    const scrollbar_hit_cap = had_scrollback and scrollbar.offset == 0;
-
-    const force_full =
-        force_full_arg or
-        font_info_changed or
-        cols_changed or
-        scrollbar_reset or
-        scrollbar_hit_cap;
-    if (force_full) {
-        env.eraseBuffer();
-        // Commit any pending resize since we're doing a rebuild anyway.
-        try self.commitResize(alloc);
-        self.rows_in_buffer = 0;
-        self.render_state.dirty = .full;
+    if (force_full_arg or font_info_changed or cols_changed or screen_changed) {
+        try self.clear(alloc, env);
     }
 
-    // Unpark the viewport. When we have scrollback the viewport is sitting at
-    // `max_offset - 1`; advance by 1 to reach the old active area, which is
-    // also where the Emacs buffer currently ends. When we have no scrollback
-    // there was no parking, so go to the top instead.
-    if (self.rows_in_buffer > self.size.rows) {
-        self.term.scrollViewport(.{ .delta = 1 });
-        env.gotoChar(env.pointMax());
-        _ = env.forwardLine(-@as(i64, @intCast(scrollbar.len)));
-    } else {
-        self.term.scrollViewport(.top);
-        env.gotoChar(env.pointMin());
-    }
-
-    const rendered_rows = try self.renderToEnd(alloc, env);
-    // Now that we rendered, even if we cleared the buffer above, we now have at
-    // least the rows in the active area:
-    self.rows_in_buffer = @max(self.rows_in_buffer, self.size.rows);
-    // But we might also have added scrollback rows - that is, rows that we
-    // rendered that was not active area. Guard the subtraction: when
-    // renderToEnd is a no-op (scrollbar.len == 0 or empty range) it returns 0,
-    // and there are no new scrollback rows to add.
-    if (rendered_rows > self.size.rows) {
-        self.rows_in_buffer += rendered_rows - self.size.rows;
-    }
+    self.gotoActiveStart(env);
+    try self.renderToEnd(alloc, env, self.active_pin.*);
 
     // If we have a pending resize, commit it now and just rerender the active
     // since the scrollback is already up to date.
     if (self.pending_resize != null) {
         try self.commitResize(alloc);
-        self.term.scrollViewport(.bottom);
         self.gotoActiveStart(env);
-        try self.render(alloc, env, 0);
-        // There is now at least self.size.rows number of rows
-        self.rows_in_buffer = @max(self.rows_in_buffer, self.size.rows);
+        try self.render(alloc, env, self.term.screens.active.pages.getTopLeft(.active), 0);
     }
 
-    // Evict old scrollback if libghostty also did
-    const libghostty_rows = self.term.screens.active.pages.total_rows;
-    if (libghostty_rows < self.rows_in_buffer) {
-        env.gotoChar(env.pointMin());
-        _ = env.forwardLine(@as(i64, @intCast(self.rows_in_buffer - libghostty_rows)));
-        env.deleteRegion(env.pointMin(), env.point());
-        self.rows_in_buffer = libghostty_rows;
-    }
+    self.evictScrollback(alloc, env);
 
     try self.renderCursor(env);
 
@@ -199,13 +161,7 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
         _ = env.f("ghostel--update-directory", .{pwd});
     }
 
-    // Park the viewport one row above the bottom. On the next render, if
-    // libghostty has cleared its scrollback the viewport will have snapped back
-    // to the bottom (`offset + len == total`), which we treat as the rebuild
-    // signal. If scrollback only grew, the parked position naturally points at
-    // the old active area, and advancing by 1 reaches the new one.
-    self.term.scrollViewport(.bottom);
-    self.term.scrollViewport(.{ .delta = -1 });
+    self.active_pin.* = self.rendered_screen.pages.getTopLeft(.active);
 }
 
 /// Read the default font and rendering parameters from Emacs, compare
@@ -543,7 +499,7 @@ fn adjustGlyph(
     // Let's check if we can claim some space after the glyph to be able to render
     // it larger than the cell size while still maintaining alignment.
     const pre_char_width = char_width;
-    while (cell.col + char_width < self.size.cols) : ({
+    while (cell.col + char_width < self.term.cols) : ({
         char_width += 1;
         slot_width = default_font_info.width * char_width;
     }) {
@@ -583,7 +539,7 @@ fn adjustGlyph(
 }
 
 /// Insert row text and apply property runs.
-fn insertRow(self: *Self, alloc: Allocator, env: emacs.Env, row: *const gt.RenderState.Row) !void {
+fn insertRow(self: *Self, alloc: Allocator, env: emacs.Env, row: *const gt.RenderState.Row) !usize {
     try self.row.build(
         alloc,
         self,
@@ -613,6 +569,8 @@ fn insertRow(self: *Self, alloc: Allocator, env: emacs.Env, row: *const gt.Rende
         const nl_pos = env.makeInteger(env.extractInteger(point) - 1);
         env.putTextProperty(nl_pos, point, "ghostel-wrap", env.t());
     }
+
+    return @intCast(row_end - row_start);
 }
 
 /// Convert a terminal column to an Emacs character offset by iterating
@@ -644,11 +602,18 @@ fn positionCursorByCell(self: *Self, env: emacs.Env, cx: u16, cy: u16) !bool {
     const pt = env.extractInteger(env.point());
     const eol = env.extractInteger(env.lineEndPosition());
     const max_chars = eol - pt;
-    env.gotoCharN(pt + @min(char_count, max_chars));
+    env.gotoChar(pt + @min(char_count, max_chars));
     return true;
 }
 
-pub fn render(self: *Self, alloc: Allocator, env: emacs.Env, skip: usize) !void {
+pub fn render(
+    self: *Self,
+    alloc: Allocator,
+    env: emacs.Env,
+    pin: gt.Pin,
+    skip: usize,
+) !void {
+    self.term.screens.active.pages.scroll(.{ .pin = pin });
     try self.render_state.update(alloc, self.term);
 
     if (self.render_state.dirty != .false) {
@@ -660,11 +625,8 @@ pub fn render(self: *Self, alloc: Allocator, env: emacs.Env, skip: usize) !void 
             formatColor(self.render_state.colors.background, &bg_hex),
         });
 
-        // Incremental redraw: only update dirty rows when possible.
-        // force_full bypasses partial mode to avoid stale rows after scrolls.
         var i: u16 = 0;
         const row_dirty = self.render_state.row_data.items(.dirty);
-
         while (i < self.render_state.rows) : ({
             // Clear per-row dirty flag
             row_dirty[i] = false;
@@ -672,19 +634,32 @@ pub fn render(self: *Self, alloc: Allocator, env: emacs.Env, skip: usize) !void 
         }) {
             if (i < skip) continue;
 
-            // Only process dirty rows
             const dirty_row = self.render_state.dirty == .full or row_dirty[i];
-            if (dirty_row) {
-                env.deleteRegion(env.point(), env.lineBeginningPosition2());
+            // Only process dirty rows, or there's no existing row
+            const eob = env.eobp();
+            if (dirty_row or eob) {
                 const row = self.render_state.row_data.get(i);
-                try self.insertRow(alloc, env, &row);
+                const page = try self.getOrAddLastPage(alloc, row.pin.node.serial);
+
+                if (eob) {
+                    // We're adding one line since we're at the end of the buffer
+                    self.rows_in_buffer += 1;
+                    page.rows += 1;
+                } else {
+                    // Line is dirty and we're not at the end of the buffer,
+                    // delete the old line.
+                    const old_line_start = env.point();
+                    const old_line_end = env.lineBeginningPosition2();
+                    const old_line_len = env.extractInteger(old_line_end) - env.extractInteger(old_line_start);
+                    page.char_len -= @intCast(old_line_len);
+                    env.deleteRegion(old_line_start, old_line_end);
+                }
+
+                page.char_len += try self.insertRow(alloc, env, &row);
             } else {
                 _ = env.forwardLine(1);
             }
         }
-
-        // If there's anything left below the viewport, delete it
-        env.deleteRegion(env.point(), env.pointMax());
 
         // Reset dirty state
         self.render_state.dirty = .false;
@@ -700,7 +675,7 @@ fn renderCursor(self: *Self, env: emacs.Env) !void {
     // X/Y are only valid when HAS_VALUE is true, so query separately
     // to avoid stopping the style batch above on NO_VALUE.
     if (self.render_state.cursor.viewport) |vp| {
-        env.gotoCharN(active_start_int);
+        env.gotoChar(active_start_int);
         _ = env.forwardLine(@as(i64, vp.y));
         if (!try self.positionCursorByCell(env, vp.x, vp.y)) {
             env.moveToColumn(@as(i64, vp.x));
@@ -719,51 +694,100 @@ fn renderCursor(self: *Self, env: emacs.Env) !void {
     });
 }
 
-// Render content from the current viewport scroll position all the way to
-// the active area at the current Emacs point.
-fn renderToEnd(self: *Self, alloc: Allocator, env: emacs.Env) !usize {
-    const scrollbar = self.term.screens.active.pages.scrollbar();
-    if (scrollbar.len == 0) return 0;
-    const offset_max = scrollbar.total - scrollbar.len;
-    // Walk from the current viewport position to offset_max in viewport-sized
-    // steps, rendering each chunk into the Emacs buffer. Consecutive positions
-    // overlap by `scrollbar.len - step` rows when the remaining range is
-    // smaller than a full viewport; `skip` tracks how many leading rows of the
-    // next position were already rendered at the tail of the previous one.
-    // After the loop the viewport sits at offset_max (the active area).
-    const total_range = scrollbar.total - scrollbar.offset;
-    const num_viewports = (total_range + scrollbar.len - 1) / scrollbar.len;
-    var skip: usize = 0;
-    var rendered_rows: usize = 0;
-    var current_offset = scrollbar.offset;
-    for (0..num_viewports) |_| {
-        try self.render(alloc, env, skip);
-        rendered_rows += (scrollbar.len - skip);
-
-        const max_step = offset_max - current_offset;
-        const step = @min(max_step, scrollbar.len);
-        skip = scrollbar.len - step;
-
-        current_offset += step;
-        self.term.scrollViewport(.{ .delta = @intCast(step) });
+// Render all pages from start_pin through the end of the active area,
+// one viewport-sized chunk per page.
+fn renderToEnd(self: *Self, alloc: Allocator, env: emacs.Env, start_pin: gt.Pin) !void {
+    const pages = &self.term.screens.active.pages;
+    var p: ?gt.Pin = start_pin;
+    while (p) |pin| : (p = pin.down(self.term.rows)) {
+        var overflow: usize = 0;
+        if (pin.node == pages.pages.last) {
+            overflow = (pin.y + self.term.rows) -| pin.node.data.size.rows;
+        }
+        try self.render(alloc, env, pin, overflow);
     }
-
-    return rendered_rows;
 }
 
 fn commitResize(self: *Self, alloc: Allocator) !void {
     if (self.pending_resize) |rz| {
         try self.term.resize(alloc, rz.cols, rz.rows);
-        self.term.width_px = std.math.mul(u32, rz.cols, rz.cell_w) catch std.math.maxInt(u32);
-        self.term.height_px = std.math.mul(u32, rz.rows, rz.cell_h) catch std.math.maxInt(u32);
-        self.size = rz;
+        self.term.width_px = std.math.mul(u32, rz.cols, rz.cell_w) catch
+            std.math.maxInt(u32);
+        self.term.height_px = std.math.mul(u32, rz.rows, rz.cell_h) catch
+            std.math.maxInt(u32);
         self.pending_resize = null;
     }
 }
 
-/// Position the Emacs point at the start of the active area: `self.size.rows`
+/// Position the Emacs point at the start of the active area: `self.term.rows`
 /// lines back from `point-max`.
 fn gotoActiveStart(self: *Self, env: emacs.Env) void {
     env.gotoChar(env.pointMax());
-    _ = env.forwardLine(-@as(i64, @intCast(self.size.rows)));
+    _ = env.forwardLine(-@as(i64, @intCast(self.term.rows)));
+}
+
+fn getOrAddLastPage(self: *Self, alloc: Allocator, serial: PageSerial) !*MaterializedPage {
+    if (self.pages_in_buffer.last) |node| {
+        const page: *MaterializedPage = @fieldParentPtr("node", node);
+        if (page.serial == serial) return page;
+    }
+
+    const page = try alloc.create(MaterializedPage);
+    page.* = .{ .serial = serial };
+    self.pages_in_buffer.append(&page.node);
+    return page;
+}
+
+fn clear(self: *Self, alloc: Allocator, env: emacs.Env) !void {
+    env.eraseBuffer();
+    self.rows_in_buffer = 0;
+    self.render_state.dirty = .full;
+    self.clearPages(alloc);
+
+    self.rendered_screen.pages.untrackPin(self.active_pin);
+
+    // Commit any pending resize since we're doing a rebuild anyway.
+    try self.commitResize(alloc);
+
+    self.rendered_screen = self.term.screens.active;
+    self.active_pin = try self.rendered_screen.pages.trackPin(
+        self.rendered_screen.pages.getTopLeft(.screen),
+    );
+}
+
+fn clearPages(self: *Self, alloc: Allocator) void {
+    while (self.pages_in_buffer.pop()) |n| {
+        alloc.destroy(@as(*MaterializedPage, @fieldParentPtr("node", n)));
+    }
+}
+
+fn evictScrollback(self: *Self, alloc: Allocator, env: emacs.Env) void {
+    const term_first_page = self.term.screens.active.pages.pages.first.?;
+    var evicted_chars: usize = 0;
+    while (self.pages_in_buffer.first) |n| {
+        const first_page: *MaterializedPage = @fieldParentPtr("node", n);
+        if (first_page.serial == term_first_page.serial) break;
+        evicted_chars += first_page.char_len;
+        self.rows_in_buffer -= first_page.rows;
+        _ = self.pages_in_buffer.popFirst();
+        alloc.destroy(first_page);
+    }
+    if (evicted_chars > 0) env.deleteRegion(1, 1 + evicted_chars);
+
+    if (self.pages_in_buffer.first) |n| {
+        const first_page: *MaterializedPage = @fieldParentPtr("node", n);
+        const term_page_rows = term_first_page.data.size.rows;
+        if (term_page_rows < first_page.rows) {
+            const diff = first_page.rows - term_first_page.data.size.rows;
+            env.gotoChar(1);
+            _ = env.forwardLine(diff);
+
+            const point = env.point();
+            env.deleteRegion(1, point);
+            const deleted_chars = env.extractInteger(point) - 1;
+            first_page.char_len -= @intCast(deleted_chars);
+            first_page.rows -= diff;
+            self.rows_in_buffer -= diff;
+        }
+    }
 }

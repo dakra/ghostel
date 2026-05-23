@@ -77,7 +77,7 @@ fn emitOnePlacement(
             // row is viewport_row + scrollback_in_buffer.  Compute it on this side
             // so the elisp callback can do a single forward-line from point-min.
             const abs_row: i64 = @as(i64, @intCast(vp_row)) +
-                @as(i64, @intCast(term.renderer.rows_in_buffer - term.renderer.size.rows));
+                @as(i64, @intCast(term.renderer.rows_in_buffer - term.terminal.rows));
             _ = env.f("ghostel--kitty-display-image", .{
                 img_val,
                 if (emacs_data.is_png) env.t() else env.nil(),

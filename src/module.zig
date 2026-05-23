@@ -492,22 +492,17 @@ fn fnRedraw(raw_env: ?*c.emacs_env, nargs: isize, args: [*c]c.emacs_value, _: ?*
         return env.nil();
     };
 
-    // `redraw' parks the libghostty viewport one row above the active
-    // area for the next-redraw incremental change detection.  Kitty
-    // placement queries report `viewport_row' relative to the current
-    // viewport, so reading them with the parked offset shifts every
-    // placement up by 1, anchoring the resulting overlay one row too
-    // low and covering the prompt that sits just below the image.
-    // Restore to the active area (SCROLL_BOTTOM) for the kitty calls,
-    // then re-park afterwards.
+    // Kitty placement queries report `viewport_row' relative to the current
+    // viewport position.  `render()' scrolls the viewport to intermediate
+    // page positions during rendering; reset it to the active area so
+    // placement row offsets are computed correctly.
     term.terminal.scrollViewport(.bottom);
-    defer term.terminal.scrollViewport(.{ .delta = -1 });
 
     // Clear viewport-region kitty overlays after redraw so the cleared
-    // region is computed against the post-promotion `scrollback_in_buffer`.
-    // Running kitty-clear before redraw would use the pre-promotion viewport
-    // boundary, wiping the overlay on the row that's about to be promoted
-    // into scrollback — exactly the row we want to keep tagged.
+    // region boundary is computed against the updated `rows_in_buffer'
+    // (which reflects any scrollback evicted during this redraw).
+    // Running kitty-clear before redraw would use the stale value and
+    // compute the wrong absolute row for the overlay boundary.
     _ = env.f("ghostel--kitty-clear", .{});
     kitty_graphics.emitPlacements(env, term) catch |err| {
         env.logStackTrace(@errorReturnTrace());
@@ -930,7 +925,7 @@ fn fnUriAt(raw_env: ?*c.emacs_env, _: isize, args: [*c]c.emacs_value, _: ?*anyop
     const col = env.extractInteger(args[2]);
     const total_rows = term.terminal.screens.active.pages.total_rows;
 
-    if (col < 0 or col >= term.renderer.size.cols) return env.nil();
+    if (col < 0 or col >= term.terminal.cols) return env.nil();
     // The Emacs buffer always carries a trailing newline, so the line
     // immediately after the last content row produces row_from_bottom == 0.
     if (row_from_bottom <= 0 or row_from_bottom > total_rows) return env.nil();

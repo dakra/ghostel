@@ -3,7 +3,6 @@
 ## Architectural guidelines
 
 - Calling `render_state.update(...)`, directly or indirectly, **consumes** dirty state from the terminal. For this reason, **only** the Renderer (in `Renderer.zig`) may do so. Any other usage of `render_state.update` **will** break the `Renderer`.
-- The viewport scroll position must always remain at the position that the `Renderer` left it at. Its position is always intentional and is used to track scrolling. Moving it and not restoring it **will** break the `Renderer`.
 - With the above in mind: If you need information from the rendering process - add ways for the `Renderer` to communicate that information as output from the rendering process. This can be in the form of text properties, buffer local variables. A last resort method is also to add callbacks, but this is more fragile and harder to follow.
 
 ## Error handling

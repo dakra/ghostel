@@ -39,8 +39,8 @@ pub fn encodeAndSend(env: emacs.Env, term: *GhostelTerm, key: Key, mods: Mods, u
 pub fn encodeAndSendMouse(env: emacs.Env, term: *GhostelTerm, action: i64, button: i64, row: i64, col: i64, mods_val: i64) !bool {
     const options = gt.input.MouseEncodeOptions.fromTerminal(&term.terminal, .{
         .screen = .{
-            .width = term.renderer.size.cols,
-            .height = term.renderer.size.rows,
+            .width = term.terminal.cols,
+            .height = term.terminal.rows,
         },
         .cell = .{ .width = 1, .height = 1 },
         .padding = .{ .top = 0, .bottom = 0, .right = 0, .left = 0 },

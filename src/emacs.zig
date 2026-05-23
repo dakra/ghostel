@@ -296,11 +296,7 @@ pub const Env = struct {
         return self.f("point", .{});
     }
 
-    pub fn gotoChar(self: Env, pos: Value) void {
-        _ = self.f("goto-char", .{pos});
-    }
-
-    pub fn gotoCharN(self: Env, pos: i64) void {
+    pub fn gotoChar(self: Env, pos: anytype) void {
         _ = self.f("goto-char", .{pos});
     }
 
@@ -308,7 +304,7 @@ pub const Env = struct {
         _ = self.f("insert", .{text});
     }
 
-    pub fn forwardLine(self: Env, n: i64) i64 {
+    pub fn forwardLine(self: Env, n: anytype) i64 {
         return self.extractInteger(self.f("forward-line", .{n}));
     }
 
@@ -348,8 +344,12 @@ pub const Env = struct {
         return self.f("set-marker", .{ marker, pos });
     }
 
-    pub fn deleteRegion(self: Env, start: Value, end: Value) void {
+    pub fn deleteRegion(self: Env, start: anytype, end: anytype) void {
         _ = self.f("delete-region", .{ start, end });
+    }
+
+    pub fn eobp(self: Env) bool {
+        return self.isNotNil(self.f("eobp", .{}));
     }
 
     pub fn putTextProperty(
@@ -434,6 +434,7 @@ pub const Env = struct {
 // ---------------------------------------------------------------------------
 
 const interned_symbols = [_][:0]const u8{
+    "eobp",
     ":background",
     ":color",
     ":error",
@@ -490,12 +491,12 @@ const interned_symbols = [_][:0]const u8{
     "ghostel--osc52-handle",
     "ghostel--query-font-cached",
     "ghostel--rendered-font",
-    "ghostel-glyph-scale-floor",
     "ghostel--set-buffer-face",
     "ghostel--set-cursor-style",
     "ghostel--set-title",
     "ghostel--update-directory",
     "ghostel-comint--update-dir",
+    "ghostel-glyph-scale-floor",
     "ghostel-input",
     "ghostel-link-map",
     "ghostel-prompt",
