@@ -13,7 +13,6 @@ pub const c = @cImport({
     @cInclude("emacs-module.h");
 });
 
-/// Emacs value type alias for convenience.
 pub const Value = c.emacs_value;
 pub const RawEnv = ?*c.emacs_env;
 pub const FnArgs = [*c]Value;
@@ -37,6 +36,15 @@ const DebugUserPtr = struct {
 /// explicitly free them before atexit fires. This allows us to check for
 /// memory leaks on exit.
 var debug_userptrs: std.ArrayList(DebugUserPtr) = .{};
+
+pub const FunctionEntry = struct {
+    name: [*:0]const u8,
+    arity: struct { i32, i32 },
+    doc: [*:0]const u8,
+    impl: type,
+};
+
+pub var current_env: ?Env = null;
 
 /// Emacs environment wrapper providing typed access to the module API.
 pub const Env = struct {
@@ -281,10 +289,28 @@ pub const Env = struct {
     }
 
     /// Register a named Elisp function backed by a C function.
-    pub fn bindFunction(self: Env, name: [*:0]const u8, min_arity: i32, max_arity: i32, func: *const fn (?*c.emacs_env, isize, [*c]c.emacs_value, ?*anyopaque) callconv(.c) c.emacs_value, docstring: [*:0]const u8) void {
-        const fun = self.makeFunction(min_arity, max_arity, func, docstring, null);
-        const name_sym = self.intern(name);
-        _ = self.funcall(sym.fset, &[_]Value{ name_sym, fun });
+    pub fn registerFunction(self: Env, entry: *const FunctionEntry) void {
+        const wrapped_fn = struct {
+            fn call(
+                raw_env: RawEnv,
+                nargs: isize,
+                args: FnArgs,
+                _: FnData,
+            ) callconv(.c) Value {
+                const env = Env.init(raw_env.?);
+                const prev_env = current_env;
+                current_env = env;
+                defer current_env = prev_env;
+                return entry.impl.call(env, nargs, args);
+            }
+        }.call;
+        const fun = self.makeFunction(entry.arity[0], entry.arity[1], &wrapped_fn, entry.doc, null);
+        _ = self.f("fset", .{ self.intern(entry.name), fun });
+    }
+
+    /// Register a named Elisp function backed by a C function.
+    pub fn registerFunctions(self: Env, entries: []const FunctionEntry) void {
+        inline for (entries) |*entry| self.registerFunction(entry);
     }
 
     /// Call (provide 'feature).

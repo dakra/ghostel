@@ -66,7 +66,7 @@ pub fn vt(
 ///
 /// PARAM is the raw options string from the OSC - elisp parses it on
 /// demand (e.g. `(string-to-number param)` for the 'D' exit code).
-fn handleSemanticPrompt(self: *Self, sp: gt.osc.Command.SemanticPrompt) void {
+fn handleSemanticPrompt(_: *Self, sp: gt.osc.Command.SemanticPrompt) void {
     const marker_char: u8 = switch (sp.action) {
         .fresh_line_new_prompt, .new_command => 'A',
         .prompt_start => 'P',
@@ -75,7 +75,7 @@ fn handleSemanticPrompt(self: *Self, sp: gt.osc.Command.SemanticPrompt) void {
         .end_command => 'D',
         else => return,
     };
-    const e = self.env() orelse return;
+    const e = emacs.current_env orelse return;
     const type_str: [1]u8 = .{marker_char};
     const param_val = if (sp.options_unvalidated.len > 0)
         e.makeString(sp.options_unvalidated)
@@ -93,7 +93,7 @@ fn handleSemanticPrompt(self: *Self, sp: gt.osc.Command.SemanticPrompt) void {
 fn handleReportPwd(self: *Self, v: gt.StreamAction.ReportPwd) void {
     if (v.url.len == 0) return;
     self.inner.terminal.setPwd(v.url) catch |err| {
-        if (self.env()) |e|
+        if (emacs.current_env) |e|
             e.logError("setPwd failed: %s", .{@errorName(err)});
     };
 }
@@ -104,10 +104,10 @@ fn handleReportPwd(self: *Self, v: gt.StreamAction.ReportPwd) void {
 
 /// Forward clipboard SET requests to Elisp.  Queries ("?") and empty
 /// payloads carry no clipboard content, so they don't cross the FFI boundary.
-fn handleClipboardContents(self: *Self, v: gt.StreamAction.ClipboardContents) void {
+fn handleClipboardContents(_: *Self, v: gt.StreamAction.ClipboardContents) void {
     if (v.data.len == 0) return;
     if (v.data.len == 1 and v.data[0] == '?') return;
-    const e = self.env() orelse return;
+    const e = emacs.current_env orelse return;
     const kind_str: [1]u8 = .{v.kind};
     _ = e.f("ghostel--osc52-handle", .{ &kind_str, v.data });
 }
@@ -120,9 +120,9 @@ fn handleClipboardContents(self: *Self, v: gt.StreamAction.ClipboardContents) vo
 /// `\x1b]777;notify;;\x1b\\`) carries no content; the elisp default
 /// handler would just show the buffer name with an empty body.  Drop
 /// it at the FFI boundary rather than pay the call for nothing.
-fn handleNotification(self: *Self, v: gt.StreamAction.ShowDesktopNotification) void {
+fn handleNotification(_: *Self, v: gt.StreamAction.ShowDesktopNotification) void {
     if (v.title.len == 0 and v.body.len == 0) return;
-    const e = self.env() orelse return;
+    const e = emacs.current_env orelse return;
     _ = e.f("ghostel--handle-notification", .{ v.title, v.body });
 }
 
@@ -131,8 +131,8 @@ fn handleNotification(self: *Self, v: gt.StreamAction.ShowDesktopNotification) v
 // ---------------------------------------------------------------------------
 
 /// Forward the state and progress verbatim from ghostty's parser.
-fn handleProgressReport(self: *Self, v: gt.osc.Command.ProgressReport) void {
-    const e = self.env() orelse return;
+fn handleProgressReport(_: *Self, v: gt.osc.Command.ProgressReport) void {
+    const e = emacs.current_env orelse return;
     const state_str: []const u8 = switch (v.state) {
         .remove => "remove",
         .set => "set",
@@ -160,7 +160,7 @@ fn handleProgressReport(self: *Self, v: gt.osc.Command.ProgressReport) void {
 /// Other dynamic colors (cursor, pointer, highlight, tektronix) are queryable through
 /// this same action but ghostel doesn't track them, so their queries silently drop.
 fn handleColorOperation(self: *Self, v: gt.StreamAction.ColorOperation) void {
-    const e = self.env() orelse return;
+    const e = emacs.current_env orelse return;
 
     var it = v.requests.constIterator(0);
     while (it.next()) |req| {
@@ -237,23 +237,4 @@ fn sendPaletteColorReply(
         },
     ) catch return;
     _ = e.f("ghostel--flush-output", .{written});
-}
-
-// ---------------------------------------------------------------------------
-// Env lookup
-// ---------------------------------------------------------------------------
-
-/// Reach back to the parent `GhostelTerm` so we can pick up its cached
-/// Emacs env.  Same pattern as `writePtyCallback` and friends in
-/// `module.zig`: the standard handler's `terminal` field points at
-/// `&GhostelTerm.terminal`, and `Self` is itself embedded in
-/// `GhostelTerm` via `Stream(Self).handler`.
-///
-/// Returns null when no Elisp call is in flight; under `zig build test`
-/// also short-circuits to null so unit tests can drive the dispatcher
-/// without standing up a real `GhostelTerm` and Emacs env.
-fn env(self: *Self) ?emacs.Env {
-    if (@import("builtin").is_test) return null;
-    const term: *GhostelTerm = @fieldParentPtr("terminal", self.inner.terminal);
-    return term.env;
 }
