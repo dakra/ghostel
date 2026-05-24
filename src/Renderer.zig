@@ -137,7 +137,18 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
     // If the active screen changes, we reset scrollback
     const screen_changed = self.rendered_screen != self.term.screens.active;
 
-    if (force_full_arg or font_info_changed or cols_changed or screen_changed) {
+    // The active pin ends up at the top of the screen when the scrollback gets
+    // cleared rather than the top of the active area. If we don't have scrollback
+    // these are obviously the same.
+    const scrollback_cleared = self.rows_in_buffer > self.term.rows and
+        self.active_pin.eql(self.rendered_screen.pages.getTopLeft(.screen));
+
+    if (force_full_arg or
+        font_info_changed or
+        cols_changed or
+        screen_changed or
+        scrollback_cleared)
+    {
         try self.clear(alloc, env);
     }
 
