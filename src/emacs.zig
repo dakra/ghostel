@@ -26,6 +26,8 @@ pub const FuncallExit = enum(c_int) {
     throw = 2,
 };
 
+var alloc: Allocator = undefined;
+
 const DebugUserPtr = struct {
     ptr: UserPtr,
     finalizer: *const Finalizer,
@@ -35,11 +37,6 @@ const DebugUserPtr = struct {
 /// explicitly free them before atexit fires. This allows us to check for
 /// memory leaks on exit.
 var debug_userptrs: std.ArrayList(DebugUserPtr) = .{};
-/// Set by the kill-emacs hook once all tracked userpts are freed; makes
-/// finalizers a no-op for any subsequent GC-driven callbacks.
-var debug_cleanup_done: bool = false;
-
-var alloc: Allocator = undefined;
 
 /// Emacs environment wrapper providing typed access to the module API.
 pub const Env = struct {
@@ -98,8 +95,13 @@ pub const Env = struct {
             if (debug_userptrs.append(alloc, .{ .ptr = ptr, .finalizer = &finalizer })) |_| {
                 const debugFinalizer = struct {
                     fn debugFinalize(p: ?*anyopaque) callconv(.c) void {
-                        if (debug_cleanup_done) return;
-                        finalizer(p);
+                        for (debug_userptrs.items, 0..) |item, i| {
+                            if (item.ptr == p) {
+                                finalizer(p);
+                                _ = debug_userptrs.orderedRemove(i);
+                                return;
+                            }
+                        }
                     }
                 }.debugFinalize;
                 return self.raw.make_user_ptr.?(self.raw, &debugFinalizer, ptr);
@@ -584,6 +586,5 @@ fn debugKillEmacsHook(_: ?*c.emacs_env, _: isize, _: [*c]c.emacs_value, _: ?*any
         user_ptr.finalizer(user_ptr.ptr);
     }
     debug_userptrs.deinit(alloc);
-    debug_cleanup_done = true;
     return sym.nil;
 }
