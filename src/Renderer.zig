@@ -153,6 +153,11 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
     }
 
     self.evictScrollback(alloc, env);
+    // Evict stale scrollback pages before rendering.  Pages that have scrolled
+    // off must be removed from pages_in_buffer before we start replacing rows,
+    // otherwise getOrAddLastPage may not find the right entry and subsequently
+    // subtract old_line_len from a freshly-allocated page whose char_len is 0,
+    // causing integer underflow.
     self.gotoActiveStart(env);
     try self.renderToEnd(alloc, env, self.active_pin.*);
 
