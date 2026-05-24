@@ -1,4 +1,5 @@
 EMACS      ?= emacs
+PYTHON     ?= python3
 # Extra flags injected before every Emacs invocation (e.g. `-L /tmp/compat'
 # in CI so older Emacs versions can find the compat library).
 EMACSFLAGS ?=
@@ -24,7 +25,7 @@ endif
 ZIG_SOURCES := $(wildcard src/*.zig src/*.c build.zig build.zig.zon symbols.map) \
                $(wildcard vendor/*.h)
 
-.PHONY: all build test test-native test-zig test-all test-evil lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel byte-compile docquotes bench bench-quick bench-e2e bench-tui-partial clean regen-terminfo
+.PHONY: all build test test-native test-zig test-hypothesis test-all test-evil lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel byte-compile docquotes bench bench-quick bench-e2e bench-tui-partial clean regen-terminfo
 
 # Recommended invocation: `make -j$(nproc) all' on Linux,
 # `make -j$(sysctl -n hw.ncpu) all' on macOS.  GNU make 4+ also accepts
@@ -38,6 +39,9 @@ $(MODULE): $(ZIG_SOURCES)
 
 test-zig:
 	zig build test
+
+test-hypothesis: build
+	$(PYTHON) -m unittest test/hypothesis/test_render.py
 
 # Pattern rule: rebuild .elc whenever its .el source is newer.
 # Make's timestamp tracking keeps the byte-compiled files in sync, so
