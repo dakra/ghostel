@@ -3456,5 +3456,56 @@ overlay property."
       (kill-buffer buf))))
 
 
+
+
+;;; Crash and internal-invariant regressions
+;;
+;; Tests for bugs that manifested as panics or internal state corruption
+;; rather than wrong visible output.  Grouped here so they don't dilute
+;; the feature-oriented sections above and have an obvious home for
+;; future additions.
+
+(ert-deftest ghostel-test-page-eviction-before-redraw ()
+  "Regression: page-serial underflow when initial active area scrolls off entirely.
+Scenario (from Hypothesis failure): 1×136 terminal, render once while
+empty (seeds pages_in_buffer with the initial blank page serial), then
+write 231 lines of 273 bytes each — each line wraps to 3 visual rows,
+so 693 total rows cross the libghostty page boundary and force the
+active row onto a fresh internal page.  The second redraw must be
+incremental (no force-full) so the buffer is not cleared: the renderer
+then has existing buffer content to replace rather than append, and
+without evicting stale pages_in_buffer entries before rendering it
+subtracts old_line_len from the newly-created page whose char_len is
+0, causing integer underflow at Renderer.zig:654."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-page-evict*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 1 136 16384))
+                 (inhibit-read-only t)
+                 ;; 273-byte lines wrap to 3 visual rows in a 136-col
+                 ;; terminal (136+136+1), so 231 lines = 693 rows
+                 ;; which exceeds the libghostty page capacity and
+                 ;; forces allocation of a new internal page.
+                 (line (concat (make-string 273 ?x) "\r\n")))
+            ;; Render once while empty — seeds pages_in_buffer with
+            ;; the initial (blank) page serial.
+            (ghostel--redraw term t)
+            ;; Write enough wrapped lines to push the active row onto
+            ;; a new libghostty page.
+            (dotimes (_ 231)
+              (ghostel--write-input term line))
+            ;; Incremental redraw (no force-full): the buffer retains
+            ;; the content from the first render, so the renderer takes
+            ;; the replace path.  Without the fix it underflows
+            ;; char_len, signalling an error from the native module.
+            (ghostel--redraw term)
+            ;; Sanity: the active row content is present in the buffer.
+            (should (string-match-p "x"
+                                    (buffer-substring-no-properties
+                                     (point-min) (point-max))))))
+      (kill-buffer buf))))
+
+
 (provide 'ghostel-render-test)
 ;;; ghostel-render-test.el ends here

@@ -141,6 +141,7 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
         try self.clear(alloc, env);
     }
 
+    self.evictScrollback(alloc, env);
     self.gotoActiveStart(env);
     try self.renderToEnd(alloc, env, self.active_pin.*);
 
@@ -150,9 +151,8 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
         try self.commitResize(alloc);
         self.gotoActiveStart(env);
         try self.render(alloc, env, self.term.screens.active.pages.getTopLeft(.active), 0);
+        self.evictScrollback(alloc, env);
     }
-
-    self.evictScrollback(alloc, env);
 
     try self.renderCursor(env);
 
