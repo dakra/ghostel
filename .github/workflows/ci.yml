@@ -219,3 +219,39 @@ jobs:
           make -j$(getconf _NPROCESSORS_ONLN) \
             EMACSFLAGS="-L /tmp/compat" \
             test-native
+
+  test-native-debug:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: purcell/setup-emacs@master
+        with:
+          version: '29.4'
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install zsh and fish
+        run: sudo apt-get install -y zsh fish
+
+      - name: Install compat
+        run: git clone --depth 1 https://github.com/emacs-compat/compat.git /tmp/compat
+
+      - name: Build native module (Debug)
+        # Use ReleaseFast for the ghostty dependency (heavy C++ SIMD code) to
+        # avoid OOM on the CI runner while still building ghostel in Debug mode.
+        # Debug mode enables the DebugAllocator (corruption/leak detection)
+        # and preserves stack traces, in addition to Zig's safety checks for
+        # integer overflow and out-of-bounds that ReleaseFast silently wraps.
+        run: zig build -Doptimize=Debug -Dghostty-optimize=ReleaseFast -Dcpu=baseline
+
+      - name: Run native module tests (Debug)
+        # The module was just built so make sees it as up-to-date.
+        run: |
+          make -j$(getconf _NPROCESSORS_ONLN) \
+            EMACSFLAGS="-L /tmp/compat" \
+            test-native
