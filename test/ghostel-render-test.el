@@ -1499,6 +1499,59 @@ single redraw):
               (should (string-match-p "after-04" content)))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-scrollback-csi3j-refill-same-count ()
+  "CSI 3 J plus same-count refill must drop stale cleared scrollback.
+
+Regression shape: the pre-clear and post-refill buffers have the same
+number of materialized scrollback rows, so a renderer that only compares
+counts can leave the old scrollback text in place.  Rows that were in the
+active viewport when CSI 3J ran may legitimately scroll into the new
+scrollback; rows that were already in scrollback must not survive."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-csi3j-same-count*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 80 1000))
+                 (inhibit-read-only t))
+            ;; Phase 1: 10 rows in a 5-row terminal gives 6 materialized
+            ;; scrollback rows (old-sb-00..old-sb-05) after redraw, with
+            ;; old-vp-06..old-vp-09 in the active viewport.
+            (dotimes (i 6)
+              (ghostel--write-input term (format "old-sb-%02d\r\n" i)))
+            (dotimes (i 4)
+              (ghostel--write-input term (format "old-vp-%02d\r\n" (+ i 6))))
+            (ghostel--redraw term t)
+            (let ((before (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p "old-sb-00" before))
+              (should (string-match-p "old-sb-05" before))
+              (should (string-match-p "old-vp-09" before)))
+            ;; Phase 2: clear scrollback and, before the next redraw, write
+            ;; enough rows to recreate exactly 6 scrollback rows: the 4 old
+            ;; viewport rows plus new-00 and new-01.  This keeps the row count
+            ;; unchanged while changing the contents of the cleared region.
+            (ghostel--write-input
+             term
+             (concat "\e[3J"
+                     (mapconcat (lambda (i) (format "new-%02d\r\n" i))
+                                (number-sequence 0 5) "")))
+            ;; Phase 3: incremental redraw must notice the cleared/refilled
+            ;; scrollback, not reuse stale pre-clear rows just because the
+            ;; materialized row count stayed the same.
+            (ghostel--redraw term)
+            (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+              ;; Rows that were in scrollback when CSI 3J fired are gone.
+              (should-not (string-match-p "old-sb-00" content))
+              (should-not (string-match-p "old-sb-05" content))
+              ;; Rows from the active viewport at CSI 3J time legitimately
+              ;; scrolled into the new scrollback.
+              (should (string-match-p "old-vp-06" content))
+              (should (string-match-p "old-vp-09" content))
+              ;; The refill rows are present too, with new-00/new-01 in
+              ;; scrollback and the rest in the viewport.
+              (should (string-match-p "new-00" content))
+              (should (string-match-p "new-05" content)))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-clear-scrollback-resets-scroll-state ()
   "`ghostel-clear-scrollback' drops recorded scroll positions.
 After the buffer is wiped, the old content no longer exists, so the
