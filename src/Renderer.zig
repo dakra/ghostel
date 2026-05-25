@@ -639,7 +639,7 @@ pub fn render(
             formatColor(self.render_state.colors.background, &bg_hex),
         });
 
-        var i: u16 = 0;
+        var i: usize = 0;
         const row_dirty = self.render_state.row_data.items(.dirty);
         while (i < self.render_state.rows) : ({
             // Clear per-row dirty flag
@@ -665,7 +665,7 @@ pub fn render(
                     const old_line_start = env.point();
                     const old_line_end = env.lineBeginningPosition2();
                     const old_line_len = env.extractInteger(old_line_end) - env.extractInteger(old_line_start);
-                    page.char_len -= @intCast(old_line_len);
+                    page.char_len -|= @intCast(old_line_len);
                     env.deleteRegion(old_line_start, old_line_end);
                 }
 
@@ -782,7 +782,7 @@ fn evictScrollback(self: *Self, alloc: Allocator, env: emacs.Env) void {
         const first_page: *MaterializedPage = @fieldParentPtr("node", n);
         if (first_page.serial == term_first_page.serial) break;
         evicted_chars += first_page.char_len;
-        self.rows_in_buffer -= first_page.rows;
+        self.rows_in_buffer -|= first_page.rows;
         _ = self.pages_in_buffer.popFirst();
         alloc.destroy(first_page);
     }
@@ -799,7 +799,7 @@ fn evictScrollback(self: *Self, alloc: Allocator, env: emacs.Env) void {
             const point = env.point();
             env.deleteRegion(1, point);
             const deleted_chars = env.extractInteger(point) - 1;
-            first_page.char_len -= @intCast(deleted_chars);
+            first_page.char_len -|= @intCast(deleted_chars);
             first_page.rows -= diff;
             self.rows_in_buffer -= diff;
         }
