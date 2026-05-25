@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import selectors
+import shlex
 import subprocess
 import threading
 import time
@@ -27,6 +28,7 @@ except ImportError as exc:  # pragma: no cover - exercised by the test runner en
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EMACS = os.environ.get("EMACS", "emacs")
+EMACSFLAGS = shlex.split(os.environ.get("EMACSFLAGS", ""))
 MAX_EXAMPLES = int(os.environ.get("GHOSTEL_HYPOTHESIS_EXAMPLES", "100"))
 CASE_TIMEOUT = float(os.environ.get("GHOSTEL_HYPOTHESIS_TIMEOUT", "30"))
 CASES_DIR = Path(
@@ -496,6 +498,7 @@ class EmacsGhostelRunner:
         cmd = [
             EMACS,
             "--batch",
+            *EMACSFLAGS,
             "-Q",
             "-L",
             "lisp",

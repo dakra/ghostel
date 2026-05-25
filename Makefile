@@ -3,6 +3,7 @@ PYTHON     ?= python3
 # Extra flags injected before every Emacs invocation (e.g. `-L /tmp/compat'
 # in CI so older Emacs versions can find the compat library).
 EMACSFLAGS ?=
+export EMACSFLAGS
 
 XDG_CACHE_HOME ?= $(HOME)/.cache
 MELPAZOID_DIR  ?= $(XDG_CACHE_HOME)/melpazoid
