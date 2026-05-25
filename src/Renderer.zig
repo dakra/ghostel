@@ -162,7 +162,7 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
     if (self.pending_resize != null) {
         try self.commitResize(alloc);
         self.gotoActiveStart(env);
-        try self.render(alloc, env, self.term.screens.active.pages.getTopLeft(.active), 0);
+        try self.render(alloc, env, self.term.screens.active.pages.getTopLeft(.active));
         self.evictScrollback(alloc, env);
     }
 
@@ -625,7 +625,6 @@ pub fn render(
     alloc: Allocator,
     env: emacs.Env,
     pin: gt.Pin,
-    skip: usize,
 ) !void {
     self.term.screens.active.pages.scroll(.{ .pin = pin });
     try self.render_state.update(alloc, self.term);
@@ -638,6 +637,11 @@ pub fn render(
             formatColor(self.render_state.colors.foreground, &fg_hex),
             formatColor(self.render_state.colors.background, &bg_hex),
         });
+
+        const skip = switch (pin.downOverflow(self.term.rows)) {
+            .overflow => |of| of.remaining - 1,
+            else => 0,
+        };
 
         var i: usize = 0;
         const row_dirty = self.render_state.row_data.items(.dirty);
@@ -711,14 +715,9 @@ fn renderCursor(self: *Self, env: emacs.Env) !void {
 // Render all pages from start_pin through the end of the active area,
 // one viewport-sized chunk per page.
 fn renderToEnd(self: *Self, alloc: Allocator, env: emacs.Env, start_pin: gt.Pin) !void {
-    const pages = &self.term.screens.active.pages;
     var p: ?gt.Pin = start_pin;
     while (p) |pin| : (p = pin.down(self.term.rows)) {
-        var overflow: usize = 0;
-        if (pin.node == pages.pages.last) {
-            overflow = (pin.y + self.term.rows) -| pin.node.data.size.rows;
-        }
-        try self.render(alloc, env, pin, overflow);
+        try self.render(alloc, env, pin);
     }
 }
 
