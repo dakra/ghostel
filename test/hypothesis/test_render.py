@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import collections
+import hashlib
 import json
 import os
 import selectors
@@ -28,6 +29,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EMACS = os.environ.get("EMACS", "emacs")
 MAX_EXAMPLES = int(os.environ.get("GHOSTEL_HYPOTHESIS_EXAMPLES", "100"))
 CASE_TIMEOUT = float(os.environ.get("GHOSTEL_HYPOTHESIS_TIMEOUT", "30"))
+CASES_DIR = Path(
+    os.environ.get("GHOSTEL_HYPOTHESIS_CASES_DIR", REPO_ROOT / "test/hypothesis/cases")
+)
+FAILURE_ARTIFACTS_DIR = Path(
+    os.environ.get(
+        "GHOSTEL_HYPOTHESIS_FAILURE_DIR", "/private/tmp/ghostel-hypothesis-failure"
+    )
+)
 
 TEXT_ALPHABET = (
     "abcdefghijklmnopqrstuvwxyz"
@@ -313,10 +322,7 @@ def render_case(draw: st.DrawFn) -> RenderCase:
     for _ in range(batch_count):
         ops.extend(draw(redraw_batch(rows, cols)))
     payload = {"rows": rows, "cols": cols, "scrollback": scrollback, "ops": ops}
-    write_count = sum(1 for op in ops if op.get("op") == "write")
-    redraw_count = sum(1 for op in ops if op.get("op") == "redraw")
-    total_bytes = sum(write_bytes(op) for op in ops)
-    return RenderCase(payload, total_bytes, write_count, redraw_count)
+    return RenderCase.from_payload(payload)
 
 
 def write_bytes(op: dict[str, str]) -> int:
@@ -341,6 +347,21 @@ class RenderCase:
         self.write_count = write_count
         self.redraw_count = redraw_count
 
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> RenderCase:
+        """Return a render case with metrics computed from PAYLOAD."""
+        ops = payload["ops"]
+        if not isinstance(ops, list):
+            raise TypeError(f"case ops must be a list, got {type(ops).__name__}")
+        write_count = sum(
+            1 for op in ops if isinstance(op, dict) and op.get("op") == "write"
+        )
+        redraw_count = sum(
+            1 for op in ops if isinstance(op, dict) and op.get("op") == "redraw"
+        )
+        total_bytes = sum(write_bytes(op) for op in ops if isinstance(op, dict))
+        return cls(payload, total_bytes, write_count, redraw_count)
+
     def __repr__(self) -> str:
         return (
             "RenderCase("
@@ -358,6 +379,33 @@ class RenderCase:
 def case_json(case: dict[str, object]) -> str:
     """Return CASE encoded as compact JSON."""
     return json.dumps(case, ensure_ascii=False, separators=(",", ":"))
+
+
+def case_digest(case: RenderCase) -> str:
+    """Return a stable short digest for CASE."""
+    return hashlib.sha256(case_json(case.payload).encode("utf-8")).hexdigest()[:16]
+
+
+def save_regression_case(case: RenderCase) -> Path:
+    """Save CASE in the committed regression corpus and return its path."""
+    CASES_DIR.mkdir(parents=True, exist_ok=True)
+    path = CASES_DIR / f"render-{case_digest(case)}.json"
+    path.write_text(case_json(case.payload) + "\n", encoding="utf-8")
+    return path
+
+
+def load_render_case(path: Path) -> RenderCase:
+    """Load one saved render regression case from PATH."""
+    with path.open(encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise TypeError(f"case file {path} must contain a JSON object")
+    return RenderCase.from_payload(payload)
+
+
+def saved_case_files() -> list[Path]:
+    """Return saved render regression case files."""
+    return sorted(CASES_DIR.glob("*.json"))
 
 
 def first_difference(left: str, right: str) -> Optional[int]:
@@ -405,19 +453,23 @@ def write_failure_artifacts(
     case: RenderCase,
     incremental: Optional[str],
     full: Optional[str],
-) -> Path:
-    """Write replay/debug artifacts for a failing CASE and return the directory."""
-    failure_dir = Path("/private/tmp/ghostel-hypothesis-failure")
-    failure_dir.mkdir(parents=True, exist_ok=True)
-    (failure_dir / "case.json").write_text(
+) -> tuple[Path, Path]:
+    """Write replay/debug artifacts and save CASE to the regression corpus."""
+    saved_case = save_regression_case(case)
+    FAILURE_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    (FAILURE_ARTIFACTS_DIR / "case.json").write_text(
         case_json(case.payload) + "\n", encoding="utf-8"
     )
-    (failure_dir / "summary.txt").write_text(repr(case) + "\n", encoding="utf-8")
+    (FAILURE_ARTIFACTS_DIR / "summary.txt").write_text(
+        repr(case) + "\n", encoding="utf-8"
+    )
     if incremental is not None:
-        (failure_dir / "incremental.txt").write_text(incremental, encoding="utf-8")
+        (FAILURE_ARTIFACTS_DIR / "incremental.txt").write_text(
+            incremental, encoding="utf-8"
+        )
     if full is not None:
-        (failure_dir / "full.txt").write_text(full, encoding="utf-8")
-    return failure_dir
+        (FAILURE_ARTIFACTS_DIR / "full.txt").write_text(full, encoding="utf-8")
+    return FAILURE_ARTIFACTS_DIR, saved_case
 
 
 def failure_visualization(incremental: str, full: str) -> list[str]:
@@ -531,7 +583,8 @@ class EmacsGhostelRunner:
             line = self.proc.stdout.readline()
             if line == "":
                 raise RuntimeError(
-                    f"Emacs stdout closed with {self.proc.poll()}. stderr tail:\n{self.stderr_tail()}"
+                    f"Emacs stdout closed with {self.proc.poll()}. "
+                    f"stderr tail:\n{self.stderr_tail()}"
                 )
             try:
                 value = json.loads(line)
@@ -541,6 +594,104 @@ class EmacsGhostelRunner:
                 continue
             if isinstance(value, dict):
                 return value
+
+
+def remember_failure_case(
+    test: unittest.TestCase,
+    case: RenderCase,
+    incremental: Optional[str],
+    full: Optional[str],
+) -> None:
+    """Remember CASE as the latest failing generated case for TEST."""
+    setattr(test, "_ghostel_hypothesis_failure", (case, incremental, full))
+
+
+def assert_render_case_ok(
+    test: unittest.TestCase,
+    runner: EmacsGhostelRunner,
+    case: RenderCase,
+    label: str,
+    *,
+    save_artifacts: bool = True,
+) -> None:
+    """Fail TEST if CASE does not preserve content across a full redraw."""
+    try:
+        result = runner.run_case(case)
+    except Exception as exc:  # pragma: no cover - exercised by failing cases
+        if not save_artifacts:
+            remember_failure_case(test, case, None, None)
+            test.fail(f"Emacs failed while running {label}: {exc}")
+        failure_dir, saved_case = write_failure_artifacts(case, None, None)
+        test.fail(
+            "\n".join(
+                [
+                    f"Emacs failed while running {label}: {exc}",
+                    f"saved regression case: {saved_case}",
+                    f"failure artifacts: {failure_dir}",
+                    f"  case:        {failure_dir / 'case.json'}",
+                    f"stderr tail:\n{runner.stderr_tail()}",
+                ]
+            )
+        )
+
+    if result.get("ok") is True:
+        return
+
+    message = [f"Emacs reported render failure for {label}: {result.get('kind')}"]
+    incremental = None
+    full = None
+    if "error" in result:
+        message.append(str(result["error"]))
+    if "incremental" in result and "full" in result:
+        incremental = base64.b64decode(str(result["incremental"])).decode(
+            "utf-8", "replace"
+        )
+        full = base64.b64decode(str(result["full"])).decode("utf-8", "replace")
+        message.extend(failure_visualization(incremental, full))
+    if not save_artifacts:
+        remember_failure_case(test, case, incremental, full)
+        message.append(f"stderr tail:\n{runner.stderr_tail()}")
+        test.fail("\n".join(message))
+    failure_dir, saved_case = write_failure_artifacts(case, incremental, full)
+    message.append(f"saved regression case: {saved_case}")
+    message.append(f"failure artifacts: {failure_dir}")
+    message.append(f"  case:        {failure_dir / 'case.json'}")
+    if incremental is not None and full is not None:
+        message.append(f"  incremental: {failure_dir / 'incremental.txt'}")
+        message.append(f"  full:        {failure_dir / 'full.txt'}")
+    message.append(f"stderr tail:\n{runner.stderr_tail()}")
+    test.fail("\n".join(message))
+
+
+class RenderSavedCaseRegressionTest(unittest.TestCase):
+    """Regression tests for cases saved from prior Hypothesis failures."""
+
+    runner: EmacsGhostelRunner
+    case_files: list[Path]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.case_files = saved_case_files()
+        if not cls.case_files:
+            raise unittest.SkipTest(f"no saved Hypothesis cases in {CASES_DIR}")
+        cls.runner = EmacsGhostelRunner()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        runner = getattr(cls, "runner", None)
+        if runner is not None:
+            runner.close()
+
+    def test_saved_render_cases(self) -> None:
+        """Saved failing cases must remain fixed."""
+        for case_file in self.case_files:
+            with self.subTest(case=str(case_file)):
+                assert_render_case_ok(
+                    self,
+                    self.runner,
+                    load_render_case(case_file),
+                    str(case_file),
+                )
 
 
 class RenderConsistencyPropertyTest(unittest.TestCase):
@@ -556,6 +707,30 @@ class RenderConsistencyPropertyTest(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.runner.close()
 
+    def test_full_redraw_does_not_change_buffer_content(self) -> None:
+        """A full redraw after incremental redraws must preserve buffer text."""
+        if hasattr(self, "_ghostel_hypothesis_failure"):
+            delattr(self, "_ghostel_hypothesis_failure")
+        try:
+            self._check_full_redraw_does_not_change_buffer_content()
+        except Exception as exc:
+            failure = getattr(self, "_ghostel_hypothesis_failure", None)
+            if failure is None:
+                raise
+            case, incremental, full = failure
+            failure_dir, saved_case = write_failure_artifacts(case, incremental, full)
+            message = [
+                str(exc),
+                "",
+                f"saved regression case: {saved_case}",
+                f"failure artifacts: {failure_dir}",
+                f"  case:        {failure_dir / 'case.json'}",
+            ]
+            if incremental is not None and full is not None:
+                message.append(f"  incremental: {failure_dir / 'incremental.txt'}")
+                message.append(f"  full:        {failure_dir / 'full.txt'}")
+            raise AssertionError("\n".join(message)) from exc
+
     @settings(
         max_examples=MAX_EXAMPLES,
         deadline=None,
@@ -563,8 +738,10 @@ class RenderConsistencyPropertyTest(unittest.TestCase):
         verbosity=Verbosity.verbose,
     )
     @given(case=render_case())
-    def test_full_redraw_does_not_change_buffer_content(self, case: RenderCase) -> None:
-        """A full redraw after incremental redraws must preserve buffer text."""
+    def _check_full_redraw_does_not_change_buffer_content(
+        self, case: RenderCase
+    ) -> None:
+        """Check one generated render case."""
         ops = case.payload["ops"]
         assert isinstance(ops, list)
 
@@ -576,29 +753,9 @@ class RenderConsistencyPropertyTest(unittest.TestCase):
         event(f"redraws={case.redraw_count}")
         note(repr(case))
 
-        result = self.runner.run_case(case)
-        if result.get("ok") is True:
-            return
-
-        message = [f"Emacs reported render property failure: {result.get('kind')}"]
-        incremental = None
-        full = None
-        if "error" in result:
-            message.append(str(result["error"]))
-        if "incremental" in result and "full" in result:
-            incremental = base64.b64decode(str(result["incremental"])).decode(
-                "utf-8", "replace"
-            )
-            full = base64.b64decode(str(result["full"])).decode("utf-8", "replace")
-            message.extend(failure_visualization(incremental, full))
-        failure_dir = write_failure_artifacts(case, incremental, full)
-        message.append(f"failure artifacts: {failure_dir}")
-        message.append(f"  case:        {failure_dir / 'case.json'}")
-        if incremental is not None and full is not None:
-            message.append(f"  incremental: {failure_dir / 'incremental.txt'}")
-            message.append(f"  full:        {failure_dir / 'full.txt'}")
-        message.append(f"stderr tail:\n{self.runner.stderr_tail()}")
-        self.fail("\n".join(message))
+        assert_render_case_ok(
+            self, self.runner, case, repr(case), save_artifacts=False
+        )
 
 
 if __name__ == "__main__":

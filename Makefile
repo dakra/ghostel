@@ -25,7 +25,7 @@ endif
 ZIG_SOURCES := $(wildcard src/*.zig src/*.c build.zig build.zig.zon symbols.map) \
                $(wildcard vendor/*.h)
 
-.PHONY: all build test test-native test-zig test-hypothesis test-all test-evil lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel byte-compile docquotes bench bench-quick bench-e2e bench-tui-partial clean regen-terminfo
+.PHONY: all build test test-native test-zig test-hypothesis test-hypothesis-cases test-all test-evil lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel byte-compile docquotes bench bench-quick bench-e2e bench-tui-partial clean regen-terminfo
 
 # Recommended invocation: `make -j$(nproc) all' on Linux,
 # `make -j$(sysctl -n hw.ncpu) all' on macOS.  GNU make 4+ also accepts
@@ -42,6 +42,9 @@ test-zig:
 
 test-hypothesis: build
 	$(PYTHON) -m unittest test/hypothesis/test_render.py
+
+test-hypothesis-cases: build
+	cd test/hypothesis && $(PYTHON) -m unittest test_render.RenderSavedCaseRegressionTest
 
 # Pattern rule: rebuild .elc whenever its .el source is newer.
 # Make's timestamp tracking keeps the byte-compiled files in sync, so
