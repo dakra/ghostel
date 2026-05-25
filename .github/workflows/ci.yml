@@ -219,3 +219,30 @@ jobs:
           make -j$(getconf _NPROCESSORS_ONLN) \
             EMACSFLAGS="-L /tmp/compat" \
             test-native
+
+  test-hypothesis-cases:
+    needs: build-native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: purcell/setup-emacs@master
+        with:
+          version: '29.4'
+
+      - name: Download native module
+        uses: actions/download-artifact@v4
+        with:
+          name: ghostel-module-x86_64-linux
+
+      - name: Mark pre-built module as up-to-date
+        run: touch ghostel-module.so
+
+      - name: Install compat
+        run: git clone --depth 1 https://github.com/emacs-compat/compat.git /tmp/compat
+
+      - name: Install Hypothesis test dependencies
+        run: python3 -m pip install -r test/hypothesis/requirements.txt
+
+      - name: Run saved Hypothesis regression cases
+        run: |
+          make EMACSFLAGS="-L /tmp/compat" test-hypothesis-cases
