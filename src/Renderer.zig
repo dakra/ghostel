@@ -5,6 +5,7 @@
 /// Emacs buffer.  See `redraw' below for the per-redraw algorithm
 /// (pin-based scrollback sync, dirty-row reuse).
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const emacs = @import("emacs.zig");
 const gt = @import("ghostty-vt");
@@ -173,6 +174,8 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
     }
 
     self.active_pin.* = self.rendered_screen.pages.getTopLeft(.active);
+
+    std.debug.assert(self.rows_in_buffer == self.term.screens.active.pages.total_rows);
 }
 
 /// Read the default font and rendering parameters from Emacs, compare
