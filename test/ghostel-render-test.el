@@ -1837,6 +1837,26 @@ and `forward-line' for clean ones.  Only the dirty row loses the sentinel."
 
 
 
+;;; Alt-screen rendering invariants
+
+(ert-deftest ghostel-test-alt-screen-overflow-line-count ()
+  "Overflowing an alt-screen scroll region does not grow the buffer."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-alt-overflow-lines*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 80 1000))
+                 (inhibit-read-only t))
+            (ghostel--write-input term "\e[?1049h")
+            (ghostel--write-input term "\e[1;3r")
+            (dotimes (i 10)
+              (ghostel--write-input term (format "ROW-%02d\r\n" i)))
+            (ghostel--redraw term t)
+            (should (= 5 (count-lines (point-min) (point-max))))))
+      (kill-buffer buf))))
+
+
+
 ;;; Resize rendering
 
 (ert-deftest ghostel-test-content-preserved-across-vertical-resizes ()
@@ -1893,6 +1913,40 @@ the written content; all remaining lines must be empty."
               (should (equal ""
                              (buffer-substring-no-properties
                               (line-beginning-position) (line-end-position)))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-alt-screen-vertical-shrink-line-count ()
+  "Shrinking the alt-screen viewport leaves exactly the new row count."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-alt-shrink-lines*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 80 1000))
+                 (inhibit-read-only t))
+            (ghostel--write-input term "\e[?1049h")
+            (dotimes (i 5)
+              (ghostel--write-input term (format "\e[%d;1HROW-%d" (1+ i) i)))
+            (ghostel--redraw term t)
+            (ghostel--set-size term 3 80)
+            (ghostel--redraw term)
+            (should (= 3 (count-lines (point-min) (point-max))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-alt-screen-vertical-grow-line-count ()
+  "Growing the alt-screen viewport leaves exactly the new row count."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-alt-grow-lines*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 3 80 1000))
+                 (inhibit-read-only t))
+            (ghostel--write-input term "\e[?1049h")
+            (dotimes (i 3)
+              (ghostel--write-input term (format "\e[%d;1HROW-%d" (1+ i) i)))
+            (ghostel--redraw term t)
+            (ghostel--set-size term 5 80)
+            (ghostel--redraw term)
+            (should (= 5 (count-lines (point-min) (point-max))))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-resize-no-blank-flash ()
