@@ -85,6 +85,11 @@ def write_op(data: bytes) -> dict[str, str]:
     return {"op": "write", "data": b64(data)}
 
 
+def resize_op(delta_rows: int, delta_cols: int) -> dict[str, int]:
+    """Return a resize operation with relative row/column deltas."""
+    return {"op": "resize", "delta_rows": delta_rows, "delta_cols": delta_cols}
+
+
 def repeated(pattern: bytes, length: int) -> bytes:
     """Return PATTERN repeated and truncated to LENGTH bytes."""
     if length <= 0:
@@ -281,9 +286,26 @@ def write_chunk(draw: st.DrawFn, rows: int, cols: int) -> bytes:
 
 
 @st.composite
-def redraw_batch(draw: st.DrawFn, rows: int, cols: int) -> list[dict[str, str]]:
-    """Generate [0-N writes, redraw]."""
-    write_count = draw(
+def terminal_operation(draw: st.DrawFn, rows: int, cols: int) -> tuple[dict[str, object], int, int]:
+    """Generate one terminal operation (write or resize) and return (op, new_rows, new_cols)."""
+    is_resize = draw(st.booleans())
+    if is_resize:
+        delta_rows = draw(st.integers(min_value=max(-rows + 1, -10), max_value=15))
+        delta_cols = draw(st.integers(min_value=max(-cols + 1, -20), max_value=30))
+        new_rows = max(1, rows + delta_rows)
+        new_cols = max(1, cols + delta_cols)
+        return resize_op(delta_rows, delta_cols), new_rows, new_cols
+    else:
+        return write_op(draw(write_chunk(rows, cols))), rows, cols
+
+
+@st.composite
+def redraw_batch(draw: st.DrawFn, rows: int, cols: int) -> list[dict[str, object]]:
+    """Generate [0-N writes/resizes, redraw]."""
+    ops: list[dict[str, object]] = []
+    current_rows, current_cols = rows, cols
+
+    op_count = draw(
         st.one_of(
             st.just(0),
             st.integers(min_value=1, max_value=3),
@@ -291,7 +313,12 @@ def redraw_batch(draw: st.DrawFn, rows: int, cols: int) -> list[dict[str, str]]:
             st.integers(min_value=4, max_value=12),
         )
     )
-    ops = [write_op(draw(write_chunk(rows, cols))) for _ in range(write_count)]
+    for _ in range(op_count):
+        op, current_rows, current_cols = draw(
+            terminal_operation(current_rows, current_cols)
+        )
+        ops.append(op)
+
     ops.append({"op": "redraw"})
     return ops
 
@@ -343,11 +370,13 @@ class RenderCase:
         total_bytes: int,
         write_count: int,
         redraw_count: int,
+        resize_count: int,
     ) -> None:
         self.payload = payload
         self.total_bytes = total_bytes
         self.write_count = write_count
         self.redraw_count = redraw_count
+        self.resize_count = resize_count
 
     @classmethod
     def from_payload(cls, payload: dict[str, object]) -> RenderCase:
@@ -361,8 +390,11 @@ class RenderCase:
         redraw_count = sum(
             1 for op in ops if isinstance(op, dict) and op.get("op") == "redraw"
         )
+        resize_count = sum(
+            1 for op in ops if isinstance(op, dict) and op.get("op") == "resize"
+        )
         total_bytes = sum(write_bytes(op) for op in ops if isinstance(op, dict))
-        return cls(payload, total_bytes, write_count, redraw_count)
+        return cls(payload, total_bytes, write_count, redraw_count, resize_count)
 
     def __repr__(self) -> str:
         return (
@@ -372,6 +404,7 @@ class RenderCase:
             f"scrollback={self.payload['scrollback']}, "
             f"ops={len(self.payload['ops'])}, "
             f"writes={self.write_count}, "
+            f"resizes={self.resize_count}, "
             f"redraws={self.redraw_count}, "
             f"bytes={self.total_bytes}"
             ")"
@@ -750,9 +783,11 @@ class RenderConsistencyPropertyTest(unittest.TestCase):
 
         target(case.total_bytes, label="input bytes")
         target(case.write_count, label="write ops")
+        target(case.resize_count, label="resize ops")
         target(case.redraw_count, label="redraw checkpoints")
         event(f"bytes={case.total_bytes.bit_length()} bits")
         event(f"writes={case.write_count}")
+        event(f"resizes={case.resize_count}")
         event(f"redraws={case.redraw_count}")
         note(repr(case))
 

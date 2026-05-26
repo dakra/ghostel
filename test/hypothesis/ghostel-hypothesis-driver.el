@@ -35,9 +35,9 @@ PAIRS is a plist whose keys are encoded without the leading colon."
 (defun ghostel-hypothesis-run-case (case)
   "Run one render consistency CASE and return a JSON-encodable alist.
 CASE is parsed from Python JSON.  It has `rows', `cols', optional
-`scrollback', and `ops'.  Each op is either a write operation with
-base64 data or a redraw operation.  After all ops, a final incremental
-redraw is compared with a full redraw."
+`scrollback', and `ops'.  Each op is a write operation with base64 data,
+a resize operation with delta_rows/delta_cols, or a redraw operation.
+After all ops, a final incremental redraw is compared with a full redraw."
   (let* ((rows (ghostel-hypothesis--get case "rows"))
          (cols (ghostel-hypothesis--get case "cols"))
          (ops (ghostel-hypothesis--get case "ops"))
@@ -64,6 +64,14 @@ redraw is compared with a full redraw."
                    term
                    (base64-decode-string
                     (ghostel-hypothesis--get op "data"))))
+                 ((equal kind "resize")
+                  (let* ((delta-rows (ghostel-hypothesis--get op "delta_rows"))
+                         (delta-cols (ghostel-hypothesis--get op "delta_cols"))
+                         (new-rows (max 1 (+ ghostel--term-rows delta-rows)))
+                         (new-cols (max 1 (+ ghostel--term-cols delta-cols))))
+                    (ghostel--set-size term new-rows new-cols)
+                    (setq ghostel--term-rows new-rows)
+                    (setq ghostel--term-cols new-cols)))
                  ((equal kind "redraw")
                   (ghostel--redraw term nil))
                  (t
