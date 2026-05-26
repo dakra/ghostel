@@ -126,37 +126,7 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
         }
     }
 
-    // If the font metrics or related parameters changed, the cached metrics
-    // are no longer valid, so we rebuild.
-    const font_info_changed = self.updateFontInfo(env);
-
-    // We always do a full rebuild if the width changed
-    const cols_changed = if (self.pending_resize) |rz|
-        rz.cols != self.term.cols
-    else
-        false;
-
-    // If we are in no-scrollback mode, just redraw whenever we have a resize.
-    const clear_resize =
-        self.pending_resize != null and self.rendered_screen.no_scrollback;
-
-    // If the active screen changes, we reset scrollback
-    const screen_changed = self.rendered_screen != self.term.screens.active;
-
-    // If we had existing scrollback, the render pin should be below the top of
-    // the scrollback. If it isn't that means that the scrollback was cleared.
-    const scrollback_cleared =
-        self.rows_in_buffer > self.term.rows and
-        self.render_pin != null and
-        self.render_pin.?.eql(self.rendered_screen.pages.getTopLeft(.screen));
-
-    if (force_full_arg or
-        font_info_changed or
-        cols_changed or
-        screen_changed or
-        scrollback_cleared or
-        clear_resize)
-    {
+    if (self.invalidate(env) or force_full_arg) {
         try self.clear(alloc, env);
     }
 
@@ -193,6 +163,38 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
         self.term.rows
     else
         self.rendered_screen.pages.total_rows);
+}
+
+fn invalidate(self: *Self, env: emacs.Env) bool {
+    // If the font metrics or related parameters changed, the cached metrics
+    // are no longer valid, so we rebuild.
+    if (self.updateFontInfo(env)) return true;
+
+    // We always do a full rebuild if the width changed
+    if (self.pending_resize) |rz| {
+        if (rz.cols != self.term.cols) return true;
+    }
+
+    // If we are in no-scrollback mode, just redraw whenever we have a resize.
+    if (self.pending_resize != null and self.rendered_screen.no_scrollback) {
+        return true;
+    }
+
+    // If the active screen changes, we reset scrollback
+    if (self.rendered_screen != self.term.screens.active) {
+        return true;
+    }
+
+    // If we had existing scrollback, the render pin should be below the top of
+    // the scrollback. If it isn't that means that the scrollback was cleared.
+    if (self.rows_in_buffer > self.term.rows and
+        self.render_pin != null and
+        self.render_pin.?.eql(self.rendered_screen.pages.getTopLeft(.screen)))
+    {
+        return true;
+    }
+
+    return false;
 }
 
 /// Read the default font and rendering parameters from Emacs, compare
