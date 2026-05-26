@@ -130,11 +130,15 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
     // are no longer valid, so we rebuild.
     const font_info_changed = self.updateFontInfo(env);
 
-    // We always reset scrollback if the number of columns changed
+    // We always do a full rebuild if the width changed
     const cols_changed = if (self.pending_resize) |rz|
         rz.cols != self.term.cols
     else
         false;
+
+    // If we are in no-scrollback mode, just redraw whenever we have a resize.
+    const clear_resize =
+        self.pending_resize != null and self.rendered_screen.no_scrollback;
 
     // If the active screen changes, we reset scrollback
     const screen_changed = self.rendered_screen != self.term.screens.active;
@@ -150,7 +154,8 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
         font_info_changed or
         cols_changed or
         screen_changed or
-        scrollback_cleared)
+        scrollback_cleared or
+        clear_resize)
     {
         try self.clear(alloc, env);
     }
