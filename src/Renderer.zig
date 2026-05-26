@@ -24,8 +24,8 @@ term: *gt.Terminal,
 /// Render state for incremental screen updates.
 render_state: gt.RenderState,
 
-/// Tracked pin of the active region.
-active_pin: *gt.Pin,
+/// Tracked pin of which row to render down from.
+render_pin: ?*gt.Pin,
 
 /// The screen that is currently rendered into the buffer.
 rendered_screen: *gt.Screen,
@@ -69,7 +69,7 @@ pub fn init(alloc: Allocator, term: *gt.Terminal) !Self {
     var renderer = Self{
         .term = term,
         .render_state = gt.RenderState.empty,
-        .active_pin = try term.screens.active.pages.trackPin(
+        .render_pin = try term.screens.active.pages.trackPin(
             term.screens.active.pages.getTopLeft(.screen),
         ),
         .rendered_screen = term.screens.active,
@@ -83,7 +83,7 @@ pub fn deinit(self: *Self, alloc: Allocator) void {
     self.render_state.deinit(alloc);
     self.row.deinit(alloc);
     self.clearPages(alloc);
-    self.rendered_screen.pages.untrackPin(self.active_pin);
+    if (self.render_pin) |p| self.rendered_screen.pages.untrackPin(p);
 }
 
 pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) void {
@@ -139,11 +139,12 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
     // If the active screen changes, we reset scrollback
     const screen_changed = self.rendered_screen != self.term.screens.active;
 
-    // The active pin ends up at the top of the screen when the scrollback gets
-    // cleared rather than the top of the active area. If we don't have scrollback
-    // these are obviously the same.
-    const scrollback_cleared = self.rows_in_buffer > self.term.rows and
-        self.active_pin.eql(self.rendered_screen.pages.getTopLeft(.screen));
+    // If we had existing scrollback, the render pin should be below the top of
+    // the scrollback. If it isn't that means that the scrollback was cleared.
+    const scrollback_cleared =
+        self.rows_in_buffer > self.term.rows and
+        self.render_pin != null and
+        self.render_pin.?.eql(self.rendered_screen.pages.getTopLeft(.screen));
 
     if (force_full_arg or
         font_info_changed or
@@ -156,7 +157,14 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
 
     self.evictScrollback(alloc, env);
     self.gotoActiveStart(env);
-    try self.renderToEnd(alloc, env, self.active_pin.*);
+    try self.renderToEnd(
+        alloc,
+        env,
+        if (self.render_pin) |p|
+            p.*
+        else
+            self.rendered_screen.pages.getTopLeft(.active),
+    );
 
     // If we have a pending resize, commit it now and just rerender the active
     // since the scrollback is already up to date.
@@ -174,9 +182,12 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
         _ = env.f("ghostel--update-directory", .{pwd});
     }
 
-    self.active_pin.* = self.rendered_screen.pages.getTopLeft(.active);
+    if (self.render_pin) |p| p.* = self.rendered_screen.pages.getTopLeft(.active);
 
-    std.debug.assert(self.rows_in_buffer == self.term.screens.active.pages.total_rows);
+    std.debug.assert(self.rows_in_buffer == if (self.rendered_screen.no_scrollback)
+        self.term.rows
+    else
+        self.rendered_screen.pages.total_rows);
 }
 
 /// Read the default font and rendering parameters from Emacs, compare
@@ -693,23 +704,29 @@ pub fn render(
             const eob = env.eobp();
             if (dirty_row or eob) {
                 const row = self.render_state.row_data.get(i);
-                const page = try self.getOrAddLastPage(alloc, row.pin.node.serial);
+
+                // We don't track pages when we have no scrollback
+                const page: ?*MaterializedPage = if (self.rendered_screen.no_scrollback)
+                    null
+                else
+                    try self.getOrAddLastPage(alloc, row.pin.node.serial);
 
                 if (eob) {
                     // We're adding one line since we're at the end of the buffer
                     self.rows_in_buffer += 1;
-                    page.rows += 1;
+                    if (page) |p| p.rows += 1;
                 } else {
                     // Line is dirty and we're not at the end of the buffer,
                     // delete the old line.
                     const old_line_start = env.point();
                     const old_line_end = env.lineBeginningPosition2();
                     const old_line_len = env.extractInteger(old_line_end) - env.extractInteger(old_line_start);
-                    page.char_len -|= @intCast(old_line_len);
+                    if (page) |p| p.char_len -|= @intCast(old_line_len);
                     env.deleteRegion(old_line_start, old_line_end);
                 }
 
-                page.char_len += try self.insertRow(alloc, env, &row);
+                const line_char_len = try self.insertRow(alloc, env, &row);
+                if (page) |p| p.char_len += line_char_len;
             } else {
                 _ = env.forwardLine(1);
             }
@@ -792,16 +809,18 @@ fn clear(self: *Self, alloc: Allocator, env: emacs.Env) !void {
     self.rows_in_buffer = 0;
     self.render_state.dirty = .full;
     self.clearPages(alloc);
-
-    self.rendered_screen.pages.untrackPin(self.active_pin);
+    if (self.render_pin) |p| self.rendered_screen.pages.untrackPin(p);
+    self.render_pin = null;
 
     // Commit any pending resize since we're doing a rebuild anyway.
     try self.commitResize(alloc);
 
     self.rendered_screen = self.term.screens.active;
-    self.active_pin = try self.rendered_screen.pages.trackPin(
-        self.rendered_screen.pages.getTopLeft(.screen),
-    );
+    if (!self.rendered_screen.no_scrollback) {
+        self.render_pin = try self.rendered_screen.pages.trackPin(
+            self.rendered_screen.pages.getTopLeft(.screen),
+        );
+    }
 }
 
 fn clearPages(self: *Self, alloc: Allocator) void {
@@ -811,7 +830,7 @@ fn clearPages(self: *Self, alloc: Allocator) void {
 }
 
 fn evictScrollback(self: *Self, alloc: Allocator, env: emacs.Env) void {
-    const term_first_page = self.term.screens.active.pages.pages.first.?;
+    const term_first_page = self.rendered_screen.pages.pages.first.?;
     var evicted_chars: usize = 0;
     while (self.pages_in_buffer.first) |n| {
         const first_page: *MaterializedPage = @fieldParentPtr("node", n);
