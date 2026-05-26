@@ -28,6 +28,9 @@ terminal: gt.Terminal,
 /// semantic prompt) without re-parsing the bytes ourselves.
 stream: gt.Stream(GhostelHandler),
 
+/// Reusable and dynamically growing buffer for VT writes.
+buffer: ?[]u8 = null,
+
 /// True iff the last byte of the previous `fnWriteInput` input was
 /// `\r`. Carries the bare-LF detection state across write-input calls
 /// so that a CR at the tail of one write and an LF at the head of the
@@ -82,6 +85,7 @@ pub fn deinit(self: *Self) void {
     self.renderer.deinit(self.alloc);
     self.stream.deinit();
     self.terminal.deinit(self.alloc);
+    if (self.buffer) |buf| self.alloc.free(buf);
     self.alloc.destroy(self);
 }
 
@@ -317,18 +321,10 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     env.signalError("invalid terminal handle", .{});
                     return env.nil();
                 };
-                // Extract string data — try stack buffer first, fall back to alloc
-                var stack_buf: [65536]u8 = undefined;
-                var heap_buf: ?[]const u8 = null;
-                defer if (heap_buf) |hb| module_alloc.free(hb);
-                const data = env.extractString(args[1], &stack_buf) orelse blk: {
-                    heap_buf = env.extractStringAlloc(args[1], module_alloc);
-                    break :blk heap_buf;
-                };
-                if (data == null) {
+                const raw = env.extractStringAlloc(module_alloc, args[1], &term.buffer) catch |err| {
+                    env.signalError("Failed to extract string: %s", .{@errorName(err)});
                     return env.nil();
-                }
-                const raw = data.?;
+                };
                 if (term.terminal.screens.active_key == .alternate) {
                     term.vtWrite(raw);
                     if (raw.len > 0) term.last_input_was_cr = raw[raw.len - 1] == '\r';
@@ -475,12 +471,12 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
             pub fn call(env: emacs.Env, nargs: isize, args: [*c]emacs.Value) emacs.Value {
                 const term = env.getUserPtr(Self, args[0]) orelse return env.nil();
                 var key_buf: [64]u8 = undefined;
-                const key_name = env.extractString(args[1], &key_buf) orelse return env.nil();
+                const key_name = env.extractString(args[1], &key_buf) catch return env.nil();
                 var mod_buf: [64]u8 = undefined;
-                const mod_str = env.extractString(args[2], &mod_buf) orelse "";
+                const mod_str = env.extractString(args[2], &mod_buf) catch "";
                 var utf8_buf: [32]u8 = undefined;
                 const utf8: ?[]const u8 = if (nargs > 3 and env.isNotNil(args[3]))
-                    env.extractString(args[3], &utf8_buf)
+                    env.extractString(args[3], &utf8_buf) catch null
                 else
                     null;
                 const key = input.mapKey(key_name);
@@ -562,8 +558,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     return env.nil();
                 };
                 var str_buf: [2048]u8 = undefined;
-                const colors_str = env.extractString(args[1], &str_buf) orelse {
-                    env.signalError("invalid palette string", .{});
+                const colors_str = env.extractString(args[1], &str_buf) catch |err| {
+                    env.signalError("invalid palette string: %s", .{@errorName(err)});
                     return env.nil();
                 };
                 var palette = term.terminal.colors.palette.current;
@@ -614,12 +610,12 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 };
                 var fg_buf: [16]u8 = undefined;
                 var bg_buf: [16]u8 = undefined;
-                const fg_str = env.extractString(args[1], &fg_buf) orelse {
-                    env.signalError("invalid foreground color", .{});
+                const fg_str = env.extractString(args[1], &fg_buf) catch |err| {
+                    env.signalError("invalid foreground color: %s", .{@errorName(err)});
                     return env.nil();
                 };
-                const bg_str = env.extractString(args[2], &bg_buf) orelse {
-                    env.signalError("invalid background color", .{});
+                const bg_str = env.extractString(args[2], &bg_buf) catch |err| {
+                    env.signalError("invalid background color: %s", .{@errorName(err)});
                     return env.nil();
                 };
                 const fg = parseHexColor(fg_str) orelse {
@@ -656,8 +652,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     term.renderer.bold_config = .bright;
                 } else {
                     var hex_buf: [16]u8 = undefined;
-                    const hex = env.extractString(val, &hex_buf) orelse {
-                        env.signalError("invalid bold config value", .{});
+                    const hex = env.extractString(val, &hex_buf) catch |err| {
+                        env.signalError("invalid bold config value: %s", .{@errorName(err)});
                         return env.nil();
                     };
                     if (parseHexColor(hex)) |color| {

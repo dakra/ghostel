@@ -25,7 +25,7 @@ pub const FuncallExit = enum(c_int) {
     throw = 2,
 };
 
-var alloc: Allocator = undefined;
+var module_alloc: Allocator = undefined;
 
 const DebugUserPtr = struct {
     ptr: UserPtr,
@@ -100,7 +100,7 @@ pub const Env = struct {
 
     pub fn makeUserPtr(self: Env, finalizer: Finalizer, ptr: UserPtr) Value {
         if (builtin.mode == .Debug) {
-            if (debug_userptrs.append(alloc, .{ .ptr = ptr, .finalizer = &finalizer })) |_| {
+            if (debug_userptrs.append(module_alloc, .{ .ptr = ptr, .finalizer = &finalizer })) |_| {
                 const debugFinalizer = struct {
                     fn debugFinalize(p: ?*anyopaque) callconv(.c) void {
                         for (debug_userptrs.items, 0..) |item, i| {
@@ -175,42 +175,33 @@ pub const Env = struct {
         return self.extractFloat(self.f("float", .{val}));
     }
 
-    pub fn extractString(self: Env, val: Value, buf: []u8) ?[]const u8 {
+    pub fn extractString(self: Env, val: Value, buf: []u8) ![]const u8 {
         var len: isize = @intCast(buf.len);
         if (self.raw.copy_string_contents.?(self.raw, val, buf.ptr, &len)) {
             // len includes the null terminator
-            const actual_len: usize = @intCast(len);
-            if (actual_len > 0) {
-                return buf[0 .. actual_len - 1];
-            }
-            return buf[0..0];
+            return buf[0..(@as(usize, @intCast(len)) - 1)];
         }
         // Clear the non-local exit so callers (e.g. extractStringAlloc
         // fallback) can make further API calls.
-        self.raw.non_local_exit_clear.?(self.raw);
-        return null;
+        self.nonLocalExitClear();
+        return error.ExtractStringFailed;
     }
 
-    pub fn extractStringAlloc(self: Env, val: Value, allocator: std.mem.Allocator) ?[]const u8 {
-        // First call to get required size
-        var len: isize = 0;
-        _ = self.raw.copy_string_contents.?(self.raw, val, null, &len);
-        self.raw.non_local_exit_clear.?(self.raw);
-
-        if (len <= 0) return null;
-        const size: usize = @intCast(len);
-
-        const buf = allocator.alloc(u8, size) catch return null;
-        var actual_len: isize = @intCast(size);
-        if (self.raw.copy_string_contents.?(self.raw, val, buf.ptr, &actual_len)) {
-            const actual: usize = @intCast(actual_len);
-            if (actual > 0) {
-                return buf[0 .. actual - 1];
+    pub fn extractStringAlloc(self: Env, alloc: Allocator, val: Value, buf: *?[]u8) ![]u8 {
+        const ptr = if (buf.*) |b| b.ptr else null;
+        var len: isize = if (buf.*) |b| @intCast(b.len) else 0;
+        if (!self.raw.copy_string_contents.?(self.raw, val, ptr, &len) or ptr == null) {
+            self.nonLocalExitClear();
+            if (buf.*) |b| alloc.free(b);
+            buf.* = try alloc.alloc(u8, @intCast(len));
+            if (!self.raw.copy_string_contents.?(self.raw, val, buf.*.?.ptr, &len)) {
+                self.nonLocalExitClear();
+                return error.ExtractStringFailed;
             }
-            return buf[0..0];
         }
-        allocator.free(buf);
-        return null;
+
+        // len includes the null terminator
+        return buf.*.?[0..(@as(usize, @intCast(len)) - 1)];
     }
 
     // --- Type checking ---
@@ -588,8 +579,8 @@ pub var sym: SymbolCache(&interned_symbols) = undefined;
 
 /// Initialize the global symbol cache.  Must be called once from
 /// emacs_module_init with the environment provided by Emacs.
-pub fn initModule(allocator: Allocator, raw: *c.emacs_env) void {
-    alloc = allocator;
+pub fn initModule(alloc: Allocator, raw: *c.emacs_env) void {
+    module_alloc = alloc;
 
     const env = Env.init(raw);
     inline for (std.meta.fields(@TypeOf(sym))) |field| {
@@ -612,6 +603,6 @@ fn debugKillEmacsHook(_: ?*c.emacs_env, _: isize, _: [*c]c.emacs_value, _: ?*any
     for (debug_userptrs.items) |user_ptr| {
         user_ptr.finalizer(user_ptr.ptr);
     }
-    debug_userptrs.deinit(alloc);
+    debug_userptrs.deinit(module_alloc);
     return sym.nil;
 }

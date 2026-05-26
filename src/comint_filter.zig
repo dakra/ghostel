@@ -313,6 +313,7 @@ const Handler = struct {
 
 alloc: Allocator,
 stream: gt.Stream(Handler),
+buffer: ?[]u8 = null,
 
 pub fn create(alloc: Allocator) !*Self {
     const self = try alloc.create(Self);
@@ -325,6 +326,7 @@ pub fn create(alloc: Allocator) !*Self {
 }
 
 pub fn deinit(self: *Self) void {
+    if (self.buffer) |buf| self.alloc.free(buf);
     self.stream.deinit();
     self.alloc.destroy(self);
 }
@@ -459,15 +461,11 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     env.signalError("invalid comint filter state", .{});
                     return env.nil();
                 };
-                var stack_buf: [65536]u8 = undefined;
-                var heap_buf: ?[]const u8 = null;
-                defer if (heap_buf) |hb| module_alloc.free(hb);
-                const data = env.extractString(args[1], &stack_buf) orelse blk: {
-                    heap_buf = env.extractStringAlloc(args[1], module_alloc);
-                    break :blk heap_buf;
+                const data = env.extractStringAlloc(module_alloc, args[1], &filter.buffer) catch |err| {
+                    env.signalError("Failed to extract string: %s", .{@errorName(err)});
+                    return env.nil();
                 };
-                if (data == null) return env.nil();
-                return filter.feed(env, data.?) catch |err| {
+                return filter.feed(env, data) catch |err| {
                     env.signalError("comint filter failed: %s", .{@errorName(err)});
                     return env.nil();
                 };
@@ -493,8 +491,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     return env.nil();
                 };
                 var str_buf: [2048]u8 = undefined;
-                const colors_str = env.extractString(args[1], &str_buf) orelse {
-                    env.signalError("invalid palette string", .{});
+                const colors_str = env.extractString(args[1], &str_buf) catch |err| {
+                    env.signalError("invalid palette string: %s", .{@errorName(err)});
                     return env.nil();
                 };
                 var palette16: [16]gt.color.RGB = @splat(.{});
@@ -532,12 +530,12 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 };
                 var fg_buf: [16]u8 = undefined;
                 var bg_buf: [16]u8 = undefined;
-                const fg_str = env.extractString(args[1], &fg_buf) orelse {
-                    env.signalError("invalid foreground color", .{});
+                const fg_str = env.extractString(args[1], &fg_buf) catch |err| {
+                    env.signalError("invalid foreground color: %s", .{@errorName(err)});
                     return env.nil();
                 };
-                const bg_str = env.extractString(args[2], &bg_buf) orelse {
-                    env.signalError("invalid background color", .{});
+                const bg_str = env.extractString(args[2], &bg_buf) catch |err| {
+                    env.signalError("invalid background color: %s", .{@errorName(err)});
                     return env.nil();
                 };
                 const fg = parseHexColor(fg_str) orelse {

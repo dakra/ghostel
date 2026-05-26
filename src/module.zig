@@ -133,7 +133,7 @@ const emacs_functions = [_]emacs.FunctionEntry{
         .impl = struct {
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) emacs.Value {
                 var stack_buf: [1024]u8 = undefined;
-                const path = env.extractString(args[0], &stack_buf) orelse return env.nil();
+                const path = env.extractString(args[0], &stack_buf) catch return env.nil();
                 return if (pty.isPasswordMode(path)) env.t() else env.nil();
             }
         },
