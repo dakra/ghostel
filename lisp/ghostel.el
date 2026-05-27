@@ -6915,9 +6915,10 @@ prevent redraw flicker."
 (defun ghostel--init-buffer (buffer &optional rows cols)
   "Initialize BUFFER as a ghostel terminal.
 This is the invariant boundary between an Emacs buffer and its native
-terminal handle: BUFFER is made empty, stale terminal state is cleared,
-and the newly created terminal is attached immediately as BUFFER's
-buffer-local `ghostel--term'.
+terminal handle: BUFFER is made empty, renderer-coupled buffer-local
+state is reset, and the newly created terminal is attached immediately
+as BUFFER's buffer-local `ghostel--term'.  It intentionally does not
+reset unrelated buffer-local state such as title/identity bookkeeping.
 
 Optional ROWS and COLS override size detection.  Otherwise terminal
 dimensions come from BUFFER's displayed window when one exists,
@@ -6963,9 +6964,7 @@ spawn after initialization."
           ghostel--force-next-redraw nil
           ghostel--cursor-pos nil
           ghostel--cursor-char-pos nil
-          ghostel--rendered-font nil
-          ghostel--managed-buffer-name nil
-          ghostel--buffer-identity nil)
+          ghostel--rendered-font nil)
     (let* ((w (or (get-buffer-window buffer t) (selected-window)))
            (height (max 1 (or rows
                               (if (window-live-p w)
@@ -7089,10 +7088,6 @@ Signals `user-error' if BUFFER already has a live ghostel process."
                   80)))
     (with-current-buffer buffer
       (ghostel--init-buffer buffer height width)
-      ;; `ghostel--init-buffer' clears identity bookkeeping; restore it so
-      ;; OSC 2 title sequences don't auto-rename a user-renamed buffer
-      (setq ghostel--managed-buffer-name (buffer-name))
-      (setq ghostel--buffer-identity (buffer-name))
       (let ((remote-p (file-remote-p default-directory)))
         (ghostel--spawn-pty program args ghostel--term-rows ghostel--term-cols
                             ghostel--default-stty nil remote-p)))))

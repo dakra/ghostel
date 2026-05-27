@@ -149,14 +149,17 @@ proves the project-prefixed binding actually took effect."
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-init-buffer-replaces-stale-terminal ()
-  "`ghostel--init-buffer' supports reusing a buffer with stale terminal state."
+  "`ghostel--init-buffer' preserves identity while replacing stale terminal state."
   (let ((buf (generate-new-buffer " *ghostel-test-reinit*")))
     (unwind-protect
         (progn
           (with-current-buffer buf
+            (ghostel-mode)
             (setq-local ghostel--term 'old-term)
             (setq-local ghostel--term-rows 1)
-            (setq-local ghostel--term-cols 2))
+            (setq-local ghostel--term-cols 2)
+            (setq-local ghostel--managed-buffer-name "managed")
+            (setq-local ghostel--buffer-identity "identity"))
           (cl-letf (((symbol-function 'ghostel--new) (lambda (&rest _) 'new-term))
                     ((symbol-function 'ghostel--set-size) #'ignore)
                     ((symbol-function 'ghostel--apply-palette) #'ignore))
@@ -164,7 +167,9 @@ proves the project-prefixed binding actually took effect."
           (with-current-buffer buf
             (should (eq ghostel--term 'new-term))
             (should (= ghostel--term-rows 7))
-            (should (= ghostel--term-cols 33))))
+            (should (= ghostel--term-cols 33))
+            (should (equal ghostel--managed-buffer-name "managed"))
+            (should (equal ghostel--buffer-identity "identity"))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-create-initializes-buffer ()
