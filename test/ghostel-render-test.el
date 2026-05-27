@@ -288,6 +288,47 @@ are retained — only unwritten padding cells are trimmed."
               (should (equal "$ " (car lines))))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-render-untrims-cursor-line-to-cursor-column ()
+  "A cursor past EOL keeps only enough blanks to place point there."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-cursor-untrim*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 3 20 100))
+                 (inhibit-read-only t))
+            (ghostel--write-input term "\e[H\e[2Jhi\e[1;11H")
+            (ghostel--redraw term t)
+            (should (equal '(10 . 0) ghostel--cursor-pos))
+            (goto-char ghostel--cursor-char-pos)
+            (should (= 10 (current-column)))
+            (let ((line (buffer-substring-no-properties
+                         (line-beginning-position)
+                         (line-end-position))))
+              (should (equal (concat "hi" (make-string 8 ?\s)) line)))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-render-retrims-old-cursor-line-on-cursor-move ()
+  "Moving the cursor trims the old line and untrims the new one."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-cursor-retrim*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 3 20 100))
+                 (inhibit-read-only t))
+            (ghostel--write-input term "\e[H\e[2Jhi\e[1;11H")
+            (ghostel--redraw term t)
+            (ghostel--write-input term "\e[2;6H")
+            (ghostel--redraw term)
+            (should (equal '(5 . 1) ghostel--cursor-pos))
+            (let ((lines (split-string (buffer-substring-no-properties
+                                        (point-min) (point-max))
+                                       "\n")))
+              (should (equal "hi" (nth 0 lines)))
+              (should (equal (make-string 5 ?\s) (nth 1 lines))))
+            (goto-char ghostel--cursor-char-pos)
+            (should (= 5 (current-column)))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-soft-wrap-copy ()
   "Test that soft-wrapped newlines are filtered during copy."
   :tags '(native)
