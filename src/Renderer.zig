@@ -2,23 +2,27 @@
 ///
 /// Reads rows/cells from the ghostty render state, extracts text and
 /// style attributes, and inserts propertized text into the current
-/// Emacs buffer.  See `redraw' below for the per-redraw algorithm
-/// (pin-based scrollback sync, dirty-row reuse).
+/// Emacs buffer.  See `redraw' below for the per-redraw algorithm.
 const std = @import("std");
-const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
-const emacs = @import("emacs.zig");
-const gt = @import("ghostty-vt");
-const GhostelTerm = @import("GhostelTerm.zig");
-const style_face = @import("style_face.zig");
 
+const builtin = @import("builtin");
+
+const gt = @import("ghostty-vt");
+
+const GhostelTerm = @import("GhostelTerm.zig");
+const SavedBufferMarkers = @import("saved_markers.zig").SavedBufferMarkers;
+const emacs = @import("emacs.zig");
+const utils = @import("utils.zig");
+
+const style_face = @import("style_face.zig");
 pub const CellProps = style_face.CellProps;
 pub const LinkId = style_face.LinkId;
 const formatColor = style_face.formatColor;
 
 const Self = @This();
 
-/// Render state for incremental screen updates.
+/// Terminal being rendered.
 term: *gt.Terminal,
 
 /// Render state for incremental screen updates.
@@ -36,7 +40,7 @@ rows_in_buffer: usize = 0,
 /// List of pages materialized in buffer
 pages_in_buffer: std.DoublyLinkedList = .{},
 
-/// Any pending resize as `.{cols, rows}`. Resizes are comitted on next redraw.
+/// Any pending resize as `.{cols, rows}`. Resizes are committed on next redraw.
 pending_resize: ?ViewportSize = null,
 
 /// Reusable instance of RowContent to reduce allocations
@@ -48,6 +52,10 @@ font_info: ?FontInfo = null,
 
 /// Bold text coloring configuration.
 bold_config: ?gt.Style.BoldColor = null,
+
+/// Saved positions and pins for various buffer markers. Retained between
+/// rendering passes to avoid allocations.
+saved_markers: SavedBufferMarkers = .{},
 
 const PageSerial = @FieldType(gt.PageList.List.Node, "serial");
 
@@ -80,6 +88,7 @@ pub fn init(alloc: Allocator, term: *gt.Terminal) !Self {
 }
 
 pub fn deinit(self: *Self, alloc: Allocator) void {
+    self.saved_markers.deinit(alloc);
     self.render_state.deinit(alloc);
     self.row.deinit(alloc);
     self.clearPages(alloc);
@@ -98,33 +107,16 @@ pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) void 
 /// Redraw the terminal into the current Emacs buffer.
 ///
 /// The Emacs buffer is a permanent record: materialized scrollback sits
-/// above the active area. `active_pin` tracks the top-left of the active
-/// area across redraws; `pages_in_buffer` mirrors libghostty's page list
-/// so scrollback eviction can be applied precisely by character count.
+/// above the active area. `render_pin` tracks the next libghostty row to
+/// render, and `pages_in_buffer` mirrors libghostty's page list so
+/// scrollback eviction can be applied precisely by character count.
 ///
-/// When `force_full_arg` is true, the buffer is cleared and fully rebuilt
+/// Saved buffer positions are restored after mutations.  When
+/// `force_full_arg` is true, the buffer is cleared and fully rebuilt
 /// instead of using the incremental dirty-row path.
 pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: bool) !void {
-    // Snapshot the buffer's mark across the destructive ops below.  Both
-    // paths — full (eraseBuffer / deleteRegion over the viewport) and
-    // partial (per-row deleteRegion + insert) — move every marker in the
-    // buffer by standard Emacs marker rules.  Point is owned by the
-    // renderer and is placed at the TUI cursor on exit, but mark is user
-    // state (C-SPC, region commands) and must survive the redraw.  Other
-    // markers (e.g. evil's visual-beginning/end) remain the caller's
-    // responsibility to preserve in elisp.
-    const saved_mark: ?i64 = blk: {
-        const pos = env.markerPosition(env.markMarker());
-        if (!env.isNotNil(pos)) break :blk null;
-        break :blk env.extractInteger(pos);
-    };
-    defer {
-        if (saved_mark) |pos| {
-            const pmax = env.extractInteger(env.pointMax());
-            const clamped: i64 = if (pos > pmax) pmax else pos;
-            _ = env.setMarker(env.markMarker(), env.makeInteger(clamped));
-        }
-    }
+    try self.saved_markers.save(alloc, env);
+    defer self.saved_markers.restoreAndClear(self.term.screens.active, env);
 
     if (self.invalidate(env) or force_full_arg) {
         try self.clear(alloc, env);
@@ -172,7 +164,11 @@ fn invalidate(self: *Self, env: emacs.Env) bool {
 
     // We always do a full rebuild if the width changed
     if (self.pending_resize) |rz| {
-        if (rz.cols != self.term.cols) return true;
+        if (rz.cols != self.term.cols) {
+            // Pin our saved positions during resize
+            self.saved_markers.pin(self.term.screens.active, env);
+            return true;
+        }
     }
 
     // If we are in no-scrollback mode, just redraw whenever we have a resize.
@@ -480,10 +476,8 @@ pub const RowContent = struct {
             }
         }
 
-        // Trim trailing blank cells. Cap `prompt_char_len' / input range at the
-        // new `char_len' so neither region extends past the trimmed text. Style
-        // runs extending past the trim point are clipped by `insertAndStyle' via
-        // its `self.row.char_len' cap.
+        // Trim trailing blank cells. Style runs extending past the trim point
+        // are clipped when properties are applied.
         self.text.shrinkRetainingCapacity(trim_byte_len);
         self.char_len = trim_char_len;
         if (self.runs.items.len > 0) {
@@ -704,20 +698,6 @@ pub fn render(
                 else
                     try self.getOrAddLastPage(alloc, row.pin.node.serial);
 
-                if (eob) {
-                    // We're adding one line since we're at the end of the buffer
-                    self.rows_in_buffer += 1;
-                    if (page) |p| p.rows += 1;
-                } else {
-                    // Line is dirty and we're not at the end of the buffer,
-                    // delete the old line.
-                    const old_line_start = env.point();
-                    const old_line_end = env.lineBeginningPosition2();
-                    const old_line_len = env.extractInteger(old_line_end) - env.extractInteger(old_line_start);
-                    if (page) |p| p.char_len -|= @intCast(old_line_len);
-                    env.deleteRegion(old_line_start, old_line_end);
-                }
-
                 const cursor_col = blk: {
                     if (self.render_state.cursor.viewport) |vp| {
                         if (vp.y == i) break :blk vp.x;
@@ -725,8 +705,31 @@ pub fn render(
 
                     break :blk null;
                 };
-                const line_char_len = try self.insertRow(alloc, env, &row, cursor_col);
-                if (page) |p| p.char_len += line_char_len;
+
+                if (eob) {
+                    // We're adding one line since we're at the end of the buffer
+                    const line_char_len = try self.insertRow(alloc, env, &row, cursor_col);
+                    self.rows_in_buffer += 1;
+                    if (page) |p| {
+                        p.rows += 1;
+                        p.char_len += line_char_len;
+                    }
+                } else {
+                    // Line is dirty and we're not at the end of the buffer,
+                    // so we're replacing the line.
+                    const line_start_val = env.point();
+                    const line_start: usize = @intCast(env.extractInteger(line_start_val));
+                    const old_line_end_val = env.lineBeginningPosition2();
+                    const old_line_len = @as(usize, @intCast(env.extractInteger(old_line_end_val))) - line_start;
+                    env.deleteRegion(line_start_val, old_line_end_val);
+                    const new_line_len = try self.insertRow(alloc, env, &row, cursor_col);
+
+                    if (page) |p| {
+                        p.char_len -|= old_line_len;
+                        p.char_len += new_line_len;
+                    }
+                    self.saved_markers.adjustRegion(line_start, old_line_len, new_line_len);
+                }
             } else {
                 _ = env.forwardLine(1);
             }
@@ -769,8 +772,6 @@ fn renderCursor(self: *Self, env: emacs.Env) !void {
         @intFromEnum(self.render_state.cursor.visual_style),
         if (self.render_state.cursor.visible) env.t() else env.nil(),
     });
-
-    _ = env.f("goto-char", .{env.symbolValue("ghostel--cursor-char-pos")});
 }
 
 // Render all pages from start_pin through the end of the active area,
@@ -838,17 +839,20 @@ fn clearPages(self: *Self, alloc: Allocator) void {
 }
 
 fn evictScrollback(self: *Self, alloc: Allocator, env: emacs.Env) void {
-    const term_first_page = self.rendered_screen.pages.pages.first.?;
     var evicted_chars: usize = 0;
+    var evicted_rows: usize = 0;
+
+    const term_first_page = self.rendered_screen.pages.pages.first.?;
     while (self.pages_in_buffer.first) |n| {
         const first_page: *MaterializedPage = @fieldParentPtr("node", n);
         if (first_page.serial == term_first_page.serial) break;
+
         evicted_chars += first_page.char_len;
-        self.rows_in_buffer -|= first_page.rows;
+        evicted_rows += first_page.rows;
+
         _ = self.pages_in_buffer.popFirst();
         alloc.destroy(first_page);
     }
-    if (evicted_chars > 0) env.deleteRegion(1, 1 + evicted_chars);
 
     if (self.pages_in_buffer.first) |n| {
         const first_page: *MaterializedPage = @fieldParentPtr("node", n);
@@ -859,11 +863,18 @@ fn evictScrollback(self: *Self, alloc: Allocator, env: emacs.Env) void {
             _ = env.forwardLine(diff);
 
             const point = env.point();
-            env.deleteRegion(1, point);
-            const deleted_chars = env.extractInteger(point) - 1;
-            first_page.char_len -|= @intCast(deleted_chars);
+            const rows_char_len = env.extractInteger(point) - 1;
+            first_page.char_len -|= @intCast(rows_char_len);
+            evicted_chars += @intCast(rows_char_len);
+
             first_page.rows -= diff;
-            self.rows_in_buffer -= diff;
+            evicted_rows += diff;
         }
+    }
+
+    self.rows_in_buffer -|= evicted_rows;
+    if (evicted_chars > 0) {
+        env.deleteRegion(1, 1 + evicted_chars);
+        self.saved_markers.adjustRegion(1, evicted_chars, 0);
     }
 }

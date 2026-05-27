@@ -464,7 +464,6 @@ pub const Env = struct {
 // ---------------------------------------------------------------------------
 
 const interned_symbols = [_][:0]const u8{
-    "eobp",
     ":background",
     ":color",
     ":error",
@@ -480,6 +479,8 @@ const interned_symbols = [_][:0]const u8{
     ":width",
     "bold",
     "bright",
+    "car",
+    "cdr",
     "char-after",
     "char-before",
     "cons",
@@ -491,6 +492,7 @@ const interned_symbols = [_][:0]const u8{
     "display-warning",
     "dot",
     "double-line",
+    "eobp",
     "erase-buffer",
     "error",
     "face",
@@ -502,8 +504,10 @@ const interned_symbols = [_][:0]const u8{
     "font-object",
     "fontp",
     "format",
+    "forward-char",
     "forward-line",
     "fset",
+    "get-buffer-window-list",
     "ghostel",
     "ghostel--cursor-char-pos",
     "ghostel--cursor-pos",
@@ -543,6 +547,7 @@ const interned_symbols = [_][:0]const u8{
     "line",
     "line-beginning-position",
     "line-end-position",
+    "line-number-at-pos",
     "list",
     "mark-marker",
     "marker-position",
@@ -561,10 +566,14 @@ const interned_symbols = [_][:0]const u8{
     "selected-window",
     "set",
     "set-marker",
+    "set-window-point",
+    "set-window-start",
     "space",
     "symbol-value",
     "t",
     "wave",
+    "window-point",
+    "window-start",
 };
 
 fn SymbolCache(comptime symbols: []const [:0]const u8) type {
