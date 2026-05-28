@@ -178,7 +178,7 @@ and watch `mode-line-process` for the current mode indicator.
 | copy        | `:Copy`   | frozen   | read-only   | precise text selection without scroll churn   |
 | line        | `:Line`   | live     | editable    | compose input with Emacs keys, send on `RET`  |
 
-### Mode-switch keybindings (available from every live mode)
+### Mode-switch keybindings (available from every mode except char mode)
 
 | Key       | Action                                    |
 |-----------|-------------------------------------------|
@@ -238,6 +238,9 @@ mode (`C-c C-j`) when you want to type to the shell.  `C-y` is the
 exception: it pastes via bracketed paste as a deliberate action and
 snaps point back to the live cursor.
 
+`C-c C-e` toggles Emacs mode off again (returning to the mode you came
+from), and `C-c C-t` switches to copy mode to freeze the output.
+
 Use this for searching through scrollback while a build is running,
 filtering streaming logs with `M-x occur`, marking and copying across
 the visible history, or running any buffer-based command over the
@@ -250,6 +253,10 @@ updates the buffer until you exit.  Use this when you want to select
 text precisely without the terminal scrolling underneath your cursor.
 The aggressive copy-mode keymap exits on self-insert, so typing a
 letter sends it to the terminal and returns to semi-char mode.
+
+`C-c C-t` toggles copy mode off again, and `C-c C-e` switches to Emacs
+mode — read-only but live, so output resumes — without going through
+semi-char.
 
 | Key           | Action                           |
 |---------------|----------------------------------|

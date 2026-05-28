@@ -722,6 +722,51 @@ Otherwise the window stays where the user navigated."
   (should (eq (lookup-key ghostel-mode-map (kbd "C-c C-t"))
               #'ghostel-copy-mode)))
 
+(ert-deftest ghostel-test-readonly-fast-exit-switch-keybindings ()
+  "Fast-exit copy/Emacs mode keeps the full mode-switch matrix (issue #342).
+The mode-switch keys stay bound to their mode commands rather than being
+repurposed as exit shortcuts, while the quit keys stay bound to the fast exit."
+  (should (eq (lookup-key ghostel-readonly-fast-exit-mode-map (kbd "C-c C-e"))
+              #'ghostel-emacs-mode))
+  (should (eq (lookup-key ghostel-readonly-fast-exit-mode-map (kbd "C-c C-t"))
+              #'ghostel-copy-mode))
+  (should (eq (lookup-key ghostel-readonly-fast-exit-mode-map (kbd "C-c C-j"))
+              #'ghostel-semi-char-mode))
+  (should (eq (lookup-key ghostel-readonly-fast-exit-mode-map (kbd "C-c M-d"))
+              #'ghostel-char-mode))
+  (should (eq (lookup-key ghostel-readonly-fast-exit-mode-map (kbd "C-c C-l"))
+              #'ghostel-line-mode))
+  (should (eq (lookup-key ghostel-readonly-fast-exit-mode-map (kbd "q"))
+              #'ghostel-readonly-exit))
+  (should (eq (lookup-key ghostel-readonly-fast-exit-mode-map (kbd "C-g"))
+              #'ghostel-readonly-exit)))
+
+(ert-deftest ghostel-test-emacs-mode-toggles-off ()
+  "`ghostel-emacs-mode' is a toggle: calling it while in Emacs mode exits.
+Exiting returns to whatever mode the user was in beforehand, mirroring
+`ghostel-copy-mode'."
+  (let ((buf (generate-new-buffer " *ghostel-test-emacs-toggle*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake)
+                (ghostel--redraw-timer nil))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+              ;; semi-char → emacs → (toggle) semi-char
+              (ghostel-emacs-mode)
+              (should (eq ghostel--input-mode 'emacs))
+              (ghostel-emacs-mode)
+              (should (eq ghostel--input-mode 'semi-char))
+              (should-not buffer-read-only)
+              ;; char → emacs → (toggle) char
+              (ghostel-char-mode)
+              (ghostel-emacs-mode)
+              (should (eq ghostel--input-mode 'emacs))
+              (ghostel-emacs-mode)
+              (should (eq ghostel--input-mode 'char)))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-prompt-nav-enters-emacs-mode ()
   "`ghostel-next-prompt' auto-enters Emacs mode, not copy mode."
   (let ((buf (generate-new-buffer " *ghostel-test-prompt-nav*")))

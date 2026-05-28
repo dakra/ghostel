@@ -2002,8 +2002,6 @@ See `ghostel-readonly-fast-exit'."
   "<return>"                      #'ghostel-readonly-RET-or-exit-and-send
   "C-c M-l"                       #'ghostel-readonly-exit-and-clear
   "q"                             #'ghostel-readonly-exit
-  "C-c C-e"                       #'ghostel-readonly-exit
-  "C-c C-t"                       #'ghostel-readonly-exit
   "C-g"                           #'ghostel-readonly-exit)
 
 ;; Char mode must override minor-mode keymaps.  Without this, a user
@@ -2996,16 +2994,18 @@ a non-read-only mode."
     (ghostel--fake-cursor-update)))
 
 (defun ghostel-emacs-mode ()
-  "Switch to Emacs mode — read-only buffer with the terminal still running.
+  "Toggle Emacs mode — read-only buffer with the terminal still running.
 The terminal keeps running and scrollback keeps growing.  The
 buffer is read-only, so standard Emacs commands like `isearch',
 `occur', `M-x', `C-SPC' / `M-w', and regular navigation all work
-unmodified over the entire materialised scrollback.  Exit with an
-explicit mode-switch command (`\\[ghostel-semi-char-mode]'), or
-\\`q'/\\`C-g'/any self-insert key when `ghostel-readonly-fast-exit'
-is non-nil."
+unmodified over the entire materialised scrollback.  When already
+in Emacs mode this exits back to the previous mode (mirroring
+`ghostel-copy-mode'); otherwise exit with an explicit mode-switch
+command (`\\[ghostel-semi-char-mode]'), or \\`q'/\\`C-g'/any
+self-insert key when `ghostel-readonly-fast-exit' is non-nil."
   (interactive)
-  (unless (eq ghostel--input-mode 'emacs)
+  (if (eq ghostel--input-mode 'emacs)
+      (ghostel-readonly-exit)
     (ghostel--enter-readonly
      'emacs nil ":Emacs"
      (format "Emacs mode: terminal live, %s to exit"
