@@ -67,6 +67,18 @@ pub const Env = struct {
     }
 
     pub fn f(self: Env, comptime func: []const u8, args: anytype) Value {
+        if (comptime builtin.mode == .Debug) {
+            if (self.nonLocalExitCheck() != .normal) {
+                return self.nil();
+            }
+        }
+        defer {
+            if (comptime builtin.mode == .Debug) {
+                if (self.nonLocalExitCheck() != .normal) {
+                    std.log.err("Call to {s} failed", .{func});
+                }
+            }
+        }
         return self.funcall(@field(sym, func), &self.makeValues(args));
     }
 
