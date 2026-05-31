@@ -3701,5 +3701,118 @@ subtracts old_line_len from the newly-created page whose char_len is
       (kill-buffer buf))))
 
 
+(defun ghostel-test--bold-color-palette ()
+  "Return a 256-entry hex palette string with index 1 red and 9 green.
+Used by bold-color tests so palette mapping is observable."
+  (concat "#000000"                                ;; 0
+          "#ff0000"                                ;; 1 (red)
+          (apply #'concat (make-list 7 "#000000")) ;; 2..8
+          "#00ff00"                                ;; 9 (bright red, distinguishable)
+          (apply #'concat (make-list 246 "#000000"))))
+
+(ert-deftest ghostel-test-bold-is-bright ()
+  "Test that bold text uses bright colors when ghostel-bold-color is 'bright."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-bold*"))
+        (ghostel-bold-color 'bright))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--set-palette term (ghostel-test--bold-color-palette))
+            (ghostel--apply-bold-config term)
+
+            ;; Write bold red text
+            (ghostel--write-input term "\e[1;31mBOLD\e[0m")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should (equal "#00ff00" (plist-get face :foreground)))
+              (should (eq 'bold (plist-get face :weight))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-bold-fixed-color ()
+  "Test that bold text uses a fixed color when ghostel-bold-color is a hex string."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-bold-fixed*"))
+        (ghostel-bold-color "#abcdef"))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--apply-bold-config term)
+
+            ;; Write bold text without color
+            (ghostel--write-input term "\e[1mBOLD\e[0m")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should (equal "#abcdef" (plist-get face :foreground)))
+              (should (eq 'bold (plist-get face :weight))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-bold-color-nil-leaves-fg-alone ()
+  "Test that bold text keeps its original color when `ghostel-bold-color' is nil."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-bold-nil*"))
+        (ghostel-bold-color nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--set-palette term (ghostel-test--bold-color-palette))
+            (ghostel--apply-bold-config term)
+            ;; Bold red (palette 1) must stay red — no brightening to palette 9.
+            (ghostel--write-input term "\e[1;31mBOLD\e[0m")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should (equal "#ff0000" (plist-get face :foreground)))
+              (should (eq 'bold (plist-get face :weight))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-bold-fixed-also-brightens-palette ()
+  "Test that fixed-color bold still maps palette 0-7 to 8-15.
+The fixed color only applies to default-fg cells; palette colors take
+the bright variant just like in `bright' mode."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-bold-fixed-palette*"))
+        (ghostel-bold-color "#abcdef"))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--set-palette term (ghostel-test--bold-color-palette))
+            (ghostel--apply-bold-config term)
+            ;; Bold red (palette 1) → bright red (palette 9 = #00ff00),
+            ;; NOT the fixed color #abcdef.
+            (ghostel--write-input term "\e[1;31mBOLD\e[0m")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should (equal "#00ff00" (plist-get face :foreground))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-bold-leaves-bright-palette-alone ()
+  "Test that bold on palette 8-15 is not re-mapped (no overflow into 16-23)."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-bold-bright-palette*"))
+        (ghostel-bold-color 'bright))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--set-palette term (ghostel-test--bold-color-palette))
+            (ghostel--apply-bold-config term)
+            ;; SGR 91 selects palette 9 directly; bold must not shift it further.
+            (ghostel--write-input term "\e[1;91mBOLD\e[0m")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should (equal "#00ff00" (plist-get face :foreground)))
+              (should (eq 'bold (plist-get face :weight))))))
+      (kill-buffer buf))))
+
+
 (provide 'ghostel-render-test)
 ;;; ghostel-render-test.el ends here
