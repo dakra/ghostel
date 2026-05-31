@@ -1560,7 +1560,7 @@ Matches Ghostty 1.2.0's `bold-color' configuration."
                  (ghostel--redraw ghostel--term t)))))))
 
 (defvar-local ghostel--cursor-pos nil
-  "The position of the terminal cursor as (COL . ROW) in terminal screen coords.")
+  "The terminal cursor as (COL . ROW) in viewport-relative coordinates.")
 
 (defvar-local ghostel--cursor-char-pos nil
   "The position of the terminal cursor in the buffer.")
@@ -1594,63 +1594,6 @@ One of `semi-char', `char', `copy', `emacs', or `line'.  See
 
 (defvar-local ghostel--force-next-redraw nil
   "When non-nil, redraw regardless of synchronized output mode.")
-
-(defvar ghostel--redraw-resize-active nil
-  "Dynamically bound to t inside a resize-triggered `ghostel--delayed-redraw'.
-Read by `ghostel--window-anchored-p' so the redraw keeps auto-following
-windows anchored even when Emacs redisplay drifted `window-start' below
-the anchor between redraws (e.g. via `keep-point-visible' when the
-minibuffer shrinks the window).  Not set for output-driven redraws,
-clear-scrollback, copy-exit, or snap-to-input — those either reset
-`ghostel--scroll-positions' or set `ghostel--snap-requested', both of
-which already produce the intended anchoring.")
-
-(defvar-local ghostel--snap-requested nil
-  "When non-nil, the next redraw should anchor `window-start' to the viewport.
-Set by `ghostel--snap-to-input' on user-initiated input (typing, paste,
-yank, drop) and cleared by `ghostel--delayed-redraw' after the anchor
-runs.  When nil, a redraw preserves the existing `window-start' if the
-user has scrolled into the scrollback, so live output and Emacs commands
-do not yank the view back to the prompt.")
-
-(defvar-local ghostel--windows-needing-snap nil
-  "List of windows that must anchor to the viewport on the next redraw.
-Populated by `ghostel--reshow-snap' when a window starts displaying
-this buffer, and cleared by `ghostel--delayed-redraw' after the anchor
-runs.  Per-window (rather than buffer-local like `ghostel--snap-requested')
-so opening a second window on a ghostel buffer does not yank peers the
-user has scrolled back for reading history (issue #177).")
-
-(defvar-local ghostel--last-anchor-position nil
-  "Buffer position where the anchor last set `window-start'.
-Used by `ghostel--delayed-redraw' to tell windows that are following
-the viewport (window-start at or past this anchor) from windows the
-user has scrolled into the scrollback (window-start below this anchor).
-Robust across redraws that shift viewport-start without the user
-scrolling — e.g. live output that grows the buffer, or a window resize
-that changes `ghostel--term-rows'.")
-
-(defvar-local ghostel--scroll-positions nil
-  "Alist of (WINDOW . (WS-KEY WP-KEY WP-COL)) for scrolled windows.
-Each entry is a window viewing this buffer that is currently in the
-scrollback (not following the viewport).  WS-KEY and WP-KEY are
-multi-line content keys (see `ghostel--line-key') at `window-start'
-and `window-point' respectively; WP-COL is the column of
-`window-point' within its line.  Content-based (rather than byte
-positions or line numbers) so lookups survive the native redraw's
-buffer reshuffles (eraseBuffer + re-insert, scrollback eviction,
-viewport rewrite) while libghostty's logical content is preserved.
-
-The alist is rebuilt each redraw.  The pre-redraw pass in
-`ghostel--delayed-redraw' uses a heuristic to distinguish Emacs
-clamping `window-start' to `point-min' (restore from saved key) from a
-legitimate user scroll to a different valid position (refresh saved
-key to match).  The heuristic misfires if Emacs moves `window-start'
-to a non-`point-min' non-saved position (e.g. programmatic
-`recenter', `follow-mode', window split layouts); in that case the
-saved key is refreshed to the new content and the original scroll
-intent is lost.  That's an accepted tradeoff for avoiding a
-`post-command-hook' that would fire on every keystroke.")
 
 (defvar-local ghostel--kitty-active nil
   "Non-nil when kitty image overlays are present in the buffer.")
@@ -2241,13 +2184,7 @@ Returns the sequence string, or nil for unknown keys."
 
 (defun ghostel--snap-to-input ()
   "Return the window to the live viewport on user input.
-Resets the terminal engine's viewport out of scrollback and sets
-`ghostel--snap-requested' so the delayed redraw anchors
-`window-start' to the viewport (and clears any pixel vscroll left
-by `pixel-scroll-precision-mode' or similar scrollers).  No-op
-when `ghostel-scroll-on-input' is nil.  Call from any path where
-the user's action implies \"show me the prompt\" — typed input,
-paste, yank, drop.
+Uses `ghostel--anchor-window'.
 
 Fires regardless of input mode: in semi-char/char/line modes
 each typed key calls this before forwarding; in Emacs mode
@@ -2256,8 +2193,7 @@ through `ghostel--paste-text' which calls this before sending.
 Pure-navigation commands do not call this, so reading scrollback
 without sending anything to the shell preserves point."
   (when (and ghostel-scroll-on-input ghostel--term)
-    (setq ghostel--snap-requested t)
-    (setq ghostel--force-next-redraw t)))
+    (ghostel--anchor-window)))
 
 (defun ghostel--self-insert ()
   "Send the last typed character to the terminal."
@@ -2502,16 +2438,6 @@ pasted using bracketed paste."
     ;; CSI H = home, CSI 2 J = erase screen, CSI 3 J = erase scrollback.
     (ghostel--write-input ghostel--term "\e[H\e[2J\e[3J")
     (setq ghostel--force-next-redraw t)
-    ;; Scrollback is gone; any recorded scroll position no longer
-    ;; refers to real content.  Reset so the next redraw anchors
-    ;; fresh to the new (empty) viewport.  No need to set
-    ;; `ghostel--snap-requested' here: nilling
-    ;; `--last-anchor-position' makes `ghostel--window-anchored-p'
-    ;; treat every window as anchored on the next redraw via its
-    ;; bootstrap branch.  (`ghostel-readonly-exit' uses the snap
-    ;; flag instead because it preserves `--last-anchor-position'.)
-    (setq ghostel--scroll-positions nil)
-    (setq ghostel--last-anchor-position nil)
     (ghostel--invalidate)
     ;; Send form-feed to the shell so it redraws its prompt.
     (when (and ghostel--process (process-live-p ghostel--process))
@@ -3018,12 +2944,9 @@ Most keys are sent to the terminal; keys in
     (setq ghostel--mode-line-tag nil)
     (ghostel--mode-line-refresh)
     (when ghostel--term
-      ;; Snap the next redraw to the live viewport so the user lands
-      ;; back at the prompt after exiting copy/emacs/line.  The render
-      ;; pipeline parks libghostty at `max_offset' on each pass, so
-      ;; setting these flags is the equivalent of the old
-      ;; `ghostel--scroll-bottom' call.
-      (setq ghostel--snap-requested t)
+      ;; Snap the window to the live viewport so the user lands back
+      ;; at the prompt after exiting copy/emacs/line.
+      (ghostel--anchor-window)
       (setq ghostel--force-next-redraw t)
       (goto-char (point-max))
       (ghostel--invalidate))))
@@ -3052,7 +2975,7 @@ Even keys listed in `ghostel-keymap-exceptions' (\\`C-c', \\`C-x',
     (setq ghostel--mode-line-tag (ghostel--mode-line-tag-make 'char ":Char"))
     (ghostel--mode-line-refresh)
     (when ghostel--term
-      (setq ghostel--snap-requested t)
+      (ghostel--anchor-window)
       (setq ghostel--force-next-redraw t)
       (goto-char (point-max))
       (ghostel--invalidate))
@@ -3152,16 +3075,10 @@ returns to whichever input mode was active before."
   (when (memq ghostel--input-mode '(copy emacs))
     (let ((target (or ghostel--pre-readonly-mode 'semi-char)))
       (setq ghostel--pre-readonly-mode nil)
-      ;; Jump out of any scrollback position so the next redraw is
-      ;; free to position point at the terminal cursor.
+      ;; Return to the live viewport before reenabling terminal input.
       (goto-char (point-max))
-      ;; Drop stale scroll-state that was frozen while delayed-redraw
-      ;; was short-circuited during copy mode, and let the next redraw
-      ;; snap fresh to the viewport.  `force-next-redraw' is required
-      ;; so the snap fires even when DEC 2026 synchronized output is
-      ;; active.
-      (setq ghostel--scroll-positions nil)
-      (setq ghostel--snap-requested t)
+      ;; Force the anchor even when DEC 2026 synchronized output is active.
+      (ghostel--anchor-window)
       (setq ghostel--force-next-redraw t)
       (pcase target
         ('char  (ghostel-char-mode))
@@ -4296,11 +4213,14 @@ when called from the deferred-detection timer outside the redraw scope."
   (let* ((begin (or begin (point-min)))
          (end (or end (point-max)))
          (inhibit-read-only t)
-         ;; Point sits at the live terminal cursor after a redraw, so its
-         ;; line is the prompt the user is currently editing.  Capture as
+         ;; `ghostel--cursor-char-pos' is the live terminal cursor after a redraw;
+         ;; its line is the prompt the user is currently editing.  Capture as
          ;; buffer-position bounds so the per-match skip check is O(1).
-         (active-bounds (cons (line-beginning-position)
-                              (line-end-position))))
+         (active-pos (or ghostel--cursor-char-pos (point)))
+         (active-bounds (save-excursion
+                          (goto-char active-pos)
+                          (cons (line-beginning-position)
+                                (line-end-position)))))
     (save-excursion
       ;; Pass 1: http(s) URLs
       (when ghostel-enable-url-detection
@@ -4971,12 +4891,10 @@ skipped.  Labels are truncated to 80 columns."
 
 (defun ghostel--imenu-goto (_name position &rest _)
   "Jump to POSITION, then advance past the prompt prefix.
-Switches to Emacs mode first in semi-char/char modes (where
-point would otherwise be yanked back to the live cursor on the
-next redraw).  Line mode is preserved — `ghostel--window-anchored-p'
-treats a window with `window-point' in scrollback as non-anchored,
-so the redraw's restore path keeps point where the jump put it.
-Mirrors the landing position used by `ghostel-next-prompt'."
+Switches to Emacs mode first in semi-char/char modes so navigation
+stays in scrollback while the terminal continues running.  Line mode
+is preserved.  Mirrors the landing position used by
+`ghostel-next-prompt'."
   (unless (memq ghostel--input-mode '(emacs line copy))
     (ghostel-emacs-mode))
   (when (or (< position (point-min)) (> position (point-max)))
@@ -6440,54 +6358,6 @@ When `ghostel--query-font-cache' is nil, call `query-font' directly."
           (puthash font (query-font font) ghostel--query-font-cache))
     (query-font font)))
 
-(defconst ghostel--line-context-lines 3
-  "Number of lines (including the target) used as a disambiguation key.
-`ghostel--line-key' captures this many consecutive lines starting at a
-position; `ghostel--find-line-pos' searches for the exact multi-line
-block to locate that position after the buffer has been rewritten.
-Larger values better disambiguate repeated content (blank lines,
-identical prompts) at the cost of wider comparisons.")
-
-(defun ghostel--line-key (pos)
-  "Return a disambiguation key for the line containing POS.
-The key is a list of consecutive line strings starting with the line
-at POS, of length up to `ghostel--line-context-lines'.  Passed to
-`ghostel--find-line-pos' to re-locate POS after the buffer has been
-rewritten.  Multiple scrollback lines may share identical text (blank
-lines, repeated prompts), but a short run of consecutive lines is
-far more likely to be unique."
-  (save-excursion
-    (goto-char pos)
-    (let ((lines nil)
-          (n ghostel--line-context-lines))
-      (while (and (> n 0) (not (eobp)))
-        (push (buffer-substring-no-properties
-               (line-beginning-position) (line-end-position))
-              lines)
-        (forward-line 1)
-        (setq n (1- n)))
-      (nreverse lines))))
-
-(defun ghostel--find-line-pos (key &optional col)
-  "Find the beginning-of-line position matching KEY.
-KEY is a list of consecutive line strings produced by
-`ghostel--line-key'.  Returns the position of the first match of the
-full multi-line block, or nil if no match.  With COL, returns the
-position COL columns into the first matched line."
-  (when (and key (listp key) (stringp (car key)))
-    (let ((pattern
-           (concat "^" (mapconcat #'regexp-quote key "\n") "$")))
-      (save-excursion
-        (goto-char (point-min))
-        (when (re-search-forward pattern nil t)
-          (let ((found (match-beginning 0)))
-            (if col
-                (save-excursion
-                  (goto-char found)
-                  (move-to-column col)
-                  (point))
-              found)))))))
-
 (defun ghostel--flush-pending-output ()
   "Feed any accumulated output to the terminal in a single batch."
   (when ghostel--pending-output
@@ -6510,69 +6380,6 @@ position COL columns into the first matched line."
         (forward-line (- tr))
         (line-beginning-position)))))
 
-(defun ghostel--active-preedit-overlay ()
-  "Return the active GUI preedit overlay in the current buffer, if any.
-GTK/PGTK input methods display uncommitted text with `x-preedit-overlay'
-or `pgtk-preedit-overlay'.  Those overlays are anchored at point, so a
-terminal redraw that moves point can make the candidate window jump."
-  (cl-loop for sym in '(x-preedit-overlay pgtk-preedit-overlay)
-           for ov = (and (boundp sym) (symbol-value sym))
-           for text = (and (overlayp ov) (overlay-get ov 'before-string))
-           when (and text
-                     (eq (overlay-buffer ov) (current-buffer))
-                     (stringp text)
-                     (> (length text) 0))
-           return ov))
-
-(defun ghostel--preedit-window (overlay)
-  "Return the window associated with preedit OVERLAY, if it is usable."
-  (let ((win (overlay-get overlay 'window)))
-    (cond
-     ((and (window-live-p win)
-           (eq (window-buffer win) (current-buffer)))
-      win)
-     ((eq (window-buffer (selected-window)) (current-buffer))
-      (selected-window)))))
-
-(defun ghostel--capture-preedit-state ()
-  "Capture active GUI preedit position before a redraw rewrites the buffer."
-  (when-let* ((overlay (ghostel--active-preedit-overlay)))
-    (let* ((pos (overlay-start overlay))
-           (viewport-start (ghostel--viewport-start))
-           (line (and viewport-start
-                      (>= pos viewport-start)
-                      (- (line-number-at-pos pos)
-                         (line-number-at-pos viewport-start))))
-           (column (save-excursion
-                     (goto-char pos)
-                     (current-column))))
-      (list :overlay overlay
-            :window (ghostel--preedit-window overlay)
-            :position pos
-            :viewport-line line
-            :column column))))
-
-(defun ghostel--restore-preedit-state (state viewport-start)
-  "Restore preedit overlay STATE after redraw.
-VIEWPORT-START is the post-redraw viewport-start position.
-Returns the buffer position that should be used as the composing
-window's point, or nil when the saved overlay is no longer live."
-  (let ((overlay (plist-get state :overlay)))
-    (when (and (overlayp overlay)
-               (eq (overlay-buffer overlay) (current-buffer)))
-      (let* ((line (plist-get state :viewport-line))
-             (column (plist-get state :column))
-             (pos (if (and viewport-start line)
-                      (save-excursion
-                        (goto-char viewport-start)
-                        (forward-line
-                         (min line (max 0 (1- (or ghostel--term-rows 1)))))
-                        (move-to-column column)
-                        (point))
-                    (min (plist-get state :position) (point-max)))))
-        (move-overlay overlay pos pos (current-buffer))
-        pos))))
-
 (defun ghostel--schedule-link-detection (&optional begin end)
   "Schedule deferred plain-text link detection over BEGIN..END.
 BEGIN defaults to the current viewport start (or `point-min' if the
@@ -6584,140 +6391,65 @@ remain handled inside the renderer."
      (or begin (ghostel--viewport-start) (point-min))
      (or end (point-max)))))
 
-(defsubst ghostel--window-anchored-p (win)
-  "Non-nil if WIN is auto-following the viewport.
-A window counts as anchored when `ghostel--snap-requested' is set
-\(the user just typed), when WIN is in `ghostel--windows-needing-snap'
-\(WIN just gained this buffer), when no anchor has been recorded yet
-\(first redraw), or when BOTH its `window-start' and `window-point'
-are at or past the prior anchor.  During a resize-triggered redraw,
-a window absent from `ghostel--scroll-positions' whose `window-point'
-is still at or past the anchor also counts as anchored: the prior
-redraw left it following the viewport, and a drifted `window-start'
-below the anchor is Emacs redisplay (e.g. `keep-point-visible' when
-the minibuffer shrinks the window), not a user scroll.  The
-`window-point' guard on the resize branch matters because consult-line
-and friends open and close a minibuffer that resizes the body twice;
-without it, the second resize would re-anchor a window whose point
-the user had moved into scrollback during the preview.
+(defun ghostel--window-anchored-p (window &optional pixel-height)
+  "Non-nil if WINDOW is auto-following the new output.
+When PIXEL-HEIGHT is non-nil, that value is used for calculation rather than
+`(window-pixel-height)'."
+  (with-current-buffer (window-buffer window)
+    (when-let* (((derived-mode-p 'ghostel-mode))
+                ((not (eq ghostel--input-mode 'emacs)))
+                (dlh (default-line-height))
+                (pixel-height (or pixel-height (window-pixel-height window)))
+                (line-count (/ (float pixel-height) (float dlh)))
+                (ws (window-start window))
+                (ws-lines-to-end (count-lines ws (point-max))))
+      (<= ws-lines-to-end line-count))))
 
-The `window-point' check fixes the case where navigation moves
-point into scrollback without moving `window-start' — `consult-line',
-`consult-imenu', `goto-char' from a command, etc.  Without it,
-those jumps would be misclassified as \"following the cursor\" and
-the next redraw would yank point back to the live cursor.  Typing
-is unaffected because `ghostel--snap-requested' short-circuits."
-  (let ((anchor ghostel--last-anchor-position))
-    ;; Snap-requested (the user just typed) overrides Emacs mode's
-    ;; usual no-anchor behaviour so typing forwards the keystroke
-    ;; AND brings the window back to the live cursor.  Emacs mode
-    ;; otherwise decouples buffer-point from the terminal cursor —
-    ;; treat every window as non-anchored so the scrollback restore
-    ;; preserves the user's window-point/window-start.
-    (or ghostel--snap-requested
-        (memq win ghostel--windows-needing-snap)
-        (and (not (eq ghostel--input-mode 'emacs))
-             (or (null anchor)
-                 (and (>= (window-start win) anchor)
-                      (>= (window-point win) anchor))
-                 (and ghostel--redraw-resize-active
-                      (>= (window-point win) anchor)
-                      (not (assq win ghostel--scroll-positions))))))))
+(defconst ghostel--set-window-vscroll-preserve-supported-p
+  (let ((max-args (cdr (subr-arity (symbol-function 'set-window-vscroll)))))
+    (or (eq max-args 'many)
+        (and (integerp max-args) (>= max-args 4))))
+  "Non-nil if `set-window-vscroll' accepts PRESERVE-VSCROLL-P.")
 
-(defun ghostel--capture-window-state (win)
-  "Return (WIN WS-KEY WP-KEY WP-COL) for WIN.
-Used to snapshot a non-anchored window's scroll position so it can
-be restored after the native redraw rewrites the buffer."
-  (let ((wp (window-point win)))
-    (list win
-          (ghostel--line-key (window-start win))
-          (ghostel--line-key wp)
-          (save-excursion (goto-char wp) (current-column)))))
+(defun ghostel--set-window-vscroll (window vscroll &optional pixels-p preserve-vscroll-p)
+  "Call `set-window-vscroll' compatibly across Emacs versions.
+Arguments will be WINDOW, VSCROLL, PIXELS-P and also PRESERVE-VSCROLL-P if
+supported."
+  (if ghostel--set-window-vscroll-preserve-supported-p
+      (apply #'set-window-vscroll window vscroll pixels-p
+             (list preserve-vscroll-p))
+    (set-window-vscroll window vscroll pixels-p)))
 
-(defun ghostel--position-mangled-p (pos saved-key)
-  "Return non-nil when POS looks like Emacs clamped it to `point-min'.
-The mangling signature is: POS is `point-min' and SAVED-KEY does not
-match the content currently at `point-min' (i.e. the saved content
-lived elsewhere).  Other cases — SAVED-KEY still matches POS (fast
-path), or POS is at some other valid line (legitimate user scroll)
-— return nil; the post-redraw capture records them."
-  (and (= pos (point-min))
-       (not (equal saved-key (ghostel--line-key pos)))))
-
-(defun ghostel--reconcile-saved-position (win entry)
-  "Restore WIN's ws/wp from ENTRY when Emacs has clamped them to point-min.
-ENTRY is an alist entry of the form (WIN . (WS-KEY WP-KEY WP-COL)).
-For ws and wp independently: when the live position looks mangled
-\(see `ghostel--position-mangled-p'), search for the saved content
-and move the window back.  Other position changes are left alone —
-the post-redraw capture rebuilds `ghostel--scroll-positions' from
-each window's live state, so refreshing the saved key here would
-be a dead write."
-  (let ((data (cdr entry)))
-    (when (ghostel--position-mangled-p (window-start win) (nth 0 data))
-      (let ((p (ghostel--find-line-pos (nth 0 data))))
-        (when p (set-window-start win p t))))
-    (when (ghostel--position-mangled-p (window-point win) (nth 1 data))
-      (let ((p (ghostel--find-line-pos (nth 1 data) (nth 2 data))))
-        (when p (set-window-point win p))))))
-
-(defun ghostel--correct-mangled-scroll-positions (buffer)
-  "Apply the mangling heuristic to every saved scroll position on BUFFER.
-Emacs redisplay between our redraws can clamp `window-start' to
-`point-min' (typically after a minibuffer-triggered window resize);
-this pass detects and corrects that before the native redraw runs,
-so the classification below sees the user's real scroll state.
-No-op when `ghostel--snap-requested' (user input overrides)."
-  (unless ghostel--snap-requested
-    (dolist (entry ghostel--scroll-positions)
-      (let ((win (car entry)))
-        (when (and (window-live-p win)
-                   (eq (window-buffer win) buffer))
-          (ghostel--reconcile-saved-position win entry))))))
-
-(defun ghostel--anchor-window (win vs pt)
-  "Pin WIN to viewport-start VS and sync its point to PT.
-Also resets pixel vscroll (pixel-scroll-precision-mode may leave a
-partial offset that would clip the top line after a redraw)."
-  (set-window-start win vs t)
-  (set-window-vscroll win 0 t)
-  (set-window-point win pt))
-
-(defun ghostel--restore-scrollback-window (win state)
-  "Restore WIN to ws/wp recorded in STATE and push STATE to scroll-positions.
-Only searches when the native redraw actually moved ws/wp off the
-captured line (fast path otherwise).  STATE is (WIN WS-KEY WP-KEY
-WP-COL) as produced by `ghostel--capture-window-state', or nil if
-WIN appeared after the pre-redraw capture (e.g. shown in a new
-frame mid-redraw) — in which case this is a no-op."
-  (when state
-    (let ((ws-key (nth 1 state))
-          (wp-key (nth 2 state))
-          (wp-col (nth 3 state)))
-      (unless (equal ws-key (ghostel--line-key (window-start win)))
-        (let ((new (ghostel--find-line-pos ws-key)))
-          (when new (set-window-start win new t))))
-      (unless (equal wp-key (ghostel--line-key (window-point win)))
-        (let ((new (ghostel--find-line-pos wp-key wp-col)))
-          (when new (set-window-point win new))))
-      (push (cons win (list ws-key wp-key wp-col))
-            ghostel--scroll-positions))))
+(defun ghostel--anchor-window (&optional window)
+  "Scroll WINDOW so that the last row is aligned to the bottom of the window.
+In graphics mode, the bottom line is anchored to the bottom of the window using
+vscroll if there are more rows than can fit into the window."
+  (when-let* ((window (or window (selected-window)))
+              (buffer (window-buffer window)))
+    (with-selected-window window
+      (with-current-buffer buffer
+        (let ((lines (window-screen-lines)))
+          (goto-char (point-max))
+          (forward-line (- (floor lines)))
+          (if (and (> (point) (point-min))
+                   (display-graphic-p (window-frame window)))
+              (progn
+                (forward-line -1)
+                (set-window-start window (point))
+                (let ((pixels (round (* (- 1.0 (- lines (floor lines)))
+                                        (default-line-height)))))
+                  (ghostel--set-window-vscroll window pixels t t)))
+            (set-window-start window (point))
+            (ghostel--set-window-vscroll window 0 t t)))
+        (set-window-point window (or ghostel--cursor-char-pos
+                                     (point-max)))))))
 
 (defun ghostel--delayed-redraw (buffer)
   "Perform the actual redraw in BUFFER.
-Flushes pending PTY output, corrects any Emacs-side window-start
-mangling, runs the native redraw, then restores scroll state for
-windows that were reading scrollback and anchors windows that were
-following the viewport.
-
-When a GUI input method is composing preedit text in BUFFER, leaves
-buffer point on the preedit anchor instead of the terminal cursor so
-the candidate window does not jump while text is streaming in.
-
-In Emacs mode, the read-only buffer is decoupled from the terminal
-cursor — point is captured per-window via the standard scroll-state
-restore path so the user's navigation point is not yanked back when
-new output arrives."
+Flushes pending PTY output and runs the native renderer.  The
+renderer preserves buffer positions while applying terminal
+mutations; this function anchors windows that were following the
+live viewport."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (setq ghostel--redraw-timer nil)
@@ -6731,94 +6463,50 @@ new output arrives."
           ;; post-pause input mode and skips its own capture.
           (ghostel--line-mode-pre-redraw)
           (setq ghostel--force-next-redraw nil)
-          (ghostel--correct-mangled-scroll-positions buffer)
-          (let* ((preedit-state (ghostel--capture-preedit-state))
-                 (preedit-window (plist-get preedit-state :window))
-                 (all-windows (get-buffer-window-list buffer nil t))
-                 (anchored (cl-remove-if-not #'ghostel--window-anchored-p
-                                             all-windows))
-                 (non-anchored-states
-                  (mapcar #'ghostel--capture-window-state
-                          (cl-remove-if #'ghostel--window-anchored-p
-                                        all-windows)))
-                 (render-win (ghostel--get-render-window buffer))
-                 ;; In Emacs mode the buffer-point is normally
-                 ;; decoupled from the terminal cursor.  Stash a
-                 ;; marker so we can restore it after the renderer
-                 ;; rewrites the buffer (which moves point to the
-                 ;; live cursor).  Skip the stash when snap-requested
-                 ;; — the user just typed and wants point to land at
-                 ;; the live cursor where their input went, not
-                 ;; wherever they had navigated to.
-                 (emacs-saved-marker
-                  (and (eq ghostel--input-mode 'emacs)
-                       (not ghostel--snap-requested)
-                       (copy-marker (point) t)))
-                 ;; In line mode the user's in-progress input lives
-                 ;; in the buffer past the prompt and is not in
-                 ;; libghostty's grid; the renderer would otherwise
-                 ;; clobber it.  Snapshot the input region (and clear
-                 ;; it from the buffer) before the redraw, then
-                 ;; restore it after.
-                 (line-snapshot
-                  (and (eq ghostel--input-mode 'line)
-                       (ghostel--line-mode-snapshot)))
-                 (inhibit-read-only t)
-                 (inhibit-redisplay t)
-                 (inhibit-modification-hooks t)
-                 ;; Raise GC threshold to defer GC during redraw.
-                 (gc-cons-threshold (min most-positive-fixnum
-                                         (* gc-cons-threshold 3))))
-            (when render-win
-              (let ((ghostel--query-font-cache (make-hash-table :test 'eq)))
-                (with-selected-window render-win
-                  (ghostel--redraw ghostel--term ghostel-full-redraw))))
-            (let ((line-restored
-                   (and line-snapshot
-                        (ghostel--line-mode-restore line-snapshot))))
-              (let* ((pt (point))
-                     (vs (ghostel--viewport-start))
-                     (preedit-point
-                      (and preedit-state
-                           (ghostel--restore-preedit-state
-                            preedit-state vs))))
-                (setq ghostel--scroll-positions nil)
-                (dolist (win all-windows)
-                  (if (and vs (memq win anchored))
-                      (let ((preedit-win-p
-                             (and preedit-point
-                                  preedit-window
-                                  (eq win preedit-window))))
-                        (ghostel--anchor-window
-                         win vs
-                         (if preedit-win-p preedit-point pt)))
-                    (ghostel--restore-scrollback-window
-                     win (assq win non-anchored-states))))
-                (cond
-                 (preedit-point      (goto-char preedit-point))
-                 (line-restored      nil) ; restore already moved point
-                 (emacs-saved-marker (goto-char emacs-saved-marker)))
-                (when emacs-saved-marker
-                  (set-marker emacs-saved-marker nil))
-                (when vs
-                  (setq ghostel--last-anchor-position vs))
-                (ghostel--schedule-link-detection vs (point-max)))
-              ;; Restore failed (prompt scrolled off / shell
-              ;; integration dropped out): the input was already
-              ;; deleted from the buffer in snapshot — forward it raw
-              ;; so the user does not lose what they typed.
-              (when (and line-snapshot (not line-restored))
-                (let ((input (plist-get line-snapshot :input)))
-                  (when (and input (> (length input) 0)
-                             ghostel--process
-                             (process-live-p ghostel--process))
-                    (process-send-string ghostel--process input))
-                  (message "ghostel: line-mode prompt lost; input forwarded raw")))
+          (when-let* ((render-win (ghostel--get-render-window buffer)))
+            (let* ((all-windows (get-buffer-window-list buffer nil t))
+                   (anchored (cl-remove-if-not #'ghostel--window-anchored-p
+                                               all-windows))
+                   ;; In line mode the user's in-progress input lives
+                   ;; in the buffer past the prompt and is not in
+                   ;; libghostty's grid; the renderer would otherwise
+                   ;; clobber it.  Snapshot the input region (and clear
+                   ;; it from the buffer) before the redraw, then
+                   ;; restore it after.
+                   (line-snapshot (and (eq ghostel--input-mode 'line)
+                                       (ghostel--line-mode-snapshot)))
+                   (inhibit-read-only t)
+                   (inhibit-redisplay t)
+                   (inhibit-modification-hooks t)
+                   ;; Raise GC threshold to defer GC during redraw.
+                   (gc-cons-threshold (min most-positive-fixnum
+                                           (* gc-cons-threshold 3)))
+                   (ghostel--query-font-cache (make-hash-table :test 'eq)))
+              (with-selected-window render-win
+                (ghostel--redraw ghostel--term ghostel-full-redraw))
+
+              (dolist (win anchored) (ghostel--anchor-window win))
+
+              (let* ((line-restored
+                      (and line-snapshot
+                           (ghostel--line-mode-restore line-snapshot))))
+                ;; Restore failed (prompt scrolled off / shell
+                ;; integration dropped out): the input was already
+                ;; deleted from the buffer in snapshot — forward it raw
+                ;; so the user does not lose what they typed.
+                (when (and line-snapshot (not line-restored))
+                  (let ((input (plist-get line-snapshot :input)))
+                    (when (and input (> (length input) 0)
+                               ghostel--process
+                               (process-live-p ghostel--process))
+                      (process-send-string ghostel--process input))
+                    (message "ghostel: line-mode prompt lost; input forwarded raw")))
+
+                (ghostel--schedule-link-detection (ghostel--viewport-start)
+                                                  (point-max)))
               ;; Resume line mode if alt-screen just turned off, and
               ;; update the alt-screen-prev cache for the next cycle.
-              (ghostel--line-mode-post-redraw)))
-          (setq ghostel--snap-requested nil)
-          (setq ghostel--windows-needing-snap nil))
+              (ghostel--line-mode-post-redraw))))
         (ghostel--detect-password-prompt)))))
 
 (defun ghostel-force-redraw ()
@@ -6920,12 +6608,7 @@ PROCESS is the shell process, WINDOWS is the list of windows."
             (when ghostel--redraw-timer
               (cancel-timer ghostel--redraw-timer)
               (setq ghostel--redraw-timer nil))
-            ;; `ghostel--redraw-resize-active' lets `ghostel--window-anchored-p'
-            ;; treat Emacs-induced `window-start' drift (from `keep-point-visible'
-            ;; when a minibuffer-triggered resize shrinks the body) as drift,
-            ;; not as a user scroll.
-            (let ((ghostel--redraw-resize-active t))
-              (ghostel--delayed-redraw buffer)))))))
+            (ghostel--delayed-redraw buffer))))))
     ;; Return size — Emacs calls set-process-window-size (SIGWINCH)
     ;; after this function returns.  nil suppresses the call.
     size))
@@ -6944,25 +6627,31 @@ and the TTY display that needs it off keeps working in parallel)."
       (unless (equal auto-composition-mode tt)
         (setq-local auto-composition-mode tt)))))
 
-(defun ghostel--reshow-snap (window)
-  "Mark WINDOW for viewport-snap on the next redraw.
-Intended for buffer-local `window-buffer-change-functions'.  Fires
-whenever this buffer becomes WINDOW's buffer: both on the classic
-hide-then-show transition and when an additional window opens on
-the same buffer (`split-window', `display-buffer', etc.).  While
-the buffer is hidden `ghostel--last-anchor-position' keeps advancing
-with each redraw, so the pre-show `window-start' that Emacs restores
-falls behind the anchor and is misclassified as scrollback (issue
-#177).  Recording WINDOW (rather than setting a buffer-level flag)
-forces the next redraw to anchor only that window, leaving peer
-windows the user may have scrolled back undisturbed.
-`ghostel--invalidate' schedules the redraw even when no new PTY
-output is arriving."
+(defun ghostel--window-buffer-change (window)
+  "Anchor window and force redraw when buffer gets displayed in WINDOW."
   (when (and (window-live-p window)
-             (eq (window-buffer window) (current-buffer))
-             ghostel--term)
-    (cl-pushnew window ghostel--windows-needing-snap)
+             (eq (window-buffer window) (current-buffer)))
+    (ghostel--anchor-window window)
     (ghostel--invalidate)))
+
+(defun ghostel--anchor-on-resize (window)
+  "Scroll WINDOW to the active area if it was already anchored.
+If WINDOW was already anchored at the active area before resizing, WINDOW will
+scroll to active area to keep it focused even during resize."
+  (with-current-buffer (window-buffer window)
+    (when (ghostel--window-anchored-p window
+                                      (window-old-pixel-height window))
+      (ghostel--anchor-window window))))
+
+(defun ghostel--minibuffer-exit ()
+  "Schedule anchoring of all the currently anchored Ghostel windows.
+The minibuffer when used with packages such as Vertico can cause a resize of
+a Ghostel window making it lose its anchoring."
+  (when-let* ((anchored (cl-delete-if-not #'ghostel--window-anchored-p
+                                          (window-list))))
+    (run-at-time 0 nil
+                 (lambda ()
+                   (dolist (win anchored) (ghostel--anchor-window win))))))
 
 
 ;;; Major mode
@@ -7004,8 +6693,10 @@ output is arriving."
   (add-function :after after-focus-change-function #'ghostel--focus-change)
   (add-hook 'window-selection-change-functions #'ghostel--focus-change)
   (add-hook 'window-buffer-change-functions #'ghostel--focus-change)
-  (add-hook 'window-buffer-change-functions #'ghostel--reshow-snap nil t)
+  (add-hook 'window-buffer-change-functions #'ghostel--window-buffer-change nil t)
   (add-hook 'window-buffer-change-functions #'ghostel--sync-tty-composition nil t)
+  (add-hook 'window-size-change-functions #'ghostel--anchor-on-resize nil t)
+  (add-hook 'minibuffer-exit-hook #'ghostel--minibuffer-exit)
   (ghostel--suppress-interfering-modes)
   (ghostel-imenu-setup)
   (setq ghostel--scroll-intercept-active t)

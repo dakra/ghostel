@@ -126,14 +126,13 @@ Regression guard: the minor-mode body used to call
    (should-not evil-move-cursor-back)))
 
 ;; -----------------------------------------------------------------------
-;; Test: around-redraw preserves point / mark / visual markers
+;; Test: around-redraw point and visual-marker policy
 ;; -----------------------------------------------------------------------
 
 (defmacro evil-ghostel-test--simulating-redraw (&rest body)
   "Run BODY with `ghostel--redraw' replaced by a buffer-rewriter.
-The mock erases the buffer and reinserts the same text, which is what
-the native full-redraw path does at the Emacs level — every marker in
-the buffer snaps to `point-min' across the call."
+The mock erases and reinserts the same text so these tests exercise
+`evil-ghostel--around-redraw' independent of renderer marker handling."
   `(cl-letf (((symbol-function 'ghostel--redraw)
               (lambda (_term &optional _full)
                 (let ((text (buffer-string)))
@@ -143,35 +142,39 @@ the buffer snaps to `point-min' across the call."
               (lambda (_term _mode) nil)))
      ,@body))
 
-(ert-deftest evil-ghostel-test-around-redraw-preserves-point-in-normal ()
-  "Point is restored in non-terminal states after the native redraw call."
+(ert-deftest evil-ghostel-test-around-redraw-does-not-restore-normal-point ()
+  "Normal-state point is left where the renderer placed it."
   (evil-ghostel-test--with-evil-buffer
    (insert "one\ntwo\nthree\nfour\nfive\n")
    (evil-normal-state)
    (goto-char (point-min))
-   (search-forward "three")
-   (let ((target (point)))
-     (evil-ghostel-test--simulating-redraw
+   (search-forward "two")
+   (let ((renderer-point (save-excursion
+                           (goto-char (point-min))
+                           (search-forward "four"))))
+     (cl-letf (((symbol-function 'ghostel--redraw)
+                (lambda (_term &optional _full)
+                  (goto-char renderer-point)))
+               ((symbol-function 'ghostel--mode-enabled)
+                (lambda (_term _mode) nil)))
       (evil-ghostel--around-redraw (symbol-function 'ghostel--redraw) nil))
-     (should (= target (point))))))
+     (should (= renderer-point (point))))))
 
 (ert-deftest evil-ghostel-test-around-redraw-lets-point-follow-in-emacs ()
-  "Point is NOT preserved in `emacs'/`insert' — it follows the TUI cursor."
+  "Point follows the TUI cursor in `emacs'/`insert' states."
   (evil-ghostel-test--with-evil-buffer
    (insert "one\ntwo\nthree\nfour\nfive\n")
    (evil-emacs-state)
+   (setq-local ghostel--term 'fake
+               ghostel--cursor-pos '(0 . 2))
    (goto-char (point-min))
-   (search-forward "three")
-   (evil-ghostel-test--simulating-redraw
-    ;; Mock redraw places point at point-min (like eraseBuffer does).
-    (evil-ghostel--around-redraw
-     (lambda (_term &optional _full)
-       (let ((text (buffer-string)))
-         (erase-buffer)
-         (insert text)
-         (goto-char (point-min))))
-     nil))
-   (should (= (point-min) (point)))))
+   (search-forward "five")
+   (cl-letf (((symbol-function 'ghostel--redraw) #'ignore)
+             ((symbol-function 'ghostel--mode-enabled)
+              (lambda (_term _mode) nil)))
+     (evil-ghostel--around-redraw (symbol-function 'ghostel--redraw) 'fake))
+   (should (= 3 (line-number-at-pos)))
+   (should (= 0 (current-column)))))
 
 (ert-deftest evil-ghostel-test-around-redraw-preserves-visual-markers ()
   "`evil-visual-beginning'/`evil-visual-end' are restored in visual state."
@@ -214,16 +217,16 @@ advice must not restore point or visual markers there."
 
 (ert-deftest evil-ghostel-test-around-redraw-snaps-point-on-prompt-line ()
   "Point follows the new cursor line in normal state when on the prompt.
-Output that grows scrollback must not strand point above the new
-prompt — the renderer's cursor placement should win."
+Output that grows scrollback must not strand point above the live
+prompt."
   (evil-ghostel-test--with-buffer 5 40 "$ "
                                   (evil-normal-state)
-                                  ;; After the initial redraw, point sits on the cursor line.
+                                  ;; Start on the cursor line.
+                                  (evil-ghostel--reset-cursor-point)
                                   (should (evil-ghostel--point-on-cursor-line-p))
                                   ;; Stream output that overflows the 5-row viewport, growing
-                                  ;; scrollback.  Without the on-prompt-line heuristic the
-                                  ;; advice would restore the stale buffer position from before
-                                  ;; the scroll.
+                                  ;; scrollback.  The prompt-following heuristic should keep
+                                  ;; point on the live cursor row.
                                   (ghostel--write-input term "\r\n")
                                   (dotimes (i 8)
                                     (ghostel--write-input term (format "out-%d\r\n" i)))
@@ -238,6 +241,8 @@ prompt — the renderer's cursor placement should win."
 Scrollback navigation must not be disturbed by output redraws."
   (evil-ghostel-test--with-buffer 5 40 "alpha\r\nbeta\r\ngamma\r\n$ "
                                   (evil-normal-state)
+                                  (save-window-excursion
+                                    (switch-to-buffer (current-buffer))
                                   ;; Park point on a non-cursor line above the prompt.
                                   (goto-char (point-min))
                                   (search-forward "beta")
@@ -253,7 +258,7 @@ Scrollback navigation must not be disturbed by output redraws."
                                            (buffer-substring-no-properties
                                             (line-beginning-position)
                                             (line-end-position))))
-                                  (should-not (evil-ghostel--point-on-cursor-line-p))))
+                                    (should-not (evil-ghostel--point-on-cursor-line-p)))))
 
 ;; -----------------------------------------------------------------------
 ;; Test: reset-cursor-point
@@ -360,7 +365,8 @@ point in the scrollback region instead of the visible viewport."
 (ert-deftest evil-ghostel-test-cursor-to-point-no-op ()
   "Test that no arrows are sent when point matches terminal cursor."
   (evil-ghostel-test--with-buffer 5 40 "hello"
-                                  ;; Point is already at terminal cursor after redraw
+                                  ;; Put point at the terminal cursor.
+                                  (evil-ghostel--reset-cursor-point)
                                   (let ((keys-sent '()))
                                     (cl-letf (((symbol-function 'ghostel--send-encoded)
                                                (lambda (key _mods &rest _)
@@ -413,6 +419,8 @@ on-cursor-line normal state intentionally follows the cursor across
 redraws so the prompt isn't left behind by output."
   (evil-ghostel-test--with-buffer 5 40 "first\r\nsecond\r\nthird"
                                   (evil-normal-state)
+                                  (save-window-excursion
+                                    (switch-to-buffer (current-buffer))
                                   ;; Park point on the first row, off the cursor line.
                                   (goto-char (point-min))
                                   (move-to-column 3)
@@ -422,7 +430,7 @@ redraws so the prompt isn't left behind by output."
                                   (let ((inhibit-read-only t))
                                     (ghostel--redraw term t))
                                   (should (= 3 (current-column)))
-                                  (should (= 1 (line-number-at-pos)))))
+                                    (should (= 1 (line-number-at-pos))))))
 
 (ert-deftest evil-ghostel-test-redraw-moves-point-insert ()
   "Test that redraws move point to terminal cursor in insert state."
@@ -1189,6 +1197,7 @@ and with `ghostel--send-encoded' captured into the local list `sent'."
   `(let ((sent '()))
      (cl-letf (((symbol-function 'ghostel--mode-enabled)
                 (lambda (_term mode) (and (= mode 1049) ,alt-screen-p)))
+               ((symbol-function 'ghostel--anchor-window) #'ignore)
                ((symbol-function 'ghostel--send-encoded)
                 (lambda (key mods &rest _) (push (cons key mods) sent))))
        (setq-local ghostel--term t)

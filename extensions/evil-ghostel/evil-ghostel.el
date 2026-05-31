@@ -112,8 +112,7 @@ right there, so PTY-routing intercepts must stand down."
 (defun evil-ghostel--reset-cursor-point ()
   "Move Emacs point to the terminal cursor position.
 `ghostel--cursor-pos' holds the viewport-relative (COL . ROW), so
-the row must be offset by the scrollback line count.  Mirrors the
-placement math the native module performs in `src/render.zig'."
+the row must be offset by the scrollback line count."
   (when (and ghostel--term ghostel--term-rows)
     (let ((pos ghostel--cursor-pos))
       (when pos
@@ -126,8 +125,7 @@ placement math the native module performs in `src/render.zig'."
 (defun evil-ghostel--cursor-buffer-line ()
   "Return the 0-indexed buffer line of the terminal cursor, or nil.
 Translates `ghostel--cursor-pos' (viewport-relative row) into a
-buffer line by adding the scrollback line count.  Mirrors the
-placement math the native module performs in `src/render.zig'."
+buffer line by adding the scrollback line count."
   (when (and ghostel--term ghostel--term-rows)
     (let ((pos ghostel--cursor-pos))
       (when pos
@@ -157,11 +155,8 @@ helper is unsafe there — use `evil-ghostel--last-cursor-line' instead."
 
 (defvar-local evil-ghostel--last-cursor-line nil
   "Buffer line where the previous redraw placed the terminal cursor.
-Used by `evil-ghostel--around-redraw' to recognize the case where the
-user is parked at the live prompt and the prompt scrolls during the
-redraw — only then does the renderer's cursor placement win across
-the redraw, so column-only navigation (`^', `$', `0', and the like)
-survives redraws that *don't* scroll the prompt.")
+Used by `evil-ghostel--around-redraw' to distinguish prompt-following
+from scrollback navigation and same-line column motion.")
 
 (defvar-local evil-ghostel--shadow-cursor nil
   "Pending terminal cursor (COL . VIEWPORT-ROW), or nil to read live state.
@@ -216,7 +211,7 @@ still-stale live value."
       (setq evil-ghostel--shadow-cursor (cons ecol erow)))))
 
 
-;; Redraw: preserve point and evil visual markers across the native call
+;; Redraw: apply Evil-specific point and visual-marker semantics
 
 (defvar-local evil-ghostel--sync-point-on-next-redraw nil
   "When non-nil, the next `ghostel--redraw' moves point to the terminal cursor.
@@ -225,44 +220,22 @@ terminal cursor (e.g. the same-row `dd' Ctrl-u path) where Emacs
 point would otherwise be left at a now-stale position.")
 
 (defun evil-ghostel--around-redraw (orig-fn term &optional full)
-  "Preserve point and evil visual markers across the native redraw call.
-Native `ghostel--redraw' in `src/render.zig' rewrites the viewport
-region, moving every marker in the buffer.  `point' (non-terminal
-states) and the evil-specific visual range markers are restored here;
-`mark' is preserved by the native module itself and needs no handling
-at this layer.
-
-  - `point' in non-terminal states.  In `insert' and `emacs' point
-    intentionally follows the TUI cursor.  In `normal' (and other
-    non-visual non-terminal states) point follows the cursor too when
-    the user was parked at the prompt position (line *and* column)
-    before the redraw — the renderer leaves point at the new cursor
-    and we keep it there so the prompt isn't left behind by output.
-    Otherwise the saved buffer position is restored so scrollback
-    navigation, and column-only motions like `^'/`$', are undisturbed.
-  - `evil-visual-beginning' and `evil-visual-end' in `visual' state.
+  "Apply Evil-specific point handling around `ghostel--redraw'.
+The renderer preserves normal buffer positions.  This advice only
+syncs point to the terminal cursor when Evil semantics require it:
+insert/Emacs states, explicit sync requests, and normal-state prompt
+movement.  Visual range markers are restored around the native redraw.
 
 ORIG-FN is the advised `ghostel--redraw' called with TERM and FULL.
-Skipped when the terminal is in alt-screen mode (1049); apps there
-own the screen and drive their own redraw cycle."
+Skipped when the terminal is in alt-screen mode (1049)."
   (if (and evil-ghostel-mode
            (not (ghostel--mode-enabled term 1049)))
-      (let* ((sync-flag evil-ghostel--sync-point-on-next-redraw)
-             (preserve-point (and (not sync-flag)
-                                  (not (memq evil-state '(insert emacs)))))
+      (let* ((sync-point evil-ghostel--sync-point-on-next-redraw)
              (visual-p (eq evil-state 'visual))
-             (saved-point (and preserve-point (point)))
-             ;; Pre-redraw, was the user parked on the cursor's
-             ;; buffer line?  If yes *and* the redraw moves the
-             ;; cursor onto a new line (output scrolled the prompt),
-             ;; we let the renderer's placement win so the user
-             ;; isn't stranded above the live prompt — that's the
-             ;; intent of `evil-ghostel-test-around-redraw-snaps-
-             ;; point-on-prompt-line'.  When the cursor stays on the
-             ;; same line, we restore saved-point so single-line
-             ;; column navigation (`^', `$', `0') isn't undone by an
-             ;; incidental redraw.
-             (pre-line (and preserve-point (not visual-p)
+             (track-prompt (and (not sync-point)
+                                (not visual-p)
+                                (not (memq evil-state '(insert emacs)))))
+             (pre-line (and track-prompt
                             (- (line-number-at-pos (point) t) 1)))
              (was-on-prompt-line (and pre-line
                                       evil-ghostel--last-cursor-line
@@ -273,15 +246,14 @@ own the screen and drive their own redraw cycle."
              (saved-ve (and visual-p (bound-and-true-p evil-visual-end)
                             (marker-position evil-visual-end))))
         (funcall orig-fn term full)
-        (when sync-flag
-          (setq evil-ghostel--sync-point-on-next-redraw nil)
-          (evil-ghostel--reset-cursor-point))
         (let* ((post-cursor-line (evil-ghostel--cursor-buffer-line))
                (prompt-moved (and was-on-prompt-line
                                   post-cursor-line
                                   (not (= post-cursor-line pre-line)))))
-          (when (and preserve-point (not prompt-moved))
-            (goto-char (min saved-point (point-max))))
+          (when sync-point
+            (setq evil-ghostel--sync-point-on-next-redraw nil))
+          (when (or sync-point prompt-moved (memq evil-state '(insert emacs)))
+            (evil-ghostel--reset-cursor-point))
           (when visual-p
             (let ((pmax (point-max)))
               (when saved-vb
@@ -436,7 +408,7 @@ Heuristic for TUIs that draw a fixed-width input box wider than the
 user's typed text (e.g. prompt_toolkit-based REPLs that fill each
 input row out to the box's right border).  The trailing spaces end
 up in the Emacs buffer because the terminal explicitly wrote them
-\(see `src/render.zig' — only unwritten cells are trimmed), but
+\(see `src/Renderer.zig' — only unwritten cells are trimmed), but
 they are not characters in the TUI's input model, and sending one
 backspace per buffer character would eat far past the actual input.
 

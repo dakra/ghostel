@@ -23,8 +23,7 @@ unlike semi-char mode where it tracks the terminal cursor."
     (let ((inhibit-read-only t))
       (ghostel--redraw term t))
     ;; Enter emacs mode and navigate to the top.
-    (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
-              ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+    (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore))
       (ghostel-emacs-mode))
     (goto-char (point-min))
     (let ((mark (point)))
@@ -50,8 +49,7 @@ unlike semi-char mode where it tracks the terminal cursor."
                             (format "initial-%d\r\n" i)))
     (let ((inhibit-read-only t))
       (ghostel--redraw term t))
-    (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
-              ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+    (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore))
       (ghostel-copy-mode))
     (let ((snapshot (buffer-substring-no-properties
                      (point-min) (point-max))))
@@ -65,7 +63,8 @@ unlike semi-char mode where it tracks the terminal cursor."
                      (buffer-substring-no-properties
                       (point-min) (point-max)))))
     ;; Exiting copy mode lets the redraw catch up.
-    (ghostel-readonly-exit)
+    (cl-letf (((symbol-function 'ghostel--anchor-window) #'ignore))
+      (ghostel-readonly-exit))
     (let ((inhibit-read-only t))
       (ghostel--redraw term t))
     (let ((content (buffer-substring-no-properties
@@ -83,14 +82,15 @@ unlike semi-char mode where it tracks the terminal cursor."
           (should (null cursor-type))                       ; cursor hidden
           ;; Enter copy mode — cursor should become visible
           (let ((ghostel--redraw-timer nil))
-            (ghostel-copy-mode)
-            (should (eq ghostel--input-mode 'copy))         ; in copy mode
-            (should cursor-type)                            ; cursor visible
-            (should (equal cursor-type (default-value 'cursor-type))) ; uses user default
-            ;; Exit copy mode — cursor should be hidden again
-            (ghostel-readonly-exit)
-            (should (eq ghostel--input-mode 'semi-char))    ; exited copy mode
-            (should (null cursor-type))))                   ; cursor hidden again
+            (cl-letf (((symbol-function 'ghostel--anchor-window) #'ignore))
+              (ghostel-copy-mode)
+              (should (eq ghostel--input-mode 'copy))         ; in copy mode
+              (should cursor-type)                            ; cursor visible
+              (should (equal cursor-type (default-value 'cursor-type))) ; uses user default
+              ;; Exit copy mode — cursor should be hidden again
+              (ghostel-readonly-exit)
+              (should (eq ghostel--input-mode 'semi-char))    ; exited copy mode
+              (should (null cursor-type)))))                 ; cursor hidden again
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-copy-mode-hl-line ()
@@ -111,11 +111,12 @@ unlike semi-char mode where it tracks the terminal cursor."
             (should-not global-hl-line-mode))
           ;; Enter copy mode — local hl-line-mode should be enabled
           (let ((ghostel--redraw-timer nil))
-            (ghostel-copy-mode)
-            (should (bound-and-true-p hl-line-mode))
-            ;; Exit copy mode — local hl-line-mode disabled again
-            (ghostel-readonly-exit)
-            (should-not (bound-and-true-p hl-line-mode))))
+            (cl-letf (((symbol-function 'ghostel--anchor-window) #'ignore))
+              (ghostel-copy-mode)
+              (should (bound-and-true-p hl-line-mode))
+              ;; Exit copy mode — local hl-line-mode disabled again
+              (ghostel-readonly-exit)
+              (should-not (bound-and-true-p hl-line-mode)))))
       (when (buffer-live-p buf)
         (with-current-buffer buf
           (kill-local-variable 'global-hl-line-mode))
@@ -424,7 +425,7 @@ unlike semi-char mode where it tracks the terminal cursor."
           (ghostel-mode)
           (let ((ghostel--term 'fake))
             (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
-                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+                      ((symbol-function 'ghostel--anchor-window) #'ignore))
               (ghostel-char-mode)
               (should (eq ghostel--input-mode 'char))
               (should (eq (current-local-map) ghostel-char-mode-map))
@@ -444,7 +445,7 @@ unlike semi-char mode where it tracks the terminal cursor."
           (ghostel-mode)
           (let ((ghostel--term 'fake))
             (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
-                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+                      ((symbol-function 'ghostel--anchor-window) #'ignore))
               (ghostel-emacs-mode)
               (should (eq ghostel--input-mode 'emacs))
               (should (eq (current-local-map)
@@ -504,7 +505,7 @@ unlike semi-char mode where it tracks the terminal cursor."
           (ghostel-mode)
           (let ((ghostel--term 'fake))
             (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
-                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+                      ((symbol-function 'ghostel--anchor-window) #'ignore))
               (dolist (case '((ghostel-char-mode  . ":Char")
                               (ghostel-emacs-mode . ":Emacs")
                               (ghostel-copy-mode  . ":Copy")))
@@ -526,7 +527,7 @@ unlike semi-char mode where it tracks the terminal cursor."
           (let ((ghostel--term 'fake)
                 (event `(mouse-1 (,(selected-window) mode-line (0 . 0) 0))))
             (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
-                      ((symbol-function 'ghostel--scroll-bottom) #'ignore)
+                      ((symbol-function 'ghostel--anchor-window) #'ignore)
                       ((symbol-function 'ghostel-force-redraw) #'ignore))
               ;; Char mode → semi-char on click.
               (ghostel-char-mode)
@@ -553,8 +554,7 @@ unlike semi-char mode where it tracks the terminal cursor."
         (with-current-buffer buf
           (ghostel-mode)
           (let ((ghostel--term 'fake))
-            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
-                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore))
               (ghostel-emacs-mode)
               ;; Terminal is live in emacs mode — unlike copy mode.
               (should (ghostel--terminal-live-p))
@@ -575,8 +575,7 @@ scrollback."
         (with-current-buffer buf
           (ghostel-mode)
           (let ((ghostel--term 'fake))
-            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
-                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore))
               (ghostel-emacs-mode)
               (should (eq ghostel--input-mode 'emacs))
               ;; Self-insert is NOT remapped to the ghostel version.
@@ -601,36 +600,6 @@ scrollback."
                           #'ghostel-semi-char-mode)))))
       (kill-buffer buf))))
 
-(ert-deftest ghostel-test-emacs-mode-snap-on-input ()
-  "`ghostel--snap-to-input' fires in Emacs mode (e.g. on paste).
-Emacs mode no longer forwards typed characters, but explicit
-input actions like `\\`C-y'' still go through `ghostel--paste-text'
-which calls `snap-to-input' before sending — so the next redraw
-brings the window back to the live cursor where the paste lands,
-instead of leaving it parked wherever the user had navigated."
-  (with-temp-buffer
-    (let ((ghostel--input-mode 'emacs)
-          (ghostel--term 'fake)
-          (ghostel--snap-requested nil)
-          (ghostel-scroll-on-input t))
-      (ghostel--snap-to-input)
-      (should ghostel--snap-requested)
-      (should ghostel--force-next-redraw))))
-
-(ert-deftest ghostel-test-emacs-mode-window-anchored-when-snap-requested ()
-  "`ghostel--window-anchored-p' returns t in Emacs mode when snap-requested.
-Otherwise the window stays where the user navigated."
-  (with-temp-buffer
-    (let ((ghostel--input-mode 'emacs)
-          (ghostel--term 'fake)
-          (ghostel--last-anchor-position 1)
-          (ghostel--snap-requested nil))
-      ;; No snap → not anchored (user navigates freely).
-      (should-not (ghostel--window-anchored-p (selected-window)))
-      ;; Snap requested (user just typed) → anchored.
-      (let ((ghostel--snap-requested t))
-        (should (ghostel--window-anchored-p (selected-window)))))))
-
 (ert-deftest ghostel-test-copy-mode-restores-previous-mode ()
   "Exiting copy mode returns to whatever mode the user was in beforehand."
   (let ((buf (generate-new-buffer " *ghostel-test-copy-restore*")))
@@ -640,7 +609,7 @@ Otherwise the window stays where the user navigated."
           (let ((ghostel--term 'fake)
                 (ghostel--redraw-timer nil))
             (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
-                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+                      ((symbol-function 'ghostel--anchor-window) #'ignore))
               ;; semi-char → copy → semi-char
               (ghostel-copy-mode)
               (should (eq ghostel--input-mode 'copy))
@@ -669,7 +638,7 @@ Otherwise the window stays where the user navigated."
           (let ((ghostel--term 'fake)
                 (ghostel--redraw-timer nil))
             (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
-                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+                      ((symbol-function 'ghostel--anchor-window) #'ignore))
               (ghostel-copy-mode)
               (should (eq ghostel--input-mode 'copy))
               (should buffer-read-only)
@@ -690,8 +659,7 @@ Otherwise the window stays where the user navigated."
           (ghostel-mode)
           (let ((ghostel--term 'fake)
                 (ghostel--redraw-timer (run-at-time 999 nil #'ignore)))
-            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
-                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore))
               (unwind-protect
                   (progn
                     (ghostel-emacs-mode)
@@ -751,8 +719,7 @@ Exiting returns to whatever mode the user was in beforehand, mirroring
           (ghostel-mode)
           (let ((ghostel--term 'fake)
                 (ghostel--redraw-timer nil))
-            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
-                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore))
               ;; semi-char → emacs → (toggle) semi-char
               (ghostel-emacs-mode)
               (should (eq ghostel--input-mode 'emacs))
@@ -775,7 +742,7 @@ Exiting returns to whatever mode the user was in beforehand, mirroring
           (ghostel-mode)
           (let ((ghostel--term 'fake))
             (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
-                      ((symbol-function 'ghostel--scroll-bottom) #'ignore)
+                      ((symbol-function 'ghostel--anchor-window) #'ignore)
                       ((symbol-function 'ghostel--navigate-next-prompt)
                        (lambda (_n) nil))
                       ((symbol-function 'ghostel--navigate-previous-prompt)
@@ -795,7 +762,7 @@ Exiting returns to whatever mode the user was in beforehand, mirroring
           (ghostel-mode)
           (let ((ghostel--term 'fake))
             (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
-                      ((symbol-function 'ghostel--scroll-bottom) #'ignore))
+                      ((symbol-function 'ghostel--anchor-window) #'ignore))
               ;; A round-trip through every mode returns to semi-char.
               (ghostel-char-mode)  (should (eq ghostel--input-mode 'char))
               (ghostel-emacs-mode) (should (eq ghostel--input-mode 'emacs))
