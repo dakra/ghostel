@@ -544,30 +544,12 @@ fn adjustGlyph(
 
     const start_val = env.makeInteger(row_start + @as(i64, @intCast(cell.char_start)));
     const end_val = env.makeInteger(row_start + @as(i64, @intCast(cell.char_end)));
-    const font = env.f("font-at", .{ start_val, window });
-    // TODO: Maybe we should replace the cell with something else if there
-    //       is no font. Today, it will just show the missing char glyph,
-    //       which will push the line size bigger. This is rare, though.
-    //       Most chars are covered by SOME font on the system.
-    if (env.isNil(font)) return;
-
-    const font_info = env.f("ghostel--query-font-cached", .{font});
-    const ascent = env.extractInteger(env.vecGet(font_info, 4));
-    const descent = env.extractInteger(env.vecGet(font_info, 5));
-    const height = ascent + descent;
-
-    const glyphs = env.f("font-get-glyphs", .{ font, start_val, end_val });
-    if (env.vecSize(glyphs) == 0) return;
-
-    // Each element is a vector containing information of a glyph in this format:
-    // [FROM-IDX TO-IDX C CODE WIDTH LBEARING RBEARING ASCENT DESCENT ADJUSTMENT]
-    const glyph = env.vecGet(glyphs, 0);
-    const width = env.extractInteger(env.vecGet(glyph, 4));
+    const metrics = getGlyphMetrics(env, window, start_val, end_val) orelse return;
     var char_width: i64 = if (cell.wide) 2 else 1;
     var slot_width = default_font_info.width * char_width;
 
     // Skip adjustments if size already matches perfectly
-    if (width == slot_width and height == default_font_info.height) return;
+    if (metrics.width == slot_width and metrics.height == default_font_info.height) return;
 
     // Let's check if we can claim some space after the glyph to be able to render
     // it larger than the cell size while still maintaining alignment.
@@ -576,8 +558,10 @@ fn adjustGlyph(
         char_width += 1;
         slot_width = default_font_info.width * char_width;
     }) {
-        const cell_aspect = @as(f64, @floatFromInt(slot_width)) / @as(f64, @floatFromInt(default_font_info.height));
-        const glyph_aspect = @as(f64, @floatFromInt(width)) / @as(f64, @floatFromInt(height));
+        const cell_aspect = @as(f64, @floatFromInt(slot_width)) /
+            @as(f64, @floatFromInt(default_font_info.height));
+        const glyph_aspect = @as(f64, @floatFromInt(metrics.width)) /
+            @as(f64, @floatFromInt(metrics.height));
         // If the aspect of the glyph is narrower than that of the cell, we're done
         if (glyph_aspect < cell_aspect) break;
 
@@ -600,8 +584,10 @@ fn adjustGlyph(
     }
 
     // We add a fudge factor of +1 to the denominator to ensure fit
-    const scale_width = @as(f64, @floatFromInt(slot_width)) / @as(f64, @floatFromInt(width + 1));
-    const scale_height = @as(f64, @floatFromInt(default_font_info.height)) / @as(f64, @floatFromInt(height + 1));
+    const scale_width = @as(f64, @floatFromInt(slot_width)) /
+        @as(f64, @floatFromInt(metrics.width + 1));
+    const scale_height = @as(f64, @floatFromInt(default_font_info.height)) /
+        @as(f64, @floatFromInt(metrics.height + 1));
     const computed_scale = @min(scale_width, scale_height);
     const scale = @max(computed_scale, default_font_info.glyph_scale_floor);
 
@@ -609,6 +595,56 @@ fn adjustGlyph(
     const scale_spec = env.list(.{ s.height, scale });
     const display_spec = env.list(.{ min_width_spec, scale_spec });
     _ = env.f("put-text-property", .{ start_val, end_val, s.display, display_spec });
+}
+
+fn getGlyphMetrics(
+    env: emacs.Env,
+    window: emacs.Value,
+    start_val: emacs.Value,
+    end_val: emacs.Value,
+) ?struct { width: i64, height: i64 } {
+    const gstring = findGlyphString(env, window, start_val, end_val) orelse {
+        return null;
+    };
+    // [HEADER ID GLYPH ...]
+    const header = env.vecGet(gstring, 0);
+    const glyph = env.vecGet(gstring, 2);
+
+    // [FONT-OBJECT CHAR ...]
+    const font = env.vecGet(header, 0);
+    const font_info = env.f("ghostel--query-font-cached", .{font});
+    const ascent = env.extractInteger(env.vecGet(font_info, 4));
+    const descent = env.extractInteger(env.vecGet(font_info, 5));
+    const height = ascent + descent;
+
+    // Each element is a vector containing information of a glyph in this format:
+    // [FROM-IDX TO-IDX C CODE WIDTH LBEARING RBEARING ASCENT DESCENT ADJUSTMENT]
+    const width = env.extractInteger(env.vecGet(glyph, 4));
+
+    return .{ .width = width, .height = height };
+}
+
+fn findGlyphString(
+    env: emacs.Env,
+    window: emacs.Value,
+    start_val: emacs.Value,
+    end_val: emacs.Value,
+) ?emacs.Value {
+    const composition = env.f("find-composition", .{ start_val, end_val, env.nil(), env.t() });
+    if (env.isNotNil(composition)) {
+        const gstring = env.f("nth", .{ 2, composition });
+        if (env.isNotNil(gstring)) return gstring;
+    }
+
+    const font = env.f("font-at", .{ start_val, window });
+    // TODO: Maybe we should replace the cell with something else if there
+    //       is no font. Today, it will just show the missing char glyph,
+    //       which will push the line size bigger. This is rare, though.
+    //       Most chars are covered by SOME font on the system.
+    if (env.isNil(font)) return null;
+    var gstring = env.f("composition-get-gstring", .{ start_val, end_val, font, env.nil() });
+    gstring = env.f("font-shape-gstring", .{ gstring, env.nil() });
+    return if (env.isNil(gstring)) null else gstring;
 }
 
 /// Insert row text and apply property runs.

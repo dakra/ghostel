@@ -47,6 +47,13 @@ section "Emoji  (10 chars → 20 cols)"
 pair "10 faces"     "😀😃😄😁😆😅🤣😂🙂😉"   "...................."
 pair "10 objects"   "🍎🍊🍋🍌🍇🍓🍒🍑🥭🍍"   "...................."
 pair "10 symbols"   "⚽️🏀🏈⚾️🎾🏐🏉🎱🏓🏸"   "...................."
+pair "10 signs"     "⚠️❗❕❓❔‼️⁉️〰️〽️✅"   "...................."
+
+section "Emoji presentation sequences  (10 base chars + VS16 → 20 cols)"
+pair "10 VS16"      "⚠️‼️⁉️〰️〽️©️®️™️♥️♠️"   "...................."
+
+section "Emoji keycaps  (12 ASCII bases → 24 cols)"
+pair "12 keycaps"   "#️⃣*️⃣0️⃣1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣8️⃣9️⃣" "........................"
 
 section "Emoji flags  (10 pairs of regional indicators → 20 cols)"
 pair "10 flags"     "🇺🇸🇬🇧🇫🇷🇩🇪🇯🇵🇨🇳🇰🇷🇧🇷🇮🇳🇮🇹"   "...................."
