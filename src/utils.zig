@@ -67,7 +67,7 @@ pub fn bufferPosToPin(screen: *gt.Screen, env: emacs.Env, pos: usize) ?gt.Pin {
     if (row_pin == null) return null;
 
     const point = env.extractInteger(env.point());
-    const row_start_pos = env.extractInteger(env.f("line-beginning-position", .{}));
+    const row_start_pos = env.extractInteger(env.f("pos-bol", .{}));
     const char_offset = @as(usize, @intCast(point - row_start_pos));
 
     return advanceByCharOffset(row_pin.?, char_offset);

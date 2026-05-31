@@ -358,18 +358,6 @@ pub const Env = struct {
         _ = self.f("erase-buffer", .{});
     }
 
-    pub fn lineEndPosition(self: Env) Value {
-        return self.f("line-end-position", .{});
-    }
-
-    pub fn lineBeginningPosition2(self: Env) Value {
-        return self.f("line-beginning-position", .{2});
-    }
-
-    pub fn pointMin(self: Env) Value {
-        return self.f("point-min", .{});
-    }
-
     pub fn pointMax(self: Env) Value {
         return self.f("point-max", .{});
     }
@@ -557,7 +545,6 @@ const interned_symbols = [_][:0]const u8{
     "keymap",
     "light",
     "line",
-    "line-beginning-position",
     "line-end-position",
     "line-number-at-pos",
     "list",
@@ -572,6 +559,7 @@ const interned_symbols = [_][:0]const u8{
     "point",
     "point-max",
     "point-min",
+    "pos-bol",
     "provide",
     "put-text-property",
     "query-font",

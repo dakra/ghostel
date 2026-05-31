@@ -719,7 +719,7 @@ pub fn render(
                     // so we're replacing the line.
                     const line_start_val = env.point();
                     const line_start: usize = @intCast(env.extractInteger(line_start_val));
-                    const old_line_end_val = env.lineBeginningPosition2();
+                    const old_line_end_val = env.f("pos-bol", .{2});
                     const old_line_len = @as(usize, @intCast(env.extractInteger(old_line_end_val))) - line_start;
                     env.deleteRegion(line_start_val, old_line_end_val);
                     const new_line_len = try self.insertRow(alloc, env, &row, cursor_col);
