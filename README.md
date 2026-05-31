@@ -1403,7 +1403,7 @@ module or compile from source with [Zig](https://ziglang.org/).  vterm uses
 CMake with a single C dependency (libvterm) and can auto-compile on first
 load from Elisp.
 
-For a detailed architectural comparison, see [design.org](design.org).
+For a detailed architectural comparison, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Architecture
 
