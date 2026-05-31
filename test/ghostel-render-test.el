@@ -64,6 +64,278 @@ either of which would snap every marker in the buffer to `point-min'."
               (should (= target (marker-position (mark-marker)))))))
       (kill-buffer buf))))
 
+(defun ghostel-test--token-position (token)
+  "Return the start position of TOKEN in the current buffer."
+  (save-excursion
+    (goto-char (point-min))
+    (search-forward token)
+    (match-beginning 0)))
+
+(defun ghostel-test--token-at-p (pos token)
+  "Return non-nil when TOKEN starts at POS in the current buffer."
+  (and pos
+       (<= (+ pos (length token)) (1+ (point-max)))
+       (equal token
+              (buffer-substring-no-properties pos (+ pos (length token))))))
+
+(defun ghostel-test--set-position-preservation-anchors (win)
+  "Set mark, WIN point, and WIN start on distinct semantic targets."
+  (let ((mark-pos (ghostel-test--token-position "MARK_TARGET"))
+        (point-pos (ghostel-test--token-position "POINT_TARGET"))
+        (start-pos (ghostel-test--token-position "START_TARGET")))
+    (set-marker (mark-marker) mark-pos)
+    (goto-char point-pos)
+    (set-window-point win point-pos)
+    (set-window-start win start-pos t)))
+
+(defun ghostel-test--assert-position-preservation (win)
+  "Assert mark, point, WIN point, and WIN start kept their targets."
+  (should (ghostel-test--token-at-p (marker-position (mark-marker))
+                                    "MARK_TARGET"))
+  (should (ghostel-test--token-at-p (point)
+                                    "POINT_TARGET"))
+  (should (ghostel-test--token-at-p (window-point win)
+                                    "POINT_TARGET"))
+  (should (ghostel-test--token-at-p (window-start win)
+                                    "START_TARGET")))
+
+(defmacro ghostel-test--with-position-preservation-case (spec &rest body)
+  "Run BODY in a displayed native terminal buffer.
+SPEC is (BUFFER TERM ROWS COLS SCROLLBACK WRITER).  WRITER is called
+with TERM and must write MARK_TARGET, POINT_TARGET, and START_TARGET."
+  (declare (indent 1))
+  (pcase-let ((`(,buffer ,term ,rows ,cols ,scrollback ,writer) spec))
+    `(let ((,buffer (generate-new-buffer " *ghostel-test-position-preservation*"))
+           (orig-buf (window-buffer (selected-window))))
+       (unwind-protect
+           (with-current-buffer ,buffer
+             (ghostel-mode)
+             (set-window-buffer (selected-window) ,buffer)
+             (let* ((,term (ghostel--new ,rows ,cols ,scrollback))
+                    (ghostel--term ,term)
+                    (ghostel--term-rows ,rows)
+                    (ghostel--term-cols ,cols)
+                    (inhibit-read-only t)
+                    (win (selected-window)))
+               (funcall ,writer ,term)
+               (ghostel--redraw ,term t)
+               (ghostel-test--set-position-preservation-anchors win)
+               ,@body
+               (ghostel-test--assert-position-preservation win)))
+         (when (buffer-live-p orig-buf)
+           (set-window-buffer (selected-window) orig-buf))
+         (kill-buffer ,buffer)))))
+
+(defun ghostel-test--write-position-preservation-lines (term count)
+  "Write COUNT hard-wrapped rows containing the position target tokens to TERM."
+  (dotimes (i count)
+    (ghostel--write-input
+     term
+     (cond
+      ((= i 3) "START_TARGET start-row\r\n")
+      ((= i 7) "mark row MARK_TARGET here\r\n")
+      ((= i 11) "point row POINT_TARGET here\r\n")
+      (t (format "row-%03d ordinary content\r\n" i))))))
+
+(defun ghostel-test--write-position-preservation-reflow-content (term)
+  "Write content to TERM whose target rows survive a width-changing reflow."
+  (ghostel--write-input term "START_TARGET stable start row\r\n")
+  (ghostel--write-input term
+                        (concat "long row before mark "
+                                (make-string 45 ?a)
+                                " MARK_TARGET "
+                                (make-string 45 ?b)
+                                " POINT_TARGET tail\r\n"))
+  (dotimes (i 8)
+    (ghostel--write-input term (format "after-%02d\r\n" i))))
+
+(defun ghostel-test--write-position-preservation-alt-screen (term rows)
+  "Write target tokens to TERM into ROWS of alt-screen content."
+  (ghostel--write-input term "\e[?1049h\e[H\e[2J")
+  (dotimes (i rows)
+    (ghostel--write-input
+     term
+     (format "\e[%d;1H%s" (1+ i)
+             (pcase i
+               (0 "START_TARGET alt-start")
+               (2 "MARK_TARGET alt-mark")
+               (4 "POINT_TARGET alt-point")
+               (_ (format "alt-row-%02d" i)))))))
+
+(ert-deftest ghostel-test-position-preservation-regular-redraw ()
+  "Incremental redraw preserves mark, point, and window start semantically."
+  :tags '(native)
+  (ghostel-test--with-position-preservation-case
+   (buf term 8 80 2000 (lambda (term)
+                         (ghostel-test--write-position-preservation-lines term 12)))
+   (ghostel--write-input term "\e[2;1Hdirty-row")
+   (ghostel--redraw term)))
+
+(ert-deftest ghostel-test-position-preservation-after-changed-length-line ()
+  "Positions after a changed-length dirty row stay at semantic targets."
+  :tags '(native)
+  (ghostel-test--with-position-preservation-case
+   (buf term 12 80 2000 (lambda (term)
+                          (ghostel--write-input term "short mutable row\r\n")
+                          (ghostel--write-input term "START_TARGET start-row\r\n")
+                          (ghostel--write-input term "mark row MARK_TARGET here\r\n")
+                          (ghostel--write-input term "point row POINT_TARGET here\r\n")
+                          (dotimes (i 4)
+                            (ghostel--write-input term
+                                                  (format "tail-%02d\r\n" i)))))
+   (let ((old-start (ghostel-test--token-position "START_TARGET"))
+         (old-mark (ghostel-test--token-position "MARK_TARGET"))
+         (old-point (ghostel-test--token-position "POINT_TARGET")))
+     (ghostel--write-input
+      term
+      "\e[1;1H\e[2Kthis mutable row is now much longer than before")
+     (ghostel--redraw term)
+     (should (/= old-start (ghostel-test--token-position "START_TARGET")))
+     (should (/= old-mark (ghostel-test--token-position "MARK_TARGET")))
+     (should (/= old-point (ghostel-test--token-position "POINT_TARGET"))))))
+
+(ert-deftest ghostel-test-position-preservation-on-changed-length-line-no-clamp ()
+  "Positions on a changed-length dirty row keep their row offsets."
+  :tags '(native)
+  (ghostel-test--with-position-preservation-case
+   (buf term 12 80 2000 (lambda (term)
+                          (ghostel--write-input
+                           term
+                           "short START_TARGET MARK_TARGET POINT_TARGET tail\r\n")
+                          (dotimes (i 7)
+                            (ghostel--write-input term
+                                                  (format "tail-%02d\r\n" i)))))
+   (let ((old-start (ghostel-test--token-position "START_TARGET"))
+         (old-mark (ghostel-test--token-position "MARK_TARGET"))
+         (old-point (ghostel-test--token-position "POINT_TARGET")))
+     (ghostel--write-input
+      term
+      "\e[1;1H\e[2Kshort START_TARGET MARK_TARGET POINT_TARGET longer suffix")
+     (ghostel--redraw term)
+     (should (= old-start (ghostel-test--token-position "START_TARGET")))
+     (should (= old-mark (ghostel-test--token-position "MARK_TARGET")))
+     (should (= old-point (ghostel-test--token-position "POINT_TARGET"))))))
+
+(ert-deftest ghostel-test-position-preservation-on-shortened-line-clamps ()
+  "Positions past a shortened dirty row clamp to that row's end."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-position-clamp*"))
+        (orig-buf (window-buffer (selected-window))))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (set-window-buffer (selected-window) buf)
+          (let* ((term (ghostel--new 12 80 2000))
+                 (ghostel--term term)
+                 (ghostel--term-rows 12)
+                 (ghostel--term-cols 80)
+                 (inhibit-read-only t)
+                 (win (selected-window)))
+            (ghostel--write-input
+             term
+             "prefix START_TARGET middle MARK_TARGET more POINT_TARGET tail\r\n")
+            (dotimes (i 7)
+              (ghostel--write-input term (format "tail-%02d\r\n" i)))
+            (ghostel--redraw term t)
+            (set-window-start win
+                              (ghostel-test--token-position "START_TARGET")
+                              t)
+            (set-marker (mark-marker)
+                        (ghostel-test--token-position "MARK_TARGET"))
+            (goto-char (ghostel-test--token-position "POINT_TARGET"))
+            (set-window-point win (point))
+            (ghostel--write-input term "\e[1;1H\e[2Kshort")
+            (ghostel--redraw term)
+            (let* ((line-end (save-excursion
+                               (goto-char (point-min))
+                               (line-end-position)))
+                   (row-boundary (1+ line-end)))
+              (should (equal "short"
+                             (buffer-substring-no-properties
+                              (point-min) line-end)))
+              (should (= row-boundary (window-start win)))
+              (should (= row-boundary (marker-position (mark-marker))))
+              (should (= row-boundary (point)))
+              (should (= row-boundary (window-point win))))))
+      (when (buffer-live-p orig-buf)
+        (set-window-buffer (selected-window) orig-buf))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-position-preservation-full-redraw ()
+  "Full redraw preserves mark, point, and window start semantically."
+  :tags '(native)
+  (ghostel-test--with-position-preservation-case
+   (buf term 8 80 2000 (lambda (term)
+                         (ghostel-test--write-position-preservation-lines term 12)))
+   (ghostel--redraw term t)))
+
+(ert-deftest ghostel-test-position-preservation-scrollback-row-added ()
+  "Adding a row with scrollback preserves semantic buffer positions."
+  :tags '(native)
+  (ghostel-test--with-position-preservation-case
+   (buf term 6 80 4000 (lambda (term)
+                         (ghostel-test--write-position-preservation-lines term 16)))
+   (ghostel--write-input term "new-row-after-anchors\r\n")
+   (ghostel--redraw term)))
+
+(ert-deftest ghostel-test-position-preservation-width-reflow ()
+  "Width-changing reflow preserves semantic buffer positions."
+  :tags '(native)
+  (ghostel-test--with-position-preservation-case
+   (buf term 8 80 4000 #'ghostel-test--write-position-preservation-reflow-content)
+   (ghostel--set-size term 8 40)
+   (setq ghostel--term-cols 40)
+   (ghostel--redraw term)))
+
+(ert-deftest ghostel-test-position-preservation-height-resize-no-scrollback ()
+  "Height resize on the primary screen preserves positions without scrollback."
+  :tags '(native)
+  (ghostel-test--with-position-preservation-case
+   (buf term 14 80 4000 (lambda (term)
+                          (ghostel-test--write-position-preservation-lines term 12)))
+   (ghostel--set-size term 16 80)
+   (setq ghostel--term-rows 16)
+   (ghostel--redraw term)))
+
+(ert-deftest ghostel-test-position-preservation-height-resize-with-scrollback ()
+  "Height resize on the primary screen preserves positions with scrollback."
+  :tags '(native)
+  (ghostel-test--with-position-preservation-case
+   (buf term 6 80 4000 (lambda (term)
+                         (ghostel-test--write-position-preservation-lines term 18)))
+   (ghostel--set-size term 9 80)
+   (setq ghostel--term-rows 9)
+   (ghostel--redraw term)))
+
+(ert-deftest ghostel-test-position-preservation-alt-screen-resize ()
+  "Alt-screen resize preserves mark, point, and window start semantically."
+  :tags '(native)
+  (ghostel-test--with-position-preservation-case
+   (buf term 6 80 4000 (lambda (term)
+                         (ghostel-test--write-position-preservation-alt-screen term 6)))
+   (ghostel--set-size term 8 80)
+   (setq ghostel--term-rows 8)
+   (ghostel--redraw term)))
+
+(ert-deftest ghostel-test-position-preservation-scrollback-eviction ()
+  "Scrollback eviction preserves positions for surviving content."
+  :tags '(native)
+  (ghostel-test--with-position-preservation-case
+   (buf term 6 80 4096 (lambda (term)
+                         (dotimes (i 140)
+                           (ghostel--write-input
+                            term
+                            (cond
+                             ((= i 105) "START_TARGET start-row\r\n")
+                             ((= i 115) "mark row MARK_TARGET here\r\n")
+                             ((= i 125) "point row POINT_TARGET here\r\n")
+                             (t (format "initial-%03d content\r\n" i)))))))
+   (let ((old-start (window-start win)))
+     (dotimes (i 60)
+       (ghostel--write-input term (format "later-%03d content\r\n" i)))
+     (ghostel--redraw term)
+     (should (< (point-min) old-start)))))
+
 
 
 ;;; Cell and row rendering basics
