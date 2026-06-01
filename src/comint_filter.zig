@@ -23,8 +23,8 @@ const Self = @This();
 
 const log = std.log.scoped(.comint_filter);
 
-/// One styled run within the output buffer.  Owns its `link_uri`
-/// allocation, freed on run-list reset.
+/// One styled run within the output buffer.  If it has a hyperlink,
+/// `props.hyperlink.uri` is owned and freed on run-list reset.
 ///
 /// Positions are *character* offsets (codepoints), not byte offsets:
 /// Emacs string positions are character-indexed for multibyte strings,
@@ -34,7 +34,6 @@ const Run = struct {
     start: usize, // character offset in the output string
     end: usize,
     props: style_face.CellProps,
-    link_uri: ?[]u8, // owned; null when not in an OSC 8 link
 };
 
 const Handler = struct {
@@ -69,13 +68,9 @@ const Handler = struct {
     /// Character offset where the pending run started.
     pending_start: usize = 0,
 
-    /// Props that are active for the pending run.
+    /// Props active for the pending run.  Hyperlink URI slices here borrow
+    /// from `link_uri`; only closed runs own their copied URI strings.
     pending_props: style_face.CellProps = .{},
-
-    /// Hyperlink URI snapshot for the pending run (owned).  Captured at
-    /// `switchProps` time so the run sees the URI that was active when
-    /// it started, even if `link_uri` is freed before `closePending` runs.
-    pending_link_uri: ?[]u8 = null,
 
     /// Cached Emacs env, valid only during `feed`.  Used by `.report_pwd`.
     env: ?emacs.Env = null,
@@ -86,13 +81,11 @@ const Handler = struct {
         self.runs.deinit(self.alloc);
         if (self.link_uri) |uri| self.alloc.free(uri);
         self.link_uri = null;
-        if (self.pending_link_uri) |uri| self.alloc.free(uri);
-        self.pending_link_uri = null;
     }
 
     /// Free per-run URIs and reset the runs list.
     fn clearRuns(self: *Handler) void {
-        for (self.runs.items) |run| if (run.link_uri) |uri| self.alloc.free(uri);
+        for (self.runs.items) |run| if (run.props.hyperlink) |link| self.alloc.free(link.uri);
         self.runs.clearRetainingCapacity();
     }
 
@@ -129,45 +122,42 @@ const Handler = struct {
             .overline = self.style.flags.overline,
             .inverse = self.style.flags.inverse,
             .underline_color = self.style.underlineColor(&self.palette),
-            .link_id = if (self.link_uri != null) .{ .implicit = 0 } else null,
+            .hyperlink = if (self.link_uri) |uri| .{
+                .id = .{ .implicit = 0 },
+                .uri = uri,
+            } else null,
             // semantic_content stays default — comint has no notion of prompts here
         };
     }
 
     /// Close the pending run if non-empty, then start a new pending run
-    /// with `props` at the current end of the output.  Snapshots the
-    /// current `link_uri` into `pending_link_uri` so the run sees the
-    /// URI that was active when it started.
+    /// with `props` at the current end of the output.
     fn switchProps(self: *Handler, props: style_face.CellProps) !void {
-        const new_link: ?[]u8 = if (self.link_uri != null)
-            try self.alloc.dupe(u8, self.link_uri.?)
-        else
-            null;
-        errdefer if (new_link) |uri| self.alloc.free(uri);
         try self.closePending();
         self.pending_props = props;
-        self.pending_link_uri = new_link;
     }
 
-    /// Push the pending run onto `runs` if it has content.  Transfers
-    /// ownership of `pending_link_uri` to the run (no extra dupe).
+    /// Push the pending run onto `runs` if it has content.
+    ///
+    /// `pending_props.hyperlink.uri` borrows from the current OSC 8 state;
+    /// duplicate it for the stored run because the active hyperlink can end
+    /// before Emacs properties are applied.
     fn closePending(self: *Handler) !void {
         const here = self.text_chars;
         if (here > self.pending_start) {
+            var run_props = self.pending_props;
+            if (run_props.hyperlink) |*link| {
+                link.uri = try self.alloc.dupe(u8, link.uri);
+            }
+            errdefer if (run_props.hyperlink) |link| self.alloc.free(link.uri);
+
             try self.runs.append(self.alloc, .{
                 .start = self.pending_start,
                 .end = here,
-                .props = self.pending_props,
-                .link_uri = self.pending_link_uri,
+                .props = run_props,
             });
-            self.pending_link_uri = null;
-            self.pending_start = here;
-        } else if (self.pending_link_uri) |uri| {
-            // No content emitted for this pending run — drop the URI
-            // snapshot so it doesn't leak into the next one.
-            self.alloc.free(uri);
-            self.pending_link_uri = null;
         }
+        self.pending_start = here;
     }
 
     fn appendCodepoint(self: *Handler, cp: u21) !void {
@@ -286,15 +276,25 @@ const Handler = struct {
             .set_attribute => self.applyAttr(value),
 
             .start_hyperlink => {
+                self.closePending() catch |err| {
+                    log.warn("closePending before start_hyperlink failed: {s}", .{@errorName(err)});
+                    return;
+                };
                 if (self.link_uri) |old| self.alloc.free(old);
                 self.link_uri = self.alloc.dupe(u8, value.uri) catch |err| blk: {
                     log.warn("start_hyperlink dupe failed: {s}", .{@errorName(err)});
                     break :blk null;
                 };
+                self.pending_props = self.currentProps();
             },
             .end_hyperlink => {
+                self.closePending() catch |err| {
+                    log.warn("closePending before end_hyperlink failed: {s}", .{@errorName(err)});
+                    return;
+                };
                 if (self.link_uri) |old| self.alloc.free(old);
                 self.link_uri = null;
+                self.pending_props = self.currentProps();
             },
 
             .report_pwd => {
@@ -353,16 +353,6 @@ pub fn feed(self: *Self, env: emacs.Env, data: []const u8) !emacs.Value {
     h.clearRuns();
     h.pending_start = 0;
     h.pending_props = h.currentProps();
-    // Null-then-free so a later OOM on the dupe can't leave `pending_link_uri`
-    // pointing at freed memory (next feed/deinit would double-free).
-    if (h.pending_link_uri) |uri| {
-        h.pending_link_uri = null;
-        h.alloc.free(uri);
-    }
-    h.pending_link_uri = if (h.link_uri != null)
-        try h.alloc.dupe(u8, h.link_uri.?)
-    else
-        null;
 
     h.env = env;
     defer h.env = null;
@@ -380,8 +370,8 @@ pub fn feed(self: *Self, env: emacs.Env, data: []const u8) !emacs.Value {
         if (try style_face.buildFacePlist(env, run.props)) |face| {
             _ = env.f("put-text-property", .{ start_val, end_val, s.face, face, text_val });
         }
-        if (run.link_uri) |uri| {
-            const uri_val = env.makeString(uri);
+        if (run.props.hyperlink) |link| {
+            const uri_val = env.makeString(link.uri);
             _ = env.f(
                 "put-text-property",
                 .{ start_val, end_val, s.@"help-echo", uri_val, text_val },

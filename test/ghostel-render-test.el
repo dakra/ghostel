@@ -857,52 +857,22 @@ and typed text was invisible."
   (should (null (ghostel--open-link nil)))                 ; open-link returns nil for empty
   (should (null (ghostel--open-link 42))))
 
-(ert-deftest ghostel-test-uri-at-pos-prefers-string-help-echo ()
-  "`ghostel--uri-at-pos' returns a string `help-echo' without calling native.
-Plain-text link detection stores URIs as strings; the native path must
-not be reached when the property is already a string."
+(ert-deftest ghostel-test-uri-at-pos-returns-string-help-echo ()
+  "`ghostel--uri-at-pos' returns a string `help-echo'."
   (with-temp-buffer
     (insert "click here")
     (put-text-property 1 11 'help-echo "https://static.example.com")
     (goto-char 5)
-    (let (native-called)
-      (cl-letf (((symbol-function 'ghostel--native-uri-at-pos)
-                 (lambda (_) (setq native-called t) "should-not-reach")))
-        (should (equal "https://static.example.com"
-                       (ghostel--uri-at-pos (point))))
-        (should-not native-called)))))
+    (should (equal "https://static.example.com"
+                   (ghostel--uri-at-pos (point))))))
 
-(ert-deftest ghostel-test-uri-at-pos-calls-native-for-function-help-echo ()
-  "`ghostel--uri-at-pos' delegates to native when `help-echo' is a function.
-OSC8 links set `help-echo' to the symbol `ghostel--native-link-help-echo';
-`ghostel--uri-at-pos' must call `ghostel--native-uri-at-pos' in that case."
+(ert-deftest ghostel-test-uri-at-pos-ignores-non-string-help-echo ()
+  "`ghostel--uri-at-pos' ignores non-string `help-echo' values."
   (with-temp-buffer
     (insert "click here")
-    (put-text-property 1 11 'help-echo #'ghostel--native-link-help-echo)
+    (put-text-property 1 11 'help-echo #'ignore)
     (goto-char 5)
-    (cl-letf (((symbol-function 'ghostel--native-uri-at-pos)
-               (lambda (_pos) "native-uri")))
-      (should (equal "native-uri" (ghostel--uri-at-pos (point)))))))
-
-(ert-deftest ghostel-test-native-link-help-echo-calls-uri-at-pos ()
-  "`ghostel--native-link-help-echo' delegates to `ghostel--native-uri-at-pos'.
-The help-echo handler stored on OSC8 link text-properties must call the
-native URI lookup when Emacs invokes it for tooltip display or clicking."
-  (let ((buf (generate-new-buffer " *ghostel-test-echo-handler*"))
-        (orig-buf (window-buffer (selected-window))))
-    (unwind-protect
-        (progn
-          (set-window-buffer (selected-window) buf)
-          (with-current-buffer buf
-            (insert "test content")
-            (cl-letf (((symbol-function 'ghostel--native-uri-at-pos)
-                       (lambda (pos) (format "uri-at-%d" pos))))
-              (should (equal "uri-at-1"
-                             (ghostel--native-link-help-echo
-                              (selected-window) nil 1))))))
-      (when (buffer-live-p orig-buf)
-        (set-window-buffer (selected-window) orig-buf))
-      (kill-buffer buf))))
+    (should (null (ghostel--uri-at-pos (point))))))
 
 (ert-deftest ghostel-test-url-detection ()
   "Test automatic URL detection in plain text."
@@ -924,14 +894,14 @@ native URI lookup when Emacs invokes it for tooltip display or clicking."
     (let ((ghostel-enable-url-detection nil))
       (ghostel--detect-urls))
     (should (null (get-text-property 7 'help-echo))))      ; url detection disabled
-  ;; Skips existing OSC 8 links (help-echo is the native handler function symbol)
+  ;; Skips existing links.
   (with-temp-buffer
     (insert "Visit https://other.com for info\n")
-    (put-text-property 7 26 'help-echo #'ghostel--native-link-help-echo)
+    (put-text-property 7 26 'help-echo "https://osc8.example")
     (let ((ghostel-enable-url-detection t))
       (ghostel--detect-urls))
-    (should (eq #'ghostel--native-link-help-echo           ; osc8 handler not overwritten
-                (get-text-property 7 'help-echo))))
+    (should (equal "https://osc8.example"                 ; existing link not overwritten
+                   (get-text-property 7 'help-echo))))
   ;; URL not ending in punctuation
   (with-temp-buffer
     (insert "See https://example.com/path.\n")

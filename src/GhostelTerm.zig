@@ -735,39 +735,4 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
             }
         },
     },
-    .{
-        .name = "ghostel--native-uri-at",
-        .arity = .{ 3, 3 },
-        .doc =
-        \\Get URI at ROW-from-bottom and COL.
-        \\
-        \\(ghostel--native-uri-at TERM ROW COL)
-        ,
-        .impl = struct {
-            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) emacs.Value {
-                const term = env.getUserPtr(Self, args[0]) orelse return env.nil();
-                const row_from_bottom = env.extractInteger(args[1]);
-                const col = env.extractInteger(args[2]);
-                const total_rows = term.terminal.screens.active.pages.total_rows;
-                if (col < 0 or col >= term.terminal.cols) return env.nil();
-                // The Emacs buffer always carries a trailing newline, so the line
-                // immediately after the last content row produces row_from_bottom == 0.
-                if (row_from_bottom <= 0 or row_from_bottom > total_rows) return env.nil();
-                const row = total_rows - @as(usize, @intCast(row_from_bottom));
-                const point = gt.Point{ .screen = .{
-                    .x = @intCast(col),
-                    .y = @intCast(row),
-                } };
-                const pin = term.terminal.screens.active.pages.pin(point) orelse return env.nil();
-                const cell = pin.rowAndCell().cell;
-                if (!cell.hyperlink) {
-                    return env.nil();
-                }
-                const link_id = pin.node.data.lookupHyperlink(cell) orelse return env.nil();
-                const entry = pin.node.data.hyperlink_set.get(pin.node.data.memory, link_id);
-                const uri = entry.uri.slice(pin.node.data.memory);
-                return env.makeString(uri);
-            }
-        },
-    },
 };

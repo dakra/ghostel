@@ -9,26 +9,8 @@
 
 (require 'ghostel-test-helpers)
 
-(ert-deftest ghostel-test-osc8-renders-native-link-handler ()
-  "OSC8 links set `help-echo' to the native handler symbol, not a URI string.
-After the refactor, render stores `ghostel--native-link-help-echo' as the
-`help-echo' text property so Emacs calls it lazily instead of embedding
-the URI in the buffer."
-  :tags '(native)
-  (ghostel-test--with-terminal-buffer (_buf term 5 80 1000)
-    (let ((inhibit-read-only t))
-      (ghostel--write-input term "\e]8;;https://example.com\e\\link text\e]8;;\e\\")
-      (ghostel--redraw term t)
-      (goto-char (point-min))
-      (let* ((end (search-forward "link text" nil t))
-             (link-pos (- end (length "link text"))))
-        (should end)
-        (should (eq #'ghostel--native-link-help-echo ; function symbol, not string URI
-                    (get-text-property link-pos 'help-echo)))
-        (should (keymapp (get-text-property link-pos 'keymap)))))))
-
-(ert-deftest ghostel-test-osc8-uri-at-pos-returns-uri ()
-  "`ghostel--native-uri-at-pos' queries libghostty and returns the OSC8 URI."
+(ert-deftest ghostel-test-osc8-renders-uri-help-echo ()
+  "OSC8 links set `help-echo' directly to the URI string."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (_buf term 5 80 1000)
     (let ((inhibit-read-only t))
@@ -39,18 +21,18 @@ the URI in the buffer."
              (link-pos (- end (length "link text"))))
         (should end)
         (should (equal "https://example.com"
-                       (ghostel--native-uri-at-pos link-pos)))))))
+                       (get-text-property link-pos 'help-echo)))
+        (should (keymapp (get-text-property link-pos 'keymap)))))))
 
-(ert-deftest ghostel-test-osc8-uri-at-pos-nil-outside-link ()
-  "`ghostel--native-uri-at-pos' returns nil or empty for a non-link cell."
+(ert-deftest ghostel-test-osc8-no-help-echo-outside-link ()
+  "Non-link cells do not carry an OSC8 `help-echo' URI."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (_buf term 5 80 1000)
     (let ((inhibit-read-only t))
       (ghostel--write-input term "plain text")
       (ghostel--redraw term t)
       (goto-char (point-min))
-      (let ((uri (ghostel--native-uri-at-pos (point))))
-        (should (or (null uri) (string= "" uri)))))))
+      (should (null (get-text-property (point) 'help-echo))))))
 
 (ert-deftest ghostel-test-osc8-shared-id-emits-link-id-property ()
   "OSC 8 chunks sharing `id=foo' carry equal `ghostel-link-id' text properties.
@@ -122,8 +104,8 @@ row.  Navigation should land on the link only once, not on each chunk."
         ;; and lands on chunk1, the URL's first chunk.
         (should (equal chunk1 (ghostel--find-previous-link other)))))))
 
-(ert-deftest ghostel-test-osc8-uri-at-pos-two-links ()
-  "`ghostel--native-uri-at-pos' returns the correct URI for each of two links."
+(ert-deftest ghostel-test-osc8-help-echo-two-links ()
+  "OSC8 links store the correct URI string on each `help-echo'."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (_buf term 5 80 1000)
     (let ((inhibit-read-only t))
@@ -141,9 +123,9 @@ row.  Navigation should land on the link only once, not on each chunk."
         (should first-end)
         (should second-end)
         (should (equal "https://first.example"
-                       (ghostel--native-uri-at-pos first-pos)))
+                       (get-text-property first-pos 'help-echo)))
         (should (equal "https://second.example"
-                       (ghostel--native-uri-at-pos second-pos)))))))
+                       (get-text-property second-pos 'help-echo)))))))
 
 (ert-deftest ghostel-test-osc52 ()
   "Test OSC 52 clipboard handling."

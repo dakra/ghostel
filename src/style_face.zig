@@ -19,6 +19,11 @@ pub const LinkId = union(enum) {
     implicit: u32,
 };
 
+pub const Hyperlink = struct {
+    id: LinkId,
+    uri: []const u8,
+};
+
 /// Resolved style attributes for a run of cells.
 pub const CellProps = struct {
     fg: gt.color.RGB = .{},
@@ -37,7 +42,7 @@ pub const CellProps = struct {
     strikethrough: bool = false,
     overline: bool = false,
     inverse: bool = false,
-    link_id: ?LinkId = null,
+    hyperlink: ?Hyperlink = null,
     semantic_content: gt.page.Cell.SemanticContent = .output,
 
     /// True if these props match the default style for the given palette

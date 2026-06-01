@@ -519,8 +519,6 @@ const interned_symbols = [_][:0]const u8{
     "ghostel--kitty-clear",
     "ghostel--kitty-display-image",
     "ghostel--kitty-display-virtual",
-    "ghostel--native-link-help-echo",
-    "ghostel--native-uri-at",
     "ghostel--osc-progress",
     "ghostel--osc133-marker",
     "ghostel--osc52-eval",

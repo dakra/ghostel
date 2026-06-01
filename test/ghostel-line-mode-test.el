@@ -700,7 +700,7 @@ pi), the trailing encoded `return' is the submit and any embedded
                       ((symbol-function 'ghostel--send-encoded)
                        (lambda (key _mods &optional _utf8)
                          (setq encoded key)))
-                      ;; No native URI lookup with a fake terminal handle.
+                      ;; No hyperlink at point with a fake terminal handle.
                       ((symbol-function 'ghostel--uri-at-pos)
                        (lambda (_pos) nil))
                       ((symbol-function 'ghostel--open-link)

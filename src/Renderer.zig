@@ -18,6 +18,7 @@ const utils = @import("utils.zig");
 const style_face = @import("style_face.zig");
 pub const CellProps = style_face.CellProps;
 pub const LinkId = style_face.LinkId;
+pub const Hyperlink = style_face.Hyperlink;
 const formatColor = style_face.formatColor;
 
 const Self = @This();
@@ -255,21 +256,21 @@ fn probeCoverage(env: emacs.Env, font: emacs.Value) u32 {
 
 const ViewportSize = struct { cols: u16, rows: u16, cell_w: u32, cell_h: u32 };
 
-/// Resolve a page-local hyperlink id to a `LinkId` that compares equal
-/// across pages for the same logical OSC 8 link.  `PageEntry.dupe`
-/// preserves `.explicit` byte strings verbatim and `.implicit` counters
-/// as-is, so byte- and numeric-equality both work cross-page.
-///
-/// The `.explicit` slice borrows from `page` memory and is invalidated
-/// by the next `render_state.update`; callers must copy it (e.g. via
-/// `env.makeString`) within the current `insertRow`.
-fn resolveLinkId(page: *const gt.page.Page, local_id: gt.size.HyperlinkCountInt) ?LinkId {
+/// Resolve a page-local hyperlink id to the URI and stable link id we store
+/// on Emacs text properties. Returned slices borrow from `page` memory; callers
+/// must copy them into Emacs values during the current render pass.
+fn resolveHyperlink(page: *const gt.page.Page, local_id: gt.size.HyperlinkCountInt) ?Hyperlink {
     if (local_id == 0) return null;
 
     const entry = page.hyperlink_set.get(page.memory, local_id);
-    return switch (entry.id) {
+    const link_id: LinkId = switch (entry.id) {
         .explicit => |slice| .{ .explicit = slice.slice(page.memory) },
         .implicit => |v| .{ .implicit = @intCast(v) },
+    };
+
+    return .{
+        .id = link_id,
+        .uri = entry.uri.slice(page.memory),
     };
 }
 
@@ -299,7 +300,7 @@ fn createCellProps(
     props.overline = style.flags.overline;
     props.inverse = style.flags.inverse;
     props.underline_color = style.underlineColor(&self.render_state.colors.palette);
-    props.link_id = resolveLinkId(page, key.hyperlink_id);
+    props.hyperlink = resolveHyperlink(page, key.hyperlink_id);
     props.semantic_content = cell.raw.semantic_content;
 
     return if (props.isDefault(
@@ -308,8 +309,7 @@ fn createCellProps(
     )) null else props;
 }
 
-/// Apply face properties to a region of the buffer.
-/// Uses (put-text-property START END 'face PLIST).
+/// Apply text properties to a region of the buffer.
 fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps) !void {
     if (start >= end) return;
 
@@ -321,15 +321,15 @@ fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps) !void {
         env.putTextProperty(start_val, end_val, "face", face);
     }
 
-    if (props.link_id) |id| {
-        env.putTextProperty(start_val, end_val, "help-echo", s.@"ghostel--native-link-help-echo");
+    if (props.hyperlink) |link| {
+        env.putTextProperty(start_val, end_val, "help-echo", env.makeString(link.uri));
         env.putTextProperty(start_val, end_val, "mouse-face", s.highlight);
         env.putTextProperty(start_val, end_val, "keymap", env.symbolValue("ghostel-link-map"));
 
         // Stored as a string (explicit) or integer (implicit), so elisp `equal' returns true
         // only when both kind and value match. A user-supplied explicit id like "42" never
         // collides with an implicit counter of 42.
-        const id_val: emacs.Value = switch (id) {
+        const id_val: emacs.Value = switch (link.id) {
             .explicit => |str| env.makeString(str),
             .implicit => |n| env.makeInteger(@intCast(n)),
         };

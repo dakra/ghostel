@@ -1049,7 +1049,6 @@ Used when `cursor-in-non-selected-windows' resolves to box.")
 (declare-function ghostel--set-palette "ghostel-module")
 (declare-function ghostel--set-size "ghostel-module" (term rows cols &optional cell-w cell-h))
 (declare-function ghostel--write-input "ghostel-module")
-(declare-function ghostel--native-uri-at "ghostel-module")
 (declare-function ghostel--pty-password-input-p "ghostel-module" (path))
 
 (declare-function spinner-create "spinner")
@@ -4062,31 +4061,10 @@ semi-char/char mode never hijacks the key away from the PTY."
   "<mouse-1>" #'ghostel-open-link-at-click
   "<mouse-2>" #'ghostel-open-link-at-click)
 
-(defun ghostel--native-link-help-echo (window _ pos)
-  "Return the native OSC8 URI for the link at POS in WINDOW.
-Used as the `help-echo' handler for OSC8 hyperlinks; retrieves the
-URI from libghostty."
-  (with-current-buffer (window-buffer window)
-    (ghostel--native-uri-at-pos pos)))
-
-(defun ghostel--native-uri-at-pos (pos)
-  "Return the native OSC8 hyperlink URI at POS."
-  (save-excursion
-    (goto-char pos)
-    (let* ((line (line-number-at-pos nil t))
-           (total (line-number-at-pos (point-max) t))
-           (row-from-bottom (- total line))
-           (col (current-column)))
-      (ghostel--native-uri-at ghostel--term row-from-bottom col))))
-
 (defun ghostel--uri-at-pos (pos)
-  "Return the URI at POS.
-If the `help-echo' property is a string, return it; otherwise fetch
-the native OSC8 URI at that position."
-  (let ((help-echo (get-text-property pos 'help-echo)))
-    (if (stringp help-echo)
-        help-echo
-      (ghostel--native-uri-at-pos pos))))
+  "Return the URI string stored in POS's `help-echo', or nil."
+  (let ((uri (get-text-property pos 'help-echo)))
+    (and (stringp uri) uri)))
 
 (defun ghostel--open-link (url)
   "Open URL, dispatching by scheme.
