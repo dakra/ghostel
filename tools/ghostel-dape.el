@@ -10,7 +10,7 @@
 ;;   M-x ghostel-dape-hypothesis-case-file
 ;;   M-x ghostel-dape-hypothesis-latest-failure
 ;;
-;; The commands launch a fresh batch Emacs under codelldb, matching the
+;; The commands launch a fresh batch Emacs under lldb-dap, matching the
 ;; existing manual Dape workflow but without typing the long config blob.
 
 ;;; Code:
@@ -62,10 +62,10 @@ Set to nil to skip automatic compilation."
   (vconcat (delq nil args)))
 
 (defun ghostel-dape--launch-emacs (&rest args)
-  "Launch batch Emacs with ARGS under Dape/codelldb."
+  "Launch batch Emacs with ARGS under Dape/lldb-dap."
   (let* ((root (file-name-as-directory (expand-file-name (ghostel-dape--root))))
-         (base (or (cdr (assoc 'codelldb-cc dape-configs))
-                   (user-error "No `codelldb-cc' entry in `dape-configs'")))
+         (base (or (cdr (assoc 'lldb-dap dape-configs))
+                   (user-error "No `lldb-dap' entry in `dape-configs'")))
          (config (copy-sequence base)))
     (setq config (plist-put config 'command-cwd root))
     (setq config (plist-put config :program (expand-file-name invocation-name invocation-directory)))
