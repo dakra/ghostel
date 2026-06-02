@@ -48,7 +48,7 @@ SPECS is a plist with these keys:
           (--orig-find-composition (symbol-function 'find-composition))
           (--orig-composition-get-gstring (symbol-function 'composition-get-gstring))
           (--orig-font-shape-gstring (symbol-function 'font-shape-gstring)))
-     (cl-letf (,@(when-let ((df (plist-get specs :default-font)))
+     (cl-letf (,@(when-let* ((df (plist-get specs :default-font)))
                    `(((symbol-function 'face-attribute)
                       (lambda (face attr &rest args)
                         (if (and (eq face 'default) (eq attr :font))
@@ -68,7 +68,7 @@ SPECS is a plist with these keys:
                         (or (and (ghostel-test--mock-font-p font)
                                  (plist-get (cdr font) :metrics))
                             (funcall --orig-query-font font))))))
-               ,@(when-let ((gf (plist-get specs :glyph-font)))
+               ,@(when-let* ((gf (plist-get specs :glyph-font)))
                    `(((symbol-function 'font-at)
                       (lambda (pos &optional window string)
                         (if (>= pos (if string 0 (point-min)))
@@ -90,7 +90,7 @@ SPECS is a plist with these keys:
                                         (ghostel-test--mock-font-p (aref header 0)))))
                             gstring
                           (funcall --orig-font-shape-gstring gstring direction))))))
-               ,@(when-let ((cg (plist-get specs :composition-gstring)))
+               ,@(when-let* ((cg (plist-get specs :composition-gstring)))
                    `(((symbol-function 'find-composition)
                       (lambda (pos &optional limit string detail-p)
                         (if detail-p
