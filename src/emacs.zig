@@ -38,9 +38,9 @@ const DebugUserPtr = struct {
 var debug_userptrs: std.ArrayList(DebugUserPtr) = .{};
 
 pub const FunctionEntry = struct {
-    name: [*:0]const u8,
+    name: [:0]const u8,
     arity: struct { i32, i32 },
-    doc: [*:0]const u8,
+    doc: [:0]const u8,
     impl: type,
 };
 
@@ -315,7 +315,11 @@ pub const Env = struct {
                 const prev_env = current_env;
                 current_env = env;
                 defer current_env = prev_env;
-                return entry.impl.call(env, nargs, args);
+                return entry.impl.call(env, nargs, args) catch |e| {
+                    env.logStackTrace(@errorReturnTrace());
+                    env.signalError("error in %s: %s", .{ entry.name, @errorName(e) });
+                    return env.nil();
+                };
             }
         }.call;
         const fun = self.makeFunction(entry.arity[0], entry.arity[1], &wrapped_fn, entry.doc, null);

@@ -85,7 +85,7 @@ const emacs_functions = [_]emacs.FunctionEntry{
         \\(ghostel--module-version)
         ,
         .impl = struct {
-            pub fn call(env: emacs.Env, _: isize, _: [*c]emacs.Value) emacs.Value {
+            pub fn call(env: emacs.Env, _: isize, _: [*c]emacs.Value) !emacs.Value {
                 return env.makeString(version);
             }
         },
@@ -99,7 +99,7 @@ const emacs_functions = [_]emacs.FunctionEntry{
         \\(ghostel--enable-vt-log)
         ,
         .impl = struct {
-            pub fn call(env: emacs.Env, _: isize, _: [*c]emacs.Value) emacs.Value {
+            pub fn call(env: emacs.Env, _: isize, _: [*c]emacs.Value) !emacs.Value {
                 vt_log_active = true;
                 return env.t();
             }
@@ -114,7 +114,7 @@ const emacs_functions = [_]emacs.FunctionEntry{
         \\(ghostel--disable-vt-log)
         ,
         .impl = struct {
-            pub fn call(env: emacs.Env, _: isize, _: [*c]emacs.Value) emacs.Value {
+            pub fn call(env: emacs.Env, _: isize, _: [*c]emacs.Value) !emacs.Value {
                 vt_log_active = false;
                 return env.t();
             }
@@ -131,7 +131,7 @@ const emacs_functions = [_]emacs.FunctionEntry{
         \\(ghostel--pty-password-input-p PATH)
         ,
         .impl = struct {
-            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) emacs.Value {
+            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
                 var stack_buf: [1024]u8 = undefined;
                 const path = env.extractString(args[0], &stack_buf) catch return env.nil();
                 return if (pty.isPasswordMode(path)) env.t() else env.nil();
