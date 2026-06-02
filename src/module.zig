@@ -55,7 +55,7 @@ export fn emacs_module_init(runtime: *c.struct_emacs_runtime) callconv(.c) c_int
     // Install system callbacks (PNG decoder for kitty graphics, logging).
     sys.init();
 
-    env.provide("ghostel-module");
+    _ = env.f("provide", .{emacs.sym.@"ghostel-module"});
     return 0;
 }
 

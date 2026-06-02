@@ -368,22 +368,37 @@ pub fn feed(self: *Self, env: emacs.Env, data: []const u8) !emacs.Value {
         const end_val = env.makeInteger(@intCast(run.end));
 
         if (try style_face.buildFacePlist(env, run.props)) |face| {
-            _ = env.f("put-text-property", .{ start_val, end_val, s.face, face, text_val });
+            _ = env.f("put-text-property", .{
+                start_val,
+                end_val,
+                s.face,
+                face,
+                text_val,
+            });
         }
         if (run.props.hyperlink) |link| {
             const uri_val = env.makeString(link.uri);
-            _ = env.f(
-                "put-text-property",
-                .{ start_val, end_val, s.@"help-echo", uri_val, text_val },
-            );
-            _ = env.f(
-                "put-text-property",
-                .{ start_val, end_val, s.@"mouse-face", s.highlight, text_val },
-            );
-            _ = env.f(
-                "put-text-property",
-                .{ start_val, end_val, s.keymap, env.symbolValue("ghostel-link-map"), text_val },
-            );
+            _ = env.f("put-text-property", .{
+                start_val,
+                end_val,
+                s.@"help-echo",
+                uri_val,
+                text_val,
+            });
+            _ = env.f("put-text-property", .{
+                start_val,
+                end_val,
+                s.@"mouse-face",
+                s.highlight,
+                text_val,
+            });
+            _ = env.f("put-text-property", .{
+                start_val,
+                end_val,
+                s.keymap,
+                env.symbolValue("ghostel-link-map"),
+                text_val,
+            });
         }
     }
 

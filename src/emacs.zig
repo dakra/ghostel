@@ -176,6 +176,7 @@ pub const Env = struct {
         return switch (ty) {
             .int => @as(T, @intCast(self.extractInteger(val))),
             .float => @as(T, @floatCast(self.extractFloat(val))),
+            .bool => self.isNotNil(val),
             else => @compileError(std.fmt.comptimePrint("Non-supported type: {}", .{T})),
         };
     }
@@ -340,71 +341,6 @@ pub const Env = struct {
         inline for (entries) |*entry| self.registerFunction(entry);
     }
 
-    /// Call (provide 'feature).
-    pub fn provide(self: Env, feature: [*:0]const u8) void {
-        _ = self.funcall(sym.provide, &[_]Value{self.intern(feature)});
-    }
-
-    // --- Buffer helpers ---
-
-    pub fn point(self: Env) Value {
-        return self.f("point", .{});
-    }
-
-    pub fn gotoChar(self: Env, pos: anytype) void {
-        _ = self.f("goto-char", .{pos});
-    }
-
-    pub fn insert(self: Env, text: []const u8) void {
-        _ = self.f("insert", .{text});
-    }
-
-    pub fn forwardLine(self: Env, n: anytype) i64 {
-        return self.extractInteger(self.f("forward-line", .{n}));
-    }
-
-    pub fn moveToColumn(self: Env, col: i64) void {
-        _ = self.f("move-to-column", .{col});
-    }
-
-    pub fn eraseBuffer(self: Env) void {
-        _ = self.f("erase-buffer", .{});
-    }
-
-    pub fn pointMax(self: Env) Value {
-        return self.f("point-max", .{});
-    }
-
-    pub fn markMarker(self: Env) Value {
-        return self.f("mark-marker", .{});
-    }
-
-    pub fn markerPosition(self: Env, marker: Value) Value {
-        return self.f("marker-position", .{marker});
-    }
-
-    pub fn setMarker(self: Env, marker: Value, pos: Value) Value {
-        return self.f("set-marker", .{ marker, pos });
-    }
-
-    pub fn deleteRegion(self: Env, start: anytype, end: anytype) void {
-        _ = self.f("delete-region", .{ start, end });
-    }
-
-    pub fn eobp(self: Env) bool {
-        return self.isNotNil(self.f("eobp", .{}));
-    }
-
-    pub fn putTextProperty(
-        self: Env,
-        start: anytype,
-        end: anytype,
-        comptime prop: []const u8,
-        value: anytype,
-    ) void {
-        _ = self.f("put-text-property", .{ start, end, @field(sym, prop), value });
-    }
-
     /// Create a unibyte string (for binary data like PNG images).
     /// Returns null if the API is unavailable (Emacs < 28).
     pub fn makeUnibyteString(self: Env, str: []const u8) ?Value {
@@ -547,6 +483,7 @@ const interned_symbols = [_][:0]const u8{
     "ghostel-input",
     "ghostel-link-id",
     "ghostel-link-map",
+    "ghostel-module",
     "ghostel-prompt",
     "ghostel-wrap",
     "goto-char",

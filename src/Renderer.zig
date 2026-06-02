@@ -238,8 +238,9 @@ fn updateFontInfo(self: *Self, env: emacs.Env) bool {
 }
 
 fn getDefaultFont(env: emacs.Env) emacs.Value {
-    const font = env.f("face-attribute", .{ emacs.sym.default, emacs.sym.@":font" });
-    if (env.isNil(env.f("fontp", .{ font, emacs.sym.@"font-object" }))) return env.nil();
+    const s = emacs.sym;
+    const font = env.f("face-attribute", .{ s.default, s.@":font" });
+    if (env.isNil(env.f("fontp", .{ font, s.@"font-object" }))) return env.nil();
     return font;
 }
 
@@ -312,19 +313,45 @@ fn createCellProps(
 /// Apply text properties to a region of the buffer.
 fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps) !void {
     if (start >= end) return;
+    const s = emacs.sym;
 
     const start_val = env.makeInteger(start);
     const end_val = env.makeInteger(end);
-    const s = &emacs.sym;
 
     if (try style_face.buildFacePlist(env, props)) |face| {
-        env.putTextProperty(start_val, end_val, "face", face);
+        _ = env.f("put-text-property", .{
+            start_val,
+            end_val,
+            s.face,
+            face,
+        });
     }
 
     if (props.hyperlink) |link| {
-        env.putTextProperty(start_val, end_val, "help-echo", env.makeString(link.uri));
-        env.putTextProperty(start_val, end_val, "mouse-face", s.highlight);
-        env.putTextProperty(start_val, end_val, "keymap", env.symbolValue("ghostel-link-map"));
+        _ = env.f("put-text-property", .{
+            start_val,
+            end_val,
+            s.@"help-echo",
+            env.makeString(link.uri),
+        });
+        _ = env.f(
+            "put-text-property",
+            .{
+                start_val,
+                end_val,
+                s.@"mouse-face",
+                s.highlight,
+            },
+        );
+        _ = env.f(
+            "put-text-property",
+            .{
+                start_val,
+                end_val,
+                s.keymap,
+                env.symbolValue("ghostel-link-map"),
+            },
+        );
 
         // Stored as a string (explicit) or integer (implicit), so elisp `equal' returns true
         // only when both kind and value match. A user-supplied explicit id like "42" never
@@ -333,12 +360,27 @@ fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps) !void {
             .explicit => |str| env.makeString(str),
             .implicit => |n| env.makeInteger(@intCast(n)),
         };
-        env.putTextProperty(start_val, end_val, "ghostel-link-id", id_val);
+        _ = env.f("put-text-property", .{
+            start_val,
+            end_val,
+            s.@"ghostel-link-id",
+            id_val,
+        });
     }
 
     switch (props.semantic_content) {
-        .prompt => env.putTextProperty(start_val, end_val, "ghostel-prompt", env.t()),
-        .input => env.putTextProperty(start_val, end_val, "ghostel-input", env.t()),
+        .prompt => _ = env.f("put-text-property", .{
+            start_val,
+            end_val,
+            s.@"ghostel-prompt",
+            env.t(),
+        }),
+        .input => _ = env.f("put-text-property", .{
+            start_val,
+            end_val,
+            s.@"ghostel-input",
+            env.t(),
+        }),
         else => {},
     }
 }
@@ -532,9 +574,8 @@ fn adjustGlyph(
     row_end: i64,
     cell: *const RowContent.CellInfo,
 ) void {
-    const default_font_info = self.font_info.?;
-
     const s = emacs.sym;
+    const default_font_info = self.font_info.?;
 
     const start_val = env.makeInteger(row_start + @as(i64, @intCast(cell.char_start)));
     const end_val = env.makeInteger(row_start + @as(i64, @intCast(cell.char_end)));
@@ -566,12 +607,12 @@ fn adjustGlyph(
 
         const c = env.cast(i64, env.f("char-after", .{claim_pos}));
         if (c == ' ') {
-            env.putTextProperty(
+            _ = env.f("put-text-property", .{
                 claim_pos,
                 claim_pos + 1,
-                "display",
+                s.display,
                 env.cons(s.space, env.list(.{ s.@":width", 0 })),
-            );
+            });
         } else {
             break;
         }
@@ -588,7 +629,12 @@ fn adjustGlyph(
     const min_width_spec = env.list(.{ s.@"min-width", env.list(.{char_width}) });
     const scale_spec = env.list(.{ s.height, scale });
     const display_spec = env.list(.{ min_width_spec, scale_spec });
-    _ = env.f("put-text-property", .{ start_val, end_val, s.display, display_spec });
+    _ = env.f("put-text-property", .{
+        start_val,
+        end_val,
+        s.display,
+        display_spec,
+    });
 }
 
 fn getGlyphMetrics(
@@ -657,9 +703,9 @@ fn insertRow(
         if (self.font_info) |f| f.coverage else std.math.maxInt(u32),
     );
 
-    const row_start = env.cast(i64, env.point());
-    env.insert(self.row.text.items);
-    const row_end = env.cast(i64, env.point());
+    const row_start = env.cast(i64, env.f("point", .{}));
+    _ = env.f("insert", .{self.row.text.items});
+    const row_end = env.cast(i64, env.f("point", .{}));
 
     for (self.row.runs.items) |*run| {
         if (run.end_char <= run.start_char) continue;
@@ -675,8 +721,13 @@ fn insertRow(
 
     if (row.raw.wrap) {
         // Mark newlines from soft-wrapped rows so copy mode can filter them
-        const point = env.point();
-        env.putTextProperty(env.cast(i64, point) - 1, point, "ghostel-wrap", env.t());
+        const point = env.f("point", .{});
+        _ = env.f("put-text-property", .{
+            env.cast(i64, point) - 1,
+            point,
+            emacs.sym.@"ghostel-wrap",
+            env.t(),
+        });
     }
 
     if (self.row.cursor_char_pos) |pos| {
@@ -723,7 +774,7 @@ pub fn render(
 
             const dirty_row = self.render_state.dirty == .full or row_dirty[i];
             // Only process dirty rows, or there's no existing row
-            const eob = env.eobp();
+            const eob = env.isNotNil(env.f("eobp", .{}));
             if (dirty_row or eob) {
                 const row = self.render_state.row_data.get(i);
 
@@ -752,11 +803,11 @@ pub fn render(
                 } else {
                     // Line is dirty and we're not at the end of the buffer,
                     // so we're replacing the line.
-                    const line_start_val = env.point();
+                    const line_start_val = env.f("point", .{});
                     const line_start = env.cast(usize, line_start_val);
                     const old_line_end_val = env.f("pos-bol", .{2});
                     const old_line_len = env.cast(usize, old_line_end_val) - line_start;
-                    env.deleteRegion(line_start_val, old_line_end_val);
+                    _ = env.f("delete-region", .{ line_start_val, old_line_end_val });
                     const new_line_len = try self.insertRow(alloc, env, &row, cursor_col);
 
                     if (page) |p| {
@@ -766,7 +817,7 @@ pub fn render(
                     self.saved_markers.adjustRegion(line_start, old_line_len, new_line_len);
                 }
             } else {
-                _ = env.forwardLine(1);
+                _ = env.f("forward-line", .{1});
             }
         }
 
@@ -832,8 +883,8 @@ fn commitResize(self: *Self, alloc: Allocator) !void {
 /// Position the Emacs point at the start of the active area: `self.term.rows`
 /// lines back from `point-max`.
 fn gotoActiveStart(self: *Self, env: emacs.Env) void {
-    env.gotoChar(env.pointMax());
-    _ = env.forwardLine(-@as(i64, @intCast(self.term.rows)));
+    _ = env.f("goto-char", .{env.f("point-max", .{})});
+    _ = env.f("forward-line", .{-@as(i64, @intCast(self.term.rows))});
 }
 
 fn getOrAddLastPage(self: *Self, alloc: Allocator, serial: PageSerial) !*MaterializedPage {
@@ -849,7 +900,7 @@ fn getOrAddLastPage(self: *Self, alloc: Allocator, serial: PageSerial) !*Materia
 }
 
 fn clear(self: *Self, alloc: Allocator, env: emacs.Env) !void {
-    env.eraseBuffer();
+    _ = env.f("erase-buffer", .{});
     self.rows_in_buffer = 0;
     self.render_state.dirty = .full;
     self.clearPages(alloc);
@@ -894,10 +945,10 @@ fn evictScrollback(self: *Self, alloc: Allocator, env: emacs.Env) void {
         const term_page_rows = term_first_page.data.size.rows;
         if (term_page_rows < first_page.rows) {
             const diff = first_page.rows - term_first_page.data.size.rows;
-            env.gotoChar(1);
-            _ = env.forwardLine(diff);
+            _ = env.f("goto-char", .{1});
+            _ = env.f("forward-line", .{diff});
 
-            const point = env.point();
+            const point = env.f("point", .{});
             const rows_char_len = env.cast(usize, point) - 1;
             first_page.char_len -|= rows_char_len;
             evicted_chars += rows_char_len;
@@ -909,7 +960,7 @@ fn evictScrollback(self: *Self, alloc: Allocator, env: emacs.Env) void {
 
     self.rows_in_buffer -|= evicted_rows;
     if (evicted_chars > 0) {
-        env.deleteRegion(1, 1 + evicted_chars);
+        _ = env.f("delete-region", .{ 1, 1 + evicted_chars });
         self.saved_markers.adjustRegion(1, evicted_chars, 0);
     }
 }
