@@ -2442,9 +2442,6 @@ pasted using bracketed paste."
   "Clear the screen and scrollback buffer."
   (interactive)
   (when ghostel--term
-    ;; Flush pending process output first so it doesn't recreate
-    ;; scrollback after the clear.
-    (ghostel--flush-pending-output)
     ;; CSI H = home, CSI 2 J = erase screen, CSI 3 J = erase scrollback.
     (ghostel--write-input ghostel--term "\e[H\e[2J\e[3J")
     (setq ghostel--force-next-redraw t)
@@ -2457,8 +2454,6 @@ pasted using bracketed paste."
   "Clear the visible screen, preserving scrollback history."
   (interactive)
   (when ghostel--term
-    ;; Flush pending process output first so it renders before the clear.
-    (ghostel--flush-pending-output)
     (ghostel--write-input ghostel--term "\e[H\e[2J")
     (setq ghostel--force-next-redraw t)
     (ghostel--invalidate)
@@ -3748,8 +3743,9 @@ input captured by an earlier auto-pause)."
 
 (defun ghostel--line-mode-pre-redraw ()
   "Pause line mode if alt-screen is on while in line mode.
-Runs at the top of `ghostel--delayed-redraw' (after PTY flush, but
-before the renderer paints).  Pausing here lets us snapshot the
+Runs at the top of `ghostel--delayed-redraw' after process output has
+already been fed to the terminal, but before the renderer paints.
+Pausing here lets us snapshot the
 in-progress input before libghostty's grid (which does not contain
 it) drives the renderer over the buffer.  After pausing,
 `ghostel--input-mode' is no longer `line', so subsequent calls
@@ -5195,22 +5191,11 @@ indicator and suppression always reach a sane state."
 
 ;;; Callbacks from native module
 
-(defvar-local ghostel--osc52-eval-in-flight nil
-  "Non-nil while an OSC 52;e dispatch is pending.
-Set by `ghostel--filter' when the introducer regex matches; cleared
-by `ghostel--osc52-eval' as its first form, so the dispatch firing
-is the authoritative \"done\" edge.  Used to keep forcing synchronous
-flushes until the OSC completes, even when the introducer and body arrive
-in separate filter chunks (slow producers, SSH, small TCP segments).")
-
 (defun ghostel--osc52-eval (str)
   "Handle an OSC 52 elisp-eval payload from the terminal.
 STR is the raw payload from OSC 52 with kind \\='e\\='.
 Parses the command and arguments, looks up the command in
 `ghostel-eval-cmds', and calls it if whitelisted."
-  ;; Clear before the body so a callback error still drops the flag —
-  ;; `ghostel--filter' relies on this firing to stop forcing sync flush.
-  (setq ghostel--osc52-eval-in-flight nil)
   (let* ((parts (split-string-and-unquote str))
          (command (car parts))
          (args (cdr parts))
@@ -5623,45 +5608,26 @@ further gates on terminal mode 1004."
               (when (ghostel--focus-event ghostel--term focused)
                 (setq ghostel--focus-state focused)))))))))
 
-(defvar-local ghostel--pending-output nil
-  "Accumulated output chunks waiting to be fed to the terminal.
-When non-nil, a list of unibyte strings (in reverse order) that
-will be concatenated and passed to `ghostel--write-input' at the
-next redraw.  Batching writes reduces per-call overhead in the
-VT parser.")
-
 
 ;;; Process management
 
 (defun ghostel--filter (process output)
   "Process filter: feed PTY output to the terminal.
 PROCESS is the shell process, OUTPUT is the raw byte string.
-Output is accumulated and fed to the terminal in a single batch
-when the redraw timer fires, reducing per-call VT parser overhead.
+Output is fed to the terminal immediately; rendering is scheduled
+separately so the terminal may run ahead of the materialized buffer.
 
 For interactive echo (small output arriving shortly after a keystroke),
 the redraw is performed immediately to minimize typing latency."
   (when (buffer-live-p (process-buffer process))
     (with-current-buffer (process-buffer process)
       (when ghostel--term
-        ;; Accumulate output for batched write-input at redraw time.
-        (push output ghostel--pending-output)
-        ;; Sync-flush OSC 52;e (elisp-eval) and OSC 4/10/11 color queries
-        ;; so producers don't race the redraw timer.  Carry-tail catches
-        ;; mid-introducer splits; the in-flight flag catches the split
-        ;; where the introducer ends chunk 1 (chunk 2 has no `52;e;' to
-        ;; rematch on its own).  The flag is set only for eval - color
-        ;; replies are written back inside the same write-input call.
-        (let* ((prev (cadr ghostel--pending-output))
-               (carry (and prev (substring prev (max 0 (- (length prev) 16)))))
-               (text (if carry (concat carry output) output))
-               (eval-match (string-match-p "\e\\]52;e;" text)))
-          (when (or eval-match
-                    ghostel--osc52-eval-in-flight
-                    (string-match-p
-                     "\e\\]\\(?:4;[0-9]+;\\?\\|10;\\?\\|11;\\?\\)" text))
-            (when eval-match (setq ghostel--osc52-eval-in-flight t))
-            (ghostel--flush-pending-output)))
+        ;; Native callbacks dispatched while parsing output (for example OSC 52;e)
+        ;; may select another buffer.  Keep the rest of the filter's buffer-local
+        ;; reads anchored to this ghostel buffer.
+        (save-current-buffer
+          (ghostel--write-input ghostel--term output))
+
         ;; Immediate redraw for interactive echo: small output arriving
         ;; within `ghostel-immediate-redraw-interval' of last keystroke.
         (if (and (> ghostel-immediate-redraw-threshold 0)
@@ -5676,7 +5642,7 @@ the redraw is performed immediately to minimize typing latency."
                 (cancel-timer ghostel--redraw-timer)
                 (setq ghostel--redraw-timer nil))
               (ghostel--delayed-redraw (current-buffer)))
-          ;; Bulk output: batch and schedule as before.
+          ;; Bulk output: schedule a later redraw.
           (ghostel--invalidate))))))
 
 (defun ghostel--sentinel (process event)
@@ -5685,9 +5651,6 @@ PROCESS is the shell process, EVENT describes the state change."
   (let ((buf (process-buffer process)))
     (when (buffer-live-p buf)
       (with-current-buffer buf
-        ;; Flush any pending output before cleanup.
-        (when ghostel--term
-          (ghostel--flush-pending-output))
         (when ghostel--redraw-timer
           (cancel-timer ghostel--redraw-timer)
           (setq ghostel--redraw-timer nil))
@@ -6365,19 +6328,6 @@ When `ghostel--query-font-cache' is nil, call `query-font' directly."
           (puthash font (query-font font) ghostel--query-font-cache))
     (query-font font)))
 
-(defun ghostel--flush-pending-output ()
-  "Feed any accumulated output to the terminal in a single batch."
-  (when ghostel--pending-output
-    (let ((combined (apply #'concat (nreverse ghostel--pending-output))))
-      (setq ghostel--pending-output nil)
-      ;; An OSC 52;e (elisp-eval) callback dispatched synchronously from
-      ;; the native parser (e.g. `find-file-other-window') can change the
-      ;; current buffer via `select-window'.  Isolate that so callers keep
-      ;; reading buffer-locals — notably `ghostel--term' — from the
-      ;; ghostel buffer after this returns.
-      (save-current-buffer
-        (ghostel--write-input ghostel--term combined)))))
-
 (defun ghostel--viewport-start ()
   "Position of the first line of the terminal viewport, or nil if rows<=0."
   (let ((tr (or ghostel--term-rows 0)))
@@ -6461,7 +6411,6 @@ live viewport."
     (with-current-buffer buffer
       (setq ghostel--redraw-timer nil)
       (when (and ghostel--term (ghostel--terminal-live-p))
-        (ghostel--flush-pending-output)
         ;; Skip during synchronized output unless forced by scroll/resize.
         (unless (and (not ghostel--force-next-redraw)
                      (ghostel--mode-enabled ghostel--term 2026))
@@ -6775,7 +6724,6 @@ spawn after initialization."
           ghostel--term-rows nil
           ghostel--term-cols nil
           ghostel--process nil
-          ghostel--pending-output nil
           ghostel--redraw-timer nil
           ghostel--plain-link-detection-timer nil
           ghostel--plain-link-detection-begin nil

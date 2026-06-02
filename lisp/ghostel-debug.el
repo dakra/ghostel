@@ -654,7 +654,7 @@ omit it when the connection itself is the suspected fault."
             (insert "\n(not in a ghostel buffer — buffer/process/window/terminal sections skipped)\n")
           (let (buf-name maj-mode dir remote modes
                 proc cmd shell shell-integ tramp-integ detected
-                term term-rows term-cols force pending timer input-mode
+                term term-rows term-cols force timer input-mode
                 input-bytes input-timer
                 buf-size buf-lines pt dec2026 alt-scr
                 dln-on dln-style spawn-capture)
@@ -680,7 +680,6 @@ omit it when the connection itself is the suspected fault."
                     term-rows ghostel--term-rows
                     term-cols ghostel--term-cols
                     force ghostel--force-next-redraw
-                    pending (length ghostel--pending-output)
                     timer (and ghostel--redraw-timer t)
                     input-mode ghostel--input-mode
                     input-bytes (apply #'+ (mapcar #'length
@@ -784,7 +783,6 @@ omit it when the connection itself is the suspected fault."
                     (insert (format "Alt screen:          %s\n"
                                     (if alt-scr "yes" "no")))
                     (insert (format "Force next redraw:   %s\n" force))
-                    (insert (format "Pending output:      %d chunks\n" pending))
                     (insert (format "Redraw timer:        %s\n"
                                     (if timer "pending" "none")))
                     (insert (format "Coalesce buffer:     %d bytes  timer: %s\n"

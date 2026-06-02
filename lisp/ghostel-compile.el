@@ -445,14 +445,12 @@ same as in any compilation buffer."
           (when ghostel-compile-debug
             (message "ghostel-compile: sentinel exit=%S status=%S"
                      exit (process-status process)))
-          ;; Flush pending bytes to the VT parser, then cancel any
-          ;; scheduled redraw and commit the current terminal state to
-          ;; the buffer synchronously.  Without this, a short-lived
+          ;; Cancel any scheduled redraw and commit the current terminal state
+		  ;; to the buffer synchronously.  Without this, a short-lived
           ;; command (`echo`, `false`, `exit 7`) finishes before the
           ;; ~16 ms redraw timer fires and its output is lost when
           ;; `--teardown-terminal' destroys the renderer.
           (when ghostel--term
-            (ghostel--flush-pending-output)
             (when ghostel--redraw-timer
               (cancel-timer ghostel--redraw-timer)
               (setq ghostel--redraw-timer nil))

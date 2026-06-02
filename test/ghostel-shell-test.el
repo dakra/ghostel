@@ -158,7 +158,6 @@ newest-first list aligns with the buffer-order regions."
             (ghostel-test--wait-for proc
                                     (lambda () (not (string-match-p "abc"
                                                                     (ghostel--copy-all-text ghostel--term)))))
-            (ghostel--flush-pending-output)
             (let ((state (ghostel--copy-all-text ghostel--term)))
               (should (string-match-p "ab" state))
               (should-not (string-match-p "abc" state)))
@@ -588,9 +587,9 @@ below it."
               (set-process-query-on-exit-flag proc nil)
               (unwind-protect
                   (progn
-                    ;; Wait for the initial default prompt to land.
+                    ;; Wait for the initial default prompt to reach the terminal.
                     (ghostel-test--wait-for
-                     proc (lambda () ghostel--pending-output) 10)
+                     proc (lambda () (ghostel--copy-all-text ghostel--term)) 10)
                     ;; Source ghostel.zsh (registers precmd hooks + the
                     ;; zle-line-init widget).  Then strip the wrap function
                     ;; from `precmd_functions' so PROMPT is left untouched
@@ -606,9 +605,9 @@ below it."
                       "precmd_functions=(${precmd_functions:#__ghostel_ensure_prompt_wrap})\n"
                       "PROMPT=$'top-line\\nfinal-> '\n"
                       "\n"))
-                    ;; Poll the asserted state directly: flush +
-                    ;; redraw on each tick and stop once the cursor
-                    ;; row starts with "final-> ".  Earlier attempts
+                    ;; Poll the asserted state directly: redraw on each tick
+                    ;; and stop once the cursor row starts with "final-> ".
+                    ;; Earlier attempts
                     ;; raced on slow CI: byte-pattern waits matched
                     ;; the echoed PROMPT assignment before zsh had
                     ;; rendered the new prompt, and a `(point-min)'
@@ -619,7 +618,6 @@ below it."
                     (ghostel-test--wait-for
                      proc
                      (lambda ()
-                       (ghostel--flush-pending-output)
                        (let ((inhibit-read-only t))
                          (ghostel--redraw ghostel--term t))
                        (let ((pos ghostel--cursor-pos)
@@ -702,7 +700,7 @@ checks that the most recent prompt's `top-line' row carries the
               (unwind-protect
                   (progn
                     (ghostel-test--wait-for
-                     proc (lambda () ghostel--pending-output) 10)
+                     proc (lambda () (ghostel--copy-all-text ghostel--term)) 10)
                     ;; Source ghostel.zsh + register a fake p10k that
                     ;; both overrides PROMPT AND self-reorders to end
                     ;; each cycle (this is what `_p9k_precmd' does).
@@ -730,12 +728,10 @@ checks that the most recent prompt's `top-line' row carries the
                     (ghostel-test--wait-for
                      proc
                      (lambda ()
-                       (cl-some (lambda (s)
-                                  (string-match-p "PROBE_DONE" s))
-                                ghostel--pending-output))
+                       (string-match-p "PROBE_DONE"
+                                       (ghostel--copy-all-text ghostel--term)))
                      15)
                     (sleep-for 0.2)
-                    (ghostel--flush-pending-output)
                     (let ((inhibit-read-only t))
                       (ghostel--redraw ghostel--term t))
                     ;; After the rearrange settles, the WRAP fires INLINE

@@ -1240,8 +1240,8 @@ send bytes through the process to confirm they land in the buffer."
             (ghostel-test--wait-for
              ghostel--process
              (lambda ()
-               (cl-some (lambda (s) (string-match-p "ghosttel-ping" s))
-                        ghostel--pending-output)))
+               (string-match-p "ghosttel-ping"
+                               (ghostel--copy-all-text ghostel--term))))
             ;; Shut cat down so the test doesn't leak a process.
             (process-send-eof ghostel--process)
             (ghostel-test--wait-for

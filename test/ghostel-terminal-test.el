@@ -377,27 +377,29 @@ Mirrors the real zsh case where the directory still contains a
       (ignore-errors (delete-file standalone))
       (ignore-errors (delete-directory dir t)))))
 
-(ert-deftest ghostel-test-flush-pending-output-preserves-buffer ()
+(ert-deftest ghostel-test-filter-write-input-preserves-buffer ()
   "Regression for #82: buffer switches in native callbacks do not leak out.
 A buffer switch performed by a synchronous native callback (as OSC 52;e
-dispatch does when it calls `find-file-other-window') must not leak out
-of `ghostel--flush-pending-output'.  Otherwise callers such as
-`ghostel--delayed-redraw' read `ghostel--term' from the wrong buffer and
-hand nil to the native module."
-  (let ((ghostel-buf (generate-new-buffer " *ghostel-test-flush-buf*"))
-        (other-buf (generate-new-buffer " *ghostel-test-flush-other*")))
+dispatch does when it calls `find-file-other-window') must not affect
+later `ghostel--filter' logic.  Otherwise the filter reads buffer-local
+state from the wrong buffer after feeding output to the native module."
+  (let ((ghostel-buf (generate-new-buffer " *ghostel-test-filter-buf*"))
+        (other-buf (generate-new-buffer " *ghostel-test-filter-other*"))
+        invalidate-called)
     (unwind-protect
         (with-current-buffer ghostel-buf
           (setq-local ghostel--term 'fake-handle)
-          (setq-local ghostel--pending-output (list "payload"))
-          (cl-letf (((symbol-function 'ghostel--write-input)
+          (cl-letf (((symbol-function 'process-buffer) (lambda (_) ghostel-buf))
+                    ((symbol-function 'ghostel--write-input)
                      (lambda (_term _data)
                        ;; Simulate `find-file-other-window' flipping
                        ;; the current buffer via `select-window'.
-                       (set-buffer other-buf))))
-            (ghostel--flush-pending-output))
+                       (set-buffer other-buf)))
+                    ((symbol-function 'ghostel--invalidate)
+                     (lambda () (setq invalidate-called (current-buffer)))))
+            (ghostel--filter 'fake-proc "payload"))
           (should (eq (current-buffer) ghostel-buf))
-          (should (null ghostel--pending-output)))
+          (should (eq invalidate-called ghostel-buf)))
       (kill-buffer ghostel-buf)
       (kill-buffer other-buf))))
 

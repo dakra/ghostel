@@ -481,7 +481,6 @@ row.  Navigation should land on the link only once, not on each chunk."
                                timer-fn fn
                                timer-args args)
                          'ghostel-test-link-timer))
-                      ((symbol-function 'ghostel--flush-pending-output) #'ignore)
                       ((symbol-function 'ghostel--mode-enabled)
                        (lambda (&rest _) nil))
                       ((symbol-function 'ghostel--redraw) #'ignore)
@@ -531,7 +530,6 @@ row.  Navigation should land on the link only once, not on each chunk."
                                timer-fn fn
                                timer-args args)
                          'ghostel-test-link-timer))
-                      ((symbol-function 'ghostel--flush-pending-output) #'ignore)
                       ((symbol-function 'ghostel--mode-enabled)
                        (lambda (&rest _) nil))
                       ((symbol-function 'ghostel--redraw) #'ignore)

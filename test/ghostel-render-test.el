@@ -986,13 +986,12 @@ scrolling libghostty's viewport."
         (with-current-buffer buf
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 5 80 100))
-          ;; Simulate pending PTY output.  `ghostel-clear' must flush this
-          ;; before writing CSI H / CSI 2J, otherwise the clear could race the
-          ;; output and either lose history or recreate stale viewport text.
-          (setq ghostel--pending-output
-                (list (mapconcat (lambda (i) (format "clear-test-%d\r\n" i))
-                                 (number-sequence 0 14) "")))
-          (should ghostel--pending-output)
+          ;; Seed enough content to create scrollback, then clear only the
+          ;; visible viewport.
+          (ghostel--write-input
+           ghostel--term
+           (mapconcat (lambda (i) (format "clear-test-%d\r\n" i))
+                      (number-sequence 0 14) ""))
           (ghostel-clear)
           ;; Simulate what delayed-redraw does after `ghostel-clear' invalidates.
           (let ((inhibit-read-only t))
@@ -1584,7 +1583,7 @@ app redraws all rows at new width via the filter pipeline."
 
 (ert-deftest ghostel-test-resize-through-filter-pipeline ()
   "Full pipeline test: resize, then app response goes through filter path.
-The app's output enters via `ghostel--filter' (pending-output) and is
+The app's output enters the terminal via `ghostel--filter' and is
 rendered by `ghostel--delayed-redraw'.  This is the exact real-world path."
   :tags '(native)
   (let ((buf (generate-new-buffer " *ghostel-test-pipeline*")))
@@ -1619,7 +1618,7 @@ rendered by `ghostel--delayed-redraw'.  This is the exact real-world path."
                   (setq ghostel--force-next-redraw t)
 
                   ;; Simulate app's SIGWINCH response arriving through the filter.
-                  ;; This is the real pipeline: filter → pending-output → delayed-redraw.
+                  ;; This is the real pipeline: filter → terminal → delayed-redraw.
                   ;; Use BSU/ESU like htop does.
                   (let ((response (concat
                                    "\e[?2026h"      ; BSU
@@ -1633,7 +1632,7 @@ rendered by `ghostel--delayed-redraw'.  This is the exact real-world path."
                                    "\e[6;7H"         ; position cursor
                                    "\e[?25h"         ; show cursor
                                    "\e[?2026l")))    ; ESU
-                    ;; Feed through the filter to accumulate as pending output.
+                    ;; Feed through the filter into the terminal.
                     (ghostel--filter proc response))
 
                   ;; Now call delayed-redraw (as the timer would).
