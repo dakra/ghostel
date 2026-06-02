@@ -171,6 +171,15 @@ pub const Env = struct {
 
     // --- Type extraction ---
 
+    pub fn cast(self: Env, T: type, val: Value) T {
+        const ty = @typeInfo(T);
+        return switch (ty) {
+            .int => @as(T, @intCast(self.extractInteger(val))),
+            .float => @as(T, @floatCast(self.extractFloat(val))),
+            else => @compileError(std.fmt.comptimePrint("Non-supported type: {}", .{T})),
+        };
+    }
+
     pub fn extractInteger(self: Env, val: Value) i64 {
         return @intCast(self.raw.extract_integer.?(self.raw, val));
     }

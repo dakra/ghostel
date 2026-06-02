@@ -236,14 +236,14 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .impl = struct {
             pub fn call(env: emacs.Env, nargs: isize, args: [*c]emacs.Value) !emacs.Value {
                 // Reject out-of-range row/col counts rather than wrapping/panicking.
-                const rows = std.math.cast(u16, env.extractInteger(args[0])) orelse {
+                const rows = std.math.cast(u16, env.cast(i64, args[0])) orelse {
                     return error.OutOfRange;
                 };
-                const cols = std.math.cast(u16, env.extractInteger(args[1])) orelse {
+                const cols = std.math.cast(u16, env.cast(i64, args[1])) orelse {
                     return error.OutOfRange;
                 };
                 const max_scrollback: usize = if (nargs > 2 and env.isNotNil(args[2]))
-                    (std.math.cast(usize, env.extractInteger(args[2])) orelse {
+                    (std.math.cast(usize, env.cast(i64, args[2])) orelse {
                         return error.OutOfRange;
                     })
                 else
@@ -251,7 +251,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 // Default 320 MiB; explicit 0 disables kitty graphics entirely
                 // (skips the storage allocation in libghostty's screen state).
                 const kitty_storage_limit: usize = if (nargs > 3 and env.isNotNil(args[3]))
-                    (std.math.cast(usize, env.extractInteger(args[3])) orelse {
+                    (std.math.cast(usize, env.cast(i64, args[3])) orelse {
                         return error.OutOfRange;
                     })
                 else
@@ -261,7 +261,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 // The other mediums let a remote program instruct ghostel to read
                 // arbitrary local files / SHM regions, so opt-in only.
                 const kitty_mediums: u32 = if (nargs > 4 and env.isNotNil(args[4]))
-                    (std.math.cast(u32, env.extractInteger(args[4])) orelse 0)
+                    (std.math.cast(u32, env.cast(i64, args[4])) orelse 0)
                 else
                     0;
                 var effects: gt.TerminalStream.Handler.Effects = .readonly;
@@ -318,10 +318,10 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .impl = struct {
             pub fn call(env: emacs.Env, nargs: isize, args: [*c]emacs.Value) !emacs.Value {
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
-                const rows = std.math.cast(u16, env.extractInteger(args[1])) orelse {
+                const rows = std.math.cast(u16, env.cast(i64, args[1])) orelse {
                     return error.OutOfRange;
                 };
-                const cols = std.math.cast(u16, env.extractInteger(args[2])) orelse {
+                const cols = std.math.cast(u16, env.cast(i64, args[2])) orelse {
                     return error.OutOfRange;
                 };
                 // Clamp cell dimensions to at least 1.  A zero (or negative,
@@ -329,12 +329,12 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 // some apps treat zero cell sizes as "kitty graphics not
                 // supported" and fall back to half-block rendering.
                 const cell_w: u32 = if (nargs > 3 and env.isNotNil(args[3])) blk: {
-                    const raw = env.extractInteger(args[3]);
+                    const raw = env.cast(i64, args[3]);
                     if (raw < 1) break :blk 1;
                     break :blk std.math.cast(u32, raw) orelse 1;
                 } else 1;
                 const cell_h: u32 = if (nargs > 4 and env.isNotNil(args[4])) blk: {
-                    const raw = env.extractInteger(args[4]);
+                    const raw = env.cast(i64, args[4]);
                     if (raw < 1) break :blk 1;
                     break :blk std.math.cast(u32, raw) orelse 1;
                 } else 1;
@@ -442,11 +442,11 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .impl = struct {
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
-                const action = env.extractInteger(args[1]);
-                const button = env.extractInteger(args[2]);
-                const row = env.extractInteger(args[3]);
-                const col = env.extractInteger(args[4]);
-                const mods = env.extractInteger(args[5]);
+                const action = env.cast(i64, args[1]);
+                const button = env.cast(i64, args[2]);
+                const row = env.cast(i64, args[3]);
+                const col = env.cast(i64, args[4]);
+                const mods = env.cast(i64, args[5]);
                 const sent = try input.encodeAndSendMouse(env, term, action, button, row, col, mods);
                 return if (sent) env.t() else env.nil();
             }
@@ -584,7 +584,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .impl = struct {
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
-                const raw_int = env.extractInteger(args[1]);
+                const raw_int = env.cast(i64, args[1]);
                 const mode_int = std.math.cast(u16, raw_int) orelse {
                     return error.InvalidModeValue;
                 };

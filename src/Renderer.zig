@@ -68,8 +68,8 @@ const MaterializedPage = struct {
 };
 
 const FontInfo = struct {
-    width: i64,
-    height: i64,
+    width: u32,
+    height: u32,
     coverage: u32,
     glyph_scale_floor: f64,
 };
@@ -224,11 +224,11 @@ fn updateFontInfo(self: *Self, env: emacs.Env) bool {
         // The value is a vector:
         // [ NAME FILENAME PIXEL-SIZE SIZE ASCENT DESCENT SPACE-WIDTH AVERAGE-WIDTH
         //   CAPABILITY ]
-        const cell_ascent = env.extractInteger(env.vecGet(default_font_info, 4));
-        const cell_descent = env.extractInteger(env.vecGet(default_font_info, 5));
+        const cell_ascent = env.cast(u32, env.vecGet(default_font_info, 4));
+        const cell_descent = env.cast(u32, env.vecGet(default_font_info, 5));
 
         self.font_info = .{
-            .width = env.extractInteger(env.vecGet(default_font_info, 6)),
+            .width = env.cast(u32, env.vecGet(default_font_info, 6)),
             .height = cell_ascent + cell_descent,
             .coverage = probeCoverage(env, new_font),
             .glyph_scale_floor = floor,
@@ -564,7 +564,7 @@ fn adjustGlyph(
         // the newline represent empty space we can freely claim.
         if (claim_pos >= row_end - 1) continue;
 
-        const c = env.extractInteger(env.f("char-after", .{claim_pos}));
+        const c = env.cast(i64, env.f("char-after", .{claim_pos}));
         if (c == ' ') {
             env.putTextProperty(
                 claim_pos,
@@ -607,13 +607,13 @@ fn getGlyphMetrics(
     // [FONT-OBJECT CHAR ...]
     const font = env.vecGet(header, 0);
     const font_info = env.f("ghostel--query-font-cached", .{font});
-    const ascent = env.extractInteger(env.vecGet(font_info, 4));
-    const descent = env.extractInteger(env.vecGet(font_info, 5));
+    const ascent = env.cast(i64, env.vecGet(font_info, 4));
+    const descent = env.cast(i64, env.vecGet(font_info, 5));
     const height = ascent + descent;
 
     // Each element is a vector containing information of a glyph in this format:
     // [FROM-IDX TO-IDX C CODE WIDTH LBEARING RBEARING ASCENT DESCENT ADJUSTMENT]
-    const width = env.extractInteger(env.vecGet(glyph, 4));
+    const width = env.cast(u32, env.vecGet(glyph, 4));
 
     return .{ .width = width, .height = height };
 }
@@ -657,9 +657,9 @@ fn insertRow(
         if (self.font_info) |f| f.coverage else std.math.maxInt(u32),
     );
 
-    const row_start = env.extractInteger(env.point());
+    const row_start = env.cast(i64, env.point());
     env.insert(self.row.text.items);
-    const row_end = env.extractInteger(env.point());
+    const row_end = env.cast(i64, env.point());
 
     for (self.row.runs.items) |*run| {
         if (run.end_char <= run.start_char) continue;
@@ -676,8 +676,7 @@ fn insertRow(
     if (row.raw.wrap) {
         // Mark newlines from soft-wrapped rows so copy mode can filter them
         const point = env.point();
-        const nl_pos = env.makeInteger(env.extractInteger(point) - 1);
-        env.putTextProperty(nl_pos, point, "ghostel-wrap", env.t());
+        env.putTextProperty(env.cast(i64, point) - 1, point, "ghostel-wrap", env.t());
     }
 
     if (self.row.cursor_char_pos) |pos| {
@@ -754,9 +753,9 @@ pub fn render(
                     // Line is dirty and we're not at the end of the buffer,
                     // so we're replacing the line.
                     const line_start_val = env.point();
-                    const line_start: usize = @intCast(env.extractInteger(line_start_val));
+                    const line_start = env.cast(usize, line_start_val);
                     const old_line_end_val = env.f("pos-bol", .{2});
-                    const old_line_len = @as(usize, @intCast(env.extractInteger(old_line_end_val))) - line_start;
+                    const old_line_len = env.cast(usize, old_line_end_val) - line_start;
                     env.deleteRegion(line_start_val, old_line_end_val);
                     const new_line_len = try self.insertRow(alloc, env, &row, cursor_col);
 
@@ -899,9 +898,9 @@ fn evictScrollback(self: *Self, alloc: Allocator, env: emacs.Env) void {
             _ = env.forwardLine(diff);
 
             const point = env.point();
-            const rows_char_len = env.extractInteger(point) - 1;
-            first_page.char_len -|= @intCast(rows_char_len);
-            evicted_chars += @intCast(rows_char_len);
+            const rows_char_len = env.cast(usize, point) - 1;
+            first_page.char_len -|= rows_char_len;
+            evicted_chars += rows_char_len;
 
             first_page.rows -= diff;
             evicted_rows += diff;

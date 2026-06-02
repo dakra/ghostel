@@ -63,13 +63,13 @@ pub fn bufferPosToPin(screen: *gt.Screen, env: emacs.Env, pos: usize) ?gt.Pin {
     defer env.gotoChar(saved_point);
 
     env.gotoChar(pos);
-    const row = env.extractInteger(env.f("line-number-at-pos", .{})) - 1;
+    const row = env.cast(u32, env.f("line-number-at-pos", .{})) - 1;
     const row_pin = screen.pages.pin(.{ .screen = .{ .y = @intCast(row) } });
     if (row_pin == null) return null;
 
-    const point = env.extractInteger(env.point());
-    const row_start_pos = env.extractInteger(env.f("pos-bol", .{}));
-    const char_offset = @as(usize, @intCast(point - row_start_pos));
+    const point = env.cast(usize, env.point());
+    const row_start_pos = env.cast(usize, env.f("pos-bol", .{}));
+    const char_offset = point - row_start_pos;
 
     return advanceByCharOffset(row_pin.?, char_offset);
 }
@@ -83,9 +83,6 @@ pub fn pinToBufferPos(screen: *gt.Screen, env: emacs.Env, pin: gt.Pin) ?usize {
     const point = opt_point.?.screen;
     _ = env.f("goto-char", .{1});
     _ = env.f("forward-line", .{point.y});
-    _ = env.f("goto-char", .{
-        @as(usize, @intCast(env.extractInteger(env.point()))) +
-            rowCharOffset(pin),
-    });
-    return @intCast(env.extractInteger(env.point()));
+    _ = env.f("goto-char", .{env.cast(usize, env.point()) + rowCharOffset(pin)});
+    return env.cast(usize, env.point());
 }

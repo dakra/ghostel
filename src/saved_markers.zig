@@ -56,7 +56,7 @@ pub const SavedBufferMarkers = struct {
     pub fn save(self: *SavedBufferMarkers, alloc: Allocator, env: emacs.Env) !void {
         const mark_val = env.f("marker-position", .{env.f("mark-marker", .{})});
         if (env.isNotNil(mark_val)) {
-            self.mark = .{ .pos = @intCast(env.extractInteger(mark_val)) };
+            self.mark = .{ .pos = env.cast(usize, mark_val) };
         }
 
         var windows = env.f("get-buffer-window-list", .{ env.nil(), env.nil(), env.t() });
@@ -66,10 +66,10 @@ pub const SavedBufferMarkers = struct {
             try self.windows.append(alloc, .{
                 .window = window,
                 .point = .{
-                    .pos = @intCast(env.extractInteger(env.f("window-point", .{window}))),
+                    .pos = env.cast(usize, env.f("window-point", .{window})),
                 },
                 .start = .{
-                    .pos = @intCast(env.extractInteger(env.f("window-start", .{window}))),
+                    .pos = env.cast(usize, env.f("window-start", .{window})),
                 },
             });
         }
