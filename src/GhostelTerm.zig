@@ -31,18 +31,6 @@ stream: gt.Stream(GhostelHandler),
 /// Reusable and dynamically growing buffer for VT writes.
 buffer: ?[]u8 = null,
 
-/// True iff the last byte of the previous `fnWriteInput` input was
-/// `\r`. Carries the bare-LF detection state across write-input calls
-/// so that a CR at the tail of one write and an LF at the head of the
-/// next don't get normalized into an extra `\r` (producing `\r\r\n`).
-///
-/// Named after the input stream rather than what was fed to libghostty
-/// because the two only differ in that the normalizer may insert a
-/// `\r` before a bare LF — it never drops or rewrites a trailing CR.
-/// Reset by `resize` since a reflow means the stream is effectively
-/// new.
-last_input_was_cr: bool = false,
-
 renderer: Renderer,
 
 /// Create a new terminal with the given dimensions and scrollback.
@@ -325,27 +313,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     env.signalError("Failed to extract string: %s", .{@errorName(err)});
                     return env.nil();
                 };
-                if (term.terminal.screens.active_key == .alternate) {
-                    term.vtWrite(raw);
-                    if (raw.len > 0) term.last_input_was_cr = raw[raw.len - 1] == '\r';
-                } else {
-                    var seg_start: usize = 0;
-                    var prev_was_cr: bool = term.last_input_was_cr;
-                    for (raw, 0..) |ch, i| {
-                        if (ch == '\n' and !prev_was_cr) {
-                            if (i > seg_start) term.vtWrite(raw[seg_start..i]);
-                            term.vtWrite("\r\n");
-                            seg_start = i + 1;
-                            prev_was_cr = false;
-                        } else {
-                            prev_was_cr = (ch == '\r');
-                        }
-                    }
-                    if (seg_start < raw.len) {
-                        term.vtWrite(raw[seg_start..]);
-                    }
-                    term.last_input_was_cr = prev_was_cr;
-                }
+                term.vtWrite(raw);
                 return env.nil();
             }
         },
