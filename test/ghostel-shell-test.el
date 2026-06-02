@@ -49,15 +49,19 @@ newest-first list aligns with the buffer-order regions."
       (push cwd ghostel--imenu-cwds))))
 
 (ert-deftest ghostel-test-shell-integration ()
-  "Test shell process with echo command."
+  "Test shell process command output and PTY echo."
   :tags '(native)
   (let ((buf (generate-new-buffer " *ghostel-test-shell*")))
     (unwind-protect
         (with-current-buffer buf
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 25 80 1000))
-          (let* ((process-environment
-                  (append (list "TERM=xterm-256color" "COLUMNS=80" "LINES=25")
+          (let* ((prompt "GHOSTEL_TEST_PROMPT>")
+                 (prompt-regexp (regexp-quote prompt))
+                 (process-environment
+                  (append (list "TERM=xterm-256color" "COLUMNS=80" "LINES=25"
+                                (concat "PROMPT=" prompt)
+                                (concat "PS1=" prompt))
                           process-environment))
                  (proc (make-process
                         :name "ghostel-test-sh"
@@ -71,14 +75,26 @@ newest-first list aligns with the buffer-order regions."
             (set-process-query-on-exit-flag proc nil)
             ;; Wait for shell init
             (ghostel-test--wait-for proc
-                                    (lambda () (ghostel--copy-all-text ghostel--term)) 10)
+                                    (lambda ()
+                                      (string-match-p prompt-regexp
+                                                      (or (ghostel--copy-all-text ghostel--term)
+                                                          "")))
+                                    10)
             (should (process-live-p proc))                ; shell process alive
 
-            ;; Run a command
-            (process-send-string proc "echo GHOSTEL_TEST_OK\n")
+            ;; Run a command and wait until the shell has printed the next
+            ;; prompt.  Matching only the command output races with the shell
+            ;; becoming ready for the following interactive input.  The quoted
+            ;; empty string keeps the echoed command from containing the exact
+            ;; output token.
+            (process-send-string proc "print -r -- GHOSTEL_''TEST_OK\n")
             (ghostel-test--wait-for proc
-                                    (lambda () (string-match-p "GHOSTEL_TEST_OK"
-                                                               (ghostel--copy-all-text ghostel--term))))
+                                    (lambda ()
+                                      (string-match-p
+                                       (concat "GHOSTEL_TEST_OK\\(?:.\\|\n\\)*"
+                                               prompt-regexp)
+                                       (or (ghostel--copy-all-text ghostel--term)
+                                           ""))))
             (let ((state (ghostel--copy-all-text ghostel--term)))
               (should (string-match-p "GHOSTEL_TEST_OK" state))) ; command output visible
 
