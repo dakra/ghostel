@@ -460,14 +460,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .impl = struct {
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
                 const filter = env.getUserPtr(Self, args[0]) orelse return error.InvalidComintFilter;
-                const data = env.extractStringAlloc(module_alloc, args[1], &filter.buffer) catch |err| {
-                    env.signalError("Failed to extract string: %s", .{@errorName(err)});
-                    return env.nil();
-                };
-                return filter.feed(env, data) catch |err| {
-                    env.signalError("comint filter failed: %s", .{@errorName(err)});
-                    return env.nil();
-                };
+                const data = try env.extractStringAlloc(module_alloc, args[1], &filter.buffer);
+                return try filter.feed(env, data);
             }
         },
     },
@@ -487,21 +481,13 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
                 const filter = env.getUserPtr(Self, args[0]) orelse return error.InvalidComintFilter;
                 var str_buf: [2048]u8 = undefined;
-                const colors_str = env.extractString(args[1], &str_buf) catch |err| {
-                    env.signalError("invalid palette string: %s", .{@errorName(err)});
-                    return env.nil();
-                };
+                const colors_str = try env.extractString(args[1], &str_buf);
+                if (colors_str.len < 16 * 7) return error.InvalidPaletteLength;
                 var palette16: [16]gt.color.RGB = @splat(.{});
                 var idx: usize = 0;
-                var pos: usize = 0;
-                while (idx < 16 and pos + 7 <= colors_str.len) {
-                    if (colors_str[pos] != '#') {
-                        pos += 1;
-                        continue;
-                    }
+                while (idx < 16) : (idx += 1) {
+                    const pos = idx * 7;
                     palette16[idx] = try parseHexColor(colors_str[pos .. pos + 7]);
-                    idx += 1;
-                    pos += 7;
                 }
                 filter.setPalette16(palette16);
                 return env.t();

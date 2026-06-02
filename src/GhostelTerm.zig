@@ -13,7 +13,6 @@ const input = @import("input.zig");
 const kitty_graphics = @import("kitty_graphics.zig");
 const utils = @import("utils.zig");
 const parseHexColor = utils.parseHexColor;
-const parseHexByte = utils.parseHexByte;
 
 const Self = @This();
 
@@ -271,6 +270,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 effects.title_changed = &titleChangedCallback;
                 effects.size = &sizeCallback;
                 const term = try init(module_alloc, cols, rows, max_scrollback, effects);
+                errdefer term.deinit();
                 // Set default colors (light gray on black)
                 term.setColorForeground(.{ .r = 204, .g = 204, .b = 204 });
                 term.setColorBackground(.{ .r = 0, .g = 0, .b = 0 });
@@ -298,10 +298,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .impl = struct {
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
-                const raw = env.extractStringAlloc(module_alloc, args[1], &term.buffer) catch |err| {
-                    env.signalError("Failed to extract string: %s", .{@errorName(err)});
-                    return env.nil();
-                };
+                const raw = try env.extractStringAlloc(module_alloc, args[1], &term.buffer);
                 term.vtWrite(raw);
                 return env.nil();
             }
@@ -473,8 +470,6 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 gt.input.encodeFocus(&writer, event) catch return env.nil();
                 const encoded = writer.buffered();
                 if (encoded.len == 0) return env.nil();
-                emacs.current_env = env;
-                defer emacs.current_env = null;
                 _ = env.f("ghostel--flush-output", .{encoded});
                 return env.t();
             }
@@ -493,32 +488,12 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
                 var str_buf: [2048]u8 = undefined;
                 const colors_str = try env.extractString(args[1], &str_buf);
+                if (colors_str.len < 16 * 7) return error.InvalidPaletteLength;
                 var palette = term.terminal.colors.palette.current;
                 var idx: usize = 0;
-                var pos: usize = 0;
-                while (idx < 16 and pos + 7 <= colors_str.len) {
-                    if (colors_str[pos] != '#') {
-                        pos += 1;
-                        continue;
-                    }
-                    const r = parseHexByte(colors_str[pos + 1], colors_str[pos + 2]) catch {
-                        pos += 7;
-                        idx += 1;
-                        continue;
-                    };
-                    const g = parseHexByte(colors_str[pos + 3], colors_str[pos + 4]) catch {
-                        pos += 7;
-                        idx += 1;
-                        continue;
-                    };
-                    const b = parseHexByte(colors_str[pos + 5], colors_str[pos + 6]) catch {
-                        pos += 7;
-                        idx += 1;
-                        continue;
-                    };
-                    palette[idx] = .{ .r = r, .g = g, .b = b };
-                    idx += 1;
-                    pos += 7;
+                while (idx < 16) : (idx += 1) {
+                    const pos = idx * 7;
+                    palette[idx] = try parseHexColor(colors_str[pos .. pos + 7]);
                 }
                 term.setColorPalette(palette);
                 return env.t();
@@ -620,7 +595,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         ,
         .impl = struct {
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
-                const term = env.getUserPtr(Self, args[0]) orelse return env.nil();
+                const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
                 const options = gt.formatter.Options{
                     .emit = .plain,
                     .unwrap = true,
@@ -629,10 +604,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 var formatter = gt.formatter.TerminalFormatter.init(&term.terminal, options);
                 var writer = std.io.Writer.Allocating.init(module_alloc);
                 defer writer.deinit();
-                formatter.format(&writer.writer) catch {
-                    env.signalError("formatter failed", .{});
-                    return env.nil();
-                };
+                try formatter.format(&writer.writer);
                 const written = writer.written();
                 if (written.len == 0) return env.nil();
                 return env.makeString(written);
