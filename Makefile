@@ -11,9 +11,16 @@ EVIL_DIR       ?= $(XDG_CACHE_HOME)/evil
 LINT_ELPA_DIR  ?= $(XDG_CACHE_HOME)/ghostel-lint-elpa
 LINT_DEPS_STAMP := $(LINT_ELPA_DIR)/.deps-installed
 
-ELC := lisp/ghostel.elc lisp/ghostel-debug.elc lisp/ghostel-compile.elc \
-       lisp/ghostel-eshell.elc lisp/ghostel-comint.elc \
-       extensions/evil-ghostel/evil-ghostel.elc
+ELISP_FILES := $(filter-out %-autoloads.el,$(wildcard lisp/ghostel*.el) \
+                                      $(wildcard extensions/evil-ghostel/*.el))
+PACKAGE_FILES := $(shell grep -l '^;; Package-Requires:' $(ELISP_FILES) 2>/dev/null)
+CORE_PACKAGE_FILE := $(firstword $(filter lisp/%,$(PACKAGE_FILES)))
+ELISP := $(CORE_PACKAGE_FILE) $(filter-out $(CORE_PACKAGE_FILE),$(ELISP_FILES))
+ELC := $(patsubst %.el,%.elc,$(ELISP))
+
+CHECKDOC_FILES = $(ELISP) $(sort $(wildcard test/*-test-helpers.el)) $(TEST_FILES)
+DOCQUOTE_FILES = $(ELISP)
+elisp-string-list = $(foreach f,$(1),\"$(f)\")
 
 # Native module artifact (kept in sync with `clean').  Listed as a real
 # file so the per-test stamp rules depend on its mtime instead of on the
@@ -112,32 +119,31 @@ lint: byte-compile package-lint checkdoc docquotes
 # the linter itself, and a resolvable `ghostel' package.
 # Provision both into an isolated `package-user-dir'
 # so `make package-lint' runs standalone.
-$(LINT_DEPS_STAMP):
+$(LINT_DEPS_STAMP): $(CORE_PACKAGE_FILE)
 	$(EMACS) --batch $(EMACSFLAGS) -Q \
 		--eval "(setq package-user-dir \"$(LINT_ELPA_DIR)\")" \
 		--eval "(package-initialize)" \
 		--eval "(package-refresh-contents)" \
 		--eval "(package-install 'package-lint)" \
-		--eval "(package-install-file (expand-file-name \"lisp/ghostel.el\"))"
+		--eval "(package-install-file (expand-file-name \"$(CORE_PACKAGE_FILE)\"))"
 	@touch $@
 
-package-lint: $(LINT_DEPS_STAMP)
-	$(EMACS) --batch $(EMACSFLAGS) -Q \
+package-lint: $(LINT_DEPS_STAMP) $(PACKAGE_FILES)
+	$(EMACS) --batch $(EMACSFLAGS) -Q -L lisp \
 		--eval "(setq package-user-dir \"$(LINT_ELPA_DIR)\")" \
 		--eval "(package-initialize)" \
 		--eval "(require 'package-lint)" \
 		-f package-lint-batch-and-exit \
-		lisp/ghostel.el extensions/evil-ghostel/evil-ghostel.el
+		$(PACKAGE_FILES)
 
-checkdoc:
+checkdoc: $(CHECKDOC_FILES)
 	$(EMACS) --batch $(EMACSFLAGS) -Q \
 		--eval "(require 'checkdoc)" \
 		--eval "(let ((sentence-end-double-space nil) \
 		              (checkdoc-proper-noun-list nil) \
 		              (checkdoc-verb-check-experimental-flag nil) \
 		              (ok t)) \
-		  (dolist (f (append '(\"lisp/ghostel.el\" \"lisp/ghostel-debug.el\" \"lisp/ghostel-compile.el\" \"lisp/ghostel-eshell.el\" \"lisp/ghostel-comint.el\" \"extensions/evil-ghostel/evil-ghostel.el\" \"test/ghostel-test-helpers.el\") \
-		                     (file-expand-wildcards \"test/ghostel-*-test.el\"))) \
+		  (dolist (f '($(call elisp-string-list,$(CHECKDOC_FILES)))) \
 		    (ignore-errors (kill-buffer \"*Warnings*\")) \
 		    (let ((inhibit-message t)) \
 		      (checkdoc-file f)) \
@@ -151,10 +157,10 @@ checkdoc:
 # elisp symbols" check, widened to also catch identifiers with
 # underscores like INSIDE_EMACS — env-var and macro-style names that
 # melpazoid's stricter [A-Z]+ regex skips.
-docquotes:
+docquotes: $(DOCQUOTE_FILES)
 	$(EMACS) --batch $(EMACSFLAGS) -Q \
 		--eval "(let ((ok t)) \
-		  (dolist (f '(\"lisp/ghostel.el\" \"lisp/ghostel-debug.el\" \"lisp/ghostel-compile.el\" \"lisp/ghostel-eshell.el\" \"lisp/ghostel-comint.el\" \"extensions/evil-ghostel/evil-ghostel.el\")) \
+		  (dolist (f '($(call elisp-string-list,$(DOCQUOTE_FILES)))) \
 		    (with-temp-buffer \
 		      (insert-file-contents f) \
 		      (setq case-fold-search nil) \
