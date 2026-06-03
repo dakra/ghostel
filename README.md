@@ -885,6 +885,32 @@ When `evil-ghostel-mode` is active:
 - Cursor shape follows evil state (block for normal, bar for insert)
 - Alt-screen programs (vim, less, htop) are unaffected
 
+## Emacs Lisp input methods
+
+Some Emacs Lisp input methods — `hangul-input-method` is the common
+example — commit text by inserting it into the current buffer instead
+of returning key events.  Inside a ghostel buffer that insert lands in
+the buffer but is never sent to the PTY, so the next redraw erases it.
+
+`ghostel-ime-mode` is an optional minor mode that wraps
+`input-method-function` locally.  When the input method commits by
+buffer insertion it forwards the committed text to the PTY as UTF-8 and
+lets the shell echo it back through the normal redraw path.  While a
+Quail-style composition is in flight it also asks ghostel to defer
+redraws (via `ghostel-inhibit-redraw-functions`) so the renderer does
+not rewrite the buffer mid-composition.  GUI native preedit handling is
+unaffected.
+
+```elisp
+(use-package ghostel-ime
+  :ensure nil
+  :after ghostel
+  :hook (ghostel-mode . ghostel-ime-mode))
+```
+
+This generalizes to any Lisp input method that uses `quail-overlay`
+(Korean Hangul, Japanese, Chinese, …).
+
 ## Commands
 
 | Command                        | Description                                  |

@@ -293,6 +293,16 @@ When `ghostel-adaptive-fps' is non-nil, this serves as the base
 delay between frames during sustained output."
   :type 'number)
 
+(defcustom ghostel-inhibit-redraw-functions nil
+  "Abnormal hook run before a ghostel buffer redraw.
+Each function is called with the buffer as its sole argument, with
+that buffer current.  If any function returns non-nil, the redraw
+is deferred and rescheduled.  Errors are demoted and treated as nil.
+Add-on features can use this to keep core ghostel from rewriting the
+buffer during transient states such as Emacs Lisp input-method
+composition."
+  :type 'hook)
+
 (defcustom ghostel-adaptive-fps t
   "Use adaptive frame rate for terminal redraw.
 When non-nil, use a shorter initial delay for responsive interactive
@@ -5996,6 +6006,18 @@ vscroll if there are more rows than can fit into the window."
         (set-window-point window (or ghostel--cursor-char-pos
                                      (point-max)))))))
 
+(defun ghostel--maybe-defer-redraw (buffer)
+  "Defer BUFFER's redraw if a `ghostel-inhibit-redraw-functions' hook asks.
+Return non-nil when deferred, after rescheduling `ghostel--redraw-now'
+for BUFFER; return nil to let the redraw proceed."
+  (when (with-demoted-errors "ghostel-inhibit-redraw-functions error: %S"
+          (run-hook-with-args-until-success
+           'ghostel-inhibit-redraw-functions buffer))
+    (setq ghostel--redraw-timer
+          (run-with-timer ghostel-timer-delay nil
+                          #'ghostel--redraw-now buffer))
+    t))
+
 (defun ghostel--redraw-now (buffer)
   "Perform the actual redraw in BUFFER.
 Flushes pending PTY output and runs the native renderer.  The
@@ -6007,7 +6029,9 @@ live viewport."
       (when ghostel--redraw-timer
         (cancel-timer ghostel--redraw-timer)
         (setq ghostel--redraw-timer nil))
-      (when (and ghostel--term (ghostel--terminal-live-p))
+      (when (and ghostel--term
+                 (ghostel--terminal-live-p)
+                 (not (ghostel--maybe-defer-redraw buffer)))
         ;; Skip during synchronized output unless forced by scroll/resize.
         (unless (and (not ghostel--force-next-redraw)
                      (ghostel--mode-enabled ghostel--term 2026))
