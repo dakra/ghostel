@@ -5636,12 +5636,7 @@ the redraw is performed immediately to minimize typing latency."
                  (< (float-time (time-subtract (current-time)
                                                ghostel--last-send-time))
                     ghostel-immediate-redraw-interval))
-            (progn
-              ;; Cancel pending timer — we're drawing now.
-              (when ghostel--redraw-timer
-                (cancel-timer ghostel--redraw-timer)
-                (setq ghostel--redraw-timer nil))
-              (ghostel--redraw-now (current-buffer)))
+            (ghostel--redraw-now (current-buffer))
           ;; Bulk output: schedule a later redraw.
           (ghostel--invalidate))))))
 
@@ -6409,7 +6404,9 @@ mutations; this function anchors windows that were following the
 live viewport."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (setq ghostel--redraw-timer nil)
+      (when ghostel--redraw-timer
+        (cancel-timer ghostel--redraw-timer)
+        (setq ghostel--redraw-timer nil))
       (when (and ghostel--term (ghostel--terminal-live-p))
         ;; Skip during synchronized output unless forced by scroll/resize.
         (unless (and (not ghostel--force-next-redraw)
@@ -6470,9 +6467,6 @@ live viewport."
 Cancels any pending redraw timer and schedules an immediate one.
 Requires the buffer to be visible in a window; has no effect otherwise."
   (interactive)
-  (when ghostel--redraw-timer
-    (cancel-timer ghostel--redraw-timer)
-    (setq ghostel--redraw-timer nil))
   (ghostel--redraw-now (current-buffer)))
 
 
@@ -6561,9 +6555,6 @@ PROCESS is the shell process, WINDOWS is the list of windows."
             (setq ghostel--force-next-redraw t)
             ;; Redraw synchronously so the buffer is updated before
             ;; Emacs displays the stale content at the new window size.
-            (when ghostel--redraw-timer
-              (cancel-timer ghostel--redraw-timer)
-              (setq ghostel--redraw-timer nil))
             (ghostel--redraw-now buffer))))))
     ;; Return size — Emacs calls set-process-window-size (SIGWINCH)
     ;; after this function returns.  nil suppresses the call.
