@@ -1734,7 +1734,7 @@ the buffer is either read-only or consumes keys locally."
   "Non-nil when live output is propagated into the Emacs buffer.
 False only in copy mode, which freezes the terminal entirely.
 Line mode keeps redrawing — the snapshot/restore path in
-`ghostel--delayed-redraw' preserves the user's in-progress input
+`ghostel--redraw-now' preserves the user's in-progress input
 across the rewrite."
   (not (eq ghostel--input-mode 'copy)))
 
@@ -3565,7 +3565,7 @@ executes it normally.
 
 The terminal stays live: output streaming in around the prompt
 keeps rendering, and the snapshot/restore path in
-`ghostel--delayed-redraw' preserves the user's in-progress input
+`ghostel--redraw-now' preserves the user's in-progress input
 across each redraw cycle.  After RET, line mode stays active so
 the user just keeps editing at the next prompt.
 
@@ -3659,7 +3659,7 @@ When PAUSE is non-nil, skip forwarding pending input to the PTY,
 skip the readline-clearing backspaces (the alt-screen TUI would
 receive them), and skip the trailing redraw — used by
 `ghostel--line-mode-pause' which has already snapshotted the input
-and is running inside `ghostel--delayed-redraw'."
+and is running inside `ghostel--redraw-now'."
   (unless pause
     (let ((input (ghostel--line-mode-input-text)))
       ;; Erase the adopted prefix from the shell's readline before
@@ -3743,7 +3743,7 @@ input captured by an earlier auto-pause)."
 
 (defun ghostel--line-mode-pre-redraw ()
   "Pause line mode if alt-screen is on while in line mode.
-Runs at the top of `ghostel--delayed-redraw' after process output has
+Runs at the top of `ghostel--redraw-now' after process output has
 already been fed to the terminal, but before the renderer paints.
 Pausing here lets us snapshot the
 in-progress input before libghostty's grid (which does not contain
@@ -3756,7 +3756,7 @@ fall through — there is no need for an explicit transition cache."
 
 (defun ghostel--line-mode-post-redraw ()
   "Resume line mode if alt-screen is off and a paused snapshot is armed.
-Runs at the bottom of `ghostel--delayed-redraw' (after the renderer
+Runs at the bottom of `ghostel--redraw-now' (after the renderer
 paints) so `ghostel-input-start-point' sees the
 post-TUI buffer state.  Re-attempts every redraw cycle until a
 prompt is locatable — covers the case where the shell prints its
@@ -5074,7 +5074,7 @@ edge, so we no-op."
 
 (defun ghostel--detect-password-prompt ()
   "Update `ghostel--password-mode-p' and arm the confirm timer.
-Called from `ghostel--delayed-redraw' once the buffer reflects the
+Called from `ghostel--redraw-now' once the buffer reflects the
 latest output.  No-op when `ghostel-detect-password-prompts' is nil
 \(e.g. ghostel-compile buffers, which run the pty in `canonical+!echo'
 on purpose).  Suppresses re-fires while the cursor is still on the
@@ -5557,7 +5557,7 @@ Call this after changing the Emacs theme so terminals match."
         (ghostel--apply-bold-config ghostel--term)
         (when (ghostel--terminal-live-p)
           (setq ghostel--force-next-redraw t)
-          (ghostel--delayed-redraw buf))))))
+          (ghostel--redraw-now buf))))))
 
 (defun ghostel--on-theme-change (&rest _args)
   "Hook function to sync terminal colors after theme change."
@@ -5641,7 +5641,7 @@ the redraw is performed immediately to minimize typing latency."
               (when ghostel--redraw-timer
                 (cancel-timer ghostel--redraw-timer)
                 (setq ghostel--redraw-timer nil))
-              (ghostel--delayed-redraw (current-buffer)))
+              (ghostel--redraw-now (current-buffer)))
           ;; Bulk output: schedule a later redraw.
           (ghostel--invalidate))))))
 
@@ -6317,7 +6317,7 @@ frame after idle to improve interactive responsiveness."
       (setq ghostel--last-output-time (current-time))
       (setq ghostel--redraw-timer
             (run-with-timer delay nil
-                            #'ghostel--delayed-redraw
+                            #'ghostel--redraw-now
                             (current-buffer))))))
 
 (defun ghostel--query-font-cached (font)
@@ -6401,7 +6401,7 @@ vscroll if there are more rows than can fit into the window."
         (set-window-point window (or ghostel--cursor-char-pos
                                      (point-max)))))))
 
-(defun ghostel--delayed-redraw (buffer)
+(defun ghostel--redraw-now (buffer)
   "Perform the actual redraw in BUFFER.
 Flushes pending PTY output and runs the native renderer.  The
 renderer preserves buffer positions while applying terminal
@@ -6473,7 +6473,7 @@ Requires the buffer to be visible in a window; has no effect otherwise."
   (when ghostel--redraw-timer
     (cancel-timer ghostel--redraw-timer)
     (setq ghostel--redraw-timer nil))
-  (ghostel--delayed-redraw (current-buffer)))
+  (ghostel--redraw-now (current-buffer)))
 
 
 ;;; Window resize
@@ -6564,7 +6564,7 @@ PROCESS is the shell process, WINDOWS is the list of windows."
             (when ghostel--redraw-timer
               (cancel-timer ghostel--redraw-timer)
               (setq ghostel--redraw-timer nil))
-            (ghostel--delayed-redraw buffer))))))
+            (ghostel--redraw-now buffer))))))
     ;; Return size — Emacs calls set-process-window-size (SIGWINCH)
     ;; after this function returns.  nil suppresses the call.
     size))

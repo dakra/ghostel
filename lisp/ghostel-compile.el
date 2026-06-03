@@ -330,7 +330,7 @@ cursor one row and would stack the lines diagonally."
     (when ghostel--redraw-timer
       (cancel-timer ghostel--redraw-timer)
       (setq ghostel--redraw-timer nil))
-    (ghostel--delayed-redraw (current-buffer))))
+    (ghostel--redraw-now (current-buffer))))
 
 (defun ghostel-compile--finalize (buffer exit end-time)
   "Insert header/footer, parse errors, switch major mode for BUFFER.
@@ -454,7 +454,7 @@ same as in any compilation buffer."
             (when ghostel--redraw-timer
               (cancel-timer ghostel--redraw-timer)
               (setq ghostel--redraw-timer nil))
-            (ghostel--delayed-redraw buffer))
+            (ghostel--redraw-now buffer))
           (setq compilation-in-progress
                 (delq process compilation-in-progress))
           (when (fboundp 'compilation--update-in-progress-mode-line)

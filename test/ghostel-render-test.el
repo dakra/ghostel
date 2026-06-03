@@ -729,7 +729,7 @@ and typed text was invisible."
         (redraw-calls nil))
     (cl-letf (((symbol-function 'ghostel--apply-palette)
                (lambda (term) (push term palette-calls)))
-              ((symbol-function 'ghostel--delayed-redraw)
+              ((symbol-function 'ghostel--redraw-now)
                (lambda (buf) (push buf redraw-calls))))
       (let ((buf (generate-new-buffer " *ghostel-test-theme*"))
             (other (generate-new-buffer " *ghostel-test-other*")))
@@ -1507,9 +1507,9 @@ for new size inside BSU/ESU → verify buffer shows new content."
               (ghostel--write-input term (format "\e[%d;1HNEW-LINE-%02d" (1+ i) i)))
             (ghostel--write-input term "\e[?2026l")     ; ESU
 
-            ;; 4) Simulate what ghostel--delayed-redraw does:
+            ;; 4) Simulate what ghostel--redraw-now does:
             ;;    check BSU gate, flush, redraw.
-            (ghostel--delayed-redraw buf)
+            (ghostel--redraw-now buf)
 
             ;; 5) Verify: buffer must show NEW content, not OLD.
             (let ((content (buffer-substring-no-properties (point-min) (point-max))))
@@ -1564,7 +1564,7 @@ app redraws all rows at new width via the filter pipeline."
                                     (lambda (i) (format "\e[%d;1HNARROW-R%02d" (1+ i) i))
                                     (number-sequence 0 5) ""))))
                     (ghostel--filter proc response))
-                  (ghostel--delayed-redraw buf)
+                  (ghostel--redraw-now buf)
 
                   (let ((content (buffer-substring-no-properties (point-min) (point-max))))
                     ;; All rows must have new narrow content.
@@ -1584,7 +1584,7 @@ app redraws all rows at new width via the filter pipeline."
 (ert-deftest ghostel-test-resize-through-filter-pipeline ()
   "Full pipeline test: resize, then app response goes through filter path.
 The app's output enters the terminal via `ghostel--filter' and is
-rendered by `ghostel--delayed-redraw'.  This is the exact real-world path."
+rendered by `ghostel--redraw-now'.  This is the exact real-world path."
   :tags '(native)
   (let ((buf (generate-new-buffer " *ghostel-test-pipeline*")))
     (unwind-protect
@@ -1636,7 +1636,7 @@ rendered by `ghostel--delayed-redraw'.  This is the exact real-world path."
                     (ghostel--filter proc response))
 
                   ;; Now call delayed-redraw (as the timer would).
-                  (ghostel--delayed-redraw buf)
+                  (ghostel--redraw-now buf)
 
                   (let ((content (buffer-substring-no-properties (point-min) (point-max))))
                     (should (string-match-p "NEW-00" content))
@@ -1652,7 +1652,7 @@ rendered by `ghostel--delayed-redraw'.  This is the exact real-world path."
 ;;; Delayed redraw and hidden buffers
 
 (ert-deftest ghostel-test-delayed-redraw-skips-native-redraw-without-window ()
-  "When the buffer has no window, `ghostel--delayed-redraw' must not call \
+  "When the buffer has no window, `ghostel--redraw-now' must not call \
 `ghostel--redraw'."
   (let ((buf (generate-new-buffer " *ghostel-test-no-window-redraw*"))
         (ghostel-detect-password-prompts nil))
@@ -1668,7 +1668,7 @@ rendered by `ghostel--delayed-redraw'.  This is the exact real-world path."
                        (lambda (&rest _) nil))
                       ((symbol-function 'ghostel--redraw)
                        (lambda (&rest _) (setq redraw-called t))))
-              (ghostel--delayed-redraw buf)
+              (ghostel--redraw-now buf)
               (should-not redraw-called))))
       (kill-buffer buf))))
 

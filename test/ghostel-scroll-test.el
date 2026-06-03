@@ -118,7 +118,7 @@ SPEC is (BUFFER TERM ANCHORED-WINDOW HISTORY-WINDOW)."
 																					  (let ((history-start-before (window-start history))
 								    (history-point-before (window-point history)))
 							  (ghostel--write-input term "extra\r\n")
-							  (ghostel--delayed-redraw buf)
+							  (ghostel--redraw-now buf)
 							  (should (ghostel-test-scroll--bottom-visible-p anchored))
 							  (should (= history-start-before (window-start history)))
 							  (should (= history-point-before (window-point history)))
@@ -133,7 +133,7 @@ SPEC is (BUFFER TERM ANCHORED-WINDOW HISTORY-WINDOW)."
 							  (ghostel--set-size term 6 40)
 							  (setq ghostel--term-rows 6)
 							  (setq ghostel--force-next-redraw t)
-							  (ghostel--delayed-redraw buf)
+							  (ghostel--redraw-now buf)
 							  (should (ghostel-test-scroll--bottom-visible-p anchored))
 							  (should (= history-start-before (window-start history)))
 							  (should (= history-point-before (window-point history)))
@@ -203,10 +203,10 @@ SPEC is (BUFFER TERM ANCHORED-WINDOW HISTORY-WINDOW)."
 					(line-beginning-position))))
 	    (set-window-start (selected-window) target-a t)
 	    (set-window-point (selected-window) target-a)
-	    (ghostel--delayed-redraw buf)
+	    (ghostel--redraw-now buf)
 	    (set-window-start (selected-window) target-b t)
 	    (set-window-point (selected-window) target-b)
-	    (ghostel--delayed-redraw buf)
+	    (ghostel--redraw-now buf)
 	    (should (= target-b (window-start)))
 	    (should (= target-b (window-point))))))
 
@@ -251,7 +251,7 @@ not enough; the pixel offset must also be cleared."
                        (lambda (win vscroll &optional pixels-p &rest _)
                          (should (eq pixels-p t))
                          (puthash win vscroll vscroll-by-window))))
-              (ghostel--delayed-redraw buf))
+              (ghostel--redraw-now buf))
             (should (= 0 (gethash (selected-window) vscroll-by-window)))))
       (when (buffer-live-p orig-buf)
         (set-window-buffer (selected-window) orig-buf))
@@ -259,7 +259,7 @@ not enough; the pixel offset must also be cleared."
 
 (ert-deftest ghostel-test-redraw-resets-vscroll-all-windows ()
   "Redraw resets `window-vscroll' on every window showing the buffer.
-`ghostel--delayed-redraw' iterates `get-buffer-window-list' so both
+`ghostel--redraw-now' iterates `get-buffer-window-list' so both
 windows must be anchored."
   :tags '(native)
   (let ((buf (generate-new-buffer " *ghostel-test-vscroll-multi*"))
@@ -297,7 +297,7 @@ windows must be anchored."
                          (lambda (win vscroll &optional pixels-p &rest _)
                            (should (eq pixels-p t))
                            (puthash win vscroll vscroll-by-window))))
-                (ghostel--delayed-redraw buf))
+                (ghostel--redraw-now buf))
               (should (= 0 (gethash w1 vscroll-by-window)))
               (should (= 0 (gethash w2 vscroll-by-window))))))
       (set-window-configuration orig-config)
@@ -332,7 +332,7 @@ a user reading history should not be pulled around by live redraws."
                         (line-beginning-position))))
               (set-window-start (selected-window) vp t))
             (setq ghostel--force-next-redraw t)
-            (ghostel--delayed-redraw buf)
+            (ghostel--redraw-now buf)
             ;; Simulate the user scrolling into scrollback: both
             ;; window-start and point move above the viewport (that's
             ;; what real Emacs scrollers — pixel-scroll-precision,
@@ -342,7 +342,7 @@ a user reading history should not be pulled around by live redraws."
             (set-window-start (selected-window) (point-min) t)
             (cl-letf (((symbol-function 'set-window-vscroll)
                        (lambda (&rest _) (setq vscroll-called t))))
-              (ghostel--delayed-redraw buf))
+              (ghostel--redraw-now buf))
             (should-not vscroll-called)))
       (when (buffer-live-p orig-buf)
         (set-window-buffer (selected-window) orig-buf))
@@ -377,7 +377,7 @@ anchored because the window is at the viewport) must update it."
             ;; Simulate OSC 52;e leaving window-point stale.
             (set-window-point (selected-window) (point-min))
             (setq ghostel--force-next-redraw t)
-            (ghostel--delayed-redraw buf)
+            (ghostel--redraw-now buf)
             ;; Anchored window's window-point follows the cursor
             ;; (buffer-point after native redraw), not the stale value.
             (should (= (window-point (selected-window)) (point)))

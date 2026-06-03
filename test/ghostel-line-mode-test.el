@@ -35,7 +35,7 @@ native module."
 (ert-deftest ghostel-test-line-mode-live-redraws-preserve-input ()
   "Line mode redraws live; in-progress input survives via snapshot/restore.
 Output keeps streaming around the prompt while the user composes,
-and the snapshot/restore path in `ghostel--delayed-redraw' puts
+and the snapshot/restore path in `ghostel--redraw-now' puts
 the input region back after each redraw so the user's typing is
 not clobbered."
   :tags '(native)
@@ -62,7 +62,7 @@ not clobbered."
       ;; prompt.
       (ghostel--write-input term
                             "ls\r\nfile1\r\n\e]133;A\e\\$ \e]133;B\e\\")
-      (ghostel--delayed-redraw buf)
+      (ghostel--redraw-now buf)
       ;; Input is still there.
       (should (equal (ghostel--line-mode-input-text) "ls"))
       ;; New output is in the buffer.

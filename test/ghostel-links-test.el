@@ -490,7 +490,7 @@ row.  Navigation should land on the link only once, not on each chunk."
               (set-window-buffer (selected-window) buf)
               (let ((inhibit-read-only t))
                 (insert "see https://example.com here\n"))
-              (ghostel--delayed-redraw buf)
+              (ghostel--redraw-now buf)
               (goto-char (point-min))
               (let* ((url "https://example.com")
                      (url-end (search-forward url nil t))
@@ -539,11 +539,11 @@ row.  Navigation should land on the link only once, not on each chunk."
               (set-window-buffer (selected-window) buf)
               (let ((inhibit-read-only t))
                 (insert "first https://first.example\n"))
-              (ghostel--delayed-redraw buf)
+              (ghostel--redraw-now buf)
               (let ((inhibit-read-only t))
                 (goto-char (point-max))
                 (insert "second https://second.example\n"))
-              (ghostel--delayed-redraw buf)
+              (ghostel--redraw-now buf)
               (goto-char (point-min))
               (let* ((first-url "https://first.example")
                      (first-end (search-forward first-url nil t))
@@ -837,7 +837,7 @@ attached."
             (ghostel--write-input term "see https://example.com here\r\n")
             ;; Run the supported redraw path; zero delay keeps the deferred
             ;; post-processing deterministic while still exercising it.
-            (ghostel--delayed-redraw buf)
+            (ghostel--redraw-now buf)
             ;; Sanity: delayed plain-link detection applied a help-echo while
             ;; the row is visible.
             (goto-char (point-min))
@@ -847,7 +847,7 @@ attached."
                              (get-text-property (- url-pos 19) 'help-echo))))
             ;; Now scroll the URL row off the active screen.
             (dotimes (_ 6) (ghostel--write-input term "filler\r\n"))
-            (ghostel--delayed-redraw buf)
+            (ghostel--redraw-now buf)
             ;; The URL row now lives in the scrollback region of the buffer.
             (goto-char (point-min))
             (let ((url-pos (search-forward "https://example.com" nil t)))

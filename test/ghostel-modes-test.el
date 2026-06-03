@@ -32,7 +32,7 @@ unlike semi-char mode where it tracks the terminal cursor."
       (dotimes (i 5)
         (ghostel--write-input term
                               (format "new-%02d\r\n" i)))
-      (ghostel--delayed-redraw buf)
+      (ghostel--redraw-now buf)
       ;; Point still at point-min — emacs mode preserved it.
       (should (= (point) mark)))
     ;; New rows are visible in the buffer.
@@ -41,7 +41,7 @@ unlike semi-char mode where it tracks the terminal cursor."
       (should (string-match-p "new-04" content)))))
 
 (ert-deftest ghostel-test-copy-mode-freezes-redraws ()
-  "In copy mode, `ghostel--delayed-redraw' is a no-op."
+  "In copy mode, `ghostel--redraw-now' is a no-op."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (buf term 5 80 1000)
     (dotimes (i 3)
@@ -57,7 +57,7 @@ unlike semi-char mode where it tracks the terminal cursor."
       (dotimes (i 3)
         (ghostel--write-input term
                               (format "frozen-%d\r\n" i)))
-      (ghostel--delayed-redraw buf)
+      (ghostel--redraw-now buf)
       ;; Buffer is unchanged — copy mode gated the redraw.
       (should (equal snapshot
                      (buffer-substring-no-properties

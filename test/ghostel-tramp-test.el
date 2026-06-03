@@ -839,7 +839,7 @@ while :; do sleep 0.1; done'\n")
             (let ((ghostel--term 'fake-term))
               (cl-letf (((symbol-function 'ghostel--set-size-with-cell-dims)
                          (lambda (_t _h _w) nil))
-                        ((symbol-function 'ghostel--delayed-redraw) #'ignore)
+                        ((symbol-function 'ghostel--redraw-now) #'ignore)
                         ((default-value 'window-adjust-process-window-size-function)
                          (lambda (_p _w) (cons 120 30))))
                 ;; Invoke the handler as Emacs would.

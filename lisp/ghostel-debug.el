@@ -218,7 +218,7 @@ Logs filter calls, key sends, resize events, redraw decisions
   (advice-add 'ghostel--send-string :before #'ghostel-debug--log-send)
   (advice-add 'ghostel--send-encoded :before #'ghostel-debug--log-encoded)
   ;; Render path
-  (advice-add 'ghostel--delayed-redraw :around #'ghostel-debug--log-redraw)
+  (advice-add 'ghostel--redraw-now :around #'ghostel-debug--log-redraw)
   (advice-add 'ghostel--window-adjust-process-window-size
               :around #'ghostel-debug--log-resize)
   ;; Password-prompt rising edges (events stored in
@@ -236,7 +236,7 @@ Logs filter calls, key sends, resize events, redraw decisions
   (advice-remove 'ghostel--filter #'ghostel-debug--log-filter)
   (advice-remove 'ghostel--send-string #'ghostel-debug--log-send)
   (advice-remove 'ghostel--send-encoded #'ghostel-debug--log-encoded)
-  (advice-remove 'ghostel--delayed-redraw #'ghostel-debug--log-redraw)
+  (advice-remove 'ghostel--redraw-now #'ghostel-debug--log-redraw)
   (advice-remove 'ghostel--window-adjust-process-window-size
                  #'ghostel-debug--log-resize)
   (advice-remove 'ghostel--detect-password-prompt
@@ -332,7 +332,7 @@ computed viewport-start, and per-window ws/we/wp/body-height."
 
 (defun ghostel-debug--log-redraw (orig-fn buffer)
   "Log redraw decisions: skip vs execute, DEC 2026 state, timing.
-ORIG-FN is `ghostel--delayed-redraw', BUFFER is the target buffer."
+ORIG-FN is `ghostel--redraw-now', BUFFER is the target buffer."
   (when ghostel-debug--log-buffer
     (let ((before (ghostel-debug--snapshot buffer))
           (t0 (current-time)))
@@ -420,7 +420,7 @@ The latency breakdown shows:
       (insert (format "Type %d characters to collect measurements...\n\n" n)))
     (advice-add 'ghostel--send-string :before #'ghostel-debug--latency-on-send)
     (advice-add 'ghostel--filter :before #'ghostel-debug--latency-on-echo)
-    (advice-add 'ghostel--delayed-redraw :after #'ghostel-debug--latency-on-render)
+    (advice-add 'ghostel--redraw-now :after #'ghostel-debug--latency-on-render)
     (message "ghostel-debug: type %d characters to measure latency" n)))
 
 (defun ghostel-debug--latency-on-send (_key)
@@ -456,7 +456,7 @@ The latency breakdown shows:
   "Generate and display the latency report."
   (advice-remove 'ghostel--send-string #'ghostel-debug--latency-on-send)
   (advice-remove 'ghostel--filter #'ghostel-debug--latency-on-echo)
-  (advice-remove 'ghostel--delayed-redraw #'ghostel-debug--latency-on-render)
+  (advice-remove 'ghostel--redraw-now #'ghostel-debug--latency-on-render)
   (setq ghostel-debug--latency-active nil)
   (let* ((complete (cl-remove-if-not (lambda (e) (nth 2 e))
                                      ghostel-debug--latency-log))

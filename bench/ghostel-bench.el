@@ -9,7 +9,7 @@
 ;;
 ;;   * `e2e/*' — drives ghostel's *real* `ghostel-mode' pipeline:
 ;;     `ghostel--filter' → `ghostel--invalidate' →
-;;     `ghostel--delayed-redraw' → `ghostel--schedule-link-detection'
+;;     `ghostel--redraw-now' → `ghostel--schedule-link-detection'
 ;;     plus window anchoring and wide-char compensation.  Uses the
 ;;     same input source as `pty/*' (a real `cat' subprocess) but
 ;;     installs the production filter/sentinel and waits for full
@@ -292,7 +292,7 @@ The caller must call `delete-process' when done."
 ;;
 ;;   * `pty/*' uses a stripped-down filter that calls the native
 ;;     `ghostel--write-input' / `ghostel--redraw' directly, skipping
-;;     `ghostel--delayed-redraw' (link detection, anchoring, preedit,
+;;     `ghostel--redraw-now' (link detection, anchoring, preedit,
 ;;     wide-char compensation).
 ;;
 ;; Both connection types are `pipe' so the file's literal CRLF bytes
@@ -315,18 +315,18 @@ The caller must call `delete-process' when done."
 
 Installs the production `ghostel--filter' and `ghostel--sentinel' on a
 `cat' subprocess so output is routed through `ghostel--invalidate' and
-`ghostel--delayed-redraw' — the same code path a live shell drives.
+`ghostel--redraw-now' — the same code path a live shell drives.
 The buffer is attached to the selected window so window-anchoring,
-preedit, and wide-char paths in `ghostel--delayed-redraw' actually run.
+preedit, and wide-char paths in `ghostel--redraw-now' actually run.
 
 When DETECT-P is non-nil, plain-text URL and file:line detection runs
 post-redraw via `ghostel--schedule-link-detection'; the wall clock
 includes the link-detection timer firing.
 
 After cat exits, `ghostel--sentinel' flushes any pending output but
-cancels the redraw timer without firing `ghostel--delayed-redraw'
+cancels the redraw timer without firing `ghostel--redraw-now'
 \(production behavior: the user's next interaction triggers redraw).
-For benchmarking we explicitly drive one final `ghostel--delayed-redraw'
+For benchmarking we explicitly drive one final `ghostel--redraw-now'
 post-sentinel so the full pipeline — including link detection on the
 final batch — runs at least once per iteration.  This matches what
 `pty/*' does (a final redraw post-exit) and makes the e2e/pty delta
@@ -357,7 +357,7 @@ drive the post-exit timers."
                               (* ghostel-bench-scrollback 1024)))
           (setq ghostel--term-rows rows ghostel--term-cols cols)
           ;; Display the buffer in a window so anchoring / wide-char paths
-          ;; in `ghostel--delayed-redraw' have a window to act on.  In
+          ;; in `ghostel--redraw-now' have a window to act on.  In
           ;; --batch this is a non-displaying terminal window, but
           ;; `get-buffer-window-list' still returns it.
           (when (window-live-p (selected-window))
@@ -382,7 +382,7 @@ drive the post-exit timers."
             ;; output to the native module but did not redraw).  This
             ;; mirrors `pty/*' and ensures link detection runs at least
             ;; once per iteration.
-            (ghostel--delayed-redraw buf)
+            (ghostel--redraw-now buf)
             ;; Drive timers until link detection drains.  After cat exits
             ;; there is no process to wake `accept-process-output', but
             ;; passing nil polls timers; `sit-for' would also work.
@@ -455,7 +455,7 @@ fired, the buffer is fully painted with no outstanding timers."
   "Run end-to-end benchmarks through each backend's real filter.
 
 For ghostel, exercises the full `ghostel-mode' pipeline including
-`ghostel--delayed-redraw' and link detection.  For vterm and eat,
+`ghostel--redraw-now' and link detection.  For vterm and eat,
 exercises their production `*--filter' (decode loop, control-seq
 split or output queue, per-chunk update) — the per-chunk lisp work
 the `pty/*' harness skips, for fair comparison.  `term' installs
