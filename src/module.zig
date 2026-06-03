@@ -6,11 +6,14 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
+
+const gt = @import("ghostty-vt");
+
 const emacs = @import("emacs.zig");
 const ComintFilter = @import("comint_filter.zig");
 const GhostelTerm = @import("GhostelTerm.zig");
-const sys = @import("sys.zig");
 const pty = @import("pty.zig");
+const png = @import("png.zig");
 
 const c = emacs.c;
 
@@ -52,8 +55,7 @@ export fn emacs_module_init(runtime: *c.struct_emacs_runtime) callconv(.c) c_int
     ComintFilter.initModule(alloc, env);
     GhostelTerm.initModule(alloc, env);
 
-    // Install system callbacks (PNG decoder for kitty graphics, logging).
-    sys.init();
+    gt.sys.decode_png = &png.decode;
 
     _ = env.f("provide", .{emacs.sym.@"ghostel-module"});
     return 0;
