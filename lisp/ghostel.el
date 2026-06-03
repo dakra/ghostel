@@ -333,6 +333,21 @@ feedback and stop the timer entirely when idle.  When nil, use the
 fixed `ghostel-timer-delay' unconditionally."
   :type 'boolean)
 
+(defcustom ghostel-flood-redraw-delay 0.1
+  "Redraw delay in seconds during sustained high-throughput output.
+When output streams continuously faster than it can be rendered (a
+\"flood\", e.g. `cat huge.log'), redraws are throttled to this slower
+cadence instead of `ghostel-timer-delay'.  Intermediate frames during
+a flood scroll past faster than they can be read, and each one costs a
+full Emacs redisplay — the dominant cost of bulk output — so rendering
+fewer of them speeds the whole operation up without losing information
+\(the scrolled-off rows are evicted from the scrollback either way).
+
+A redraw still fires within this interval after output pauses, so the
+final screen state always appears promptly.  Set this equal to
+`ghostel-timer-delay' to disable flood throttling."
+  :type 'number)
+
 (defcustom ghostel-immediate-redraw-threshold 256
   "Maximum bytes of output to trigger an immediate redraw.
 When output arrives within `ghostel-immediate-redraw-interval'
@@ -6284,6 +6299,9 @@ on the remote host."
 (defvar-local ghostel--last-output-time nil
   "Time of the last process output, for adaptive frame rate.")
 
+(defvar-local ghostel--last-redraw-time nil
+  "Time of the last redraw, for flood detection in `ghostel--invalidate'.")
+
 (defun ghostel--get-render-window (buffer)
   "Return a live window showing BUFFER.
 Used as the reference window for determining graphics properties when
@@ -6297,19 +6315,33 @@ terminal windows."
 (defun ghostel--invalidate ()
   "Schedule a redraw after a short delay.
 With `ghostel-adaptive-fps', use a shorter delay for the first
-frame after idle to improve interactive responsiveness."
+frame after idle to improve interactive responsiveness.  During a
+sustained flood of output, throttle to `ghostel-flood-redraw-delay'
+to avoid rendering unreadable intermediate frames."
   (unless ghostel--redraw-timer
-    (let ((delay (if (and ghostel-adaptive-fps ghostel--last-output-time)
-                     (let ((idle-secs (float-time
-                                       (time-subtract (current-time)
-                                                      ghostel--last-output-time))))
-                       ;; If idle for more than 100ms, use a short delay
-                       ;; for snappy first-frame response.
-                       (if (> idle-secs 0.1)
-                           (min 0.016 ghostel-timer-delay)
-                         ghostel-timer-delay))
-                   ghostel-timer-delay)))
-      (setq ghostel--last-output-time (current-time))
+    (let* ((now (current-time))
+           ;; Seconds since the last completed redraw.  When output is
+           ;; streaming faster than we render, `ghostel--invalidate'
+           ;; runs again almost immediately after each redraw clears
+           ;; the timer, so this stays well under a frame.
+           (since-redraw (and ghostel--last-redraw-time
+                              (float-time
+                               (time-subtract now ghostel--last-redraw-time))))
+           (delay
+            (cond
+             ;; Flood: redraws happening back-to-back (within ~1.5 frames of the
+             ;; previous one).  Throttle; because each frame costs a full
+             ;; redisplay and scrolls past faster than it can be read.
+             ((and since-redraw
+                   (< since-redraw (* 1.5 ghostel-timer-delay)))
+              ghostel-flood-redraw-delay)
+             ;; Snappy first frame after idle.
+             ((and ghostel-adaptive-fps ghostel--last-output-time
+                   (> (float-time (time-subtract now ghostel--last-output-time))
+                      0.1))
+              (min 0.016 ghostel-timer-delay))
+             (t ghostel-timer-delay))))
+      (setq ghostel--last-output-time now)
       (setq ghostel--redraw-timer
             (run-with-timer delay nil
                             #'ghostel--redraw-now
@@ -6407,6 +6439,8 @@ live viewport."
       (when ghostel--redraw-timer
         (cancel-timer ghostel--redraw-timer)
         (setq ghostel--redraw-timer nil))
+      ;; Record redraw time for flood detection in `ghostel--invalidate'.
+      (setq ghostel--last-redraw-time (current-time))
       (when (and ghostel--term (ghostel--terminal-live-p))
         ;; Skip during synchronized output unless forced by scroll/resize.
         (unless (and (not ghostel--force-next-redraw)
