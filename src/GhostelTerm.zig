@@ -385,16 +385,6 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
                 const force_full = nargs > 1 and env.isNotNil(args[1]);
                 try term.renderer.redraw(term.alloc, env, force_full);
-                // Kitty placement queries report `viewport_row' relative to the current
-                // viewport position.  `render()' scrolls the viewport to intermediate
-                // page positions during rendering; reset it to the active area so
-                // placement row offsets are computed correctly.
-                term.terminal.scrollViewport(.bottom);
-                // Clear viewport-region kitty overlays after redraw so the cleared
-                // region boundary is computed against the updated `rows_in_buffer'
-                // (which reflects any scrollback evicted during this redraw).
-                // Running kitty-clear before redraw would use the stale value and
-                // compute the wrong absolute row for the overlay boundary.
                 _ = env.f("ghostel--kitty-clear", .{});
                 try kitty_graphics.emitPlacements(env, term);
                 return env.nil();

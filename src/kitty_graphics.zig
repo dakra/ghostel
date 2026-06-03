@@ -57,13 +57,14 @@ fn emitOnePlacement(
             const grid_size = placement.gridSize(image.*, &term.terminal);
             const pages = &term.terminal.screens.active.pages;
             const pin_screen = pages.pointFromPin(.screen, pin.*) orelse return error.NotVisible;
-            const vp_tl = pages.getTopLeft(.viewport);
-            const vp_screen = pages.pointFromPin(.screen, vp_tl) orelse return error.NotVisible;
-            const vp_row: i32 = @as(i32, @intCast(pin_screen.screen.y)) - @as(i32, @intCast(vp_screen.screen.y));
-            const vp_col: i32 = @intCast(pin_screen.screen.x);
+            const active_tl = pages.getTopLeft(.active);
+            const active_screen = pages.pointFromPin(.screen, active_tl) orelse return error.NotVisible;
+            const active_row: i32 = @as(i32, @intCast(pin_screen.screen.y)) -
+                @as(i32, @intCast(active_screen.screen.y));
+            const active_col: i32 = @intCast(pin_screen.screen.x);
             const rows_i32: i32 = @intCast(grid_size.rows);
             const term_rows: i32 = @intCast(term.terminal.rows);
-            const visible = vp_row + rows_i32 > 0 and vp_row < term_rows;
+            const visible = active_row + rows_i32 > 0 and active_row < term_rows;
 
             // Non-virtual: get render info for viewport position.
             if (!visible) return error.NotVisible;
@@ -72,17 +73,11 @@ fn emitOnePlacement(
             defer if (emacs_data.allocated) term.alloc.free(emacs_data.data);
 
             const img_val = env.makeUnibyteString(emacs_data.data) orelse return error.MakeString;
-            // viewport_row is relative to the visible viewport; ghostel materializes
-            // scrollback above the viewport in the buffer, so the absolute buffer
-            // row is viewport_row + scrollback_in_buffer.  Compute it on this side
-            // so the elisp callback can do a single forward-line from point-min.
-            const abs_row: i64 = @as(i64, @intCast(vp_row)) +
-                @as(i64, @intCast(term.renderer.rows_in_buffer - term.terminal.rows));
             _ = env.f("ghostel--kitty-display-image", .{
                 img_val,
                 if (emacs_data.is_png) env.t() else env.nil(),
-                abs_row,
-                vp_col,
+                pin_screen.screen.y,
+                active_col,
                 grid_size.cols,
                 grid_size.rows,
                 pixel_size.width,
