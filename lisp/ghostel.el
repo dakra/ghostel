@@ -333,6 +333,25 @@ feedback and stop the timer entirely when idle.  When nil, use the
 fixed `ghostel-timer-delay' unconditionally."
   :type 'boolean)
 
+(defcustom ghostel-flood-drain-budget 0.1
+  "Seconds to spend draining PTY output per filter entry during a flood.
+During sustained output (e.g. `cat huge.log') the OS hands Emacs the
+data in many tiny PTY reads.  Returning to Emacs's command loop after
+each one — to run its full input/timer/event machinery — costs far more
+than processing the chunk itself, and dominates the wall time.  When
+this is a number, ghostel instead drains all immediately-available
+output in a tight loop (see `ghostel--drain-output'), collapsing
+thousands of command-loop iterations into a handful.
+
+The value bounds how long one drain runs before yielding back to the
+command loop, so an unbounded flood (e.g. `yes') stays interruptible: a
+keystroke is processed within roughly this interval, letting an
+interrupt keystroke reach the foreground program as SIGINT.  (A quit
+cannot break the loop, because `inhibit-quit' is non-nil in ghostel
+buffers, so this budget is the only bound.)  Set to nil to disable
+draining entirely."
+  :type '(choice (const :tag "Disabled" nil) number))
+
 (defcustom ghostel-immediate-redraw-threshold 256
   "Maximum bytes of output to trigger an immediate redraw.
 When output arrives within `ghostel-immediate-redraw-interval'
@@ -1616,6 +1635,15 @@ inspected when image rendering misbehaves.")
 
 (defvar-local ghostel--last-send-time nil
   "Time of the last `ghostel--send-string' call, for immediate-redraw detection.")
+
+(defvar-local ghostel--last-filter-time nil
+  "Time of the last `ghostel--filter' call, for flood detection.")
+
+(defvar ghostel--draining nil
+  "Non-nil while inside `ghostel--drain-output' (reentrancy guard).
+Global, not buffer-local: the recursive `ghostel--filter' calls that
+`accept-process-output' triggers during a drain must see it set so they
+only process their chunk and do not start a nested drain loop.")
 
 (defvar-local ghostel--input-buffer nil
   "Accumulated keystrokes waiting to be flushed to the PTY.")
@@ -5611,6 +5639,28 @@ further gates on terminal mode 1004."
 
 ;;; Process management
 
+(defun ghostel--drain-output (process)
+  "Drain immediately-available output from PROCESS in a tight loop.
+During a flood the OS hands Emacs the data in many tiny PTY reads;
+returning to the command loop after each one costs far more than the
+work itself and dominates the wall time.  Draining here — letting
+`accept-process-output' re-invoke `ghostel--filter' for each chunk,
+guarded by `ghostel--draining' against nested drains — collapses
+thousands of command-loop iterations into one.
+
+Bounded by `ghostel-flood-drain-budget' so an unbounded flood (e.g.
+`yes') still yields to the command loop roughly every budget interval,
+letting a keystroke through to interrupt it.  JUST-THIS-ONE keeps other
+processes from being starved for longer than the budget."
+  (let ((ghostel--draining t)
+        (deadline (+ (float-time) ghostel-flood-drain-budget)))
+    ;; A short per-iteration timeout bridges the sub-frame gaps while the
+    ;; producer refills the PTY; the loop ends when output truly pauses
+    ;; (timeout, returns nil) or the budget is spent.
+    (while (and (process-live-p process)
+                (< (float-time) deadline)
+                (accept-process-output process ghostel-timer-delay nil t)))))
+
 (defun ghostel--filter (process output)
   "Process filter: feed PTY output to the terminal.
 PROCESS is the shell process, OUTPUT is the raw byte string.
@@ -5618,27 +5668,46 @@ Output is fed to the terminal immediately; rendering is scheduled
 separately so the terminal may run ahead of the materialized buffer.
 
 For interactive echo (small output arriving shortly after a keystroke),
-the redraw is performed immediately to minimize typing latency."
+the redraw is performed immediately to minimize typing latency.  During
+a sustained flood, the rest of the available output is drained in a
+tight loop (see `ghostel--drain-output') to avoid paying Emacs's
+per-read command-loop overhead thousands of times."
   (when (buffer-live-p (process-buffer process))
     (with-current-buffer (process-buffer process)
       (when ghostel--term
-        ;; Native callbacks dispatched while parsing output (for example OSC 52;e)
-        ;; may select another buffer.  Keep the rest of the filter's buffer-local
-        ;; reads anchored to this ghostel buffer.
-        (save-current-buffer
-          (ghostel--write-input ghostel--term output))
+        (let* ((now (current-time))
+               ;; Flood: this chunk arrived within ~1.5 frames of the previous
+               ;; filter call (back-to-back streaming), as opposed to isolated
+               ;; output following idle — which must not pay drain latency.
+               (flooding (and ghostel--last-filter-time
+                              (< (float-time
+                                  (time-subtract now ghostel--last-filter-time))
+                                 (* 1.5 ghostel-timer-delay)))))
+          (setq ghostel--last-filter-time now)
+          ;; Native callbacks dispatched while parsing output (for example
+          ;; OSC 52;e) may select another buffer.  Keep the rest of the
+          ;; filter's buffer-local reads anchored to this ghostel buffer.
+          (save-current-buffer
+            (ghostel--write-input ghostel--term output))
 
-        ;; Immediate redraw for interactive echo: small output arriving
-        ;; within `ghostel-immediate-redraw-interval' of last keystroke.
-        (if (and (> ghostel-immediate-redraw-threshold 0)
-                 ghostel--last-send-time
-                 (<= (length output) ghostel-immediate-redraw-threshold)
-                 (< (float-time (time-subtract (current-time)
-                                               ghostel--last-send-time))
-                    ghostel-immediate-redraw-interval))
-            (ghostel--redraw-now (current-buffer))
-          ;; Bulk output: schedule a later redraw.
-          (ghostel--invalidate))))))
+          ;; Immediate redraw for interactive echo: small output arriving
+          ;; within `ghostel-immediate-redraw-interval' of last keystroke.
+          (if (and (> ghostel-immediate-redraw-threshold 0)
+                   ghostel--last-send-time
+                   (<= (length output) ghostel-immediate-redraw-threshold)
+                   (< (float-time (time-subtract now ghostel--last-send-time))
+                      ghostel-immediate-redraw-interval))
+              (ghostel--redraw-now (current-buffer))
+            ;; Bulk output: schedule a later redraw.
+            (ghostel--invalidate))
+
+          ;; Flood: drain the rest of the immediately-available output in one
+          ;; tight loop rather than once per ~1KB PTY read via the command
+          ;; loop.  Guard against re-entry from the recursive filter calls
+          ;; `accept-process-output' triggers.
+          (when (and flooding ghostel-flood-drain-budget
+                     (not ghostel--draining))
+            (ghostel--drain-output process)))))))
 
 (defun ghostel--sentinel (process event)
   "Process sentinel: clean up when shell exits.
