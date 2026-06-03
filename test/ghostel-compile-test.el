@@ -1203,11 +1203,17 @@ is what makes `htop', `less', read prompts etc. work).  And
 `--spawn' must set `ghostel--process' so `ghostel--self-insert' has
 a process to send keystrokes to.
 
-Run a long-lived `cat' interactively, verify both conditions, then
+Run a small interactive echo loop, verify both conditions, then
 send bytes through the process to confirm they land in the buffer."
   :tags '(native)
   (skip-unless (file-executable-p "/bin/sh"))
   (let* ((buf-name "*ghostel-test-interactive-compile*")
+         (script (concat "printf '%s\\n' ghostel-ready; "
+                         "while IFS= read -r line; do "
+                         "printf '%s\\n' \"$line\"; "
+                         "[ \"$line\" = ghosttel-ping ] && exit 0; "
+                         "done; exit 1"))
+         (shell-file-name "/bin/sh")
          (inhibit-message t)
          (save-some-buffers-default-predicate (lambda () nil))
          (ghostel-compile-finished-major-mode nil))
@@ -1215,13 +1221,18 @@ send bytes through the process to confirm they land in the buffer."
       (let ((kill-buffer-query-functions nil))
         (kill-buffer buf-name)))
     (unwind-protect
-        (let ((buf (ghostel-compile--start "cat" buf-name
+        (let ((buf (ghostel-compile--start script buf-name
                                            default-directory nil t))) ; interactive=t
           (with-current-buffer buf
-            ;; Wait for the process to be alive.
+            ;; Wait until the command has actually started and is blocked
+            ;; reading from the PTY.  Waiting for a program-emitted marker
+            ;; is less racy on busy CI hosts than polling process status
+            ;; immediately after `make-process' returns.
             (ghostel-test--wait-for
              ghostel--process
-             (lambda () (eq 'run (process-status ghostel--process))))
+             (lambda ()
+               (string-match-p "ghostel-ready"
+                               (ghostel--copy-all-text ghostel--term))))
             ;; The live buffer must be plain `ghostel-mode' — no compile
             ;; minor mode stealing keys.
             (should (eq major-mode 'ghostel-mode))
@@ -1235,15 +1246,13 @@ send bytes through the process to confirm they land in the buffer."
             ;; `ghostel--process' is populated, so `ghostel--self-insert'
             ;; has a process to send to.
             (should (process-live-p ghostel--process))
-            ;; Round-trip: send a line, expect it back (cat echoes stdin).
+            ;; Round-trip: send a line, expect the echo-loop to print it.
             (process-send-string ghostel--process "ghosttel-ping\n")
             (ghostel-test--wait-for
              ghostel--process
              (lambda ()
                (string-match-p "ghosttel-ping"
                                (ghostel--copy-all-text ghostel--term))))
-            ;; Shut cat down so the test doesn't leak a process.
-            (process-send-eof ghostel--process)
             (ghostel-test--wait-for
              ghostel--process
              (lambda () ghostel-compile--finalized) 10)))
@@ -1423,6 +1432,8 @@ declare that variable buffer-locally so the live buffer qualifies."
   :tags '(native)
   (skip-unless (file-executable-p "/bin/sh"))
   (let* ((buf-name "*ghostel-test-kill-compilation*")
+         (command "printf '%s\\n' GHOSTEL_KILL_READY; exec sleep 30")
+         (shell-file-name "/bin/sh")
          (inhibit-message t)
          (save-some-buffers-default-predicate (lambda () nil))
          (ghostel-compile-finished-major-mode nil))
@@ -1430,12 +1441,14 @@ declare that variable buffer-locally so the live buffer qualifies."
       (let ((kill-buffer-query-functions nil))
         (kill-buffer buf-name)))
     (unwind-protect
-        (let ((buf (ghostel-compile--start "cat" buf-name
+        (let ((buf (ghostel-compile--start command buf-name
                                            default-directory)))
           (with-current-buffer buf
             (ghostel-test--wait-for
              ghostel--process
-             (lambda () (eq 'run (process-status ghostel--process))))
+             (lambda ()
+               (string-match-p "GHOSTEL_KILL_READY"
+                               (ghostel--copy-all-text ghostel--term))))
             ;; The live buffer passes `compilation-buffer-p' — which is
             ;; the gate `kill-compilation' uses.
             (should (compilation-buffer-p buf))
@@ -1449,9 +1462,9 @@ declare that variable buffer-locally so the live buffer qualifies."
             ;; deliver SIGINT to.
             (should (process-live-p (get-buffer-process buf)))
             ;; End-to-end: invoke `kill-compilation' from inside the buffer
-            ;; and wait for the process to die via SIGINT.  `cat' exits on
-            ;; SIGINT, the sentinel finalizes, and `--last-exit' reflects
-            ;; a non-zero status (signal-based termination).
+            ;; and wait for the process to die via SIGINT.  The command has
+            ;; exec'd `sleep', so SIGINT terminates it, the sentinel finalizes,
+            ;; and `--last-exit' reflects a non-zero status.
             (kill-compilation)
             (ghostel-test--wait-for
              ghostel--process

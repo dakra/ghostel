@@ -149,7 +149,7 @@ newest-first list aligns with the buffer-order regions."
                         :name "ghostel-test-fish"
                         :buffer buf
                         :command '("/bin/sh" "-c"
-                                   "stty erase '^?' 2>/dev/null; exec fish --no-config")
+                                   "stty erase '^?' 2>/dev/null; exec fish --no-config --private")
                         :connection-type 'pty
                         :filter #'ghostel--filter)))
             (setq ghostel--process proc)
@@ -161,19 +161,39 @@ newest-first list aligns with the buffer-order regions."
                                     (lambda () (ghostel--copy-all-text ghostel--term)) 10)
             (should (process-live-p proc))
 
+            ;; Send a real command before testing line editing.  The initial
+            ;; output may be a terminal query or startup redraw; waiting for
+            ;; command output proves fish's reader is accepting input.  Private
+            ;; mode keeps history/autosuggestions from repainting `abc' after
+            ;; it has been backspaced to `ab'.
+            (process-send-string proc "printf '%s%s\\n' GHOSTEL_FISH _READY\n")
+            (ghostel-test--wait-for
+             proc
+             (lambda ()
+               (string-match-p "GHOSTEL_FISH_READY"
+                               (or (ghostel--copy-all-text ghostel--term)
+                                   "")))
+             10)
+
             ;; Type "abc" then backspace
             (process-send-string proc "abc")
-            (ghostel-test--wait-for proc
-                                    (lambda () (string-match-p "abc"
-                                                               (ghostel--copy-all-text ghostel--term))))
+            (ghostel-test--wait-for
+             proc
+             (lambda ()
+               (string-match-p "abc"
+                               (or (ghostel--copy-all-text ghostel--term)
+                                   ""))))
             (let ((state (ghostel--copy-all-text ghostel--term)))
               (should (string-match-p "abc" state)))
 
             ;; Send backspace (\x7f) and verify it works
             (process-send-string proc "\x7f")
-            (ghostel-test--wait-for proc
-                                    (lambda () (not (string-match-p "abc"
-                                                                    (ghostel--copy-all-text ghostel--term)))))
+            (ghostel-test--wait-for
+             proc
+             (lambda ()
+               (let ((state (or (ghostel--copy-all-text ghostel--term) "")))
+                 (and (string-match-p "ab" state)
+                      (not (string-match-p "abc" state))))))
             (let ((state (ghostel--copy-all-text ghostel--term)))
               (should (string-match-p "ab" state))
               (should-not (string-match-p "abc" state)))
