@@ -107,14 +107,16 @@ fn handleSemanticPrompt(_: *Self, sp: gt.osc.Command.SemanticPrompt) void {
 // OSC 7 / OSC 9;9 — report PWD
 // ---------------------------------------------------------------------------
 
-/// Save the reported PWD on the terminal so the renderer's later
-/// `terminal.getPwd()` picks it up.
+/// Save the reported PWD on the terminal and update it in Emacs.
 fn handleReportPwd(self: *Self, v: gt.StreamAction.ReportPwd) void {
     if (v.url.len == 0) return;
     self.inner.terminal.setPwd(v.url) catch |err| {
         if (emacs.current_env) |e|
             e.logError("setPwd failed: %s", .{@errorName(err)});
     };
+
+    const env = emacs.current_env orelse return;
+    _ = env.f("ghostel--update-directory", .{v.url});
 }
 
 // ---------------------------------------------------------------------------

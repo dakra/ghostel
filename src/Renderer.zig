@@ -145,11 +145,6 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
 
     try self.renderCursor(env);
 
-    // Update working directory from OSC 7
-    if (self.term.getPwd()) |pwd| {
-        _ = env.f("ghostel--update-directory", .{pwd});
-    }
-
     if (self.render_pin) |p| p.* = self.rendered_screen.pages.getTopLeft(.active);
 
     std.debug.assert(self.rows_in_buffer == if (self.rendered_screen.no_scrollback)
