@@ -22,7 +22,7 @@
 (declare-function dired-get-file-for-visit "dired")
 
 (defconst ghostel-dape--source-directory
-  (when-let ((file (or load-file-name buffer-file-name)))
+  (when-let* ((file (or load-file-name buffer-file-name)))
     (file-name-directory file))
   "Directory containing this Ghostel Dape helper file.")
 
