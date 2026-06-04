@@ -360,6 +360,93 @@ Sets floor to 1.0 and feeds a glyph larger than the cell.  With floor
                    (should (>= scale 1.0))))))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-glyph-adjust-reuses-known-glyph-metrics ()
+  "A known glyph is not queried again on a later render."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-glyph-cache*")))
+    (unwind-protect
+        (save-window-excursion
+          (with-selected-window (display-buffer buf)
+            (ghostel-mode)
+            (let* ((term (ghostel--new 5 80 1000))
+                   (ghostel--term term)
+                   (ghostel--term-rows 5)
+                   (inhibit-read-only t)
+                   (font-at-calls 0)
+                   (glyph-query-font-calls 0)
+                   (df (ghostel-test--make-font ghostel-test--default-font-info))
+                   (glyph-font (ghostel-test--make-font
+                                ["MockGlyph" "mock.ttf" 12 120 12 13 12 12 0]
+                                [[0 1 ?\u0100 0 12 0 0 12 13 0]])))
+              (ghostel--write-input term "\u0100")
+              (ghostel-test--with-glyph-mocks
+               (:default-font df
+                              :glyph-font glyph-font)
+               (let ((mock-font-at (symbol-function 'font-at))
+                     (mock-query-font (symbol-function 'query-font)))
+                 (cl-letf (((symbol-function 'font-at)
+                            (lambda (&rest args)
+                              (cl-incf font-at-calls)
+                              (apply mock-font-at args)))
+                           ((symbol-function 'query-font)
+                            (lambda (font)
+                              (when (eq font glyph-font)
+                                (cl-incf glyph-query-font-calls))
+                              (funcall mock-query-font font))))
+                   (ghostel--redraw term t)
+                   (should (= font-at-calls 1))
+                   (should (= glyph-query-font-calls 1))
+                   (ghostel--redraw term t)))
+               (goto-char (point-min))
+               (should (get-text-property (point) 'display))
+               (should (= font-at-calls 1))
+               (should (= glyph-query-font-calls 1))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-glyph-adjust-cache-distinguishes-styled-font ()
+  "The metrics cache must not reuse normal glyph metrics for styled text."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-glyph-cache-style*")))
+    (unwind-protect
+        (save-window-excursion
+          (with-selected-window (display-buffer buf)
+            (ghostel-mode)
+            (let* ((term (ghostel--new 5 80 1000))
+                   (ghostel--term term)
+                   (ghostel--term-rows 5)
+                   (inhibit-read-only t)
+                   (df (ghostel-test--make-font ghostel-test--default-font-info))
+                   (normal-font (ghostel-test--make-font
+                                 ["NormalGlyph" "normal.ttf" 12 120 10 10 10 10 0]
+                                 [[0 1 ?\u0100 0 10 0 0 10 10 0]]))
+                   (bold-font (ghostel-test--make-font
+                               ["BoldGlyph" "bold.ttf" 12 120 10 10 30 30 0]
+                               [[0 1 ?\u0100 0 30 0 0 10 10 0]])))
+              (ghostel--write-input term "\u0100 \e[1m\u0100")
+              (ghostel-test--with-glyph-mocks
+               (:default-font df)
+               (cl-letf (((symbol-function 'font-at)
+                          (lambda (pos &optional _window _string)
+                            (if (eq (plist-get (get-text-property pos 'face) :weight)
+                                    'bold)
+                                bold-font
+                              normal-font)))
+                         ((symbol-function 'composition-get-gstring)
+                          (lambda (_from _to font &optional _string)
+                            (ghostel-test--mock-font-gstring font)))
+                         ((symbol-function 'font-shape-gstring)
+                          (lambda (gstring _direction)
+                            gstring))
+                         ((symbol-function 'query-font)
+                          (lambda (font)
+                            (plist-get (cdr font) :metrics))))
+                 (ghostel--redraw term t)
+                 (goto-char (point-min))
+                 (should-not (get-text-property (point) 'display))
+                 (forward-char 2)
+                 (should (get-text-property (point) 'display)))))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-glyph-adjust-covered-by-main-font ()
   "A codepoint below the coverage threshold is not registered in adjust_cells."
   :tags '(native)

@@ -72,37 +72,27 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&copy_version_step.step);
 
     // ----------------------------------------------------------------
-    // `zig build test` — pure-Zig unit tests for the decoder helpers.
+    // `zig build test` — pure-Zig unit tests.
     //
-    // Only modules that don't depend on libghostty or emacs-module are
-    // covered here (ppm.zig, png.zig).  End-to-end tests through the
-    // C API run via `make test-native`.
+    // Modules that don't depend on emacs-module are covered here. End-to-end
+    // tests through the C API run via `make test-native`.
     // ----------------------------------------------------------------
     const test_step = b.step("test", "Run Zig unit tests");
 
-    const ppm_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/ppm.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    test_step.dependOn(&b.addRunArtifact(ppm_tests).step);
-
-    const png_test_mod = b.createModule(.{
-        .root_source_file = b.path("src/png.zig"),
+    const tests_mod = b.createModule(.{
+        .root_source_file = b.path("src/tests.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
-    png_test_mod.addIncludePath(b.path("vendor/stb"));
-    png_test_mod.addCSourceFile(.{ .file = b.path("src/stb_image.c") });
-    png_test_mod.addImport(
+    tests_mod.addIncludePath(b.path("vendor/stb"));
+    tests_mod.addCSourceFile(.{ .file = b.path("src/stb_image.c") });
+    tests_mod.addImport(
         "ghostty-vt",
         ghostty_dep.module("ghostty-vt"),
     );
-    const png_tests = b.addTest(.{ .root_module = png_test_mod });
-    test_step.dependOn(&b.addRunArtifact(png_tests).step);
+    const tests = b.addTest(.{ .root_module = tests_mod });
+    test_step.dependOn(&b.addRunArtifact(tests).step);
 }
 
 fn resolveEmacsModuleDir(b: *std.Build) std.Build.LazyPath {

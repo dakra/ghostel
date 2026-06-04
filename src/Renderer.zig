@@ -11,6 +11,7 @@ const builtin = @import("builtin");
 const gt = @import("ghostty-vt");
 
 const GhostelTerm = @import("GhostelTerm.zig");
+const GlyphMetricsCache = @import("GlyphMetricsCache.zig");
 const SavedBufferMarkers = @import("saved_markers.zig").SavedBufferMarkers;
 const emacs = @import("emacs.zig");
 const utils = @import("utils.zig");
@@ -72,6 +73,11 @@ const FontInfo = struct {
     height: u32,
     coverage: u32,
     glyph_scale_floor: f64,
+    metrics_cache: GlyphMetricsCache = .{},
+
+    pub fn deinit(self: *@This(), alloc: Allocator) void {
+        self.metrics_cache.deinit(alloc);
+    }
 };
 
 pub fn init(alloc: Allocator, term: *gt.Terminal) !Self {
@@ -94,6 +100,7 @@ pub fn deinit(self: *Self, alloc: Allocator) void {
     self.row.deinit(alloc);
     self.clearPages(alloc);
     if (self.render_pin) |p| self.rendered_screen.pages.untrackPin(p);
+    if (self.font_info) |*fi| fi.deinit(alloc);
 }
 
 pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) void {
@@ -119,7 +126,7 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
     try self.saved_markers.save(alloc, env);
     defer self.saved_markers.restoreAndClear(self.term.screens.active, env);
 
-    if (self.invalidate(env) or force_full_arg) {
+    if (self.invalidate(alloc, env) or force_full_arg) {
         try self.clear(alloc, env);
     }
 
@@ -153,10 +160,10 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
         self.rendered_screen.pages.total_rows);
 }
 
-fn invalidate(self: *Self, env: emacs.Env) bool {
+fn invalidate(self: *Self, alloc: Allocator, env: emacs.Env) bool {
     // If the font metrics or related parameters changed, the cached metrics
     // are no longer valid, so we rebuild.
-    if (self.updateFontInfo(env)) return true;
+    if (self.updateFontInfo(alloc, env)) return true;
 
     // We always do a full rebuild if the width changed
     if (self.pending_resize) |rz| {
@@ -192,7 +199,7 @@ fn invalidate(self: *Self, env: emacs.Env) bool {
 /// Read the default font and rendering parameters from Emacs, compare
 /// against the cached values, and signal whether a full invalidation is
 /// required.
-fn updateFontInfo(self: *Self, env: emacs.Env) bool {
+fn updateFontInfo(self: *Self, alloc: Allocator, env: emacs.Env) bool {
     const new_font = getDefaultFont(env);
     const current_font = env.symbolValue("ghostel--rendered-font");
 
@@ -202,9 +209,7 @@ fn updateFontInfo(self: *Self, env: emacs.Env) bool {
     // Fast path: nothing changed since last redraw.
     if (env.eq(new_font, current_font)) {
         if (self.font_info) |cached| {
-            const old_bits: u64 = @bitCast(cached.glyph_scale_floor);
-            const new_bits: u64 = @bitCast(floor);
-            if (old_bits == new_bits) return false;
+            if (cached.glyph_scale_floor == floor) return false;
         } else {
             return false; // no font before, no font now
         }
@@ -212,9 +217,12 @@ fn updateFontInfo(self: *Self, env: emacs.Env) bool {
 
     _ = env.set("ghostel--rendered-font", new_font);
 
-    if (env.isNil(new_font)) {
+    if (self.font_info) |*fi| {
+        fi.deinit(alloc);
         self.font_info = null;
-    } else {
+    }
+
+    if (env.isNotNil(new_font)) {
         const default_font_info = env.f("ghostel--query-font-cached", .{new_font});
         // The value is a vector:
         // [ NAME FILENAME PIXEL-SIZE SIZE ASCENT DESCENT SPACE-WIDTH AVERAGE-WIDTH
@@ -380,13 +388,15 @@ fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps) !void {
     }
 }
 
+// TODO: Style ID type is not exported from ghostty-vt for some reason.
+//       We should file an issue.
+const StyleId = @FieldType(gt.page.Cell, "style_id");
+
 /// Unique identifier that is cheaper to read and compare relative to `CellProps`.
 /// We read this first and if it differs from the previous cell, we read the full
 /// `CellProps`.
 const CellPropKey = packed struct {
-    // TODO: Style ID type is not exported from ghostty-vt for some reason.
-    //       We should file an issue.
-    style_id: @FieldType(gt.page.Cell, "style_id"),
+    style_id: StyleId,
     hyperlink_id: gt.size.HyperlinkCountInt,
     semantic_content: gt.page.Cell.SemanticContent,
 
@@ -411,11 +421,10 @@ pub const RowContent = struct {
 
     const CellInfo = struct {
         col: i64,
-        byte_start: i64,
-        byte_end: i64,
         char_start: i64,
         char_end: i64,
         wide: bool,
+        metrics_key: GlyphMetricsCache.Key,
     };
 
     /// The UTF-8 text content of the row
@@ -490,11 +499,14 @@ pub const RowContent = struct {
             if (raw_cell.hasGrapheme() or codepoint >= adjustment_threshold) {
                 try self.adjust_cells.append(alloc, .{
                     .col = @intCast(col),
-                    .byte_start = @intCast(byte_start),
-                    .byte_end = @intCast(self.text.items.len),
                     .char_start = @intCast(char_start),
                     .char_end = @intCast(self.char_len),
                     .wide = raw_cell.wide == .wide,
+                    .metrics_key = .{
+                        .page_serial = row.pin.node.serial,
+                        .style_id = if (current_prop_key) |key| key.style_id else 0,
+                        .utf8 = .{ .borrowed = self.text.items[byte_start..self.text.items.len] },
+                    },
                 });
             }
 
@@ -550,31 +562,45 @@ pub const RowContent = struct {
     }
 };
 
-fn adjustGlyphs(self: *Self, env: emacs.Env, row_start: i64, row_end: i64) void {
+fn adjustGlyphs(
+    self: *Self,
+    alloc: Allocator,
+    env: emacs.Env,
+    row_start: i64,
+    row_end: i64,
+) !void {
     if (self.row.adjust_cells.items.len == 0) return;
     if (self.font_info == null) return;
     const window = env.f("selected-window", .{});
     if (env.isNil(window)) return;
 
     for (self.row.adjust_cells.items) |*cell| {
-        self.adjustGlyph(env, window, row_start, row_end, cell);
+        try self.adjustGlyph(alloc, env, window, row_start, row_end, cell);
     }
 }
 
 fn adjustGlyph(
     self: *Self,
+    alloc: Allocator,
     env: emacs.Env,
     window: emacs.Value,
     row_start: i64,
     row_end: i64,
     cell: *const RowContent.CellInfo,
-) void {
+) !void {
     const s = emacs.sym;
     const default_font_info = self.font_info.?;
 
     const start_val = env.makeInteger(row_start + @as(i64, @intCast(cell.char_start)));
     const end_val = env.makeInteger(row_start + @as(i64, @intCast(cell.char_end)));
-    const metrics = getGlyphMetrics(env, window, start_val, end_val) orelse return;
+    const metrics = try self.getGlyphMetrics(
+        alloc,
+        env,
+        cell.metrics_key,
+        window,
+        start_val,
+        end_val,
+    ) orelse return;
     var char_width: i64 = if (cell.wide) 2 else 1;
     var slot_width = default_font_info.width * char_width;
 
@@ -633,11 +659,19 @@ fn adjustGlyph(
 }
 
 fn getGlyphMetrics(
+    self: *Self,
+    alloc: Allocator,
     env: emacs.Env,
+    key: GlyphMetricsCache.Key,
     window: emacs.Value,
     start_val: emacs.Value,
     end_val: emacs.Value,
-) ?struct { width: i64, height: i64 } {
+) !?GlyphMetricsCache.Metrics {
+    const borrowed_key = key.borrowed(self.row.text.items);
+    if (self.font_info) |*fi| {
+        if (fi.metrics_cache.get(borrowed_key)) |metrics| return metrics;
+    }
+
     const gstring = findGlyphString(env, window, start_val, end_val) orelse {
         return null;
     };
@@ -656,7 +690,12 @@ fn getGlyphMetrics(
     // [FROM-IDX TO-IDX C CODE WIDTH LBEARING RBEARING ASCENT DESCENT ADJUSTMENT]
     const width = env.cast(u32, env.vecGet(glyph, 4));
 
-    return .{ .width = width, .height = height };
+    const metrics = GlyphMetricsCache.Metrics{ .width = width, .height = height };
+    if (self.font_info) |*fi| {
+        try fi.metrics_cache.put(alloc, borrowed_key, metrics);
+    }
+
+    return metrics;
 }
 
 fn findGlyphString(
@@ -712,7 +751,7 @@ fn insertRow(
         }
     }
 
-    self.adjustGlyphs(env, row_start, row_end);
+    try self.adjustGlyphs(alloc, env, row_start, row_end);
 
     if (row.raw.wrap) {
         // Mark newlines from soft-wrapped rows so copy mode can filter them
