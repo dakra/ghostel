@@ -1775,13 +1775,15 @@ When NO-EXCEPTIONS is non-nil, also bind the keys in
     (when (or no-exceptions
               (not (member key-str ghostel-keymap-exceptions)))
       (define-key map (kbd key-str) #'ghostel--send-event)))
-  ;; Control-Meta keys - C-M-<letter> only; C-M-<punct>/<digit> aren't
-  ;; widely supported by terminal apps.
-  (dolist (c (number-sequence ?a ?z))
-    (let ((key-str (format "C-M-%c" c)))
-      (when (or no-exceptions
-                (not (member key-str ghostel-keymap-exceptions)))
-        (define-key map (kbd key-str) #'ghostel--send-event))))
+  ;; C-M-<letter>, plus C-] / C-/ and their C-M- forms.
+  ;; The non-letter keys the encoder maps to a control byte.
+  (dolist (key-str (append
+                    (mapcar (lambda (c) (format "C-M-%c" c))
+                            (number-sequence ?a ?z))
+                    '("C-]" "C-/" "C-M-]" "C-M-/")))
+    (when (or no-exceptions
+              (not (member key-str ghostel-keymap-exceptions)))
+      (define-key map (kbd key-str) #'ghostel--send-event)))
   ;; M-DEL: TTY Emacs delivers Alt-Backspace as ESC + 0x7f, which
   ;; resolves to ?\M-\d.  The `M-<backspace>' form above only covers
   ;; the `[M-backspace]' symbol path; without this binding, TTY
