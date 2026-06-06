@@ -2163,23 +2163,18 @@ Returns the sequence string, or nil for unknown keys."
       (format "\e[%d;%d~" param (1+ mod-num))
     (format "\e[%d~" param)))
 
-(defun ghostel--snap-to-input ()
-  "Return the window to the live viewport on user input.
-Uses `ghostel--anchor-window'.
-
-Fires regardless of input mode: in semi-char/char/line modes
-each typed key calls this before forwarding; in Emacs mode
-typing is disabled but explicit paste (`\\`C-y'') still routes
-through `ghostel--paste-text' which calls this before sending.
-Pure-navigation commands do not call this, so reading scrollback
-without sending anything to the shell preserves point."
+(defun ghostel--on-user-input ()
+  "Handle common state before explicit user input reaches the terminal."
+  (when (and ghostel-readonly-fast-exit
+             (memq ghostel--input-mode '(copy emacs)))
+    (ghostel-readonly-exit))
   (when (and ghostel-scroll-on-input ghostel--term)
     (ghostel--anchor-window)))
 
 (defun ghostel--self-insert ()
   "Send the last typed character to the terminal."
   (interactive)
-  (ghostel--snap-to-input)
+  (ghostel--on-user-input)
   (let* ((keys (this-command-keys))
          (char (aref keys (1- (length keys))))
          (str (if (and (characterp char) (< char 128))
@@ -2197,7 +2192,7 @@ In TTY Emacs, `M-<key>' arrives as two events (ESC then <key>) via
 `esc-map'; `last-command-event' is just <key> and has no meta bit.
 Detect that case via `this-command-keys-vector' and re-inject meta."
   (interactive)
-  (ghostel--snap-to-input)
+  (ghostel--on-user-input)
   (let* ((event last-command-event)
          (keys (this-command-keys-vector))
          (via-esc (and (> (length keys) 1) (eq (aref keys 0) 27)))
@@ -2246,6 +2241,7 @@ is passed through unchanged, including any embedded control
 characters; callers are responsible for UTF-8 encoding if needed."
   (unless (derived-mode-p 'ghostel-mode)
     (user-error "Must be called from a ghostel buffer"))
+  (ghostel--on-user-input)
   (ghostel--send-string string))
 
 (defun ghostel-send-key (key-name &optional mods)
@@ -2258,6 +2254,7 @@ mode (application cursor keys, Kitty keyboard protocol, etc.).
 Signals a `user-error' when called outside a ghostel buffer."
   (unless (derived-mode-p 'ghostel-mode)
     (user-error "Must be called from a ghostel buffer"))
+  (ghostel--on-user-input)
   (ghostel--send-encoded key-name (or mods "")))
 
 (defun ghostel-paste-string (string)
@@ -2270,6 +2267,7 @@ paste mode (mode 2004), so the shell treats the input as an atomic
 paste rather than character-by-character typed keystrokes."
   (unless (derived-mode-p 'ghostel-mode)
     (user-error "Must be called from a ghostel buffer"))
+  (ghostel--on-user-input)
   (ghostel--paste-text string))
 
 
@@ -2278,21 +2276,25 @@ paste rather than character-by-character typed keystrokes."
 (defun ghostel-send-C-c ()
   "Send interrupt signal to the terminal."
   (interactive)
+  (ghostel--on-user-input)
   (ghostel--send-encoded "c" "ctrl"))
 
 (defun ghostel-send-C-z ()
   "Send suspend signal to the terminal."
   (interactive)
+  (ghostel--on-user-input)
   (ghostel--send-encoded "z" "ctrl"))
 
 (defun ghostel-send-C-backslash ()
   "Send C-\\ (quit) to the terminal."
   (interactive)
+  (ghostel--on-user-input)
   (ghostel--send-string "\x1c"))
 
 (defun ghostel-send-C-d ()
   "Send EOF to the terminal."
   (interactive)
+  (ghostel--on-user-input)
   (ghostel--send-encoded "d" "ctrl"))
 
 (defun ghostel-send-C-g ()
@@ -2319,7 +2321,6 @@ overlay clears the way \\`keyboard-quit' would in other buffers."
 (defun ghostel--paste-text (text)
   "Send TEXT to the terminal, using bracketed paste if the terminal wants it."
   (when (and text ghostel--process (process-live-p ghostel--process))
-    (ghostel--snap-to-input)
     (process-send-string ghostel--process
                          (if (ghostel--bracketed-paste-p)
                              (concat "\e[200~" text "\e[201~")
@@ -2330,6 +2331,7 @@ overlay clears the way \\`keyboard-quit' would in other buffers."
 Uses bracketed paste mode so that shells can distinguish
 pasted text from typed input."
   (interactive)
+  (ghostel--on-user-input)
   (ghostel--paste-text (current-kill 0)))
 
 (defun ghostel-yank ()
@@ -2337,6 +2339,7 @@ pasted text from typed input."
 Use `ghostel-yank-pop' afterwards to cycle through older kills."
   (interactive)
   (setq ghostel--yank-index 0)
+  (ghostel--on-user-input)
   (ghostel--paste-text (current-kill 0))
   (setq this-command 'ghostel-yank))
 
@@ -2351,6 +2354,7 @@ pastes the selected entry into the terminal."
       (let* ((prev-text (current-kill ghostel--yank-index t))
              (prev-len (length prev-text)))
         (setq ghostel--yank-index (1+ ghostel--yank-index))
+        (ghostel--on-user-input)
         ;; Erase previous paste: send backspaces
         (when (and ghostel--process (process-live-p ghostel--process))
           (process-send-string ghostel--process
@@ -2361,6 +2365,7 @@ pastes the selected entry into the terminal."
     ;; No preceding yank: browse kill ring and paste selection
     (when-let* ((text (completing-read "Paste from kill ring: "
                                        kill-ring nil t)))
+      (ghostel--on-user-input)
       (ghostel--paste-text text))))
 
 (defun ghostel-xterm-paste (event)
@@ -2376,10 +2381,8 @@ parity with `xterm-paste'."
   (interactive "e")
   (unless (eq (car-safe event) 'xterm-paste)
     (error "This command must be bound to an xterm-paste event"))
-  (when (and (eq ghostel--input-mode 'copy)
-             ghostel-readonly-fast-exit)
-    (ghostel-readonly-exit))
   (when-let* ((text (nth 1 event)))
+    (ghostel--on-user-input)
     (when (bound-and-true-p xterm-store-paste-on-kill-ring)
       (kill-new text))
     (ghostel--paste-text text)))
@@ -2400,6 +2403,7 @@ pasted using bracketed paste."
       (when (and arg (not (eq arg 'lambda)))
         (let ((type (car arg))
               (objects (cddr arg)))
+          (ghostel--on-user-input)
           (if (eq type 'file)
               (ghostel--send-string
                (mapconcat #'shell-quote-argument objects " "))
@@ -2696,9 +2700,7 @@ the prompt."
       (ghostel--mouse-release event)
     (let ((text (gui-get-primary-selection)))
       (when (and text (not (string-empty-p text)))
-        (when (and (memq ghostel--input-mode '(copy emacs))
-                   ghostel-readonly-fast-exit)
-          (ghostel-readonly-exit))
+        (ghostel--on-user-input)
         (ghostel--paste-text text)))))
 
 

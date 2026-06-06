@@ -1217,20 +1217,18 @@ and with `ghostel--send-encoded' captured into the local list `sent'."
      (evil-ghostel--escape)
      (should (member '("escape" . "") sent)))))
 
-(ert-deftest evil-ghostel-test-escape-terminal-snaps-to-input ()
-  "Terminal-bound ESC must snap the viewport like every other typed key.
-Regression guard: dispatching directly via `ghostel--send-encoded'
-bypasses the snap that `ghostel-mode-map''s `<escape>' route applies."
+(ert-deftest evil-ghostel-test-escape-terminal-runs-user-input-hook ()
+  "Terminal-bound ESC runs through the same input hook as other typed keys."
   (evil-ghostel-test--with-evil-buffer
    (setq evil-ghostel--escape-mode 'terminal)
-   (let ((snapped 0))
-     (cl-letf (((symbol-function 'ghostel--snap-to-input)
-                (lambda () (cl-incf snapped)))
+   (let ((input-hook-called 0))
+     (cl-letf (((symbol-function 'ghostel--on-user-input)
+                (lambda () (cl-incf input-hook-called)))
                ((symbol-function 'ghostel--send-encoded)
                 (lambda (&rest _))))
        (setq-local ghostel--term t)
        (evil-ghostel--escape)
-       (should (= 1 snapped))))))
+       (should (= 1 input-hook-called))))))
 
 (ert-deftest evil-ghostel-test-escape-mode-evil-stays ()
   "`evil' mode never routes ESC to the PTY and triggers evil's binding."
@@ -1557,7 +1555,7 @@ sticks."
     evil-ghostel-test-delete-no-op-outside-ghostel
     evil-ghostel-test-escape-init-from-defcustom
     evil-ghostel-test-escape-mode-terminal-sends-pty
-    evil-ghostel-test-escape-terminal-snaps-to-input
+    evil-ghostel-test-escape-terminal-runs-user-input-hook
     evil-ghostel-test-escape-mode-evil-stays
     evil-ghostel-test-escape-auto-altscreen-sends-pty
     evil-ghostel-test-escape-auto-no-altscreen-stays

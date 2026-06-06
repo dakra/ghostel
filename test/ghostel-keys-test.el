@@ -398,6 +398,38 @@ where the ordering invariant lives."
   (should (eq (lookup-key ghostel-readonly-fast-exit-mode-map (kbd "C-g"))
               #'ghostel-readonly-exit)))
 
+(ert-deftest ghostel-test-c-c-fast-exits-before-sending ()
+  "The interrupt prefix exits copy/Emacs mode before forwarding."
+  (let ((call-order nil)
+        (send-args nil)
+        (ghostel--input-mode 'copy)
+        (ghostel-readonly-fast-exit t))
+    (cl-letf (((symbol-function 'ghostel-readonly-exit)
+               (lambda () (push 'exit call-order)))
+              ((symbol-function 'ghostel--send-encoded)
+               (lambda (key mods &rest _)
+                 (setq send-args (list key mods))
+                 (push 'send call-order))))
+      (ghostel-send-C-c)
+      (should (equal '(send exit) call-order))
+      (should (equal '("c" "ctrl") send-args)))))
+
+(ert-deftest ghostel-test-c-c-no-fast-exit-stays-readonly ()
+  "The interrupt prefix stays in copy/Emacs mode when fast exit is off."
+  (let ((exit-called nil)
+        (ghostel--input-mode 'copy)
+        (ghostel-readonly-fast-exit nil))
+    (cl-letf (((symbol-function 'ghostel-readonly-exit)
+               (lambda () (setq exit-called t)))
+              ((symbol-function 'ghostel--send-encoded) #'ignore))
+      (ghostel-send-C-c)
+      (should-not exit-called))))
+
+(ert-deftest ghostel-test-c-c-fast-exit-binding ()
+  "The fast-exit map still routes the interrupt prefix through its command."
+  (should (eq (lookup-key ghostel-readonly-fast-exit-mode-map (kbd "C-c C-c"))
+              #'ghostel-send-C-c)))
+
 (ert-deftest ghostel-test-inhibit-quit ()
   "`ghostel-mode' should set `inhibit-quit' buffer-locally."
   (let ((buf (generate-new-buffer " *ghostel-test-inhibit-quit*")))

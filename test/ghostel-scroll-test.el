@@ -521,23 +521,26 @@ rows in the viewport — with or without the trailing newline."
 
 (ert-deftest ghostel-test-scroll-on-input-paste ()
   "Paste scrolls the window to the live cursor."
-  (let (sent-text)
+  (let ((kill-ring '("hello"))
+        (kill-ring-yank-pointer nil)
+        sent-text)
     (ghostel-test--with-scroll-on-input-window t
-	    (cl-letf (((symbol-function 'ghostel--bracketed-paste-p)
-			      (lambda () nil))
-			    ((symbol-function 'process-live-p)
-			  (lambda (_process) t))
-			    ((symbol-function 'process-send-string)
-			  (lambda (_process string)
-			    (setq sent-text string))))
-	    (ghostel--paste-text "hello"))
-	    (should (equal "hello" sent-text))
-	    (should (> (window-start) (point-min))))))
+      (cl-letf (((symbol-function 'ghostel--bracketed-paste-p)
+                 (lambda () nil))
+                ((symbol-function 'process-live-p)
+                 (lambda (_process) t))
+                ((symbol-function 'process-send-string)
+                 (lambda (_process string)
+                   (setq sent-text string))))
+        (ghostel-paste))
+      (should (equal "hello" sent-text))
+      (should (> (window-start) (point-min))))))
 
 (ert-deftest ghostel-test-emacs-mode-yank-scrolls-to-live-cursor ()
   "Yanking in Emacs mode scrolls the window to the live cursor."
   (let ((kill-ring '("hello"))
         (kill-ring-yank-pointer nil)
+        (ghostel-readonly-fast-exit nil)
         sent-text)
     (ghostel-test--with-scroll-on-input-window t
 	    (setq ghostel--input-mode 'emacs)

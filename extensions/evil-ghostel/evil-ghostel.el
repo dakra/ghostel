@@ -671,8 +671,8 @@ Valid values: `auto', `terminal', `evil'.")
 
 (defun evil-ghostel--escape ()
   "Dispatch insert-state ESC based on `evil-ghostel--escape-mode'.
-Terminal-bound ESC is snapped to the live viewport like every other
-typed key in `ghostel-mode-map'.  When falling back to evil and the
+Terminal-bound ESC runs through `ghostel--on-user-input' like every
+other typed key in `ghostel-mode-map'.  When falling back to evil and the
 user's `evil-insert-state-map' binding is missing or a chord prefix
 \(e.g. `evil-escape''s `jk'), use `evil-force-normal-state' so the
 keystroke is never silently dropped."
@@ -684,7 +684,7 @@ keystroke is never silently dropped."
                                (ghostel--mode-enabled ghostel--term 1049)))))
     (if to-terminal
         (progn
-          (ghostel--snap-to-input)
+          (ghostel--on-user-input)
           (ghostel--send-encoded "escape" ""))
       (let ((cmd (lookup-key evil-insert-state-map (kbd "<escape>"))))
         (call-interactively (if (commandp cmd) cmd #'evil-force-normal-state))))))
