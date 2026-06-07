@@ -5990,29 +5990,38 @@ supported."
              (list preserve-vscroll-p))
     (set-window-vscroll window vscroll pixels-p)))
 
+(defun ghostel--pixel-anchor (window target)
+  "Return (START . VSCROLL) anchoring TARGET at WINDOW's bottom.
+Ask Emacs redisplay for the exact pixel position that places TARGET at
+the bottom of WINDOW."
+  (when-let* ((body-height (window-body-height window t))
+              ((> body-height 0))
+              (size (window-text-pixel-size
+                     window (cons target (- body-height)) target nil nil))
+              (start (nth 2 size)))
+    (cons start (max 0 (- (nth 1 size) body-height)))))
+
 (defun ghostel--anchor-window (&optional window)
   "Scroll WINDOW so that the last row is aligned to the bottom of the window.
-In graphics mode, the bottom line is anchored to the bottom of the window using
-vscroll if there are more rows than can fit into the window."
+In graphical frames, use Emacs's pixel layout for exact bottom alignment.
+In text frames, use line-count geometry with no vscroll."
   (when-let* ((window (or window (selected-window)))
               (buffer (window-buffer window)))
     (with-selected-window window
       (with-current-buffer buffer
-        (let ((lines (window-screen-lines)))
-          (goto-char (point-max))
-          (forward-line (- (floor lines)))
-          (if (and (> (point) (point-min))
-                   (display-graphic-p (window-frame window)))
+        (let ((target (point-max)))
+          (if-let* ((anchor (and (display-graphic-p (window-frame window))
+                                 (fboundp 'window-text-pixel-size)
+                                 (ghostel--pixel-anchor window target))))
               (progn
-                (forward-line -1)
-                (set-window-start window (point))
-                (let ((pixels (round (* (- 1.0 (- lines (floor lines)))
-                                        (default-line-height)))))
-                  (ghostel--set-window-vscroll window pixels t t)))
-            (set-window-start window (point))
-            (ghostel--set-window-vscroll window 0 t t)))
-        (set-window-point window (or ghostel--cursor-char-pos
-                                     (point-max)))))))
+                (set-window-start window (car anchor))
+                (ghostel--set-window-vscroll window (cdr anchor) t t))
+            (let ((lines (window-screen-lines)))
+              (goto-char target)
+              (forward-line (- (floor lines)))
+              (set-window-start window (point))
+              (ghostel--set-window-vscroll window 0 t t)))
+          (set-window-point window (or ghostel--cursor-char-pos target)))))))
 
 (defun ghostel--maybe-defer-redraw (buffer)
   "Defer BUFFER's redraw if a `ghostel-inhibit-redraw-functions' hook asks.
