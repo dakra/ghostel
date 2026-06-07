@@ -5990,6 +5990,15 @@ supported."
              (list preserve-vscroll-p))
     (set-window-vscroll window vscroll pixels-p)))
 
+(defconst ghostel--pixel-anchor-supported-p
+  (let ((max-args (cdr (subr-arity (symbol-function 'window-text-pixel-size)))))
+    (and (integerp max-args) (>= max-args 7)))
+  "Non-nil when `window-text-pixel-size' accepts the cons FROM form.
+Emacs 29 shipped the cons FROM that `ghostel--pixel-anchor' needs together
+with IGNORE-LINE-AT-END (arity 7), so the arity probes for it; `fboundp'
+would not, since the function predates the form.  Emacs 28 falls back to
+line-count anchoring, exact for ghostel's uniform row heights.")
+
 (defun ghostel--pixel-anchor (window target)
   "Return (START . VSCROLL) anchoring TARGET at WINDOW's bottom.
 Ask Emacs redisplay for the exact pixel position that places TARGET at
@@ -6011,7 +6020,7 @@ In text frames, use line-count geometry with no vscroll."
       (with-current-buffer buffer
         (let ((target (point-max)))
           (if-let* ((anchor (and (display-graphic-p (window-frame window))
-                                 (fboundp 'window-text-pixel-size)
+                                 ghostel--pixel-anchor-supported-p
                                  (ghostel--pixel-anchor window target))))
               (progn
                 (set-window-start window (car anchor))

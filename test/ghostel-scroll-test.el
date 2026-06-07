@@ -214,6 +214,17 @@ while `window-pixel-height' stays constant)."
       (ghostel-test-scroll--set-gui-anchor-start win)
       (should (ghostel--window-anchored-p win)))))
 
+(ert-deftest ghostel-test-pixel-anchor-gate-matches-emacs-version ()
+  "`ghostel--pixel-anchor-supported-p' gates on the Emacs 29 cons FROM form.
+The cons-cell meaning of `window-text-pixel-size's FROM argument, which
+`ghostel--pixel-anchor' relies on, arrived in Emacs 29.  The predicate
+must therefore be nil on Emacs 28 (where a cons FROM signals
+`wrong-type-argument') and non-nil from Emacs 29 on.  This guards against
+regressing to a bare `fboundp' check, which is true on Emacs 28 because
+`window-text-pixel-size' has existed since Emacs 25 (issue #384)."
+  (should (eq (and ghostel--pixel-anchor-supported-p t)
+              (>= emacs-major-version 29))))
+
 (ert-deftest ghostel-test-second-window-does-not-disturb-scrollback ()
   "Opening another window on the buffer does not move a scrolled peer."
   :tags '(native)
