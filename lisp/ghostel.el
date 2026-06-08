@@ -1545,13 +1545,22 @@ Matches Ghostty 1.2.0's `bold-color' configuration."
              (when (and (derived-mode-p 'ghostel-mode) ghostel--term)
                (ghostel--apply-bold-config ghostel--term)
                (let ((inhibit-read-only t))
-                 (ghostel--redraw ghostel--term t)))))))
+                 (ghostel--redraw ghostel--term t))
+               (ghostel--apply-cursor-style))))))
 
 (defvar-local ghostel--cursor-pos nil
   "The terminal cursor as (COL . ROW) in viewport-relative coordinates.")
 
 (defvar-local ghostel--cursor-char-pos nil
   "The position of the terminal cursor in the buffer.")
+
+(defvar-local ghostel--cursor-style nil
+  "The terminal cursor visual style from the most recent render.
+Values match libghostty's cursor style enum: 0=bar, 1=block,
+2=underline, 3=hollow-block.")
+
+(defvar-local ghostel--cursor-visible nil
+  "Non-nil when the terminal cursor is visible in the most recent render.")
 
 (defvar-local ghostel--rendered-font nil
   "The font last used for rendering. Internally used by native code.")
@@ -5085,6 +5094,14 @@ user-facing cursor is managed by Emacs for navigation, or when
                 (_ 'box))
             nil))))
 
+(defun ghostel--apply-cursor-style ()
+  "Apply the terminal cursor style published by the native renderer.
+The renderer owns discovering terminal cursor state, but cursor
+application is intentionally kept in Elisp so input modes and
+integrations can decide whether `cursor-type' should change."
+  (when ghostel--cursor-style
+    (ghostel--set-cursor-style ghostel--cursor-style ghostel--cursor-visible)))
+
 (defun ghostel--update-directory (dir)
   "Update `default-directory' from terminal's OSC 7 report.
 DIR may be a file:// URL or a plain path.  When the hostname in a
@@ -6106,6 +6123,7 @@ live viewport."
                    (ghostel--query-font-cache (make-hash-table :test 'eq)))
               (with-selected-window render-win
                 (ghostel--redraw ghostel--term ghostel-full-redraw))
+              (ghostel--apply-cursor-style)
 
               (dolist (win anchored) (ghostel--anchor-window win))
 
