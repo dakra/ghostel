@@ -6244,11 +6244,11 @@ and the TTY display that needs it off keeps working in parallel)."
         (setq-local auto-composition-mode tt)))))
 
 (defun ghostel--window-buffer-change (window)
-  "Anchor window and force redraw when buffer gets displayed in WINDOW."
+  "Anchor WINDOW and redraw it immediately when its buffer is displayed."
   (when (and (window-live-p window)
              (eq (window-buffer window) (current-buffer)))
     (ghostel--anchor-window window)
-    (ghostel--invalidate)))
+    (ghostel--redraw-now (current-buffer))))
 
 (defun ghostel--anchor-on-resize (window)
   "Scroll WINDOW to the active area if it was already anchored.

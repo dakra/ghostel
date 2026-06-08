@@ -1706,12 +1706,10 @@ When the buffer reappears, it is immediately redrawn."
               ;; Redraw blocked: buffer still shows the old content.
               (should-not (string-match-p "while-hidden" (buffer-string)))
 
-              ;; Reshow the buffer; hook calls ghostel--invalidate again.
+              ;; Reshow the buffer; the hook redraws immediately without
+              ;; waiting for the delayed invalidation timer.
               (set-window-buffer win buf)
-              (cl-letf (((symbol-function 'run-with-timer)
-                         (lambda (_delay _repeat fn &rest args)
-                           (apply fn args) nil)))
-                (run-hook-with-args 'window-buffer-change-functions win))
+              (run-hook-with-args 'window-buffer-change-functions win)
 
               (should (string-match-p "while-hidden" (buffer-string))))))
       (set-window-buffer win orig-buf)
