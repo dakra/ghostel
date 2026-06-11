@@ -168,6 +168,29 @@ SPEC is (BUFFER TERM ANCHORED-WINDOW HISTORY-WINDOW)."
 							  (should (= history-point-before (window-point history)))
 							  (should-not (ghostel-test-scroll--bottom-visible-p history)))))
 
+(ert-deftest ghostel-test-minibuffer-exit-preserves-copy-mode-point ()
+  "Minibuffer exit does not re-anchor frozen copy-mode windows."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (ghostel-test-scroll--write-lines term "scroll" 80)
+    (ghostel--redraw term t)
+    (ghostel-test-scroll--anchor-window (selected-window))
+    (setq ghostel--input-mode 'copy)
+    (let ((target (save-excursion
+                    (goto-char (point-max))
+                    (forward-line -3)
+                    (line-beginning-position)))
+          timer-fn)
+      (set-window-point (selected-window) target)
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_secs _repeat function &rest args)
+                   (setq timer-fn (lambda () (apply function args)))
+                   'ghostel-test-timer)))
+        (ghostel--minibuffer-exit))
+      (should timer-fn)
+      (funcall timer-fn)
+      (should (= target (window-point))))))
+
 (ert-deftest ghostel-test-minibuffer-exit-skips-replaced-window-buffer ()
   "A deferred minibuffer re-anchor only applies to the captured buffer."
   (let ((orig-config (current-window-configuration))
@@ -511,6 +534,7 @@ rows in the viewport — with or without the trailing newline."
          (progn
            (set-window-buffer (selected-window) buf)
            (with-current-buffer buf
+             (ghostel-mode)
              (let* ((rows (max 1 (window-body-height)))
                     (ghostel--term 'fake)
                     (ghostel--term-rows rows)
