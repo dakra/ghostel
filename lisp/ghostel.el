@@ -6315,11 +6315,17 @@ scroll to active area to keep it focused even during resize."
   "Schedule anchoring of all the currently anchored Ghostel windows.
 The minibuffer when used with packages such as Vertico can cause a resize of
 a Ghostel window making it lose its anchoring."
-  (when-let* ((anchored (cl-delete-if-not #'ghostel--window-anchored-p
-                                          (window-list))))
+  (when-let* ((anchored (cl-loop for win in (window-list)
+                                 when (ghostel--window-anchored-p win)
+                                 collect (cons win (window-buffer win)))))
     (run-at-time 0 nil
                  (lambda ()
-                   (dolist (win anchored) (ghostel--anchor-window win))))))
+                   (dolist (entry anchored)
+                     (let ((win (car entry))
+                           (buffer (cdr entry)))
+                       (when (and (window-live-p win)
+                                  (eq (window-buffer win) buffer))
+                         (ghostel--anchor-window win))))))))
 
 
 ;;; Major mode
