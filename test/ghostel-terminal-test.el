@@ -120,6 +120,18 @@ the same as the primary screen now does."
     (ghostel--redraw term)
     (should (equal '(5 . 3) ghostel--cursor-pos))))
 
+(ert-deftest ghostel-test-redraw-publishes-cursor-style-buffer-locals ()
+  "Native redraw publishes cursor style data without applying it."
+  :tags '(native)
+  (let ((term (ghostel--new 25 80 1000)))
+    (with-temp-buffer
+      (setq-local cursor-type 'box)
+      (ghostel--write-input term "\e[?25l")
+      (ghostel--redraw term)
+      (should (integerp ghostel--cursor-style))
+      (should-not ghostel--cursor-visible)
+      (should (equal cursor-type 'box)))))
+
 (ert-deftest ghostel-test-erase ()
   "Test CSI erase sequences."
   :tags '(native)
@@ -379,6 +391,25 @@ state from the wrong buffer after feeding output to the native module."
           (should (eq invalidate-called ghostel-buf)))
       (kill-buffer ghostel-buf)
       (kill-buffer other-buf))))
+
+(ert-deftest ghostel-test-apply-cursor-style-from-render-state ()
+  "Apply cursor style from buffer-local render state."
+  (let ((buf (generate-new-buffer " *ghostel-test-apply-cursor*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (setq cursor-type 'box)
+          (setq-local ghostel--cursor-style 0)
+          (setq-local ghostel--cursor-visible t)
+          (ghostel--apply-cursor-style)
+          (should (equal cursor-type '(bar . 2)))
+          (setq-local ghostel--cursor-style 2)
+          (ghostel--apply-cursor-style)
+          (should (equal cursor-type '(hbar . 2)))
+          (setq-local ghostel--cursor-visible nil)
+          (ghostel--apply-cursor-style)
+          (should (null cursor-type)))
+      (kill-buffer buf))))
 
 (ert-deftest ghostel-test-ignore-cursor-change ()
   "Test that `ghostel-ignore-cursor-change' suppresses cursor style updates."
