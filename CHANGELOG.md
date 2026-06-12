@@ -20,6 +20,10 @@ All notable changes to this project will be documented in this file.
 - Char mode now captures GUI `C-SPC` and forwards it to the terminal as NUL;
   previously only the TTY `C-@` representation was bound, so a GUI
   Ctrl+Space in char mode fell through to the global `set-mark-command`.
+- A single left-click that gives an Emacs frame input focus — clicking back
+  into Emacs from another application, or into another Emacs frame — no longer
+  enters copy mode; it is treated as a pure focus click like a click in a
+  previously-unselected window (#403).
 
 ## [0.34.0] — 2026-06-08
 

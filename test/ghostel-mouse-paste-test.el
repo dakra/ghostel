@@ -352,6 +352,7 @@ mode or otherwise interfere."
   "Release with no tracking hands off to `mouse-set-point'."
   :tags '(native)
   (let ((fake-event `(mouse-1 (,(selected-window) 1 (10 . 5) 0)))
+        (ghostel--mouse-press-was-selected t)
         (set-point-arg nil)
         (mouse-event-called nil))
     (with-temp-buffer
@@ -373,6 +374,7 @@ without forwarding the second arg, `mouse-set-point' would just
 move point and clobber the word selection set by `mouse-drag-region'."
   :tags '(native)
   (let ((fake-event `(double-mouse-1 (,(selected-window) 1 (10 . 5) 0)))
+        (ghostel--mouse-press-was-selected t)
         (set-point-promote nil))
     (with-temp-buffer
       (setq-local ghostel--term 'fake)
@@ -550,22 +552,104 @@ switch to, so the click just sets point and enters no mode."
       (should emacs-mode-called)
       (should-not copy-mode-called))))
 
-(ert-deftest ghostel-test-mouse-1-press-records-was-selected ()
-  "Press records `ghostel--mouse-press-was-selected' for the clicked window.
-The window in the event equals `(selected-window)', so the press flags
-it as an already-selected (non-focus) click."
+(defmacro ghostel-test--with-click (focus-state &rest body)
+  "Run BODY in a stubbed semi-char buffer where (click) does press + release.
+FOCUS-STATE is what `frame-focus-state' reports.  BODY observes the
+outcome via `copy-mode-called' (reset by each click) and point."
+  (declare (indent 1))
+  `(let ((ghostel-mouse-drag-input-mode 'copy)
+         (ghostel--mouse-press-was-selected nil)
+         (copy-mode-called nil))
+     (with-temp-buffer
+       (setq-local ghostel--term 'fake)
+       (setq-local ghostel--input-mode 'semi-char)
+       (unwind-protect
+           (cl-letf (((symbol-function 'ghostel--mode-enabled)
+                      (lambda (_term _mode) nil))
+                     ((symbol-function 'mouse-drag-region) (lambda (_event) nil))
+                     ((symbol-function 'mouse-set-point)
+                      (lambda (_event &optional _promote) nil))
+                     ((symbol-function 'select-window) (lambda (&rest _) nil))
+                     ((symbol-function 'frame-focus-state)
+                      (lambda (&optional _f) ,focus-state))
+                     ((symbol-function 'ghostel-copy-mode)
+                      (lambda () (setq copy-mode-called t))))
+             (cl-flet ((click ()
+                         (setq copy-mode-called nil)
+                         (ghostel-mouse-press-or-copy-mode
+                          `(down-mouse-1 (,(selected-window) 1 (10 . 5) 0)))
+                         (ghostel-mouse-release-or-set-point
+                          `(mouse-1 (,(selected-window) 1 (10 . 5) 0)) 1)))
+               ,@body))
+         (set-frame-parameter nil 'ghostel--frame-refocused nil)))))
+
+(ert-deftest ghostel-test-mouse-1-click-focused-frame-enters-copy-mode ()
+  "Single click in a selected window of a focused frame enters copy mode."
   :tags '(native)
-  (let ((fake-event `(down-mouse-1 (,(selected-window) 1 (10 . 5) 0)))
-        (ghostel--mouse-press-was-selected nil))
-    (with-temp-buffer
-      (setq-local ghostel--term 'fake)
-      (setq-local ghostel--input-mode 'semi-char)
-      (cl-letf (((symbol-function 'ghostel--mode-enabled)
-                 (lambda (_term _mode) nil))
-                ((symbol-function 'mouse-drag-region) (lambda (_event) nil))
-                ((symbol-function 'select-window) (lambda (&rest _) nil)))
-        (ghostel-mouse-press-or-copy-mode fake-event))
-      (should ghostel--mouse-press-was-selected))))
+  (ghostel-test--with-click t
+    (set-frame-parameter nil 'ghostel--frame-refocused nil)
+    (click)
+    (should copy-mode-called)))
+
+(ert-deftest ghostel-test-mouse-1-click-refocused-frame-is-focus-click ()
+  "First click after the frame regains focus only focuses; the second freezes.
+The window stays selected while the frame is in the background (#403)."
+  :tags '(native)
+  (ghostel-test--with-click t
+    (insert "hello world")
+    (setq-local ghostel--cursor-char-pos 11)
+    (goto-char 8)
+    (set-frame-parameter nil 'ghostel--frame-refocused t)
+    (click)
+    (should-not copy-mode-called)
+    (should (= (point) 11))             ; snapped to the live cursor
+    (click)
+    (should copy-mode-called)))
+
+(ert-deftest ghostel-test-mouse-1-click-before-focus-in-is-focus-click ()
+  "Click dispatched before the focus-in is processed only focuses."
+  :tags '(native)
+  (ghostel-test--with-click nil
+    (set-frame-parameter nil 'ghostel--frame-refocused nil)
+    (click)
+    (should-not copy-mode-called)))
+
+(ert-deftest ghostel-test-mouse-1-click-focus-unknown-enters-copy-mode ()
+  "Click with `frame-focus-state' `unknown' still enters copy mode.
+Treating `unknown' as unfocused would break click->copy-mode on ttys."
+  :tags '(native)
+  (ghostel-test--with-click 'unknown
+    (set-frame-parameter nil 'ghostel--frame-refocused nil)
+    (click)
+    (should copy-mode-called)))
+
+(ert-deftest ghostel-test-focus-change-flags-refocused-frame ()
+  "`ghostel--focus-change' sets the refocus flag on focus gain, clears on loss."
+  :tags '(native)
+  (let ((state nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'frame-focus-state)
+                   (lambda (&optional _f) state))
+                  ;; Keep the buffer focus-event loop inert.
+                  ((symbol-function 'buffer-list) (lambda () nil)))
+          (set-frame-parameter nil 'ghostel--frame-focused nil)
+          (set-frame-parameter nil 'ghostel--frame-refocused nil)
+          (ghostel--focus-change)
+          (should-not (frame-parameter nil 'ghostel--frame-refocused))
+          (setq state t)
+          (ghostel--focus-change)
+          (should (frame-parameter nil 'ghostel--frame-refocused))
+          ;; No transition: a consumed flag stays consumed.
+          (set-frame-parameter nil 'ghostel--frame-refocused nil)
+          (ghostel--focus-change)
+          (should-not (frame-parameter nil 'ghostel--frame-refocused))
+          ;; Losing focus clears a pending flag.
+          (set-frame-parameter nil 'ghostel--frame-refocused t)
+          (setq state nil)
+          (ghostel--focus-change)
+          (should-not (frame-parameter nil 'ghostel--frame-refocused)))
+      (set-frame-parameter nil 'ghostel--frame-focused nil)
+      (set-frame-parameter nil 'ghostel--frame-refocused nil))))
 
 (ert-deftest ghostel-test-mouse-1-release-tracking-forwards ()
   "Release with active tracking forwards via `ghostel--mouse-release'."

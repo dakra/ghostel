@@ -777,7 +777,8 @@ Customize the faces `ghostel-fake-cursor' and
 
 Has no effect when a DEC mouse-tracking mode (1000/1002/1003) is
 active (the press is forwarded to the program) or when the buffer
-is not in semi-char-mode when the gesture completes."
+is not in semi-char-mode when the gesture completes.
+A click that focuses the window or its frame never switches mode."
   :type '(choice (const :tag "Copy mode (default)" copy)
                  (const :tag "Emacs mode"          emacs)
                  (const :tag "Do not switch"       nil)))
@@ -2490,9 +2491,9 @@ Return non-nil if the event was forwarded (mouse tracking is active)."
 ;;; Mouse input
 
 (defvar ghostel--mouse-press-was-selected nil
-  "Non-nil if the window under the last left-press was already selected.
-Set at press, read at release to tell a focus click (which only focuses)
-from a click in an already-focused window (which enters copy mode).")
+  "Non-nil if the last left-press hit an already-selected window.
+Nil also when the press is the click that focused the frame.  Read
+at release to tell a focus click from an interaction click.")
 
 (defvar-local ghostel--mouse-drag-button nil
   "Button number held during an in-progress mouse-tracking drag.
@@ -2651,11 +2652,20 @@ to consume mouse input."
   "Forward EVENT to the terminal, or hand off to `mouse-drag-region'.
 With a DEC mouse-tracking mode (1000/1002/1003) on, forwards the press
 to the program; otherwise hands off to `mouse-drag-region'.  Records in
-`ghostel--mouse-press-was-selected' whether the window was already
-selected before focusing it, for `ghostel-mouse-release-or-set-point'."
+`ghostel--mouse-press-was-selected' whether the window was already selected,
+in an already-focused frame, before focusing it, for
+`ghostel-mouse-release-or-set-point'."
   (interactive "e")
-  (let ((win (posn-window (event-start event))))
-    (setq ghostel--mouse-press-was-selected (eq win (selected-window)))
+  (let* ((win (posn-window (event-start event)))
+         (frame (window-frame win))
+         ;; First press since the frame gained focus, or press dispatched
+         ;; before the focus-in (nil, not `unknown'): a focus click (#403).
+         (refocused (or (frame-parameter frame 'ghostel--frame-refocused)
+                        (null (frame-focus-state frame)))))
+    (set-frame-parameter frame 'ghostel--frame-refocused nil)
+
+    (setq ghostel--mouse-press-was-selected
+          (and (eq win (selected-window)) (not refocused)))
     (select-window win)
     (if (ghostel--mouse-tracking-active-p)
         (ghostel--mouse-press event)
@@ -2668,10 +2678,10 @@ selected before focusing it, for `ghostel-mouse-release-or-set-point'."
   "Forward EVENT to the terminal, or set point / switch input mode.
 With tracking off, sets point (PROMOTE-TO-REGION keeps the word/line
 selection of a multi-click) and, in semi-char mode, switches to
-`ghostel-mouse-drag-input-mode' after a multi-click or a single click
-in an already-selected window.  A single click that only focuses a
-previously-unselected window instead snaps point to the live cursor and
-stays in semi-char (skipped when `ghostel-mouse-drag-input-mode' is nil)."
+`ghostel-mouse-drag-input-mode' after a multi-click or a single click in an
+already-selected window.  A single click that only focuses a previously
+unselected window or frame instead snaps point to the live cursor and stays
+in semi-char (skipped when `ghostel-mouse-drag-input-mode' is nil)."
   (interactive "e\np")
   (let ((active (and ghostel-mouse-drag-input-mode
                      (eq ghostel--input-mode 'semi-char))))
@@ -5310,11 +5320,15 @@ and the buffer is the active selection within it)."
 
 (defun ghostel--focus-change (&rest _)
   "Update focus state for every live ghostel buffer.
-Called from `after-focus-change-function',
-`window-selection-change-functions', and
-`window-buffer-change-functions'.  Sends a focus event only when
-the buffer's logical focus state transitions; `ghostel--focus-event'
-further gates on terminal mode 1004."
+Called from `after-focus-change-function', `window-selection-change-functions',
+`window-buffer-change-functions'.  Sends a focus event only when the buffer's
+logical focus state transitions.  Further gates on terminal mode 1004.
+Also flags just-refocused frames for `ghostel-mouse-press-or-copy-mode'."
+  (dolist (frame (frame-list))
+    (let ((focused (eq (frame-focus-state frame) t)))
+      (unless (eq focused (frame-parameter frame 'ghostel--frame-focused))
+        (set-frame-parameter frame 'ghostel--frame-focused focused)
+        (set-frame-parameter frame 'ghostel--frame-refocused focused))))
   (dolist (buf (buffer-list))
     (when (buffer-live-p buf)
       (with-current-buffer buf
@@ -5323,9 +5337,9 @@ further gates on terminal mode 1004."
                    ghostel--process
                    (process-live-p ghostel--process))
           (let ((focused (and (ghostel--buffer-focused-p buf) t)))
-            (unless (eq focused ghostel--focus-state)
-              (when (ghostel--focus-event ghostel--term focused)
-                (setq ghostel--focus-state focused)))))))))
+            (when (and (not (eq focused ghostel--focus-state))
+                       (ghostel--focus-event ghostel--term focused))
+              (setq ghostel--focus-state focused))))))))
 
 
 ;;; Process management
