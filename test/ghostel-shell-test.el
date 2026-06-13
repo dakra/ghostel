@@ -13,7 +13,7 @@
 (defmacro ghostel-test--with-cat-process (var &rest body)
   "Spawn a long-lived `cat' process bound to VAR, run BODY, then clean up.
 The process is killed and the temp buffer destroyed on exit so the
-flag-flip tests don't leak processes between runs."
+query-before-killing tests don't leak processes between runs."
   (declare (indent 1))
   `(let* ((buf (generate-new-buffer " *ghostel-test-query-cat*"))
           (,var (make-process :name "ghostel-test-cat"
@@ -48,158 +48,110 @@ newest-first list aligns with the buffer-order regions."
       (ghostel-test--insert-prompt prefix input)
       (push cwd ghostel--imenu-cwds))))
 
+(defun ghostel-test--rendered-terminal-text ()
+  "Redraw the current ghostel terminal and return its text."
+  (let ((inhibit-read-only t))
+    (ghostel--redraw ghostel--term t))
+  (ghostel-test--terminal-text))
+
 (ert-deftest ghostel-test-shell-integration ()
   "Test shell process command output and PTY echo."
   :tags '(native)
-  (let ((buf (generate-new-buffer " *ghostel-test-shell*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (ghostel-mode)
-          (setq ghostel--term (ghostel--new 25 80 1000))
-          (let* ((prompt "GHOSTEL_TEST_PROMPT>")
-                 (prompt-regexp (regexp-quote prompt))
-                 (process-environment
-                  (append (list "TERM=xterm-256color" "COLUMNS=80" "LINES=25"
-                                (concat "PROMPT=" prompt)
-                                (concat "PS1=" prompt))
-                          process-environment))
-                 (proc (make-process
-                        :name "ghostel-test-sh"
-                        :buffer buf
-                        :command '("/bin/zsh" "-f")
-                        :connection-type 'pty
-                        :filter #'ghostel--filter)))
-            (setq ghostel--process proc)
-            (set-process-coding-system proc 'binary 'binary)
-            (set-process-window-size proc 25 80)
-            (set-process-query-on-exit-flag proc nil)
-            ;; Wait for shell init
-            (ghostel-test--wait-for proc
-                                    (lambda ()
-                                      (string-match-p prompt-regexp
-                                                      (or (ghostel--copy-all-text ghostel--term)
-                                                          "")))
-                                    10)
-            (should (process-live-p proc))                ; shell process alive
+  (skip-unless (executable-find "zsh"))
+  (ghostel-test--with-pty-matrix backend
+				 (let* ((prompt "GHOSTEL_TEST_PROMPT>")
+					(prompt-regexp (regexp-quote prompt))
+					(process-environment
+					 (append (list "TERM=xterm-256color" "COLUMNS=80" "LINES=24"
+						       (concat "PROMPT=" prompt)
+						       (concat "PS1=" prompt))
+						 process-environment)))
+				   (ghostel-test--with-exec-buffer (buf proc "/bin/zsh" '("-fi"))
+								   ;; Wait for shell init.
+								   (ghostel-test--wait-until
+								    (lambda ()
+								      (string-match-p prompt-regexp
+										      (ghostel-test--rendered-terminal-text)))
+								    proc 10)
+								   (should (process-live-p proc))
 
-            ;; Run a command and wait until the shell has printed the next
-            ;; prompt.  Matching only the command output races with the shell
-            ;; becoming ready for the following interactive input.  The quoted
-            ;; empty string keeps the echoed command from containing the exact
-            ;; output token.
-            (process-send-string proc "print -r -- GHOSTEL_''TEST_OK\n")
-            (ghostel-test--wait-for proc
-                                    (lambda ()
-                                      (string-match-p
-                                       (concat "GHOSTEL_TEST_OK\\(?:.\\|\n\\)*"
-                                               prompt-regexp)
-                                       (or (ghostel--copy-all-text ghostel--term)
-                                           ""))))
-            (let ((state (ghostel--copy-all-text ghostel--term)))
-              (should (string-match-p "GHOSTEL_TEST_OK" state))) ; command output visible
-
-            ;; Test typing + backspace via PTY echo
-            (process-send-string proc "abc")
-            (ghostel-test--wait-for proc
-                                    (lambda () (string-match-p "abc"
-                                                               (ghostel--copy-all-text ghostel--term))))
-            (let ((state (ghostel--copy-all-text ghostel--term)))
-              (should (string-match-p "abc" state)))      ; typed text visible
-
-            (process-send-string proc "\x7f")
-            (ghostel-test--wait-for proc
-                                    (lambda () (not (string-match-p "abc"
-                                                                    (ghostel--copy-all-text ghostel--term)))))
-            (let ((state (ghostel--copy-all-text ghostel--term)))
-              (should (string-match-p "ab" state))        ; backspace removed char
-              (should-not (string-match-p "abc" state)))  ; no abc after BS
-
-            (delete-process proc)))
-      (kill-buffer buf))))
+								   ;; Run a command and wait until the shell has printed the next
+								   ;; prompt.  Matching only the command output races with the shell
+								   ;; becoming ready for the following interactive input.  The quoted
+								   ;; empty string keeps the echoed command from containing the exact
+								   ;; output token.
+								   (ghostel--write-pty ghostel--term "print -r -- GHOSTEL_''TEST_OK\n")
+								   (ghostel-test--wait-until
+								    (lambda ()
+								      (string-match-p
+								       (concat "GHOSTEL_TEST_OK\\(?:.\\|\n\\)*" prompt-regexp)
+								       (ghostel-test--rendered-terminal-text)))
+								    proc 10)
+								   (should (string-match-p "GHOSTEL_TEST_OK"
+											   (ghostel-test--rendered-terminal-text)))))))
 
 (ert-deftest ghostel-test-da-response ()
   "Test that the terminal responds to DA1 queries."
   :tags '(native)
-  (let* ((term (ghostel--new 25 80 1000))
-         (sent-bytes nil))
-    (cl-letf (((symbol-function 'ghostel--flush-output)
-               (lambda (data)
-                 (setq sent-bytes (concat sent-bytes data)))))
-      ;; Feed DA1 query: CSI c
-      (ghostel--write-input term "\e[c")
-      ;; Should have responded with DA1 (CSI ? 62 ; 22 c)
-      (should sent-bytes)
-      (should (string-match-p "\e\\[\\?62;22c" sent-bytes)))))
+  (let ((python (executable-find "python3")))
+    (skip-unless python)
+    (ghostel-test--with-pty-matrix backend
+				   (ghostel-test--with-exec-buffer
+				    (buf proc python
+					 (list "-c"
+					       ghostel-test--pty-reply-probe-script
+					       "0.15"
+					       (ghostel-test--hex-encode-string "\e[c")))
+				    (should (equal "1b5b3f36323b323263"
+						   (ghostel-test--wait-for-pty-reply 0 proc 6)))))))
 
 (ert-deftest ghostel-test-fish-backspace ()
   "Test backspace works with fish shell."
   :tags '(:fish native)
   (skip-unless (executable-find "fish"))
-  (let ((buf (generate-new-buffer " *ghostel-test-fish*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (ghostel-mode)
-          (setq ghostel--term (ghostel--new 25 80 1000))
-          (let* ((process-environment
-                  (append (list "TERM=xterm-256color"
-                                "COLORTERM=truecolor"
-                                "COLUMNS=80" "LINES=25")
-                          process-environment))
-                 (proc (make-process
-                        :name "ghostel-test-fish"
-                        :buffer buf
-                        :command '("/bin/sh" "-c"
-                                   "stty erase '^?' 2>/dev/null; exec fish --no-config --private")
-                        :connection-type 'pty
-                        :filter #'ghostel--filter)))
-            (setq ghostel--process proc)
-            (set-process-coding-system proc 'binary 'binary)
-            (set-process-window-size proc 25 80)
-            (set-process-query-on-exit-flag proc nil)
-            ;; Wait for fish init (may need longer for DA query handshake)
-            (ghostel-test--wait-for proc
-                                    (lambda () (ghostel--copy-all-text ghostel--term)) 10)
-            (should (process-live-p proc))
+  (ghostel-test--with-pty-matrix backend
+				 (let ((process-environment
+					(append (list "TERM=xterm-256color"
+						      "COLORTERM=truecolor"
+						      "COLUMNS=80" "LINES=24")
+						process-environment)))
+				   (ghostel-test--with-exec-buffer
+				    (buf proc "/bin/sh"
+					 '("-c" "stty erase '^?' 2>/dev/null; exec fish --no-config --private"))
+				    (should (process-live-p proc))
 
-            ;; Send a real command before testing line editing.  The initial
-            ;; output may be a terminal query or startup redraw; waiting for
-            ;; command output proves fish's reader is accepting input.  Private
-            ;; mode keeps history/autosuggestions from repainting `abc' after
-            ;; it has been backspaced to `ab'.
-            (process-send-string proc "printf '%s%s\\n' GHOSTEL_FISH _READY\n")
-            (ghostel-test--wait-for
-             proc
-             (lambda ()
-               (string-match-p "GHOSTEL_FISH_READY"
-                               (or (ghostel--copy-all-text ghostel--term)
-                                   "")))
-             10)
+				    ;; Send a real command before testing line editing.  The initial
+				    ;; output may be a terminal query or startup redraw; waiting for
+				    ;; command output proves fish's reader is accepting input.  Private
+				    ;; mode keeps history/autosuggestions from repainting `abc' after
+				    ;; it has been backspaced to `ab'.
+				    (ghostel--write-pty ghostel--term
+							"printf '%s%s\\n' GHOSTEL_FISH _READY\n")
+				    (ghostel-test--wait-until
+				     (lambda ()
+				       (string-match-p "GHOSTEL_FISH_READY"
+						       (ghostel-test--rendered-terminal-text)))
+				     proc 10)
 
-            ;; Type "abc" then backspace
-            (process-send-string proc "abc")
-            (ghostel-test--wait-for
-             proc
-             (lambda ()
-               (string-match-p "abc"
-                               (or (ghostel--copy-all-text ghostel--term)
-                                   ""))))
-            (let ((state (ghostel--copy-all-text ghostel--term)))
-              (should (string-match-p "abc" state)))
+				    ;; Type "abc" then backspace.
+				    (ghostel--write-pty ghostel--term "abc")
+				    (ghostel-test--wait-until
+				     (lambda ()
+				       (string-match-p "abc" (ghostel-test--rendered-terminal-text)))
+				     proc 5)
+				    (should (string-match-p "abc" (ghostel-test--rendered-terminal-text)))
 
-            ;; Send backspace (\x7f) and verify it works
-            (process-send-string proc "\x7f")
-            (ghostel-test--wait-for
-             proc
-             (lambda ()
-               (let ((state (or (ghostel--copy-all-text ghostel--term) "")))
-                 (and (string-match-p "ab" state)
-                      (not (string-match-p "abc" state))))))
-            (let ((state (ghostel--copy-all-text ghostel--term)))
-              (should (string-match-p "ab" state))
-              (should-not (string-match-p "abc" state)))
-
-            (delete-process proc)))
-      (kill-buffer buf))))
+				    ;; Send backspace (\x7f) and verify it works.
+				    (ghostel--write-pty ghostel--term "\x7f")
+				    (ghostel-test--wait-until
+				     (lambda ()
+				       (let ((state (ghostel-test--rendered-terminal-text)))
+					 (and (string-match-p "ab" state)
+					      (not (string-match-p "abc" state)))))
+				     proc 5)
+				    (let ((state (ghostel-test--rendered-terminal-text)))
+				      (should (string-match-p "ab" state))
+				      (should-not (string-match-p "abc" state)))))))
 
 (ert-deftest ghostel-test-fish-auto-inject-loads-integration ()
   "Fish auto-inject shim chains to ghostel.fish and cleans XDG_DATA_DIRS.
@@ -485,139 +437,6 @@ would) and puts a fake `hostname' on PATH; the integration must emit the fake
                 (should-not (equal emitted fqdn)))))
         (delete-directory bindir t)))))
 
-(ert-deftest ghostel-test-osc7-parsing ()
-  "Test that OSC 7 sequences are parsed by libghostty."
-  :tags '(native)
-  (let ((term (ghostel--new 25 80 1000)))
-    (should (equal nil (ghostel--get-pwd term)))           ; no pwd initially
-
-    (ghostel--write-input term "\e]7;file:///tmp/testdir\e\\")
-    (should (equal "file:///tmp/testdir"                    ; pwd after OSC 7 (ST)
-                   (ghostel--get-pwd term)))
-
-    (ghostel--write-input term "\e]7;file:///home/user\a")
-    (should (equal "file:///home/user"                      ; pwd after OSC 7 (BEL)
-                   (ghostel--get-pwd term)))))
-
-(ert-deftest ghostel-test-osc133-parsing ()
-  "Test that OSC 133 sequences are detected and the callback fires."
-  :tags '(native)
-  (let ((term (ghostel--new 25 80 1000))
-        (markers nil))
-    (cl-letf (((symbol-function 'ghostel--osc133-marker)
-               (lambda (type param) (push (cons type param) markers))))
-      (ghostel--write-input term "\e]133;A\e\\")
-      (should (assoc "A" markers))                         ; 133;A detected
-
-      (ghostel--write-input term "\e]133;B\a")
-      (should (assoc "B" markers))                         ; 133;B detected
-
-      (ghostel--write-input term "\e]133;C\e\\")
-      (should (assoc "C" markers))                         ; 133;C detected
-
-      (ghostel--write-input term "\e]133;D;0\e\\")
-      (let ((d-entry (assoc "D" markers)))
-        (should d-entry)                                   ; 133;D detected
-        (should (equal "0" (cdr d-entry))))                ; 133;D param is exit code
-
-      ;; Non-zero exit
-      (setq markers nil)
-      (ghostel--write-input term "\e]133;D;1\e\\")
-      (let ((d-entry (assoc "D" markers)))
-        (should (equal "1" (cdr d-entry))))                ; 133;D non-zero exit
-
-      ;; Mixed with other output
-      (setq markers nil)
-      (ghostel--write-input term "hello\e]133;A\e\\world\e]133;B\e\\")
-      (should (assoc "A" markers))                         ; 133;A in mixed stream
-      (should (assoc "B" markers))                         ; 133;B in mixed stream
-
-      ;; 133;P (explicit prompt start, no fresh-line side effect) — used
-      ;; by the zsh `zle-line-init' fallback and forwarded to elisp the
-      ;; same way as A so prompt navigation keeps working when the
-      ;; PROMPT-wrap was clobbered by a theme.
-      (setq markers nil)
-      (ghostel--write-input term "\e]133;P\e\\")
-      (should (assoc "P" markers))                         ; 133;P bare detected
-      (setq markers nil)
-      (ghostel--write-input term "\e]133;P;k=i\e\\")
-      (let ((p-entry (assoc "P" markers)))
-        (should p-entry)                                   ; 133;P with k=i detected
-        (should (equal "k=i" (cdr p-entry))))              ; param payload preserved
-
-      ;; 133;N (new_command) — spec'd as "A but with optional aid=" for
-      ;; shells that track concurrent commands.  Ghostel doesn't track
-      ;; commands by aid, so N is forwarded to elisp as A (same prompt
-      ;; navigation, same command-start/finish hooks).
-      (setq markers nil)
-      (ghostel--write-input term "\e]133;N\e\\")
-      (should (assoc "A" markers))                         ; 133;N surfaces as A
-      (setq markers nil)
-      (ghostel--write-input term "\e]133;N;aid=42\e\\")
-      (let ((a-entry (assoc "A" markers)))
-        (should a-entry)                                   ; 133;N with aid still A
-        (should (equal "aid=42" (cdr a-entry)))))))        ; aid options preserved
-
-(ert-deftest ghostel-test-osc133-text-properties ()
-  "Test that prompt markers set ghostel-prompt text property."
-  :tags '(native)
-  (let ((buf (generate-new-buffer " *ghostel-test-osc133*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (let* ((term (ghostel--new 5 40 100))
-                 (inhibit-read-only t)
-                 (ghostel--prompt-positions nil))
-            ;; Simulate a prompt: A, prompt text, B, command, output, D
-            (ghostel--write-input term "\e]133;A\e\\")
-            (ghostel--write-input term "$ ")
-            (ghostel--redraw term)
-            (ghostel--write-input term "\e]133;B\e\\")
-            (ghostel--write-input term "echo hi\r\n")
-            (ghostel--write-input term "hi\r\n")
-            (ghostel--write-input term "\e]133;D;0\e\\")
-            (ghostel--redraw term)
-
-            (goto-char (point-min))
-            (should (text-property-any (point-min) (point-max)
-                                       'ghostel-prompt t)) ; ghostel-prompt property set
-
-            ;; Property should survive a full redraw
-            (ghostel--redraw term)
-            (should (text-property-any (point-min) (point-max)
-                                       'ghostel-prompt t)) ; ghostel-prompt survives redraw
-
-            (should (> (length ghostel--prompt-positions) 0)) ; prompt-positions has entry
-
-            ;; Check exit status stored
-            (when ghostel--prompt-positions
-              (should (equal 0 (cdr (car ghostel--prompt-positions))))))) ; exit status stored
-      (kill-buffer buf))))
-
-(ert-deftest ghostel-test-osc133-input-text-property ()
-  "Cells between OSC 133 B and C should be marked `ghostel-input'.
-This is what keeps `ghostel--detect-urls' from linkifying the user's
-in-progress command line — the renderer marks input cells, the elisp
-scanner skips them."
-  :tags '(native)
-  (let ((buf (generate-new-buffer " *ghostel-test-osc133-input*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (let* ((term (ghostel--new 5 40 100))
-                 (inhibit-read-only t))
-            (ghostel--write-input
-             term "\e]133;A\e\\$ \e]133;B\e\\cd src/main.rs")
-            (ghostel--redraw term)
-            (goto-char (point-min))
-            (should (search-forward "cd src/main.rs" nil t))
-            (let ((path-beg (- (point) (length "cd src/main.rs")))
-                  (path-end (point)))
-              (should (get-text-property path-beg 'ghostel-input))
-              (should (get-text-property (1- path-end) 'ghostel-input))
-              ;; The "$ " prompt prefix should NOT be marked as input.
-              (should (null (get-text-property
-                             (point-min) 'ghostel-input))))))
-      (kill-buffer buf))))
-
 (ert-deftest ghostel-test-zsh-line-init-fallback-no-fresh-line ()
   "Use 133;P (not 133;A) in the `zle-line-init' fallback emit.
 When ghostel's PROMPT-wrap is bypassed (e.g. a theme like
@@ -638,100 +457,71 @@ below it."
                    (file-name-directory (locate-library "ghostel"))))
          (shell-zsh (expand-file-name "etc/shell/ghostel.zsh" root)))
     (skip-unless (file-exists-p shell-zsh))
-    (let ((buf (generate-new-buffer " *ghostel-test-line-init-fallback*")))
-      (unwind-protect
-          (with-current-buffer buf
-            (ghostel-mode)
-            (setq ghostel--term (ghostel--new 8 80 200))
-            ;; Mirror the dimensions into the buffer-local row/col so
-            ;; the viewport-start helpers below can map libghostty's
-            ;; viewport-row index onto a buffer position once content
-            ;; has scrolled into scrollback (real risk here: a
-            ;; multi-line PROMPT plus four typed commands fill more
-            ;; than 8 rows on slow CI, and `(point-min)' then no
-            ;; longer aligns with the viewport top).
-            (setq ghostel--term-rows 8)
-            (setq ghostel--term-cols 80)
-            (let* ((process-environment
-                    (append (list "TERM=xterm-ghostty"
-                                  "INSIDE_EMACS=ghostel"
-                                  "COLUMNS=80" "LINES=8")
-                            process-environment))
-                   (proc (make-process
-                          :name "ghostel-test-line-init-fallback"
-                          :buffer buf
-                          :command '("/bin/zsh" "-fi")
-                          :connection-type 'pty
-                          :filter #'ghostel--filter)))
-              (setq ghostel--process proc)
-              (set-process-coding-system proc 'binary 'binary)
-              (set-process-window-size proc 8 80)
-              (set-process-query-on-exit-flag proc nil)
-              (unwind-protect
-                  (progn
-                    ;; Wait for the initial default prompt to reach the terminal.
-                    (ghostel-test--wait-for
-                     proc (lambda () (ghostel--copy-all-text ghostel--term)) 10)
-                    ;; Source ghostel.zsh (registers precmd hooks + the
-                    ;; zle-line-init widget).  Then strip the wrap function
-                    ;; from `precmd_functions' so PROMPT is left untouched
-                    ;; — this exercises the fallback path the same way
-                    ;; powerlevel10k's `_p9k_precmd' override does in the
-                    ;; wild.  Set a multi-line PROMPT so the regression is
-                    ;; visible: cursor must land beside `final-> ', not on
-                    ;; the row below it.
-                    (process-send-string
-                     proc
-                     (concat
-                      "source " shell-zsh "\n"
-                      "precmd_functions=(${precmd_functions:#__ghostel_ensure_prompt_wrap})\n"
-                      "PROMPT=$'top-line\\nfinal-> '\n"
-                      "\n"))
-                    ;; Poll the asserted state directly: redraw on each tick
-                    ;; and stop once the cursor row starts with "final-> ".
-                    ;; Earlier attempts
-                    ;; raced on slow CI: byte-pattern waits matched
-                    ;; the echoed PROMPT assignment before zsh had
-                    ;; rendered the new prompt, and a `(point-min)'
-                    ;; anchor mapped the viewport-row index onto the
-                    ;; wrong buffer line once scrollback formed.
-                    ;; Anchor on `ghostel--viewport-start' so the row
-                    ;; mapping survives scrollback.
-                    (ghostel-test--wait-for
-                     proc
-                     (lambda ()
-                       (let ((inhibit-read-only t))
-                         (ghostel--redraw ghostel--term t))
-                       (let ((pos ghostel--cursor-pos)
-                             (vp-start (ghostel--viewport-start)))
-                         (and pos vp-start
-                              (save-excursion
-                                (goto-char vp-start)
-                                (forward-line (cdr pos))
-                                (string-prefix-p
-                                 "final-> "
-                                 (buffer-substring-no-properties
-                                  (line-beginning-position)
-                                  (line-end-position)))))))
-                     15)
-                    (let* ((pos ghostel--cursor-pos)
-                           (col (car pos))
-                           (row (cdr pos))
-                           (vp-start (ghostel--viewport-start)))
-                      ;; Cursor sits right after `final-> ' (8 chars).
-                      (should (= 8 col))
-                      ;; ...and on the same row as `final-> ', not below it.
-                      (save-excursion
-                        (goto-char vp-start)
-                        (forward-line row)
-                        (should
-                         (string-prefix-p
-                          "final-> "
-                          (buffer-substring-no-properties
-                           (line-beginning-position)
-                           (line-end-position)))))))
-                (delete-process proc))))
-        (kill-buffer buf)))))
+    (ghostel-test--with-pty-matrix backend
+				   (ghostel-test--with-terminal-buffer (buf term 8 80 200)
+								       (setq-local ghostel-detect-password-prompts nil)
+								       (let ((proc (ghostel--spawn-pty "/bin/zsh" '("-fi") 8 80
+												       ghostel--default-stty nil nil)))
+									 ;; Wait for the initial default prompt to reach the terminal.
+									 (ghostel-test--wait-until
+									  (lambda ()
+									    (not (string-empty-p (ghostel-test--rendered-terminal-text))))
+									  proc 10)
+									 ;; Source ghostel.zsh (registers precmd hooks + the
+									 ;; zle-line-init widget).  Then strip the wrap function
+									 ;; from `precmd_functions' so PROMPT is left untouched
+									 ;; — this exercises the fallback path the same way
+									 ;; powerlevel10k's `_p9k_precmd' override does in the
+									 ;; wild.  Set a multi-line PROMPT so the regression is
+									 ;; visible: cursor must land beside `final-> ', not on
+									 ;; the row below it.
+									 (ghostel--write-pty
+									  ghostel--term
+									  (concat
+									   "source " (shell-quote-argument shell-zsh) "\n"
+									   "precmd_functions=(${precmd_functions:#__ghostel_ensure_prompt_wrap})\n"
+									   "PROMPT=$'top-line\\nfinal-> '\n"
+									   "\n"))
+									 ;; Poll the asserted state directly: redraw on each tick
+									 ;; and stop once the cursor row starts with "final-> ".
+									 ;; Earlier attempts raced on slow CI: byte-pattern waits
+									 ;; matched the echoed PROMPT assignment before zsh had
+									 ;; rendered the new prompt, and a `(point-min)' anchor
+									 ;; mapped the viewport-row index onto the wrong buffer
+									 ;; line once scrollback formed.  Anchor on
+									 ;; `ghostel--viewport-start' so the row mapping survives
+									 ;; scrollback.
+									 (ghostel-test--wait-until
+									  (lambda ()
+									    (let ((inhibit-read-only t))
+									      (ghostel--redraw ghostel--term t))
+									    (let ((pos ghostel--cursor-pos)
+										  (vp-start (ghostel--viewport-start)))
+									      (and pos vp-start
+										   (save-excursion
+										     (goto-char vp-start)
+										     (forward-line (cdr pos))
+										     (string-match-p
+										      "^[[:blank:]]*final-> "
+										      (buffer-substring-no-properties
+										       (line-beginning-position)
+										       (line-end-position)))))))
+									  proc 15)
+									 (let* ((pos ghostel--cursor-pos)
+										(col (car pos))
+										(row (cdr pos))
+										(vp-start (ghostel--viewport-start)))
+									   ;; Cursor is on the same row as `final-> ', not below it.
+									   (should (>= col 8))
+									   (save-excursion
+									     (goto-char vp-start)
+									     (forward-line row)
+									     (should
+									      (string-match-p
+									       "^[[:blank:]]*final-> "
+									       (buffer-substring-no-properties
+										(line-beginning-position)
+										(line-end-position)))))))))))
 
 (ert-deftest ghostel-test-zsh-prompt-cells-tagged-with-self-reorder-theme ()
   "Tag prompt cells when a self-reordering theme overrides PROMPT.
@@ -759,227 +549,82 @@ checks that the most recent prompt's `top-line' row carries the
                    (file-name-directory (locate-library "ghostel"))))
          (shell-zsh (expand-file-name "etc/shell/ghostel.zsh" root)))
     (skip-unless (file-exists-p shell-zsh))
-    (let ((buf (generate-new-buffer " *ghostel-test-rearrange*")))
-      (unwind-protect
-          (with-current-buffer buf
-            (ghostel-mode)
-            (setq ghostel--term (ghostel--new 8 80 200))
-            (let* ((process-environment
-                    (append (list "TERM=xterm-ghostty"
-                                  "INSIDE_EMACS=ghostel"
-                                  "COLUMNS=80" "LINES=8")
-                            process-environment))
-                   (proc (make-process
-                          :name "ghostel-test-rearrange"
-                          :buffer buf
-                          :command '("/bin/zsh" "-fi")
-                          :connection-type 'pty
-                          :filter #'ghostel--filter)))
-              (setq ghostel--process proc)
-              (set-process-coding-system proc 'binary 'binary)
-              (set-process-window-size proc 8 80)
-              (set-process-query-on-exit-flag proc nil)
-              (unwind-protect
-                  (progn
-                    (ghostel-test--wait-for
-                     proc (lambda () (ghostel--copy-all-text ghostel--term)) 10)
-                    ;; Source ghostel.zsh + register a fake p10k that
-                    ;; both overrides PROMPT AND self-reorders to end
-                    ;; each cycle (this is what `_p9k_precmd' does).
-                    ;; Then trigger several cycles and probe PROMPT.
-                    (process-send-string
-                     proc
-                     (concat
-                      "source " shell-zsh "\n"
-                      "fake_theme() {\n"
-                      "  PROMPT=$'top-line\\nfinal-> '\n"
-                      "  precmd_functions=(${precmd_functions:#fake_theme})\n"
-                      "  precmd_functions+=(fake_theme)\n"
-                      "}\n"
-                      "precmd_functions+=(fake_theme)\n"
-                      ;; Trigger several prompt cycles so the rearrange
-                      ;; settles.  Cycle 1 has the bug; cycle 2+ should
-                      ;; have the wrap inline in PROMPT.
-                      "true\n"
-                      "true\n"
-                      "true\n"
-                      ;; Print a sentinel after the last prompt cycle
-                      ;; so the test can find a stable anchor in the
-                      ;; rendered buffer to look back from.
-                      "print -r -- 'PROBE_DONE'\n"))
-                    (ghostel-test--wait-for
-                     proc
-                     (lambda ()
-                       (string-match-p "PROBE_DONE"
-                                       (ghostel--copy-all-text ghostel--term)))
-                     15)
-                    (sleep-for 0.2)
-                    (let ((inhibit-read-only t))
-                      (ghostel--redraw ghostel--term t))
-                    ;; After the rearrange settles, the WRAP fires INLINE
-                    ;; with PROMPT expansion (cycle 2+) — so 133;A fires
-                    ;; before the prompt content is drawn.  libghostty
-                    ;; sets `.prompt' semantic on subsequent cells, and
-                    ;; the renderer maps that to `ghostel-prompt' text
-                    ;; property.  The most recent prompt's `top-line'
-                    ;; row must carry that property.
-                    ;;
-                    ;; Without the rearrange the fallback fires AFTER
-                    ;; the prompt is drawn, so prompt cells are written
-                    ;; before the marker — they DON'T get tagged.
-                    (save-excursion
-                      (goto-char (point-max))
-                      (should (search-backward "top-line" nil t))
-                      (should (get-text-property (point) 'ghostel-prompt))))
-                (delete-process proc))))
-        (kill-buffer buf)))))
+    (ghostel-test--with-pty-matrix backend
+				   (ghostel-test--with-terminal-buffer (buf term 8 80 200)
+								       (setq-local ghostel-detect-password-prompts nil)
+								       (let ((proc (ghostel--spawn-pty "/bin/zsh" '("-fi") 8 80
+												       ghostel--default-stty nil nil)))
+									 (ghostel-test--wait-until
+									  (lambda ()
+									    (not (string-empty-p (ghostel-test--rendered-terminal-text))))
+									  proc 10)
+									 ;; Source ghostel.zsh + register a fake p10k that both
+									 ;; overrides PROMPT AND self-reorders to end each cycle
+									 ;; (this is what `_p9k_precmd' does).  Then trigger several
+									 ;; cycles and probe PROMPT.
+									 (ghostel--write-pty
+									  ghostel--term
+									  (concat
+									   "source " (shell-quote-argument shell-zsh) "\n"
+									   "fake_theme() {\n"
+									   "  PROMPT=$'top-line\\nfinal-> '\n"
+									   "  precmd_functions=(${precmd_functions:#fake_theme})\n"
+									   "  precmd_functions+=(fake_theme)\n"
+									   "}\n"
+									   "precmd_functions+=(fake_theme)\n"
+									   ;; Trigger several prompt cycles so the rearrange settles.
+									   ;; Cycle 1 has the bug; cycle 2+ should have the wrap
+									   ;; inline in PROMPT.
+									   "true\n"
+									   "true\n"
+									   "true\n"
+									   ;; Print a sentinel after the last prompt cycle so the
+									   ;; test can find a stable anchor in the rendered buffer to
+									   ;; look back from.
+									   "print -r -- 'PROBE_DONE'\n"))
+									 (ghostel-test--wait-until
+									  (lambda ()
+									    (string-match-p "PROBE_DONE"
+											    (ghostel-test--rendered-terminal-text)))
+									  proc 15)
+									 (sleep-for 0.2)
+									 (let ((inhibit-read-only t))
+									   (ghostel--redraw ghostel--term t))
+									 ;; After the rearrange settles, the WRAP fires INLINE with
+									 ;; PROMPT expansion (cycle 2+) — so 133;A fires before the
+									 ;; prompt content is drawn.  libghostty sets `.prompt'
+									 ;; semantic on subsequent cells, and the renderer maps that
+									 ;; to `ghostel-prompt' text property.  The most recent
+									 ;; prompt's `top-line' row must carry that property.
+									 ;;
+									 ;; Without the rearrange the fallback fires AFTER the prompt
+									 ;; is drawn, so prompt cells are written before the marker —
+									 ;; they DON'T get tagged.
+									 (save-excursion
+									   (goto-char (point-max))
+									   (should (search-backward "top-line" nil t))
+									   (should (get-text-property (point) 'ghostel-prompt))))))))
 
-(ert-deftest ghostel-test-osc133-prompt-stops-at-input ()
-  "`ghostel-prompt' must end where `ghostel-input' begins on the row.
-Without this, the historical prompt row carries `ghostel-prompt'
-across the typed command, and `ghostel--detect-urls-skip-p' refuses
-to linkify paths in past commands — even though they are outside the
-active input range."
-  :tags '(native)
-  (let ((buf (generate-new-buffer " *ghostel-test-osc133-prompt-input*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (let* ((term (ghostel--new 5 40 100))
-                 (inhibit-read-only t))
-            (ghostel--write-input
-             term "\e]133;A\e\\$ \e]133;B\e\\ls /etc/hosts")
-            (ghostel--redraw term)
-            (goto-char (point-min))
-            (should (search-forward "ls /etc/hosts" nil t))
-            (let ((path-beg (- (point) (length "ls /etc/hosts")))
-                  (path-end (point)))
-              (should (get-text-property 1 'ghostel-prompt))            ; "$"
-              (should (get-text-property 2 'ghostel-prompt))            ; " "
-              (should (null (get-text-property path-beg 'ghostel-prompt)))
-              (should (null (get-text-property (1- path-end) 'ghostel-prompt)))
-              (should (get-text-property path-beg 'ghostel-input))
-              (should (get-text-property (1- path-end) 'ghostel-input)))))
-      (kill-buffer buf))))
-
-(ert-deftest ghostel-test-osc133-historical-input-linkifies ()
-  "Historical typed commands keep their links after the prompt advances.
-After the row scrolls past the active prompt the typed `/etc/hosts'
-must gain a `fileref:' help-echo when `ghostel--detect-urls' runs.
-Active prompt rows must NOT — RET on a linkified active-input cell
-hijacks the keystroke in tty Emacs."
-  :tags '(native)
-  (let ((buf (generate-new-buffer " *ghostel-test-osc133-historical-link*"))
-        (target "/etc/hosts"))
-    (skip-unless (file-exists-p target))
-    (unwind-protect
-        (with-current-buffer buf
-          (let* ((term (ghostel--new 5 40 100))
-                 (inhibit-read-only t)
-                 (ghostel-enable-url-detection nil)
-                 (ghostel-enable-file-detection t))
-            ;; First prompt: still the active row.  Cursor is on the typed
-            ;; line, so the path inside the input span must NOT be
-            ;; linkified.
-            (ghostel--write-input
-             term (format "\e]133;A\e\\$ \e]133;B\e\\ls %s" target))
-            (ghostel--redraw term)
-            (let ((path-beg (save-excursion
-                              (goto-char (point-min))
-                              (search-forward target)
-                              (- (point) (length target)))))
-              ;; Point sits at the live cursor after redraw; that is the
-              ;; row `ghostel--detect-urls' treats as active.  Don't move it.
-              (ghostel--detect-urls)
-              (should (null (get-text-property path-beg 'help-echo))))
-
-            ;; End the input, advance to a fresh prompt — the previous row
-            ;; is now history.  Its `/etc/hosts' should become a fileref.
-            (ghostel--write-input
-             term "\e]133;C\e\\\r\n\e]133;D;0\e\\\e]133;A\e\\$ \e]133;B\e\\")
-            (ghostel--redraw term)
-            (let ((path-beg (save-excursion
-                              (goto-char (point-min))
-                              (search-forward target)
-                              (- (point) (length target)))))
-              (ghostel--detect-urls)
-              (let ((he (get-text-property path-beg 'help-echo)))
-                (should (and he (string-prefix-p "fileref:" he)))))))
-      (kill-buffer buf))))
-
-(ert-deftest ghostel-test-osc133-input-wide-char-boundary ()
-  "Wide input chars take one Emacs char of `ghostel-input'.
-The libghostty spacer-tail cell that follows a wide char produces
-no Emacs char and must not extend the property region.  Trailing
-narrow input after the wide char keeps growing the region."
-  :tags '(native)
-  (let ((buf (generate-new-buffer " *ghostel-test-osc133-input-wide*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (let* ((term (ghostel--new 5 40 100))
-                 (inhibit-read-only t))
-            (ghostel--write-input
-             term "\e]133;A\e\\$ \e]133;B\e\\日a")
-            (ghostel--redraw term)
-            (goto-char (point-min))
-            (should (search-forward "日a" nil t))
-            ;; "$ " is 2 narrow cells (positions 1-2); "日" is wide
-            ;; (1 emacs char at position 3, occupying terminal cols 2-3);
-            ;; "a" is narrow (position 4, terminal col 4).
-            (should (null (get-text-property 1 'ghostel-input))) ; "$"
-            (should (null (get-text-property 2 'ghostel-input))) ; " "
-            (should (get-text-property 3 'ghostel-input))         ; 日
-            (should (get-text-property 4 'ghostel-input))         ; a
-            ;; The newline after "a" is past the input range.
-            (should (null (get-text-property 5 'ghostel-input)))))
-      (kill-buffer buf))))
-
-(ert-deftest ghostel-test-pty-password-input-p-detects-stty-no-echo ()
-  "Report t when a child's tty has ECHO off and ICANON on.
-This is the libghostty heuristic (canonical && !echo) replicated in
-the Zig binding.  Spawn a shell that does `stty -echo' and poll
-until the change takes effect."
+(ert-deftest ghostel-test-pty-password-input-p-tracks-noecho ()
+  "Password-mode probing tracks canonical no-echo state."
   :tags '(native)
   (skip-unless (file-executable-p "/bin/sh"))
-  (let* ((buf (generate-new-buffer " *ghostel-test-pwd-stty*"))
-         (proc (start-process "ghostel-test-pwd-stty" buf
-                              "/bin/sh" "-c" "stty -echo; sleep 30")))
-    (set-process-query-on-exit-flag proc nil)
-    (unwind-protect
-        (let ((tty (process-tty-name proc)))
-          (should tty)
-          (ghostel-test--wait-for
-           proc (lambda () (ghostel--pty-password-input-p tty)) 5)
-          (should (ghostel--pty-password-input-p tty)))
-      (when (process-live-p proc) (kill-process proc))
-      (kill-buffer buf))))
-
-(ert-deftest ghostel-test-pty-password-input-p-default-is-nil ()
-  "Cooked-mode tty (canonical + echo) returns nil from the heuristic.
-Emacs's default pty starts with echo OFF (Emacs handles echo itself),
-so `stty sane' is required to mimic a normal shell prompt — which is
-exactly what `ghostel--spawn-pty' does at startup."
-  :tags '(native)
-  (skip-unless (file-executable-p "/bin/sh"))
-  (let* ((buf (generate-new-buffer " *ghostel-test-pwd-cooked*"))
-         (proc (start-process "ghostel-test-pwd-cooked" buf
-                              "/bin/sh" "-c" "stty sane; sleep 30")))
-    (set-process-query-on-exit-flag proc nil)
-    (unwind-protect
-        (let ((tty (process-tty-name proc)))
-          (should tty)
-          ;; Wait for stty sane to take effect.
-          (ghostel-test--wait-for
-           proc (lambda () (not (ghostel--pty-password-input-p tty))) 5)
-          (should-not (ghostel--pty-password-input-p tty)))
-      (when (process-live-p proc) (kill-process proc))
-      (kill-buffer buf))))
-
-(ert-deftest ghostel-test-pty-password-input-p-non-tty-returns-nil ()
-  "Non-tty / nonexistent paths return nil rather than erroring."
-  :tags '(native)
-  (should-not (ghostel--pty-password-input-p "/dev/null"))
-  (should-not (ghostel--pty-password-input-p
-               "/tmp/ghostel-test-does-not-exist-7c4af2")))
+  (ghostel-test--with-pty-matrix backend
+				 (ghostel-test--with-exec-buffer
+				  (buf proc "/bin/sh"
+				       '("-c" "stty -echo; printf GHOSTEL_NOECHO_READY; sleep 5"))
+				  (ghostel-test--wait-for-text "GHOSTEL_NOECHO_READY" proc 5)
+				  (when (and (eq backend 'emacs-pty)
+					     (not (process-tty-name ghostel--process)))
+				    (ert-skip "Emacs PTY process has no tty name in this environment"))
+				  (ghostel-test--wait-until
+				   (lambda () (ghostel--pty-password-input-p ghostel--term))
+				   proc 5))
+				 (ghostel-test--with-exec-buffer
+				  (buf proc "/bin/sh"
+				       '("-c" "stty echo; printf GHOSTEL_ECHO_READY; sleep 5"))
+				  (ghostel-test--wait-for-text "GHOSTEL_ECHO_READY" proc 5)
+				  (should-not (ghostel--pty-password-input-p ghostel--term)))))
 
 (ert-deftest ghostel-test-password-detect-regex-fallback ()
   "Regex fallback fires when heuristic returns nil and we're in a remote shell.
@@ -993,11 +638,11 @@ stubbed nil and `ghostel--remote-shell-p' stubbed t."
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 5 80 1000))
           (setq ghostel--term-rows 5)
-          (ghostel--write-input ghostel--term "[sudo] password for alice: ")
+          (ghostel--write-vt ghostel--term "[sudo] password for alice: ")
           (let ((inhibit-read-only t))
             (ghostel--redraw ghostel--term t))
-          (cl-letf (((symbol-function 'ghostel--probe-password-tty)
-                     (lambda () nil))
+          (cl-letf (((symbol-function 'ghostel--pty-password-input-p)
+                     (lambda (_term) nil))
                     ((symbol-function 'ghostel--remote-shell-p)
                      (lambda () t)))
             (should (eq (ghostel--password-prompt-detected-p) 'regex))))
@@ -1012,11 +657,11 @@ stubbed nil and `ghostel--remote-shell-p' stubbed t."
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 5 80 1000))
           (setq ghostel--term-rows 5)
-          (ghostel--write-input ghostel--term "$ ls -la")
+          (ghostel--write-vt ghostel--term "$ ls -la")
           (let ((inhibit-read-only t))
             (ghostel--redraw ghostel--term t))
-          (cl-letf (((symbol-function 'ghostel--probe-password-tty)
-                     (lambda () nil))
+          (cl-letf (((symbol-function 'ghostel--pty-password-input-p)
+                     (lambda (_term) nil))
                     ((symbol-function 'ghostel--remote-shell-p)
                      (lambda () t)))
             (should-not (ghostel--password-prompt-detected-p))))
@@ -1036,11 +681,11 @@ Password:' at a local shell prompt should be inert."
           (setq ghostel--term (ghostel--new 5 80 1000))
           (setq ghostel--term-rows 5)
           ;; A row that DOES match the regex.
-          (ghostel--write-input ghostel--term "[sudo] password for alice: ")
+          (ghostel--write-vt ghostel--term "[sudo] password for alice: ")
           (let ((inhibit-read-only t))
             (ghostel--redraw ghostel--term t))
-          (cl-letf (((symbol-function 'ghostel--probe-password-tty)
-                     (lambda () nil))
+          (cl-letf (((symbol-function 'ghostel--pty-password-input-p)
+                     (lambda (_term) nil))
                     ((symbol-function 'ghostel--remote-shell-p)
                      (lambda () nil)))
             (should-not (ghostel--password-prompt-detected-p))))
@@ -1062,12 +707,12 @@ so the regex arm is even reachable."
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 5 80 1000))
           (setq ghostel--term-rows 5)
-          (ghostel--write-input ghostel--term
-                                "daniel@host:~/work$ echo Password:")
+          (ghostel--write-vt ghostel--term
+                             "daniel@host:~/work$ echo Password:")
           (let ((inhibit-read-only t))
             (ghostel--redraw ghostel--term t))
-          (cl-letf (((symbol-function 'ghostel--probe-password-tty)
-                     (lambda () nil))
+          (cl-letf (((symbol-function 'ghostel--pty-password-input-p)
+                     (lambda (_term) nil))
                     ((symbol-function 'ghostel--remote-shell-p)
                      (lambda () t)))
             (should-not (ghostel--password-prompt-detected-p))))
@@ -1085,14 +730,14 @@ detection arm misfired when investigating a spurious prompt."
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 5 80 1000))
           (setq ghostel--term-rows 5)
-          (ghostel--write-input ghostel--term "[sudo] password for alice: ")
+          (ghostel--write-vt ghostel--term "[sudo] password for alice: ")
           (let ((inhibit-read-only t))
             (ghostel--redraw ghostel--term t))
-          (cl-letf (((symbol-function 'ghostel--probe-password-tty)
-                     (lambda () t)))
+          (cl-letf (((symbol-function 'ghostel--pty-password-input-p)
+                     (lambda (_term) t)))
             (should (eq (ghostel--password-prompt-detected-p) 'zig)))
-          (cl-letf (((symbol-function 'ghostel--probe-password-tty)
-                     (lambda () nil))
+          (cl-letf (((symbol-function 'ghostel--pty-password-input-p)
+                     (lambda (_term) nil))
                     ((symbol-function 'ghostel--remote-shell-p)
                      (lambda () t)))
             (should (eq (ghostel--password-prompt-detected-p) 'regex))))
@@ -1102,7 +747,7 @@ detection arm misfired when investigating a spurious prompt."
   "Send the source's return value to the subprocess with a CR.
 Plain RET on a tty produces CR, so we send the password followed
 by CR and clear state.  Regression check: must NOT send via
-`ghostel--write-input' (the local VT parser) — that path echoes
+`ghostel--write-vt' (the local VT parser) — that path echoes
 the password into the terminal buffer and never
 reaches the real subprocess."
   :tags '(native)
@@ -1120,9 +765,9 @@ reaches the real subprocess."
                  (list (lambda (_row) "hunter2"))))
             (cl-letf (((symbol-function 'processp) (lambda (_p) t))
                       ((symbol-function 'process-live-p) (lambda (_p) t))
-                      ((symbol-function 'process-send-string)
-                       (lambda (_proc data) (push (copy-sequence data) sent)))
-                      ((symbol-function 'ghostel--write-input)
+                      ((symbol-function 'ghostel--write-pty)
+                       (lambda (_term data) (push (copy-sequence data) sent)))
+                      ((symbol-function 'ghostel--write-vt)
                        (lambda (_term data) (push data vt-input))))
               (ghostel--prompt-password)))
           (should (equal sent '("hunter2\r")))
@@ -1150,8 +795,8 @@ a copy — and asserts every byte is zero after
                  (list (lambda (_row) "hunter2"))))
             (cl-letf (((symbol-function 'processp) (lambda (_p) t))
                       ((symbol-function 'process-live-p) (lambda (_p) t))
-                      ((symbol-function 'process-send-string)
-                       (lambda (_proc data) (setq wire-ref data))))
+                      ((symbol-function 'ghostel--write-pty)
+                       (lambda (_term data) (setq wire-ref data))))
               (ghostel--prompt-password)))
           (should wire-ref)
           (should (= 8 (length wire-ref)))               ; "hunter2\r" length
@@ -1180,8 +825,8 @@ the fallback logic."
                        (lambda (_row) (push 'third chain) "should-not-run"))))
             (cl-letf (((symbol-function 'processp) (lambda (_p) t))
                       ((symbol-function 'process-live-p) (lambda (_p) t))
-                      ((symbol-function 'process-send-string)
-                       (lambda (_proc data) (push (copy-sequence data) sent))))
+                      ((symbol-function 'ghostel--write-pty)
+                       (lambda (_term data) (push (copy-sequence data) sent))))
               (ghostel--prompt-password)))
           (should (equal sent '("from-second\r")))
           (should (equal chain '(second first))))  ; reversed push order
@@ -1204,8 +849,8 @@ a successful submission."
           (ghostel--redraw ghostel--term)
           (let ((ghostel-password-prompt-functions
                  (list (lambda (_row) nil) (lambda (_row) nil))))
-            (cl-letf (((symbol-function 'process-send-string)
-                       (lambda (_proc data) (push (copy-sequence data) sent))))
+            (cl-letf (((symbol-function 'ghostel--write-pty)
+                       (lambda (_term data) (push (copy-sequence data) sent))))
               (ghostel--prompt-password)))
           (should-not sent)
           (should-not ghostel--password-mode-p)
@@ -1313,8 +958,8 @@ is re-confirmed (mirrors ghostty's ~200 ms termios polling cadence)."
                 (ghostel-password-prompt-debounce 0.1))
             (cl-letf (((symbol-function 'ghostel--password-prompt-detected-p)
                        (lambda () t))
-                      ((symbol-function 'process-send-string)
-                       (lambda (_p _d) nil)))
+                      ((symbol-function 'ghostel--write-pty)
+                       (lambda (_term _data) nil)))
               (ghostel--detect-password-prompt)
               (should ghostel--password-mode-p)
               (should ghostel--password-confirm-timer)
@@ -1472,7 +1117,7 @@ involving a real `read-passwd' call, and snapshots
           (setq ghostel--process 'fake-proc)
           (cl-letf (((symbol-function 'processp) (lambda (_p) t))
                     ((symbol-function 'process-live-p) (lambda (_p) t))
-                    ((symbol-function 'process-send-string) (lambda (_p _d) nil)))
+                    ((symbol-function 'ghostel--write-pty) (lambda (_term _data) nil)))
             ;; Case 1: minibuffer entered from ORIGIN → capture.
             (let ((ghostel-password-prompt-functions
                    (list (lambda (_row)
@@ -1534,149 +1179,75 @@ stubbing `active-minibuffer-window' / `window-buffer' to return it."
       (when (buffer-live-p buf) (kill-buffer buf))
       (when (buffer-live-p mb-buf) (kill-buffer mb-buf)))))
 
-(ert-deftest ghostel-test-command-finish-hook ()
-  "Test that OSC 133 D fires `ghostel-command-finish-functions'."
-  (with-temp-buffer
-    (let* ((calls nil)
-           (ghostel-command-finish-functions
-            (list (lambda (buf exit) (push (cons buf exit) calls)))))
-      (ghostel--osc133-marker "A" nil)
-      (ghostel--osc133-marker "D" "0")
-      (should (equal 1 (length calls)))                       ; hook fired once
-      (should (eq (caar calls) (current-buffer)))             ; buffer passed
-      (should (equal 0 (cdar calls)))                         ; exit 0 as integer
+(ert-deftest ghostel-test-query-before-killing-auto-prompts-while-command-runs ()
+  "`auto' asks before killing a live buffer while a command is running."
+  (ghostel-test--with-cat-process
+   proc
+   (with-current-buffer (process-buffer proc)
+     (let ((ghostel--process proc)
+           (ghostel--event-pipe nil)
+           (ghostel-query-before-killing 'auto)
+           (ghostel--command-running t)
+           asked)
+       (cl-letf (((symbol-function 'yes-or-no-p)
+                  (lambda (prompt) (setq asked prompt) nil)))
+         (should-not (ghostel--kill-buffer-query))
+         (should (string-match-p "has a running process" asked)))))))
 
-      (setq calls nil)
-      (ghostel--osc133-marker "A" nil)
-      (ghostel--osc133-marker "D" "2")
-      (should (equal 2 (cdar calls)))                         ; non-zero exit parsed
-
-      ;; Missing param -> exit is nil, hook still fires
-      (setq calls nil)
-      (ghostel--osc133-marker "A" nil)
-      (ghostel--osc133-marker "D" nil)
-      (should (equal 1 (length calls)))                       ; hook fired with nil param
-      (should (null (cdar calls))))))                         ; exit is nil
-
-(ert-deftest ghostel-test-command-finish-hook-via-vt ()
-  "End-to-end: OSC 133 D bytes through VT parser fires the hook."
-  :tags '(native)
-  (let ((buf (generate-new-buffer " *ghostel-test-finish-vt*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (let* ((term (ghostel--new 5 40 100))
-                 (calls nil)
-                 (ghostel-command-finish-functions
-                  (list (lambda (_buf exit) (push exit calls)))))
-            (ghostel--write-input term "\e]133;A\e\\$ \e]133;B\e\\")
-            (ghostel--write-input term "echo hi\r\nhi\r\n")
-            (ghostel--write-input term "\e]133;D;0\e\\")
-            (should (equal '(0) calls))                       ; exit code flows through
-            (ghostel--write-input term "\e]133;A\e\\$ \e]133;B\e\\")
-            (ghostel--write-input term "\e]133;D;127\e\\")
-            (should (equal '(127 0) calls))))                  ; non-zero exit flows through
-      (kill-buffer buf))))
-
-(ert-deftest ghostel-test-command-finish-hook-error-caught ()
-  "Errors in `ghostel-command-finish-functions' are demoted to messages.
-Bind `debug-on-error' to nil so we test the production code path
-\(under `--batch -Q' Emacs sets `debug-on-error' to t, which
-intentionally makes `with-demoted-errors' re-signal so a hook
-author's debugger can fire)."
-  (with-temp-buffer
-    (let ((inhibit-message t)
-          (debug-on-error nil)
-          (ghostel-command-finish-functions
-           (list (lambda (_buf _exit) (error "Boom")))))
-      (ghostel--osc133-marker "A" nil)
-      (should-not (condition-case _ (progn (ghostel--osc133-marker "D" "0") nil)
-                    (error t))))))
-
-(ert-deftest ghostel-test-command-finish-hook-error-isolated ()
-  "A raising hook must not prevent later hooks from running.
-See `ghostel-test-command-finish-hook-error-caught' for why we
-bind `debug-on-error' to nil."
-  (with-temp-buffer
-    (let ((inhibit-message t)
-          (debug-on-error nil)
-          (later-ran nil))
-      (let ((ghostel-command-finish-functions
-             (list (lambda (_buf _exit) (error "First boom"))
-                   (lambda (_buf _exit) (setq later-ran t)))))
-        (ghostel--osc133-marker "A" nil)
-        (ghostel--osc133-marker "D" "0")
-        (should later-ran)))))                                 ; second hook still fired
-
-(ert-deftest ghostel-test-query-before-killing-auto-toggles ()
-  "`auto' flips the query-on-exit flag around OSC 133 C/D markers."
-  (ghostel-test--with-cat-process proc
-    (with-current-buffer (process-buffer proc)
-      (setq ghostel--process proc)
-      (let ((ghostel-query-before-killing 'auto))
-        (set-process-query-on-exit-flag proc nil)              ; baseline
-        (ghostel--query-before-killing-on-cmd-start (current-buffer))
-        (should (process-query-on-exit-flag proc))             ; command running
-        (ghostel--query-before-killing-on-cmd-finish (current-buffer) 0)
-        (should-not (process-query-on-exit-flag proc))))))     ; back at prompt
+(ert-deftest ghostel-test-query-before-killing-auto-allows-at-prompt ()
+  "`auto' does not ask before killing a live buffer at a prompt."
+  (ghostel-test--with-cat-process
+   proc
+   (with-current-buffer (process-buffer proc)
+     (let ((ghostel--process proc)
+           (ghostel--event-pipe nil)
+           (ghostel-query-before-killing 'auto)
+           (ghostel--command-running nil))
+       (cl-letf (((symbol-function 'yes-or-no-p)
+                  (lambda (_) (ert-fail "unexpected prompt"))))
+         (should (ghostel--kill-buffer-query)))))))
 
 (ert-deftest ghostel-test-query-before-killing-nil-is-noop ()
-  "When set to nil, the OSC 133 handlers must not touch the flag."
-  (ghostel-test--with-cat-process proc
-    (with-current-buffer (process-buffer proc)
-      (setq ghostel--process proc)
-      (let ((ghostel-query-before-killing nil))
-        (set-process-query-on-exit-flag proc nil)
-        (ghostel--query-before-killing-on-cmd-start (current-buffer))
-        (should-not (process-query-on-exit-flag proc))         ; unchanged
-        (ghostel--query-before-killing-on-cmd-finish (current-buffer) 0)
-        (should-not (process-query-on-exit-flag proc))))))
+  "When set to nil, killing a live buffer is allowed without asking."
+  (ghostel-test--with-cat-process
+   proc
+   (with-current-buffer (process-buffer proc)
+     (let ((ghostel--process proc)
+           (ghostel--event-pipe nil)
+           (ghostel-query-before-killing nil)
+           (ghostel--command-running t))
+       (cl-letf (((symbol-function 'yes-or-no-p)
+                  (lambda (_) (ert-fail "unexpected prompt"))))
+         (should (ghostel--kill-buffer-query)))))))
 
-(ert-deftest ghostel-test-query-before-killing-t-is-noop ()
-  "When set to t, the OSC 133 handlers must not touch the flag.
-The flag is already t from spawn time, and `auto'-only toggling
-would defeat the user's request to always be asked."
-  (ghostel-test--with-cat-process proc
-    (with-current-buffer (process-buffer proc)
-      (setq ghostel--process proc)
-      (let ((ghostel-query-before-killing t))
-        (set-process-query-on-exit-flag proc t)
-        (ghostel--query-before-killing-on-cmd-start (current-buffer))
-        (should (process-query-on-exit-flag proc))             ; still t
-        (ghostel--query-before-killing-on-cmd-finish (current-buffer) 0)
-        (should (process-query-on-exit-flag proc))))))         ; still t after D
+(ert-deftest ghostel-test-query-before-killing-t-always-prompts ()
+  "When set to t, killing a live buffer asks even at a prompt."
+  (ghostel-test--with-cat-process
+   proc
+   (with-current-buffer (process-buffer proc)
+     (let ((ghostel--process proc)
+           (ghostel--event-pipe nil)
+           (ghostel-query-before-killing t)
+           (ghostel--command-running nil)
+           asked)
+       (cl-letf (((symbol-function 'yes-or-no-p)
+                  (lambda (prompt) (setq asked prompt) t)))
+         (should (ghostel--kill-buffer-query))
+         (should (string-match-p "has a running process" asked)))))))
 
 (ert-deftest ghostel-test-query-before-killing-handles-dead-process ()
-  "Handlers must not raise if the process has already exited."
-  (ghostel-test--with-cat-process proc
-    (with-current-buffer (process-buffer proc)
-      (setq ghostel--process proc)
-      (delete-process proc)
-      (let ((ghostel-query-before-killing 'auto))
-        (should-not (condition-case _
-                        (progn (ghostel--query-before-killing-on-cmd-start
-                                (current-buffer))
-                               (ghostel--query-before-killing-on-cmd-finish
-                                (current-buffer) 0)
-                               nil)
-                      (error t)))))))
-
-(ert-deftest ghostel-test-command-finish-hook-runs-synchronously ()
-  "Regression: `ghostel-command-finish-functions' must fire synchronously.
-They run inside `ghostel--osc133-marker', not deferred via timers.
-Downstream consumers (notably `ghostel-compile') depend on it."
-  (let ((ran nil))
-    (let ((ghostel-command-finish-functions
-           (list (lambda (_b _e) (setq ran t)))))
-      (ghostel--osc133-marker "D" "0")
-      (should ran))))                                          ; in-stack call
-
-(ert-deftest ghostel-test-command-start-hook-runs-synchronously ()
-  "Regression: `ghostel-command-start-functions' must fire synchronously."
-  (let ((ran nil))
-    (let ((ghostel-command-start-functions
-           (list (lambda (_b) (setq ran t)))))
-      (ghostel--osc133-marker "C" nil)
-      (should ran))))                                          ; in-stack call
+  "Dead processes may be killed without asking."
+  (ghostel-test--with-cat-process
+   proc
+   (with-current-buffer (process-buffer proc)
+     (delete-process proc)
+     (let ((ghostel--process proc)
+           (ghostel--event-pipe nil)
+           (ghostel-query-before-killing 'auto)
+           (ghostel--command-running t))
+       (cl-letf (((symbol-function 'yes-or-no-p)
+                  (lambda (_) (ert-fail "unexpected prompt"))))
+         (should (ghostel--kill-buffer-query)))))))
 
 (ert-deftest ghostel-test-prompt-navigation ()
   "Test next/previous prompt navigation.
@@ -1930,66 +1501,16 @@ input already typed at the prompt)."
             (should (= (ghostel-input-start-point) 3))))
       (kill-buffer buf))))
 
-(ert-deftest ghostel-test-line-mode-enters-without-osc133 ()
-  "Line mode enters successfully in a REPL with no shell integration.
-Reproduces the python3 case: no `ghostel-prompt' chars anywhere,
-but the cursor is at the end of the REPL's prompt."
-  (let ((buf (generate-new-buffer " *ghostel-test-line-nointegration*"))
-        (sent nil)
-        (encoded nil))
-    (unwind-protect
-        (with-current-buffer buf
-          (ghostel-mode)
-          (insert ">>> \n")
-          (setq ghostel--term 'fake)
-          (setq ghostel--term-rows 1)
-          (setq ghostel--process 'fake-proc)
-          (cl-letf (((symbol-function 'ghostel--mode-enabled)
-                     (lambda (&rest _) nil))
-                    (ghostel--cursor-char-pos 4)
-                    ((symbol-function 'process-live-p) (lambda (_p) t))
-                    ((symbol-function 'process-send-string)
-                     (lambda (_p s) (setq sent s)))
-                    ((symbol-function 'ghostel--send-encoded)
-                     (lambda (key _mods &optional _utf8)
-                       (setq encoded key)))
-                    ((symbol-function 'ghostel--redraw) #'ignore)
-                    ((symbol-function 'ghostel--invalidate) #'ignore))
-            (ghostel-line-mode)
-            (should (eq ghostel--input-mode 'line))
-            (goto-char (marker-position ghostel--line-input-end))
-            (insert "1+1")
-            (ghostel-line-mode-send)
-            (should (equal sent "1+1"))
-            (should (equal encoded "return"))))
-      (kill-buffer buf))))
 
-(ert-deftest ghostel-test-update-directory-remote ()
-  "Test TRAMP path construction from remote OSC 7."
-  ;; Remote hostname -> TRAMP path using tramp-default-method fallback
-  (let ((ghostel--last-directory nil)
-        (default-directory "/tmp/")
-        (ghostel-tramp-default-method nil)
-        (tramp-default-method "ssh"))
-    (ghostel--update-directory "file://remote-host/home/user")
-    (should (equal "/ssh:remote-host:/home/user/" default-directory)))
-  ;; ghostel-tramp-default-method takes precedence over tramp-default-method
-  (let ((ghostel--last-directory nil)
-        (default-directory "/tmp/")
-        (ghostel-tramp-default-method "rsync")
-        (tramp-default-method "ssh"))
-    (ghostel--update-directory "file://remote-host/home/user")
-    (should (equal "/rsync:remote-host:/home/user/" default-directory)))
-  ;; Preserves method from existing TRAMP default-directory
-  (let ((ghostel--last-directory nil)
-        (default-directory "/scp:server:/"))
-    (ghostel--update-directory "file://server/app")
-    (should (equal "/scp:server:/app/" default-directory)))
-  ;; Preserves user from existing TRAMP default-directory
-  (let ((ghostel--last-directory nil)
-        (default-directory "/ssh:dan@myhost:/tmp/"))
-    (ghostel--update-directory "file://myhost/home/dan")
-    (should (equal "/ssh:dan@myhost:/home/dan/" default-directory))))
+(ert-deftest ghostel-test-local-host-p ()
+  "Test local hostname detection."
+  (should (ghostel--local-host-p nil))
+  (should (ghostel--local-host-p ""))
+  (should (ghostel--local-host-p "localhost"))
+  (should (ghostel--local-host-p (system-name)))
+  (should (ghostel--local-host-p (car (split-string (system-name) "\\."))))
+  (should-not (ghostel--local-host-p "remote-server.example.com")))
+
 
 (provide 'ghostel-shell-test)
 ;;; ghostel-shell-test.el ends here

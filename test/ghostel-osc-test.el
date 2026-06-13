@@ -12,63 +12,73 @@
 (ert-deftest ghostel-test-osc52 ()
   "Test OSC 52 clipboard handling."
   :tags '(native)
-  (let ((term (ghostel--new 25 80 1000)))
-    ;; With osc52 disabled, kill ring should not be modified
-    (let ((ghostel-enable-osc52 nil)
-          (kill-ring nil))
-      (ghostel--write-input term "\e]52;c;aGVsbG8=\e\\")  ; "hello" in base64
-      (should (equal nil kill-ring)))                       ; osc52 disabled: no kill
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-cat-buffer (buf proc)
+      ;; With osc52 disabled, kill ring should not be modified.
+      (let ((ghostel-enable-osc52 nil)
+            (kill-ring nil))
+        (ghostel--write-pty ghostel--term
+                            "\e]52;c;aGVsbG8=\e\\GHOSTEL_OSC52_DISABLED_DRAIN")
+        (ghostel-test--wait-for-text "GHOSTEL_OSC52_DISABLED_DRAIN" proc 5)
+        (should (equal nil kill-ring)))
 
-    ;; With osc52 enabled, text should appear in kill ring
-    (let ((ghostel-enable-osc52 t)
-          (kill-ring nil))
-      (ghostel--write-input term "\e]52;c;aGVsbG8=\e\\")
-      (should (> (length kill-ring) 0))                     ; kill ring has entry
-      (when kill-ring
-        (should (equal "hello" (car kill-ring)))))          ; decoded text
+      ;; With osc52 enabled, text should appear in kill ring.
+      (let ((ghostel-enable-osc52 t)
+            (kill-ring nil))
+        (ghostel--write-pty ghostel--term "\e]52;c;aGVsbG8=\e\\")
+        (ghostel-test--wait-until (lambda () kill-ring) proc 5)
+        (should (equal "hello" (car kill-ring))))
 
-    ;; BEL terminator
-    (let ((ghostel-enable-osc52 t)
-          (kill-ring nil))
-      (ghostel--write-input term "\e]52;c;d29ybGQ=\a")
-      (when kill-ring
-        (should (equal "world" (car kill-ring)))))          ; osc52 BEL terminator
+      ;; BEL terminator.
+      (let ((ghostel-enable-osc52 t)
+            (kill-ring nil))
+        (ghostel--write-pty ghostel--term "\e]52;c;d29ybGQ=\a")
+        (ghostel-test--wait-until (lambda () kill-ring) proc 5)
+        (should (equal "world" (car kill-ring))))
 
-    ;; Query ('?') should be ignored
-    (let ((ghostel-enable-osc52 t)
-          (kill-ring nil))
-      (ghostel--write-input term "\e]52;c;?\e\\")
-      (should (equal nil kill-ring)))))                     ; osc52 query ignored
+      ;; Query ('?') should be ignored.
+      (let ((ghostel-enable-osc52 t)
+            (kill-ring nil))
+        (ghostel--write-pty ghostel--term
+                            "\e]52;c;?\e\\GHOSTEL_OSC52_QUERY_DRAIN")
+        (ghostel-test--wait-for-text "GHOSTEL_OSC52_QUERY_DRAIN" proc 5)
+        (should (equal nil kill-ring))))))
 
 (ert-deftest ghostel-test-osc9-notification ()
   "OSC 9 iTerm2-style notifications reach `ghostel-notification-function'."
   :tags '(native)
-  (let* ((term (ghostel--new 25 80 1000))
-         (calls nil)
-         (ghostel-notification-function
-          (lambda (title body) (push (cons title body) calls))))
-    (cl-letf (((symbol-function 'run-at-time)
-               (lambda (_secs _rep fn &rest args) (apply fn args))))
-      ;; Plain iTerm2 notification, ST terminator.
-      (ghostel--write-input term "\e]9;Hello world\e\\")
-      (should (equal '(("" . "Hello world")) calls))
+  (ghostel-test--with-pty-matrix
+      backend
+    (ghostel-test--with-raw-cat-buffer (buf proc)
+      (let* ((calls nil)
+             (ghostel-notification-function
+              (lambda (title body) (push (cons title body) calls))))
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (_secs _rep fn &rest args) (apply fn args))))
+          ;; Plain iTerm2 notification, ST terminator.
+          (ghostel--write-pty ghostel--term "\e]9;Hello world\e\\")
+          (ghostel-test--wait-until (lambda () calls) proc 5)
+          (should (equal '(("" . "Hello world")) calls))
 
-      ;; BEL terminator
-      (setq calls nil)
-      (ghostel--write-input term "\e]9;bell form\a")
-      (should (equal '(("" . "bell form")) calls))
+          ;; BEL terminator
+          (setq calls nil)
+          (ghostel--write-pty ghostel--term "\e]9;bell form\a")
+          (ghostel-test--wait-until (lambda () calls) proc 5)
+          (should (equal '(("" . "bell form")) calls))
 
-      ;; Single-character body
-      (setq calls nil)
-      (ghostel--write-input term "\e]9;X\e\\")
-      (should (equal '(("" . "X")) calls))
+          ;; Single-character body
+          (setq calls nil)
+          (ghostel--write-pty ghostel--term "\e]9;X\e\\")
+          (ghostel-test--wait-until (lambda () calls) proc 5)
+          (should (equal '(("" . "X")) calls))
 
-      ;; Empty payload is dropped at the handler — the elisp default
-      ;; notifier would just show the buffer name with an empty body,
-      ;; so there's nothing useful to dispatch.
-      (setq calls nil)
-      (ghostel--write-input term "\e]9;\e\\")
-      (should (equal nil calls)))))
+          ;; Empty payload is dropped at the handler — the elisp default
+          ;; notifier would just show the buffer name with an empty body,
+          ;; so there's nothing useful to dispatch.
+          (setq calls nil)
+          (ghostel--write-pty ghostel--term "\e]9;\e\\GHOSTEL_OSC9_EMPTY_DRAIN")
+          (ghostel-test--wait-for-text "GHOSTEL_OSC9_EMPTY_DRAIN" proc 5)
+          (should (equal nil calls)))))))
 
 (ert-deftest ghostel-test-osc9-conemu-suppressed ()
   "ConEmu OSC 9 sub-codes must not fire a notification.
@@ -77,28 +87,31 @@ sequences (sleep, message box, tab title, wait input, emulation
 mode, prompt start).  Payloads that ghostty-vt rejects fall through
 to the notification path — see `ghostel-test-osc9-invalid-conemu-notifies'."
   :tags '(native)
-  (let ((term (ghostel--new 25 80 1000))
-        (calls nil))
-    (cl-letf (((symbol-function 'ghostel--handle-notification)
-               (lambda (title body) (push (cons title body) calls)))
-              ((symbol-function 'ghostel--osc-progress)
-               (lambda (_s _p) nil)))
-      ;; 9;1;<ms> sleep, 9;2;<msg> message box, 9;3;<title> tab title
-      (ghostel--write-input term "\e]9;1;500\e\\")
-      (ghostel--write-input term "\e]9;2;hello\e\\")
-      (ghostel--write-input term "\e]9;3;tab\e\\")
-      ;; 9;5 wait-input, 9;12 prompt start
-      (ghostel--write-input term "\e]9;5\e\\")
-      (ghostel--write-input term "\e]9;12\e\\")
-      ;; 9;10 xterm emulation — bare and with valid args 0-3
-      (ghostel--write-input term "\e]9;10\e\\")
-      (ghostel--write-input term "\e]9;10;0\e\\")
-      (ghostel--write-input term "\e]9;10;3\e\\")
-      ;; Trailing bytes after a valid first-arg digit are tolerated
-      ;; (matches ghostty-vt).
-      (ghostel--write-input term "\e]9;10;01\e\\")
-      (ghostel--write-input term "\e]9;10;3x\e\\")
-      (should (equal nil calls)))))
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-cat-buffer (buf proc)
+      (let (calls)
+        (cl-letf (((symbol-function 'ghostel--handle-notification)
+                   (lambda (title body) (push (cons title body) calls)))
+                  ((symbol-function 'ghostel--osc-progress)
+                   (lambda (_s _p) nil)))
+          ;; 9;1;<ms> sleep, 9;2;<msg> message box, 9;3;<title> tab title.
+          (ghostel--write-pty ghostel--term "\e]9;1;500\e\\")
+          (ghostel--write-pty ghostel--term "\e]9;2;hello\e\\")
+          (ghostel--write-pty ghostel--term "\e]9;3;tab\e\\")
+          ;; 9;5 wait-input, 9;12 prompt start.
+          (ghostel--write-pty ghostel--term "\e]9;5\e\\")
+          (ghostel--write-pty ghostel--term "\e]9;12\e\\")
+          ;; 9;10 xterm emulation — bare and with valid args 0-3.
+          (ghostel--write-pty ghostel--term "\e]9;10\e\\")
+          (ghostel--write-pty ghostel--term "\e]9;10;0\e\\")
+          (ghostel--write-pty ghostel--term "\e]9;10;3\e\\")
+          ;; Trailing bytes after a valid first-arg digit are tolerated
+          ;; (matches ghostty-vt).
+          (ghostel--write-pty ghostel--term "\e]9;10;01\e\\")
+          (ghostel--write-pty ghostel--term
+                              "\e]9;10;3x\e\\GHOSTEL_OSC9_CONEMU_DRAIN")
+          (ghostel-test--wait-for-text "GHOSTEL_OSC9_CONEMU_DRAIN" proc 5)
+          (should (equal nil calls)))))))
 
 (ert-deftest ghostel-test-osc9-invalid-conemu-notifies ()
   "Malformed ConEmu payloads fall through to notification.
@@ -114,22 +127,26 @@ defensive carve-out that fell back to the iTerm2 path, but with
 the handler-based dispatch we trust ghostty's parser as the
 authority for OSC 9 disambiguation."
   :tags '(native)
-  (let ((term (ghostel--new 25 80 1000))
-        (calls nil))
-    (cl-letf (((symbol-function 'ghostel--handle-notification)
-               (lambda (title body) (push (cons title body) calls)))
-              ((symbol-function 'ghostel--osc-progress)
-               (lambda (_s _p) nil)))
-      (ghostel--write-input term "\e]9;10;4\e\\")
-      (should (equal '(("" . "10;4")) calls))
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-cat-buffer (buf proc)
+      (let (calls)
+        (cl-letf (((symbol-function 'ghostel--handle-notification)
+                   (lambda (title body) (push (cons title body) calls)))
+                  ((symbol-function 'ghostel--osc-progress)
+                   (lambda (_s _p) nil)))
+          (ghostel--write-pty ghostel--term "\e]9;10;4\e\\")
+          (ghostel-test--wait-until (lambda () calls) proc 5)
+          (should (equal '(("" . "10;4")) calls))
 
-      (setq calls nil)
-      (ghostel--write-input term "\e]9;10;\e\\")
-      (should (equal '(("" . "10;")) calls))
+          (setq calls nil)
+          (ghostel--write-pty ghostel--term "\e]9;10;\e\\")
+          (ghostel-test--wait-until (lambda () calls) proc 5)
+          (should (equal '(("" . "10;")) calls))
 
-      (setq calls nil)
-      (ghostel--write-input term "\e]9;10;abc\e\\")
-      (should (equal '(("" . "10;abc")) calls)))))
+          (setq calls nil)
+          (ghostel--write-pty ghostel--term "\e]9;10;abc\e\\")
+          (ghostel-test--wait-until (lambda () calls) proc 5)
+          (should (equal '(("" . "10;abc")) calls)))))))
 
 (ert-deftest ghostel-test-osc9-cwd-routing ()
   "OSC 9;9;PATH updates the terminal's working directory.
@@ -137,92 +154,44 @@ ConEmu's CWD-reporting alias is routed through libghostty's `setPwd'
 \(the same plumbing OSC 7 uses), so `ghostel--get-pwd' reflects the
 reported path and no notification fires."
   :tags '(native)
-  (let ((term (ghostel--new 25 80 1000))
-        (notifs nil))
-    (cl-letf (((symbol-function 'ghostel--handle-notification)
-               (lambda (title body) (push (cons title body) notifs))))
-      (ghostel--write-input term "\e]9;9;/tmp/ghostel-cwd\e\\")
-      (should (equal "/tmp/ghostel-cwd" (ghostel--get-pwd term)))
-      (should (equal nil notifs)))))
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-cat-buffer (buf proc)
+      (let (notifs)
+        (cl-letf (((symbol-function 'ghostel--handle-notification)
+                   (lambda (title body) (push (cons title body) notifs))))
+          (ghostel--write-pty ghostel--term "\e]9;9;/tmp/ghostel-cwd\e\\")
+          (ghostel-test--wait-until
+           (lambda () (equal "/tmp/ghostel-cwd" (ghostel--get-pwd ghostel--term)))
+           proc 5)
+          (should (equal nil notifs)))))))
 
 (ert-deftest ghostel-test-osc9-progress ()
   "OSC 9;4 progress reports reach `ghostel-progress-function'."
   :tags '(native)
-  (let* ((term (ghostel--new 25 80 1000))
-         (calls nil)
-         (ghostel-progress-function
-          (lambda (state progress) (push (list state progress) calls))))
-    ;; set, with progress
-    (ghostel--write-input term "\e]9;4;1;50\e\\")
-    (should (equal '((set 50)) calls))
-
-    ;; set without progress defaults to 0 (matches ghostty-vt)
-    (setq calls nil)
-    (ghostel--write-input term "\e]9;4;1\e\\")
-    (should (equal '((set 0)) calls))
-
-    ;; remove
-    (setq calls nil)
-    (ghostel--write-input term "\e]9;4;0\e\\")
-    (should (equal '((remove nil)) calls))
-
-    ;; remove ignores trailing progress (matches ghostty-vt's "remove
-    ;; ignores progress" test)
-    (setq calls nil)
-    (ghostel--write-input term "\e]9;4;0;100\e\\")
-    (should (equal '((remove nil)) calls))
-
-    ;; error without progress
-    (setq calls nil)
-    (ghostel--write-input term "\e]9;4;2\e\\")
-    (should (equal '((error nil)) calls))
-
-    ;; error with progress
-    (setq calls nil)
-    (ghostel--write-input term "\e]9;4;2;73\e\\")
-    (should (equal '((error 73)) calls))
-
-    ;; indeterminate
-    (setq calls nil)
-    (ghostel--write-input term "\e]9;4;3\e\\")
-    (should (equal '((indeterminate nil)) calls))
-
-    ;; indeterminate ignores trailing progress
-    (setq calls nil)
-    (ghostel--write-input term "\e]9;4;3;50\e\\")
-    (should (equal '((indeterminate nil)) calls))
-
-    ;; pause with progress
-    (setq calls nil)
-    (ghostel--write-input term "\e]9;4;4;25\e\\")
-    (should (equal '((pause 25)) calls))
-
-    ;; Trailing semicolon is tolerated (9;4;0;)
-    (setq calls nil)
-    (ghostel--write-input term "\e]9;4;0;\e\\")
-    (should (equal '((remove nil)) calls))
-
-    ;; Progress overflow clamps to 100
-    (setq calls nil)
-    (ghostel--write-input term "\e]9;4;1;999\e\\")
-    (should (equal '((set 100)) calls))
-
-    ;; Huge numbers beyond u16 still parse and clamp (would overflow
-    ;; u16, but parser uses u64).
-    (setq calls nil)
-    (ghostel--write-input term "\e]9;4;1;99999999999\e\\")
-    (should (equal '((set 100)) calls))
-
-    ;; Non-numeric progress arrives as nil — ghostty's parser pre-fills
-    ;; progress=0 for state=.set, but `;<unparseable>` reaches the value
-    ;; branch and `parseUnsigned` failure writes nil over that pre-fill.
-    ;; (Bare `9;4;1` with no value at all still yields 0 — see above.)
-    (setq calls nil)
-    (ghostel--write-input term "\e]9;4;1;foo\e\\")
-    (should (equal '((set nil)) calls))
-    (setq calls nil)
-    (ghostel--write-input term "\e]9;4;2;foo\e\\")
-    (should (equal '((error nil)) calls))))
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-cat-buffer (buf proc)
+      (let* ((calls nil)
+             (ghostel-progress-function
+              (lambda (state progress) (push (list state progress) calls))))
+        (pcase-dolist (`(,payload ,expected)
+                       '(("\e]9;4;1;50\e\\" (set 50))
+                         ("\e]9;4;1\e\\" (set 0))
+                         ("\e]9;4;0\e\\" (remove nil))
+                         ("\e]9;4;0;100\e\\" (remove nil))
+                         ("\e]9;4;2\e\\" (error nil))
+                         ("\e]9;4;2;73\e\\" (error 73))
+                         ("\e]9;4;3\e\\" (indeterminate nil))
+                         ("\e]9;4;3;50\e\\" (indeterminate nil))
+                         ("\e]9;4;4;25\e\\" (pause 25))
+                         ("\e]9;4;0;\e\\" (remove nil))
+                         ("\e]9;4;1;999\e\\" (set 100))
+                         ("\e]9;4;1;99999999999\e\\" (set 100))
+                         ("\e]9;4;1;foo\e\\" (set nil))
+                         ("\e]9;4;2;foo\e\\" (error nil))))
+          (setq calls nil)
+          (ghostel--write-pty ghostel--term payload)
+          (ghostel-test--wait-until (lambda () calls) proc 5)
+          (should (equal (list expected) calls)))))))
 
 (ert-deftest ghostel-test-osc-progress-dispatch ()
   "`ghostel--osc-progress' converts the state string to a symbol."
@@ -248,37 +217,45 @@ reported path and no notification fires."
 (ert-deftest ghostel-test-osc777-notification ()
   "OSC 777 `notify;TITLE;BODY' reaches `ghostel-notification-function'."
   :tags '(native)
-  (let ((term (ghostel--new 25 80 1000))
-        (calls nil))
-    (cl-letf (((symbol-function 'ghostel--handle-notification)
-               (lambda (title body) (push (cons title body) calls))))
-      (ghostel--write-input term "\e]777;notify;Subject;Body text\e\\")
-      (should (equal '(("Subject" . "Body text")) calls))
+  (ghostel-test--with-pty-matrix
+      backend
+    (ghostel-test--with-raw-cat-buffer (buf proc)
+      (let (calls)
+        (cl-letf (((symbol-function 'ghostel--handle-notification)
+                   (lambda (title body) (push (cons title body) calls))))
+          (ghostel--write-pty ghostel--term "\e]777;notify;Subject;Body text\e\\")
+          (ghostel-test--wait-until (lambda () calls) proc 5)
+          (should (equal '(("Subject" . "Body text")) calls))
 
-      ;; BEL terminator
-      (setq calls nil)
-      (ghostel--write-input term "\e]777;notify;T;B\a")
-      (should (equal '(("T" . "B")) calls))
+          ;; BEL terminator
+          (setq calls nil)
+          (ghostel--write-pty ghostel--term "\e]777;notify;T;B\a")
+          (ghostel-test--wait-until (lambda () calls) proc 5)
+          (should (equal '(("T" . "B")) calls))
 
-      ;; Empty title AND empty body is dropped at the handler — same
-      ;; rule as OSC 9 (the elisp default notifier has nothing useful
-      ;; to show).  Non-empty title or body still dispatches.
-      (setq calls nil)
-      (ghostel--write-input term "\e]777;notify;;\e\\")
-      (should (equal nil calls))
+          ;; Empty title AND empty body is dropped at the handler — same
+          ;; rule as OSC 9 (the elisp default notifier has nothing useful
+          ;; to show).  Non-empty title or body still dispatches.
+          (setq calls nil)
+          (ghostel--write-pty ghostel--term "\e]777;notify;;\e\\GHOSTEL_OSC777_EMPTY_DRAIN")
+          (ghostel-test--wait-for-text "GHOSTEL_OSC777_EMPTY_DRAIN" proc 5)
+          (should (equal nil calls))
 
-      (setq calls nil)
-      (ghostel--write-input term "\e]777;notify;T;\e\\")
-      (should (equal '(("T" . "")) calls))
+          (setq calls nil)
+          (ghostel--write-pty ghostel--term "\e]777;notify;T;\e\\")
+          (ghostel-test--wait-until (lambda () calls) proc 5)
+          (should (equal '(("T" . "")) calls))
 
-      (setq calls nil)
-      (ghostel--write-input term "\e]777;notify;;B\e\\")
-      (should (equal '(("" . "B")) calls))
+          (setq calls nil)
+          (ghostel--write-pty ghostel--term "\e]777;notify;;B\e\\")
+          (ghostel-test--wait-until (lambda () calls) proc 5)
+          (should (equal '(("" . "B")) calls))
 
-      ;; Unknown extension is dropped
-      (setq calls nil)
-      (ghostel--write-input term "\e]777;bogus;a;b\e\\")
-      (should (equal nil calls)))))
+          ;; Unknown extension is dropped
+          (setq calls nil)
+          (ghostel--write-pty ghostel--term "\e]777;bogus;a;b\e\\GHOSTEL_OSC777_BOGUS_DRAIN")
+          (ghostel-test--wait-for-text "GHOSTEL_OSC777_BOGUS_DRAIN" proc 5)
+          (should (equal nil calls)))))))
 
 (ert-deftest ghostel-test-notification-dispatch ()
   "`ghostel--handle-notification' honours `ghostel-notification-function'.
@@ -444,11 +421,11 @@ with no spinner.el available).  The stub currently matches reality
 future refactor of the require call would silently invalidate it."
   (cl-letf* ((orig-require (symbol-function #'require))
              ((symbol-function #'require)
-              (lambda (feature &optional filename noerror)
-                (if (eq feature 'spinner)
-                    (if noerror nil
-                      (signal 'file-missing (list "stub-no-spinner")))
-                  (funcall orig-require feature filename noerror)))))
+                 (lambda (feature &optional filename noerror)
+                   (if (eq feature 'spinner)
+                       (if noerror nil
+                         (signal 'file-missing (list "stub-no-spinner")))
+                     (funcall orig-require feature filename noerror)))))
     (with-temp-buffer
       (should-error (ghostel-spinner-progress 'indeterminate nil)
                     :type 'user-error))))
@@ -465,9 +442,9 @@ form that installs spinner.el's mode-line construct) and that
     (cl-letf (((symbol-function #'require)
                (lambda (&rest _) t))
               ((symbol-function #'spinner-start)
-               (lambda (&rest args)
-                 (cl-incf start-calls)
-                 (setq start-args args)))
+                 (lambda (&rest args)
+                   (cl-incf start-calls)
+                   (setq start-args args)))
               ((symbol-function #'spinner-stop) #'ignore))
       (with-temp-buffer
         (ghostel-spinner-progress 'indeterminate nil)
@@ -485,7 +462,7 @@ remain (rendering empty alongside the percentage)."
                (lambda (&rest _) t))
               ((symbol-function #'spinner-start) #'ignore)
               ((symbol-function #'spinner-stop)
-               (lambda (&rest _) (cl-incf stop-calls))))
+                 (lambda (&rest _) (cl-incf stop-calls))))
       (with-temp-buffer
         (ghostel-spinner-progress 'indeterminate nil)
         (ghostel-spinner-progress 'set 50)
@@ -598,90 +575,77 @@ truncated OSC 7 lands as PWD = \"PARTIAL\".  This test pins the new
 behavior so a regression toward the old reject-partial logic would
 be caught."
   :tags '(native)
-  (let ((term (ghostel--new 25 80 1000))
-        (ghostel-enable-osc52 t)
-        (kill-ring nil))
-    (ghostel--write-input term "\e]7;PARTIAL\e]52;c;aGVsbG8=\a")
-    ;; OSC 52 dispatched: "hello" in kill-ring.
-    (should kill-ring)
-    (should (equal "hello" (car kill-ring)))
-    ;; OSC 7 dispatched with the truncated payload "PARTIAL".
-    (should (equal "PARTIAL" (ghostel--get-pwd term)))))
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-cat-buffer (buf proc)
+      (let ((ghostel-enable-osc52 t)
+            (kill-ring nil))
+        (ghostel--write-pty ghostel--term "\e]7;PARTIAL\e]52;c;aGVsbG8=\a")
+        (ghostel-test--wait-until
+         (lambda ()
+           (and kill-ring
+                (equal "PARTIAL" (ghostel--get-pwd ghostel--term))))
+         proc 5)
+        ;; OSC 52 dispatched: "hello" in kill-ring.
+        (should (equal "hello" (car kill-ring)))
+        ;; OSC 7 dispatched with the truncated payload "PARTIAL".
+        (should (equal "PARTIAL" (ghostel--get-pwd ghostel--term)))))))
 
 (ert-deftest ghostel-test-osc-color-query ()
   "Test that OSC 4/10/11 color queries get responses."
   :tags '(native)
-  (let* ((term (ghostel--new 25 80 1000))
-         (sent-bytes nil))
-    (cl-letf (((symbol-function 'ghostel--flush-output)
-               (lambda (data)
-                 (setq sent-bytes (concat sent-bytes data)))))
-
-      ;; OSC 11 background query with ST terminator.
-      (setq sent-bytes nil)
-      (ghostel--write-input term "\e]11;?\e\\")
-      (should sent-bytes)
-      (should (string-match-p "\\`\e\\]11;rgb:[0-9a-f]\\{4\\}/[0-9a-f]\\{4\\}/[0-9a-f]\\{4\\}\e\\\\\\'"
-                              sent-bytes))
-
-      ;; OSC 10 foreground query with BEL terminator.
-      (setq sent-bytes nil)
-      (ghostel--write-input term "\e]10;?\a")
-      (should sent-bytes)
-      (should (string-match-p "\\`\e\\]10;rgb:[0-9a-f]\\{4\\}/[0-9a-f]\\{4\\}/[0-9a-f]\\{4\\}\a\\'"
-                              sent-bytes))
-
-      ;; OSC 4 palette query for index 1, after a prior set.  The extractor
-      ;; runs before vtWrite inside a single write-input, so the set must
-      ;; land in a previous call for the new value to be visible.
-      (setq sent-bytes nil)
-      (ghostel--write-input term "\e]4;1;rgb:11/22/33\e\\")
-      (should (equal nil sent-bytes))                   ; set: no reply
-      (ghostel--write-input term "\e]4;1;?\e\\")
-      (should (equal "\e]4;1;rgb:1111/2222/3333\e\\" sent-bytes))
-
-      ;; OSC 10 with a set value (not a query) — no response.
-      (setq sent-bytes nil)
-      (ghostel--write-input term "\e]10;rgb:aa/bb/cc\e\\")
-      (should (equal nil sent-bytes))
-
-      ;; OSC 4 set (not a query) — no response.
-      (setq sent-bytes nil)
-      (ghostel--write-input term "\e]4;2;rgb:44/55/66\e\\")
-      (should (equal nil sent-bytes))
-
-      ;; Malformed OSC 4 payloads — don't crash, don't reply.
-      (setq sent-bytes nil)
-      (ghostel--write-input term "\e]4;\e\\")           ; empty
-      (ghostel--write-input term "\e]4;xyz;?\e\\")     ; non-numeric index
-      (ghostel--write-input term "\e]4;999;?\e\\")     ; index out of range
-      (ghostel--write-input term "\e]4;0\e\\")         ; index without value
-      (ghostel--write-input term "\e]4;99999999999999999999;?\e\\") ; overflow
-      (should (equal nil sent-bytes))
-
-      ;; Multiple different-type queries in one write must reply in source
-      ;; order so termenv-style readers can match by position.
-      (setq sent-bytes nil)
-      (ghostel--write-input term "\e]11;?\e\\\e]10;?\e\\")
-      (should (string-match-p "\\`\e\\]11;rgb:.*?\e\\\\\e\\]10;rgb:.*?\e\\\\\\'"
-                              sent-bytes))
-
-      ;; Multi-pair OSC 4 with mixed set+query: the extractor runs before
-      ;; vtWrite, so the set is not yet visible to the query in the same
-      ;; payload — but the index=1 value seeded in the earlier write
-      ;; above is still there, and both indices get replied to in order.
-      (setq sent-bytes nil)
-      (ghostel--write-input term "\e]4;1;?;3;?\e\\")
-      (should (string-match-p
-               "\\`\e\\]4;1;rgb:1111/2222/3333\e\\\\\e\\]4;3;rgb:.*?\e\\\\\\'"
-               sent-bytes))
-
-      ;; Unterminated OSC query — reply is withheld until the terminator
-      ;; arrives.  (We don't buffer across write-input calls, so the
-      ;; terminator must be in the same call to get a reply.)
-      (setq sent-bytes nil)
-      (ghostel--write-input term "\e]11;?")
-      (should (equal nil sent-bytes)))))
+  (let ((python (executable-find "python3")))
+    (skip-unless python)
+    ;; Each case pairs a payload written to the terminal with a CHECK on the
+    ;; reply the terminal writes back to the child (reported as lowercase hex):
+    ;;   (PAYLOAD :none)       no reply expected
+    ;;   (PAYLOAD :equal HEX)  reply must equal HEX exactly
+    ;;   (PAYLOAD :match RE)   reply must match regexp RE
+    ;; The cases are replayed through one long-lived child in order, so palette
+    ;; state set by an earlier case is visible to a later query.
+    (let ((cases
+           (list
+            ;; OSC 11 background query with ST terminator.
+            '("\e]11;?\e\\" :match "\\`1b5d31313b7267623a[0-9a-f]+1b5c\\'")
+            ;; OSC 10 foreground query with BEL terminator.
+            '("\e]10;?\a" :match "\\`1b5d31303b7267623a[0-9a-f]+07\\'")
+            ;; OSC 4 set for index 1 (no reply), then a query that must see it.
+            '("\e]4;1;rgb:11/22/33\e\\" :none)
+            '("\e]4;1;?\e\\" :equal
+              "1b5d343b313b7267623a313131312f323232322f333333331b5c")
+            ;; OSC 10 with a set value (not a query) — no reply.
+            '("\e]10;rgb:aa/bb/cc\e\\" :none)
+            ;; OSC 4 set (not a query) — no reply.
+            '("\e]4;2;rgb:44/55/66\e\\" :none)
+            ;; Malformed OSC 4 payloads — don't crash, don't reply.
+            '("\e]4;\e\\" :none)                       ; empty
+            '("\e]4;xyz;?\e\\" :none)                  ; non-numeric index
+            '("\e]4;999;?\e\\" :none)                  ; index out of range
+            '("\e]4;0\e\\" :none)                      ; index without value
+            '("\e]4;99999999999999999999;?\e\\" :none) ; overflow
+            ;; Multiple different-type queries in one write must reply in source
+            ;; order so termenv-style readers can match by position.
+            '("\e]11;?\e\\\e]10;?\e\\" :match
+              "\\`1b5d31313b7267623a.*1b5c1b5d31303b7267623a.*1b5c\\'")
+            ;; Multi-pair OSC 4 query: the index=1 value seeded above is still
+            ;; there, and both indices get replied to in order.
+            '("\e]4;1;?;3;?\e\\" :match
+              "\\`1b5d343b313b7267623a313131312f323232322f333333331b5c1b5d343b333b7267623a.*1b5c\\'"))))
+      (cl-labels ((run-probe (payloads)
+                    (ghostel-test--with-exec-buffer
+                        (buf proc python
+                             (append (list "-c" ghostel-test--pty-reply-probe-script "0.15")
+                                     (mapcar #'ghostel-test--hex-encode-string payloads)))
+                      (cl-loop for i below (length payloads)
+                               collect (ghostel-test--wait-for-pty-reply i proc 6)))))
+        (ghostel-test--with-pty-matrix backend
+          (let ((replies (run-probe (mapcar #'car cases))))
+            (cl-loop for (payload check arg) in cases
+                     for reply in replies
+                     do (ert-info ((format "payload: %S" payload))
+                          (pcase check
+                            (:none (should (equal "" reply)))
+                            (:equal (should (equal arg reply)))
+                            (:match (should (string-match-p arg reply))))))))))))
 
 (ert-deftest ghostel-test-osc52-eval ()
   "Test that OSC 52;e dispatches to whitelisted functions."
@@ -719,61 +683,244 @@ through the filter."
       (should (string-match-p "Kaboom" (car messages))))))
 
 (ert-deftest ghostel-test-osc52-eval-native ()
-  "OSC 52 kind \\='e\\=' reaches `ghostel--osc52-eval' through the native parser."
+  "OSC 52 kind \='e\=' reaches `ghostel--osc52-eval'."
   :tags '(native)
-  (let* ((term (ghostel--new 25 80 1000))
-         (called-with nil)
-         (ghostel-eval-cmds
-          `(("test-fn" ,(lambda (&rest args) (setq called-with args))))))
-    (ghostel--write-input term "\e]52;e;\"test-fn\" \"hi\"\e\\")
-    (should (equal '("hi") called-with))))
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-cat-buffer (buf proc)
+      (let* ((called-with nil)
+             (ghostel-eval-cmds
+              `(("test-fn" ,(lambda (&rest args) (setq called-with args))))))
+        (ghostel--write-pty ghostel--term "\e]52;e;\"test-fn\" \"hi\"\e\\")
+        (ghostel-test--wait-until (lambda () called-with) proc 5)
+        (should (equal '("hi") called-with))))))
 
 (ert-deftest ghostel-test-osc52-kind-dispatch ()
-  "OSC 52 dispatches on kind: \\='e\\=' to eval, others to clipboard."
+  "OSC 52 dispatches on kind: \='e\=' to eval, others to clipboard."
   :tags '(native)
-  (let* ((term (ghostel--new 25 80 1000))
-         (eval-called nil)
-         (ghostel-eval-cmds
-          `(("k" ,(lambda (&rest _) (setq eval-called t))))))
-    (let ((ghostel-enable-osc52 t)
-          (kill-ring nil))
-      (ghostel--write-input term "\e]52;c;aGVsbG8=\e\\")
-      (should-not eval-called)
-      (should (equal "hello" (car kill-ring))))
-    (let ((ghostel-enable-osc52 t)
-          (kill-ring nil))
-      (ghostel--write-input term "\e]52;e;\"k\"\e\\")
-      (should eval-called)
-      (should-not kill-ring))))
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-cat-buffer (buf proc)
+      (let* ((eval-called nil)
+             (ghostel-eval-cmds
+              `(("k" ,(lambda (&rest _) (setq eval-called t)))))
+             (ghostel-enable-osc52 t)
+             (kill-ring nil))
+        (ghostel--write-pty ghostel--term "\e]52;c;aGVsbG8=\e\\")
+        (ghostel-test--wait-until (lambda () kill-ring) proc 5)
+        (should-not eval-called)
+        (should (equal "hello" (car kill-ring)))
+
+        (setq kill-ring nil)
+        (ghostel--write-pty ghostel--term "\e]52;e;\"k\"\e\\")
+        (ghostel-test--wait-until (lambda () eval-called) proc 5)
+        (should eval-called)
+        (should-not kill-ring)))))
 
 (ert-deftest ghostel-test-osc52-eval-cross-chunk ()
-  "OSC 52;e payload split across two write-input calls dispatches once.
+  "OSC 52;e payload split across two PTY writes dispatches once.
 Ghostty's parser buffers the OSC body across stream-feed calls, so the
 elisp callback fires exactly when the terminator arrives in the second
 call.  The OSC 51 scanner this replaces could not handle this case."
   :tags '(native)
-  (let* ((term (ghostel--new 25 80 1000))
-         (called-with nil)
-         (ghostel-eval-cmds
-          `(("test-fn" ,(lambda (&rest args) (setq called-with args))))))
-    (ghostel--write-input term "\e]52;e;\"test-fn\" \"par")
-    (should-not called-with)
-    (ghostel--write-input term "t1\" \"part2\"\e\\")
-    (should (equal '("part1" "part2") called-with))))
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-cat-buffer (buf proc)
+      (let* ((called-with nil)
+             (ghostel-eval-cmds
+              `(("test-fn" ,(lambda (&rest args) (setq called-with args))))))
+        (ghostel--write-pty ghostel--term "\e]52;e;\"test-fn\" \"par")
+        (accept-process-output proc 0.1)
+        (should-not called-with)
+        (ghostel--write-pty ghostel--term "t1\" \"part2\"\e\\")
+        (ghostel-test--wait-until (lambda () called-with) proc 5)
+        (should (equal '("part1" "part2") called-with))))))
 
 (ert-deftest ghostel-test-osc52-mixed-kinds-one-write ()
-  "A single write containing both OSC 52;e and OSC 52;c dispatches both."
+  "A single PTY write containing both OSC 52;e and OSC 52;c dispatches both."
   :tags '(native)
-  (let* ((term (ghostel--new 25 80 1000))
-         (eval-payloads nil)
-         (ghostel-eval-cmds
-          `(("k" ,(lambda (&rest args) (push args eval-payloads))))))
-    (let ((ghostel-enable-osc52 t)
-          (kill-ring nil))
-      (ghostel--write-input term
-                            "\e]52;e;\"k\" \"first\"\e\\\e]52;c;aGVsbG8=\e\\")
-      (should (equal '(("first")) eval-payloads))
-      (should (equal "hello" (car kill-ring))))))
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-cat-buffer (buf proc)
+      (let* ((eval-payloads nil)
+             (ghostel-eval-cmds
+              `(("k" ,(lambda (&rest args) (push args eval-payloads)))))
+             (ghostel-enable-osc52 t)
+             (kill-ring nil))
+        (ghostel--write-pty
+         ghostel--term
+         "\e]52;e;\"k\" \"first\"\e\\\e]52;c;aGVsbG8=\e\\")
+        (ghostel-test--wait-until
+         (lambda () (and eval-payloads kill-ring)) proc 5)
+        (should (equal '(("first")) eval-payloads))
+        (should (equal "hello" (car kill-ring)))))))
+
+(ert-deftest ghostel-test-osc7-parsing ()
+  "OSC 7 child output updates the terminal working directory."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-cat-buffer (buf proc)
+      (should (equal nil (ghostel--get-pwd ghostel--term)))
+
+      (ghostel--write-pty ghostel--term "\e]7;file:///tmp/testdir\e\\")
+      (ghostel-test--wait-until
+       (lambda () (equal "file:///tmp/testdir" (ghostel--get-pwd ghostel--term)))
+       proc 5)
+      (should (equal "file:///tmp/testdir" (ghostel--get-pwd ghostel--term)))
+
+      (ghostel--write-pty ghostel--term "\e]7;file:///home/user\a")
+      (ghostel-test--wait-until
+       (lambda () (equal "file:///home/user" (ghostel--get-pwd ghostel--term)))
+       proc 5)
+      (should (equal "file:///home/user" (ghostel--get-pwd ghostel--term))))))
+
+(ert-deftest ghostel-test-osc133-parsing ()
+  "OSC 133 child output dispatches prompt markers."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-cat-buffer (buf proc)
+      (let (markers)
+        (cl-letf (((symbol-function 'ghostel--osc133-marker)
+                   (lambda (type param) (push (cons type param) markers))))
+          (ghostel--write-pty ghostel--term "\e]133;A\e\\")
+          (ghostel-test--wait-until (lambda () (assoc "A" markers)) proc 5)
+
+          (setq markers nil)
+          (ghostel--write-pty ghostel--term "\e]133;B\a")
+          (ghostel-test--wait-until (lambda () (assoc "B" markers)) proc 5)
+
+          (setq markers nil)
+          (ghostel--write-pty ghostel--term "\e]133;C\e\\")
+          (ghostel-test--wait-until (lambda () (assoc "C" markers)) proc 5)
+
+          (setq markers nil)
+          (ghostel--write-pty ghostel--term "\e]133;D;0\e\\")
+          (ghostel-test--wait-until
+           (lambda () (equal "0" (cdr (assoc "D" markers))))
+           proc 5)
+
+          (setq markers nil)
+          (ghostel--write-pty ghostel--term "\e]133;D;1\e\\")
+          (ghostel-test--wait-until
+           (lambda () (equal "1" (cdr (assoc "D" markers))))
+           proc 5)
+
+          (setq markers nil)
+          (ghostel--write-pty ghostel--term "hello\e]133;A\e\\world\e]133;B\e\\")
+          (ghostel-test--wait-until
+           (lambda () (and (assoc "A" markers) (assoc "B" markers)))
+           proc 5)
+
+          ;; 133;P (explicit prompt start, no fresh-line side effect) — used
+          ;; by the zsh `zle-line-init' fallback and forwarded to elisp the
+          ;; same way as A so prompt navigation keeps working when the
+          ;; PROMPT-wrap was clobbered by a theme.
+          (setq markers nil)
+          (ghostel--write-pty ghostel--term "\e]133;P\e\\")
+          (ghostel-test--wait-until (lambda () (assoc "P" markers)) proc 5)
+          (setq markers nil)
+          (ghostel--write-pty ghostel--term "\e]133;P;k=i\e\\")
+          (ghostel-test--wait-until
+           (lambda () (equal "k=i" (cdr (assoc "P" markers))))
+           proc 5)
+
+          ;; 133;N (new_command) surfaces as A.  Ghostel doesn't track
+          ;; commands by aid, so N uses the same prompt navigation and hooks.
+          (setq markers nil)
+          (ghostel--write-pty ghostel--term "\e]133;N\e\\")
+          (ghostel-test--wait-until (lambda () (assoc "A" markers)) proc 5)
+          (setq markers nil)
+          (ghostel--write-pty ghostel--term "\e]133;N;aid=42\e\\")
+          (ghostel-test--wait-until
+           (lambda () (equal "aid=42" (cdr (assoc "A" markers))))
+           proc 5))))))
+
+(ert-deftest ghostel-test-command-finish-hook ()
+  "OSC 133 D fires `ghostel-command-finish-functions'."
+  (with-temp-buffer
+    (let* ((calls nil)
+           (ghostel-command-finish-functions
+            (list (lambda (buf exit) (push (cons buf exit) calls)))))
+      (ghostel--osc133-marker "A" nil)
+      (ghostel--osc133-marker "D" "0")
+      (should (equal 1 (length calls)))
+      (should (eq (caar calls) (current-buffer)))
+      (should (equal 0 (cdar calls)))
+
+      (setq calls nil)
+      (ghostel--osc133-marker "A" nil)
+      (ghostel--osc133-marker "D" "2")
+      (should (equal 2 (cdar calls)))
+
+      ;; Missing param -> exit is nil, hook still fires
+      (setq calls nil)
+      (ghostel--osc133-marker "A" nil)
+      (ghostel--osc133-marker "D" nil)
+      (should (equal 1 (length calls)))
+      (should (null (cdar calls))))))
+
+(ert-deftest ghostel-test-command-finish-hook-from-child-output ()
+  "OSC 133 D child output fires `ghostel-command-finish-functions'."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-cat-buffer (buf proc)
+      (let* ((calls nil)
+             (ghostel-command-finish-functions
+              (list (lambda (_buf exit) (push exit calls)))))
+        (ghostel--write-pty ghostel--term "\e]133;A\e\\$ \e]133;B\e\\")
+        (ghostel--write-pty ghostel--term "echo hi\r\nhi\r\n")
+        (ghostel--write-pty ghostel--term "\e]133;D;0\e\\")
+        (ghostel-test--wait-until (lambda () (equal '(0) calls)) proc 5)
+        (should (equal '(0) calls))
+
+        (ghostel--write-pty ghostel--term "\e]133;A\e\\$ \e]133;B\e\\")
+        (ghostel--write-pty ghostel--term "\e]133;D;127\e\\")
+        (ghostel-test--wait-until (lambda () (equal '(127 0) calls)) proc 5)
+        (should (equal '(127 0) calls))))))
+
+(ert-deftest ghostel-test-command-finish-hook-error-caught ()
+  "Errors in `ghostel-command-finish-functions' are demoted to messages.
+Bind `debug-on-error' to nil so we test the production code path
+\(under `--batch -Q' Emacs sets `debug-on-error' to t, which
+intentionally makes `with-demoted-errors' re-signal so a hook
+author's debugger can fire)."
+  (with-temp-buffer
+    (let ((inhibit-message t)
+          (debug-on-error nil)
+          (ghostel-command-finish-functions
+           (list (lambda (_buf _exit) (error "Boom")))))
+      (ghostel--osc133-marker "A" nil)
+      (should-not (condition-case _ (progn (ghostel--osc133-marker "D" "0") nil)
+                    (error t))))))
+
+(ert-deftest ghostel-test-command-finish-hook-error-isolated ()
+  "A raising hook must not prevent later hooks from running.
+See `ghostel-test-command-finish-hook-error-caught' for why we
+bind `debug-on-error' to nil."
+  (with-temp-buffer
+    (let ((inhibit-message t)
+          (debug-on-error nil)
+          (later-ran nil))
+      (let ((ghostel-command-finish-functions
+             (list (lambda (_buf _exit) (error "First boom"))
+                   (lambda (_buf _exit) (setq later-ran t)))))
+        (ghostel--osc133-marker "A" nil)
+        (ghostel--osc133-marker "D" "0")
+        (should later-ran)))))
+
+(ert-deftest ghostel-test-command-finish-hook-runs-synchronously ()
+  "Regression: `ghostel-command-finish-functions' must fire synchronously.
+They run inside `ghostel--osc133-marker', not deferred via timers.
+Downstream consumers (notably `ghostel-compile') depend on it."
+  (let ((ran nil))
+    (let ((ghostel-command-finish-functions
+           (list (lambda (_b _e) (setq ran t)))))
+      (ghostel--osc133-marker "D" "0")
+      (should ran))))
+
+(ert-deftest ghostel-test-command-start-hook-runs-synchronously ()
+  "Regression: `ghostel-command-start-functions' must fire synchronously."
+  (let ((ran nil))
+    (let ((ghostel-command-start-functions
+           (list (lambda (_b) (setq ran t)))))
+      (ghostel--osc133-marker "C" nil)
+      (should ran))))
 
 (provide 'ghostel-osc-test)
 ;;; ghostel-osc-test.el ends here

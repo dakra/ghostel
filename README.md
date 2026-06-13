@@ -5,8 +5,8 @@ same VT engine that drives the Ghostty terminal.
 
 Ghostel is inspired by
 [emacs-libvterm](https://github.com/akermu/emacs-libvterm): a native dynamic
-module handles terminal state and rendering, while Elisp manages the shell
-process, keymap, and buffer.
+module handles terminal state, rendering, and local PTY I/O, while Elisp
+manages keymaps, buffers, commands, and remote process integration.
 
 ## Table of Contents
 
@@ -16,6 +16,7 @@ process, keymap, and buffer.
 - [Shell Integration](#shell-integration)
 - [Key Bindings](#key-bindings)
 - [Features](#features)
+  - [Process model](#process-model)
   - [TRAMP (Remote Terminals)](#tramp-remote-terminals)
 - [Configuration](#configuration)
 - [Commands](#commands)
@@ -377,6 +378,19 @@ history in **any** mode that has a read-only buffer (Emacs or copy).
 - Alternate screen buffer (for TUI apps like htop, vim, etc.)
 - Scrollback buffer (configurable, default 5 MB (~5,000 lines), materialized into the Emacs buffer so `isearch`/`consult-line` work over history)
 
+### Process model
+
+Local ghostel buffers use a native PTY path by default
+(`ghostel-use-native-pty`).  The native reader consumes PTY output on a
+background thread, updates libghostty-vt asynchronously, and notifies Emacs
+through an event pipe when callbacks or redraws are needed.  This keeps large
+log streams and full-screen TUI redraws from running through Emacs process
+filters byte-for-byte.
+
+Remote TRAMP buffers still use Emacs process machinery so TRAMP can spawn the
+shell on the remote host and apply its file handlers.  The rendering and input
+APIs are shared by both paths.
+
 ### Links and File Detection
 - **OSC 8 hyperlinks** — clickable URLs emitted by terminal programs (click or `RET` to open)
 - **Plain-text URL detection** — automatically linkifies `http://` and `https://` URLs even without OSC 8 (toggle with `ghostel-enable-url-detection`)
@@ -649,8 +663,8 @@ output fast-path either.
 ### Rendering
 - Incremental redraw — only dirty rows are re-rendered
 - Timer-based batched updates with adaptive frame rate
-- **Immediate redraw** for interactive typing echo — small PTY output arriving shortly after a keystroke bypasses the timer, eliminating 16–33ms of latency per keypress
-- **Input coalescing** — rapid keystrokes are batched into a single PTY write to reduce syscall overhead
+- **Immediate redraw** for interactive typing echo — PTY output arriving shortly after a keystroke bypasses the timer, eliminating 16–33ms of latency per keypress
+- **Asynchronous local PTY output** — local PTY output is parsed by the native reader and Emacs is notified only when callbacks or redraws are needed
 - Cursor position updates even without cell changes
 - Theme-aware color palette (syncs with Emacs theme via `ghostel-sync-theme`)
 
@@ -828,6 +842,7 @@ inside a light Emacs):
 |----------------------------------|----------------------|----------------------------------------------------------|
 | `ghostel-module-auto-install`    | `ask`                | What to do when native module is missing (`ask`, `download`, `compile`, `nil`) |
 | `ghostel-shell`                  | `$SHELL`             | Shell program to run                                     |
+| `ghostel-use-native-pty`         | `t`                  | Use the native PTY reader for local buffers.  Remote TRAMP buffers always use Emacs processes |
 | `ghostel-term`                   | `"xterm-ghostty"`    | Value of `TERM` for spawned processes.  Default uses the bundled terminfo so apps can detect ghostel's full capability set.  Set to `"xterm-256color"` to fall back (drops `TERMINFO` and `TERM_PROGRAM=ghostty` too) |
 | `ghostel-environment`            | `nil`                | Extra env vars for spawned processes (list of `"KEY=VALUE"` strings). |
 | `ghostel-ssh-install-terminfo`   | `auto`               | Install `xterm-ghostty` terminfo on remote hosts as needed.  `auto` follows `ghostel-tramp-shell-integration`.  Affects both TRAMP-launched ghostel (push terminfo over the existing TRAMP connection) and outbound `ssh` from a local buffer (install via `tic` on first connection, cache in `~/.cache/ghostel/ssh-terminfo-cache`).  Per-call ssh override: `GHOSTEL_SSH_KEEP_TERM=1` |
@@ -840,9 +855,7 @@ inside a light Emacs):
 | `ghostel-max-scrollback`         | `5MB`                | Maximum scrollback size in bytes (materialized into the Emacs buffer; ~5,000 rows on 80-col terminals) |
 | `ghostel-timer-delay`            | `0.033`              | Base redraw delay in seconds (~30fps)                    |
 | `ghostel-adaptive-fps`           | `t`                  | Adaptive frame rate (shorter delay after idle, stop timer when idle) |
-| `ghostel-immediate-redraw-threshold` | `256`            | Max output bytes to trigger immediate redraw (0 to disable) |
 | `ghostel-immediate-redraw-interval`  | `0.05`           | Max seconds since last keystroke for immediate redraw    |
-| `ghostel-input-coalesce-delay`   | `0.003`              | Seconds to buffer rapid keystrokes before sending (0 to disable) |
 | `ghostel-full-redraw`            | `nil`                | Always do full redraws instead of incremental updates    |
 | `ghostel-cell-pixel-scale`       | `auto`               | Physical:logical pixel ratio for cell-size reporting (kitty graphics, XTWINOPS).  `auto` derives from display DPI |
 | `ghostel-kitty-graphics-storage-limit` | `320 MiB`      | Per-terminal cap on kitty graphics image storage.  Set to 0 to disable kitty graphics entirely (image transmissions are ignored, no storage allocated) |
@@ -856,7 +869,7 @@ inside a light Emacs):
 | `ghostel-enable-file-detection`  | `t`                  | Linkify file:line references in terminal output          |
 | `ghostel-ignore-cursor-change`   | `nil`                | Ignore terminal-driven cursor shape/visibility changes   |
 | `ghostel-keymap-exceptions`      | `("C-c" "C-x" ...)`  | Keys passed through to Emacs                             |
-| `ghostel-exit-functions`         | `nil`                | Hook run when the shell process exits                    |
+| `ghostel-exit-functions`         | `nil`                | Hook run when the terminal process exits                 |
 
 ## Evil-mode
 
@@ -997,11 +1010,10 @@ a real TTY so programs that probe `isatty(3)` (coloured output, progress
 bars, curses tools) behave as they do in a normal shell.
 
 Each invocation spawns a fresh process via
-`shell-file-name -c COMMAND` through a PTY owned by the ghostel
-renderer — no interactive shell sits between the command and the
-user, so multi-line shell scripts are passed through verbatim and
-no shell-integration setup is required.  The process sentinel
-delivers the real exit status.
+`shell-file-name -c COMMAND` through a PTY rendered by ghostel — no
+interactive shell sits between the command and the user, so multi-line
+shell scripts are passed through verbatim and no shell-integration setup
+is required.  The process sentinel delivers the real exit status.
 
 `ghostel-compile` inherits the same `TERM=xterm-ghostty` and
 `TERMINFO=...` env as `M-x ghostel`, so build output gets
@@ -1293,9 +1305,11 @@ module), [eat](https://codeberg.org/akib/emacs-eat) (pure Elisp), and Emacs
 built-in `term`.
 
 The primary benchmark streams 1 MB of data through a real process pipe,
-matching actual terminal usage.  All backends are configured with ~1,000
-lines of scrollback (matching vterm's default).  Results on Apple M4 Max,
-Emacs 31.0.50:
+matching actual terminal usage.  The default local path parses PTY output
+asynchronously in the native module and notifies Emacs when the rendered
+buffer needs an update.  All backends are configured with ~1,000 lines of
+scrollback (matching vterm's default).  Results on Apple M4 Max, Emacs
+31.0.50:
 
 | Backend              | Plain ASCII | URL-heavy |
 |----------------------|------------:|----------:|

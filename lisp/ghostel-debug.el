@@ -219,8 +219,7 @@ Logs filter calls, key sends, resize events, redraw decisions
   (advice-add 'ghostel--send-encoded :before #'ghostel-debug--log-encoded)
   ;; Render path
   (advice-add 'ghostel--redraw-now :around #'ghostel-debug--log-redraw)
-  (advice-add 'ghostel--window-adjust-process-window-size
-              :around #'ghostel-debug--log-resize)
+  (advice-add 'ghostel--adjust-size :around #'ghostel-debug--log-resize)
   ;; Password-prompt rising edges (events stored in
   ;; `ghostel-debug--password-events', viewable via
   ;; `ghostel-debug-password-events-show').
@@ -237,8 +236,7 @@ Logs filter calls, key sends, resize events, redraw decisions
   (advice-remove 'ghostel--send-string #'ghostel-debug--log-send)
   (advice-remove 'ghostel--send-encoded #'ghostel-debug--log-encoded)
   (advice-remove 'ghostel--redraw-now #'ghostel-debug--log-redraw)
-  (advice-remove 'ghostel--window-adjust-process-window-size
-                 #'ghostel-debug--log-resize)
+  (advice-remove 'ghostel--adjust-size #'ghostel-debug--log-resize)
   (advice-remove 'ghostel--detect-password-prompt
                  #'ghostel-debug--log-password-edge)
   (when (fboundp 'ghostel--disable-vt-log)
@@ -361,24 +359,30 @@ ORIG-FN is `ghostel--redraw-now', BUFFER is the target buffer."
             (insert (format "           wins-after:  %s\n"
                             (ghostel-debug--fmt-wins (plist-get after :wins))))))))))
 
-(defun ghostel-debug--log-resize (orig-fn process windows)
+(defun ghostel-debug--log-resize (orig-fn window)
   "Log resize events with old/new dimensions and timing.
-ORIG-FN is `ghostel--window-adjust-process-window-size'.
-PROCESS and WINDOWS are passed through."
-  (let* ((old-rows (when (buffer-live-p (process-buffer process))
-                     (buffer-local-value 'ghostel--term-rows (process-buffer process))))
+ORIG-FN is `ghostel--adjust-size'.  WINDOW is passed through."
+  (let* ((buffer (and (window-live-p window) (window-buffer window)))
+         (old-rows (and (buffer-live-p buffer)
+                        (buffer-local-value 'ghostel--term-rows buffer)))
+         (old-cols (and (buffer-live-p buffer)
+                        (buffer-local-value 'ghostel--term-cols buffer)))
          (t0 (current-time))
-         (size (funcall orig-fn process windows))
-         (elapsed (* 1000 (float-time (time-subtract (current-time) t0)))))
+         (result (funcall orig-fn window))
+         (elapsed (* 1000 (float-time (time-subtract (current-time) t0))))
+         (new-rows (and (buffer-live-p buffer)
+                        (buffer-local-value 'ghostel--term-rows buffer)))
+         (new-cols (and (buffer-live-p buffer)
+                        (buffer-local-value 'ghostel--term-cols buffer))))
     (when ghostel-debug--log-buffer
       (with-current-buffer ghostel-debug--log-buffer
         (goto-char (point-max))
         (insert (format "[%s] RESIZE: %sx%s → %sx%s (%.1fms)\n"
                         (format-time-string "%T.%3N")
-                        (and old-rows (cdr size)) old-rows
-                        (car size) (cdr size)
+                        old-cols old-rows
+                        new-cols new-rows
                         elapsed))))
-    size))
+    result))
 
 
 ;;; Typing latency measurement
@@ -655,7 +659,7 @@ omit it when the connection itself is the suspected fault."
           (let (buf-name maj-mode dir remote modes
                 proc cmd shell shell-integ tramp-integ detected
                 term term-rows term-cols force timer input-mode
-                input-bytes input-timer
+                event-pipe
                 buf-size buf-lines pt dec2026 alt-scr
                 dln-on dln-style spawn-capture)
             (with-current-buffer ghostel-buf
@@ -682,9 +686,7 @@ omit it when the connection itself is the suspected fault."
                     force ghostel--force-next-redraw
                     timer (and ghostel--redraw-timer t)
                     input-mode ghostel--input-mode
-                    input-bytes (apply #'+ (mapcar #'length
-                                                   ghostel--input-buffer))
-                    input-timer (and ghostel--input-timer t)
+                    event-pipe ghostel--event-pipe
                     buf-size (buffer-size)
                     buf-lines (count-lines (point-min) (point-max))
                     pt (point)
@@ -785,9 +787,11 @@ omit it when the connection itself is the suspected fault."
                     (insert (format "Force next redraw:   %s\n" force))
                     (insert (format "Redraw timer:        %s\n"
                                     (if timer "pending" "none")))
-                    (insert (format "Coalesce buffer:     %d bytes  timer: %s\n"
-                                    input-bytes
-                                    (if input-timer "pending" "none")))
+                    (insert (format "Event pipe:          %s\n"
+                                    (cond ((null event-pipe) "nil")
+                                          ((process-live-p event-pipe) "live")
+                                          (t (format "dead (%s)"
+                                                     (process-status event-pipe))))))
                     (insert (format "Input mode:          %s\n"
                                     (or input-mode "(unknown)"))))
                 (insert "Term handle:         nil (no terminal)\n"))
@@ -903,8 +907,8 @@ omit it when the connection itself is the suspected fault."
              ((null probe)
               (insert "(could not create probe terminal)\n"))
              (t
-              (cl-letf (((symbol-function 'ghostel--flush-output)
-                         (lambda (s) (setq sent s))))
+              (cl-letf (((symbol-function 'ghostel--write-pty)
+                         (lambda (_term s) (setq sent s))))
                 (dolist (chord '(("backspace" ""          "Backspace")
                                  ("backspace" "ctrl"      "C-Backspace")
                                  ("backspace" "meta"      "M-Backspace")
@@ -1560,7 +1564,7 @@ Bounded by `:send-cap'; sets `:send-truncated' once exceeded."
   "In-progress `ghostel-debug-keypress' capture, or nil.
 A plist with at least :buffer (the target ghostel buffer) and :calls
 \(an alist of (KIND . BYTES) reverse-collected during the captured
-command, where KIND is `:flush-output' or `:send-string').")
+command, where KIND is `:write-pty' or `:send-string').")
 
 ;;;###autoload
 (defun ghostel-debug-keypress ()
@@ -1569,18 +1573,17 @@ After you press one key, a report appears in *ghostel-debug-keypress*
 suitable for pasting into a GitHub issue.
 
 Captures the raw event, the resolved keymap binding, every byte that
-flowed through `ghostel--send-string' or `ghostel--flush-output' during
+flowed through `ghostel--send-string' or `ghostel--write-pty' during
 the command, terminal mode flags (DECCKM, DECKPAM, bracketed paste,
-mouse modes, alt screen, sync output), coalesce-buffer state, and
-process state."
+mouse modes, alt screen, sync output), and process state."
   (interactive)
   (unless (derived-mode-p 'ghostel-mode)
     (user-error "Not in a ghostel buffer"))
   (when ghostel--debug-kp-state (ghostel--debug-kp-teardown))
   (setq ghostel--debug-kp-state
         (list :buffer (current-buffer) :calls nil))
-  (advice-add 'ghostel--flush-output :before
-              #'ghostel--debug-kp-record-flush-output)
+  (advice-add 'ghostel--write-pty :before
+              #'ghostel--debug-kp-record-write-pty)
   (advice-add 'ghostel--send-string :before
               #'ghostel--debug-kp-record-send-string)
   (add-hook 'pre-command-hook #'ghostel--debug-kp-pre-command)
@@ -1594,11 +1597,11 @@ process state."
                      (cons (cons kind value)
                            (plist-get ghostel--debug-kp-state :calls))))))
 
-(defun ghostel--debug-kp-record-flush-output (data)
-  "Record DATA flowing through `ghostel--flush-output'."
+(defun ghostel--debug-kp-record-write-pty (_term data)
+  "Record DATA flowing through `ghostel--write-pty'."
   (when (eq (current-buffer)
             (plist-get ghostel--debug-kp-state :buffer))
-    (ghostel--debug-kp-add-call :flush-output data)))
+    (ghostel--debug-kp-add-call :write-pty data)))
 
 (defun ghostel--debug-kp-record-send-string (string)
   "Record STRING flowing through `ghostel--send-string'."
@@ -1635,7 +1638,7 @@ process state."
 
 (defun ghostel--debug-kp-teardown ()
   "Remove all advice and hooks installed by `ghostel-debug-keypress'."
-  (advice-remove 'ghostel--flush-output #'ghostel--debug-kp-record-flush-output)
+  (advice-remove 'ghostel--write-pty #'ghostel--debug-kp-record-write-pty)
   (advice-remove 'ghostel--send-string #'ghostel--debug-kp-record-send-string)
   (remove-hook 'pre-command-hook #'ghostel--debug-kp-pre-command)
   (remove-hook 'post-command-hook #'ghostel--debug-kp-post-command)
@@ -1655,13 +1658,12 @@ process state."
   (let* ((buf (plist-get state :buffer))
          (out (get-buffer-create "*ghostel-debug-keypress*"))
          (calls (nreverse (plist-get state :calls)))
-         term proc input-buf input-timer)
+         term proc event-pipe)
     (when (buffer-live-p buf)
       (with-current-buffer buf
         (setq term ghostel--term
               proc ghostel--process
-              input-buf ghostel--input-buffer
-              input-timer ghostel--input-timer)))
+              event-pipe ghostel--event-pipe)))
     (with-current-buffer out
       (let ((inhibit-read-only t))
         (erase-buffer)
@@ -1680,7 +1682,7 @@ process state."
         ;; Sends
         (insert "\n--- Sends during this command ---\n")
         (if (null calls)
-            (insert "(no calls to ghostel--send-string or ghostel--flush-output)\n")
+            (insert "(no calls to ghostel--send-string or ghostel--write-pty)\n")
           (cl-loop for (kind . data) in calls
                    for i from 1
                    do (insert (format "%d. %s: %s\n"
@@ -1709,15 +1711,11 @@ process state."
                                    (if (ghostel--mode-enabled term id)
                                        "ON" "off")))))
           (insert "(no terminal handle)\n"))
-        ;; Coalesce
-        (insert "\n--- Coalesce buffer ---\n")
-        (insert (format "Pending bytes:       %d\n"
-                        (apply #'+ (mapcar #'length input-buf))))
-        (insert (format "Coalesce timer:      %s\n"
-                        (if input-timer "pending" "none")))
         ;; Process
         (insert "\n--- Process ---\n")
         (cond
+         ((and (null proc) event-pipe)
+          (insert (format "Event pipe:          %s\n" (process-status event-pipe))))
          ((null proc)
           (insert "Process:             nil\n"))
          ((not (process-live-p proc))

@@ -24,11 +24,11 @@ previous undo."
   "Write a fresh OSC 133 prompt to TERM, redraw, and enter line mode.
 Stubs the process predicates so `ghostel-line-mode' runs without a
 live PTY.  Leaves the buffer in line mode with point at the input."
-  (ghostel--write-input term "\e]133;A\e\\$ \e]133;B\e\\")
+  (ghostel--write-vt term "\e]133;A\e\\$ \e]133;B\e\\")
   (let ((inhibit-read-only t))
     (ghostel--redraw term t))
   (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
-            ((symbol-function 'process-send-string) #'ignore)
+            ((symbol-function 'ghostel--write-pty) #'ignore)
             ((symbol-function 'ghostel--invalidate) #'ignore))
     (ghostel-line-mode)))
 
@@ -92,11 +92,11 @@ start, so an undo can never delete the prompt or earlier output."
     (set-window-buffer (selected-window) buf)
     (setq ghostel--process 'fake-proc)
     ;; Some prior output to form scrollback, then a fresh prompt.
-    (ghostel--write-input term "hello\r\nworld\r\n\e]133;A\e\\$ \e]133;B\e\\")
+    (ghostel--write-vt term "hello\r\nworld\r\n\e]133;A\e\\$ \e]133;B\e\\")
     (let ((inhibit-read-only t))
       (ghostel--redraw term t))
     (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
-              ((symbol-function 'process-send-string) #'ignore)
+              ((symbol-function 'ghostel--write-pty) #'ignore)
               ((symbol-function 'ghostel--invalidate) #'ignore))
       (ghostel-line-mode)
       (should (eq ghostel--input-mode 'line))
@@ -149,7 +149,7 @@ correctly against the input's new position."
     ;; Drive a redraw between edits: shell output streams in and a new
     ;; prompt is painted.  The renderer rewrites the whole viewport
     ;; (line mode forces full redraws).
-    (ghostel--write-input term "some output\r\n\e]133;A\e\\$ \e]133;B\e\\")
+    (ghostel--write-vt term "some output\r\n\e]133;A\e\\$ \e]133;B\e\\")
     (ghostel--redraw-now buf)
     ;; (a) Regression guard: the input survived snapshot/restore.
     (should (equal (ghostel--line-mode-input-text) "foo"))
@@ -186,7 +186,8 @@ correctly against the input's new position."
     (insert "echo hi")
     (undo-boundary)
     (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
-              ((symbol-function 'process-send-string) #'ignore))
+              ((symbol-function 'ghostel--write-pty) #'ignore)
+              ((symbol-function 'ghostel--send-encoded) #'ignore))
       (ghostel-line-mode-send))
     ;; History cleared.
     (should (eq buffer-undo-list nil))

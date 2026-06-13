@@ -191,7 +191,7 @@ This is the cross-input case from issue #357."
     (unwind-protect
         (ghostel-test--with-terminal-buffer (_buf term 25 80 1000)
           ;; Set the terminal title via OSC 2.
-          (ghostel--write-input term "\e]2;build\e\\")
+          (ghostel--write-vt term "\e]2;build\e\\")
           (should (equal "build" (ghostel--get-title term)))
           ;; A cd now combines the new cwd with the live title.
           (ghostel--update-directory dir)

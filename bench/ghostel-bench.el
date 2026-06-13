@@ -17,7 +17,7 @@
 ;;     before stopping the clock.
 ;;
 ;;   * `pty/*' — engine-only baseline: real subprocess, but a stripped
-;;     filter that batches output and calls `ghostel--write-input' /
+;;     filter that batches output and calls `ghostel--write-vt' /
 ;;     `ghostel--redraw' (the native functions) directly.  Skips
 ;;     link detection, anchoring, preedit, and wide-char compensation.
 ;;     The delta `e2e/* - pty/*' is the cost of the lisp-side pipeline.
@@ -291,7 +291,7 @@ The caller must call `delete-process' when done."
 ;;     timer + link-detection timer drained).
 ;;
 ;;   * `pty/*' uses a stripped-down filter that calls the native
-;;     `ghostel--write-input' / `ghostel--redraw' directly, skipping
+;;     `ghostel--write-vt' / `ghostel--redraw' directly, skipping
 ;;     `ghostel--redraw-now' (link detection, anchoring, preedit,
 ;;     wide-char compensation).
 ;;
@@ -577,7 +577,7 @@ When NO-DETECT is non-nil, disable URL and file detection."
                                        (setq redraw-timer nil)
                                        (let ((inhibit-read-only t))
                                          (when pending
-                                           (ghostel--write-input
+                                          (ghostel--write-vt
                                             term
                                             (apply #'concat (nreverse pending)))
                                            (setq pending nil))
@@ -591,7 +591,7 @@ When NO-DETECT is non-nil, disable URL and file detection."
       ;; Flush any pending output and redraw
       (when redraw-timer (cancel-timer redraw-timer))
       (when pending
-        (ghostel--write-input term (apply #'concat (nreverse pending)))
+        (ghostel--write-vt term (apply #'concat (nreverse pending)))
         (setq pending nil))
       (ghostel--redraw term full-redraw))))
 
@@ -821,7 +821,7 @@ terminal engine with periodic redraws, all in a tight loop."
            (let ((offset 0) (chunk-count 0))
              (while (< offset data-len)
                (let ((end (min (+ offset chunk-size) data-len)))
-                 (ghostel--write-input term (substring data offset end))
+                 (ghostel--write-vt term (substring data offset end))
                  (setq offset end)
                  (cl-incf chunk-count)
                  (when (zerop (% chunk-count redraw-every))
@@ -838,7 +838,7 @@ terminal engine with periodic redraws, all in a tight loop."
            (let ((offset 0) (chunk-count 0))
              (while (< offset data-len)
                (let ((end (min (+ offset chunk-size) data-len)))
-                 (ghostel--write-input term (substring data offset end))
+                 (ghostel--write-vt term (substring data offset end))
                  (setq offset end)
                  (cl-incf chunk-count)
                  (when (zerop (% chunk-count redraw-every))
@@ -857,7 +857,7 @@ terminal engine with periodic redraws, all in a tight loop."
            (let ((offset 0) (chunk-count 0))
              (while (< offset data-len)
                (let ((end (min (+ offset chunk-size) data-len)))
-                 (ghostel--write-input term (substring data offset end))
+                 (ghostel--write-vt term (substring data offset end))
                  (setq offset end)
                  (cl-incf chunk-count)
                  (when (zerop (% chunk-count redraw-every))
@@ -942,7 +942,7 @@ content — relevant for apps like htop, vim, claude-code."
                     (format "tui-frame/ghostel-incr/%s" label)
                     (string-bytes frame) tui-iterations
                     (lambda ()
-                      (ghostel--write-input term frame)
+                      (ghostel--write-vt term frame)
                       (ghostel--redraw term nil)))))
               (message "    ^ %.0f fps" (/ 1000.0 (plist-get result :per-iter-ms))))))
         ;; ghostel full
@@ -955,7 +955,7 @@ content — relevant for apps like htop, vim, claude-code."
                     (format "tui-frame/ghostel-full/%s" label)
                     (string-bytes frame) tui-iterations
                     (lambda ()
-                      (ghostel--write-input term frame)
+                      (ghostel--write-vt term frame)
                       (ghostel--redraw term t)))))
               (message "    ^ %.0f fps" (/ 1000.0 (plist-get result :per-iter-ms))))))
         ;; vterm
@@ -1030,7 +1030,7 @@ status bars, prompt redraws, and most TUI updates actually produce."
                  (ghostel-enable-file-detection nil)
                  (inhibit-read-only t)
                  (counter 0))
-            (ghostel--write-input term static)
+            (ghostel--write-vt term static)
             (ghostel--redraw term t)
             (let ((result
                    (ghostel-bench--measure
@@ -1038,7 +1038,7 @@ status bars, prompt redraws, and most TUI updates actually produce."
                     cols partial-iters
                     (lambda ()
                       (cl-incf counter)
-                      (ghostel--write-input
+                     (ghostel--write-vt
                        term (format status-template (format "status #%d" counter)))
                       (ghostel--redraw term nil)))))
               (message "    ^ %.0f fps" (/ 1000.0 (plist-get result :per-iter-ms))))))
@@ -1050,7 +1050,7 @@ status bars, prompt redraws, and most TUI updates actually produce."
                  (ghostel-enable-file-detection nil)
                  (inhibit-read-only t)
                  (counter 0))
-            (ghostel--write-input term static)
+            (ghostel--write-vt term static)
             (ghostel--redraw term t)
             (let ((result
                    (ghostel-bench--measure
@@ -1058,7 +1058,7 @@ status bars, prompt redraws, and most TUI updates actually produce."
                     cols partial-iters
                     (lambda ()
                       (cl-incf counter)
-                      (ghostel--write-input
+                     (ghostel--write-vt
                        term (format status-template (format "status #%d" counter)))
                       (ghostel--redraw term t)))))
               (message "    ^ %.0f fps" (/ 1000.0 (plist-get result :per-iter-ms))))))
@@ -1146,10 +1146,10 @@ When RENDER-P is non-nil, also call redraw after write-input."
          (if render-p
              (lambda ()
                (setq counter (1+ counter))
-               (ghostel--write-input term (format "\e[H%d\r\n" counter))
-               (ghostel--write-input term data)
+               (ghostel--write-vt term (format "\e[H%d\r\n" counter))
+               (ghostel--write-vt term data)
                (ghostel--redraw term nil))
-           (lambda () (ghostel--write-input term data))))))
+           (lambda () (ghostel--write-vt term data))))))
     ;; ghostel full
     (when render-p
       (ghostel-bench--with-bench-buffer
@@ -1162,8 +1162,8 @@ When RENDER-P is non-nil, also call redraw after write-input."
            (string-bytes data) iters
            (lambda ()
              (setq counter (1+ counter))
-             (ghostel--write-input term (format "\e[H%d\r\n" counter))
-             (ghostel--write-input term data)
+             (ghostel--write-vt term (format "\e[H%d\r\n" counter))
+             (ghostel--write-vt term data)
              (ghostel--redraw term t))))))
     ;; vterm
     (when ghostel-bench-include-vterm
@@ -1423,7 +1423,7 @@ Returns a list of (PTY-MS RENDER-MS TOTAL-MS) for each keystroke."
                 (accept-process-output proc 0.001)))
             ;; Feed to terminal and render
             (when pending
-              (ghostel--write-input term (apply #'concat (nreverse pending)))
+              (ghostel--write-vt term (apply #'concat (nreverse pending)))
               (setq pending nil))
             (ghostel--redraw term nil)
             (setq render-time (current-time))

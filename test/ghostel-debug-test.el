@@ -11,15 +11,15 @@
 (ert-deftest ghostel-test-debug-keypress-renders-capture ()
   "`ghostel--debug-kp-show' writes a paste-friendly report.
 Drives the renderer with a synthetic state plist that mimics a captured
-RET keystroke.  Asserts the report includes the event, every recorded
-send, and the coalesce-buffer state."
+RET keystroke.  Asserts the report includes the event and every recorded
+send."
   (let* ((target (generate-new-buffer " *ghostel-test-debug-kp*"))
          (state (list :buffer target
                       :event ?\C-m
                       :keys [13]
                       :command 'ghostel--send-event
                       :binding 'ghostel--send-event
-                      :calls (list (cons :flush-output "\r")
+                      :calls (list (cons :write-pty "\r")
                                    (cons :send-string "ls")))))
     (unwind-protect
         (progn
@@ -32,9 +32,8 @@ send, and the coalesce-buffer state."
               ;; Calls were collected newest-first; renderer reverses them.
               (should (string-match-p "1\\. send-string: \"ls\"" content))
               (should (string-match-p "hex: 6c 73" content))
-              (should (string-match-p "2\\. flush-output:" content))
-              (should (string-match-p "hex: 0d" content))
-              (should (string-match-p "Coalesce buffer" content)))))
+              (should (string-match-p "2\\. write-pty:" content))
+              (should (string-match-p "hex: 0d" content)))))
       (kill-buffer target)
       (when (get-buffer "*ghostel-debug-keypress*")
         (kill-buffer "*ghostel-debug-keypress*")))))
@@ -365,6 +364,111 @@ byte delta."
                              "TRAMP rewrote" content))))))
       (when (get-buffer "*ghostel-debug*")
         (kill-buffer "*ghostel-debug*")))))
+
+(ert-deftest ghostel-test-debug-ghostel-installs-spawn-pty-advice ()
+  "`ghostel-debug-ghostel' wires up self-removing advice on `ghostel--spawn-pty'.
+Confirms the around-advice fires (capturing arguments into a buffer-
+local plist) and that it removes itself after the spawn so subsequent
+plain `ghostel' calls aren't instrumented.  Stubs out `make-process'
+so no actual shell is spawned."
+  (let ((native-comp-enable-subr-trampolines nil)
+        (display-buffer-overriding-action '(display-buffer-no-window))
+        (inhibit-message t)
+        (ghostel-use-native-pty nil)
+        (orig-make-process (symbol-function #'make-process)))
+    (cl-letf (((symbol-function #'make-process)
+               (lambda (&rest plist)
+                 ;; Return a dummy process object so the advice still
+                 ;; records :command from (process-command proc).
+                 (apply orig-make-process
+                        (plist-put plist :command '("true"))))))
+      (let* ((buf (generate-new-buffer " *ghostel-test-debug-ghostel*"))
+             ;; Stub `ghostel' to call `ghostel--spawn-pty' synchronously
+             ;; in `buf' — mimics the path through `ghostel--start-process'
+             ;; without dragging in module load, buffer init, etc.
+             (calls 0))
+        (cl-letf (((symbol-function #'ghostel--spawn-pty)
+                   (lambda (&rest _args)
+                     (make-process :name "ghostel-test"
+                                   :buffer buf
+                                   :command '("/bin/sh" "-c" "exec /bin/sh")
+                                   :connection-type 'pipe
+                                   :noquery t)))
+                  ((symbol-function #'ghostel)
+                   (lambda (&rest _arg)
+                     (with-current-buffer buf
+                       (setq-local ghostel--term-rows 24)
+                       (setq-local ghostel--term-cols 80)
+                       (cl-incf calls)
+                       (ghostel--spawn-pty "/bin/sh" nil 24 80
+                                           "-ixon" nil nil)))))
+          (unwind-protect
+              (progn
+                (ghostel-debug-ghostel)
+                ;; Both advices should have removed themselves (or been
+                ;; stripped by the unwind-protect cleanup if they never
+                ;; fired — either way they must not linger).
+                (should-not (advice-member-p
+                             #'ghostel-debug--capture-spawn-pty
+                             'ghostel--spawn-pty))
+                (should-not (advice-member-p
+                             #'ghostel-debug--capture-start-process
+                             'ghostel--start-process))
+                ;; And the buffer-local capture should be populated.
+                (let ((cap (buffer-local-value
+                            'ghostel-debug--spawn-capture buf)))
+                  (should cap)
+                  (should (eq 24 (plist-get cap :height)))
+                  (should (eq 80 (plist-get cap :width)))
+                  (should (equal "/bin/sh" (plist-get cap :program)))
+                  ;; :command is the wrapper ghostel passed to make-process
+                  ;; — captured via cl-letf* on make-process *before* the
+                  ;; test stub substitutes :command.  So it must be the
+                  ;; ghostel wrapper (("/bin/sh" "-c" "<...>")), not the
+                  ;; substituted '("true").
+                  (let ((cmd (plist-get cap :command)))
+                    (should (consp cmd))
+                    (should (equal "/bin/sh" (car cmd)))
+                    (should (equal "-c" (cadr cmd))))
+                  ;; :executed-command is what process-command returns,
+                  ;; which is the test-substituted '("true").
+                  (should (equal '("true")
+                                 (plist-get cap :executed-command)))))
+            (when (buffer-live-p buf)
+              (let ((p (buffer-local-value 'ghostel--process buf)))
+                (when (processp p)
+                  (set-process-sentinel p #'ignore)
+                  (delete-process p)))
+              (kill-buffer buf))))))))
+
+(ert-deftest ghostel-test-debug-capture-start-process-records-time ()
+  "`ghostel-debug--capture-start-process' stashes its entry time and self-removes.
+The stashed value is consumed by `ghostel-debug--capture-spawn-pty'
+and folded into the capture as `:start-process-time'.  Without that
+two-step, the spawn-capture would have no baseline for the elisp-prep
+delta in the phase timings section."
+  (let ((buf (generate-new-buffer " *ghostel-test-start-proc-cap*"))
+        (orig (lambda (&rest _) 'fake-result)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--start-process) orig))
+          (advice-add 'ghostel--start-process :around
+                      #'ghostel-debug--capture-start-process)
+          (with-current-buffer buf
+            (let ((t-before (current-time)))
+              (ghostel--start-process)
+              ;; Advice removed itself after one call.
+              (should-not
+               (advice-member-p
+                #'ghostel-debug--capture-start-process
+                'ghostel--start-process))
+              ;; Buffer-local stash holds a timestamp at or after t-before.
+              (let ((stashed ghostel-debug--pending-start-process-time))
+                (should stashed)
+                (should-not (time-less-p stashed t-before))))))
+      (advice-remove 'ghostel--start-process
+                     #'ghostel-debug--capture-start-process)
+      (kill-buffer buf))))
+
 
 (provide 'ghostel-debug-test)
 ;;; ghostel-debug-test.el ends here

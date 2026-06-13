@@ -31,7 +31,7 @@ Requires the native module; without it the test is skipped
             (term (buffer-local-value 'ghostel--term buf)))
        (unwind-protect
            (with-current-buffer buf
-             (ghostel--write-input term ,text)
+             (ghostel--write-vt term ,text)
              (evil-local-mode 1)
              (evil-ghostel-mode 1)
              (let ((inhibit-read-only t))
@@ -354,8 +354,8 @@ point in the scrollback region instead of the visible viewport."
    ;; final row ("last-11") is in the viewport; earlier rows live in
    ;; scrollback above.
    (dotimes (i 12)
-     (ghostel--write-input term (format "row-%02d\r\n" i)))
-   (ghostel--write-input term "last-11")
+     (ghostel--write-vt term (format "row-%02d\r\n" i)))
+   (ghostel--write-vt term "last-11")
    (let ((inhibit-read-only t))
      (ghostel--redraw term t))
    ;; Walk point back into the scrollback region.
@@ -407,8 +407,8 @@ diffing — otherwise dy is wrong by the scrollback line count."
     ;; Push 12 rows so the viewport shows rows 8..12 plus a trailing
     ;; cursor row.
     (dotimes (i 12)
-      (ghostel--write-input term (format "row-%02d\r\n" i)))
-    (ghostel--write-input term "tail")
+      (ghostel--write-vt term (format "row-%02d\r\n" i)))
+    (ghostel--write-vt term "tail")
     (with-temp-buffer
       (ghostel-mode)
       (setq-local ghostel--term term)

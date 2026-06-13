@@ -4,7 +4,7 @@
 
 ;; Key encoding, send-event, raw key fallback, control/meta/special key
 ;; bindings, send-encoded, send-next-key, public send-string/-key/-paste API,
-;; immediate redraw, input coalescing.
+;; immediate redraw.
 
 ;;; Code:
 
@@ -116,235 +116,140 @@ Covers punctuation, digits, uppercase, space, and lowercase letters."
   (should (equal "\r" (ghostel--raw-key-sequence "return" "")))   ; plain return
   (should (equal "\t" (ghostel--raw-key-sequence "tab" ""))))     ; plain tab
 
+(defun ghostel-test--send-key-and-read-hex (key mods byte-count &optional setup)
+  "Send KEY/MODS to a byte-recorder child and return BYTE-COUNT bytes as hex.
+SETUP, when non-nil, is called before sending the key."
+  (let ((python (executable-find "python3")))
+    (unless python (ert-skip "python3 not available"))
+    (ghostel-test--with-exec-buffer
+        (buf proc python
+             (list "-c" ghostel-test--pty-byte-recorder-script
+                   (number-to-string byte-count)))
+      (ghostel-test--wait-for-text "GHOSTEL_RECORDER_READY" proc 5)
+      (when setup (funcall setup))
+      (ghostel--send-encoded key mods)
+      (ghostel-test--wait-for-marker-payload
+       "GHOSTEL_INPUT_HEX:"
+       (lambda (hex) (= (length hex) (* 2 byte-count)))
+       proc 5))))
+
 (ert-deftest ghostel-test-encode-key-kitty-backspace ()
   "Test that backspace is correctly encoded when kitty keyboard mode is active."
   :tags '(native)
-  (let* ((term (ghostel--new 25 80 1000))
-         (sent-bytes nil))
-    ;; Activate kitty keyboard protocol (flags=5: disambiguate + report-alternates)
-    ;; by feeding CSI = 5 u to the terminal
-    (ghostel--write-input term "\e[=5u")
-    ;; Capture what ghostel--flush-output sends
-    (cl-letf (((symbol-function 'ghostel--flush-output)
-               (lambda (data)
-                 (setq sent-bytes data))))
-      ;; Encode backspace — should succeed and send \x7f
-      (should (ghostel--encode-key term "backspace" ""))
-      (should sent-bytes)
-      (should (equal "\x7f" sent-bytes)))))
+  (ghostel-test--with-pty-matrix backend
+    ;; Activate kitty keyboard protocol (flags=5: disambiguate +
+    ;; report-alternates) on the terminal model, then encode backspace —
+    ;; it must still reach the child as \x7f, not a CSI u form.
+    (should (equal "7f"
+                   (ghostel-test--send-key-and-read-hex
+                    "backspace" "" 1
+                    (lambda () (ghostel--write-vt ghostel--term "\e[=5u")))))))
 
 (ert-deftest ghostel-test-encode-key-legacy-backspace ()
   "Test that backspace is correctly encoded in legacy mode (no kitty)."
   :tags '(native)
-  (let* ((term (ghostel--new 25 80 1000))
-         (sent-bytes nil))
-    ;; No kitty mode set — legacy encoding
-    (cl-letf (((symbol-function 'ghostel--flush-output)
-               (lambda (data)
-                 (setq sent-bytes data))))
-      (should (ghostel--encode-key term "backspace" ""))
-      (should sent-bytes)
-      (should (equal "\x7f" sent-bytes)))))
+  (ghostel-test--with-pty-matrix backend
+    (should (equal "7f" (ghostel-test--send-key-and-read-hex "backspace" "" 1)))))
 
-(ert-deftest ghostel-test-immediate-redraw-triggers-on-small-echo ()
-  "Small output after recent send-key triggers immediate redraw."
+(ert-deftest ghostel-test-filter-writes-vt-and-invalidates ()
+  "`ghostel--filter' feeds output to the terminal and triggers a redraw.
+The redraw-timing decision lives in `ghostel--invalidate'; the filter
+only feeds bytes and invalidates."
   (with-temp-buffer
     (let ((buf (current-buffer))
           (ghostel--term 'fake)
-          (ghostel--redraw-timer nil)
-          (ghostel--last-send-time nil)
-          (ghostel-immediate-redraw-threshold 256)
-          (ghostel-immediate-redraw-interval 0.05)
           (written nil)
-          (immediate-called nil)
-          (invalidate-called nil))
-      ;; Stub out process-buffer, native input, delayed-redraw, and invalidate.
+          (invalidated nil))
       (cl-letf (((symbol-function 'process-buffer) (lambda (_) buf))
-                ((symbol-function 'ghostel--write-input)
+                ((symbol-function 'ghostel--write-vt)
                  (lambda (_term data) (setq written data)))
-                ((symbol-function 'ghostel--redraw-now)
-                 (lambda (_buf) (setq immediate-called t)))
                 ((symbol-function 'ghostel--invalidate)
-                 (lambda () (setq invalidate-called t))))
-        ;; Simulate recent keystroke
-        (setq ghostel--last-send-time (current-time))
-        ;; Simulate small echo arriving
-        (ghostel--filter 'fake-proc "a")
-        (should (equal "a" written))
-        (should immediate-called)
-        (should-not invalidate-called)))))
+                 (lambda () (setq invalidated t))))
+        (ghostel--filter 'fake-proc "hello")
+        (should (equal "hello" written))
+        (should invalidated)))))
 
-(ert-deftest ghostel-test-immediate-redraw-skips-large-output ()
-  "Large output is written immediately and rendered by timer."
+(ert-deftest ghostel-test-invalidate-redraws-immediately-after-recent-send ()
+  "Output within `ghostel-immediate-redraw-interval' of a keystroke redraws now.
+Interactive echo is drawn synchronously to minimize typing latency
+instead of waiting for the redraw timer."
   (with-temp-buffer
-    (let ((buf (current-buffer))
-          (ghostel--term 'fake)
-          (ghostel--redraw-timer nil)
-          (ghostel--last-send-time (current-time))
-          (ghostel-immediate-redraw-threshold 256)
+    (let ((ghostel--last-send-time (current-time))
           (ghostel-immediate-redraw-interval 0.05)
-          (written nil)
-          (immediate-called nil)
-          (invalidate-called nil))
-      (cl-letf (((symbol-function 'process-buffer) (lambda (_) buf))
-                ((symbol-function 'ghostel--write-input)
-                 (lambda (_term data) (setq written data)))
-                ((symbol-function 'ghostel--redraw-now)
-                 (lambda (_buf) (setq immediate-called t)))
-                ((symbol-function 'ghostel--invalidate)
-                 (lambda () (setq invalidate-called t))))
-        ;; Large output is fed to the terminal now; rendering is scheduled.
-        (ghostel--filter 'fake-proc (make-string 500 ?x))
-        (should (= 500 (length written)))
-        (should-not immediate-called)
-        (should invalidate-called)))))
-
-(ert-deftest ghostel-test-immediate-redraw-skips-stale-send ()
-  "Output arriving long after last keystroke schedules timer redraw."
-  (with-temp-buffer
-    (let ((buf (current-buffer))
-          (ghostel--term 'fake)
           (ghostel--redraw-timer nil)
-          (ghostel--last-send-time (time-subtract (current-time) 1))
-          (ghostel-immediate-redraw-threshold 256)
-          (ghostel-immediate-redraw-interval 0.05)
-          (written nil)
-          (immediate-called nil)
-          (invalidate-called nil))
-      (cl-letf (((symbol-function 'process-buffer) (lambda (_) buf))
-                ((symbol-function 'ghostel--write-input)
-                 (lambda (_term data) (setq written data)))
-                ((symbol-function 'ghostel--redraw-now)
-                 (lambda (_buf) (setq immediate-called t)))
-                ((symbol-function 'ghostel--invalidate)
-                 (lambda () (setq invalidate-called t))))
-        (ghostel--filter 'fake-proc "a")
-        (should (equal "a" written))
-        (should-not immediate-called)
-        (should invalidate-called)))))
-
-(ert-deftest ghostel-test-immediate-redraw-disabled-when-zero ()
-  "Immediate redraw is disabled when threshold is 0."
-  (with-temp-buffer
-    (let ((buf (current-buffer))
-          (ghostel--term 'fake)
-          (ghostel--redraw-timer nil)
-          (ghostel--last-send-time (current-time))
-          (ghostel-immediate-redraw-threshold 0)
-          (ghostel-immediate-redraw-interval 0.05)
-          (written nil)
-          (immediate-called nil)
-          (invalidate-called nil))
-      (cl-letf (((symbol-function 'process-buffer) (lambda (_) buf))
-                ((symbol-function 'ghostel--write-input)
-                 (lambda (_term data) (setq written data)))
-                ((symbol-function 'ghostel--redraw-now)
-                 (lambda (_buf) (setq immediate-called t)))
-                ((symbol-function 'ghostel--invalidate)
-                 (lambda () (setq invalidate-called t))))
-        (ghostel--filter 'fake-proc "a")
-        (should (equal "a" written))
-        (should-not immediate-called)
-        (should invalidate-called)))))
-
-(ert-deftest ghostel-test-input-coalesce-buffers-single-chars ()
-  "Single-char sends are buffered when coalescing is enabled."
-  (with-temp-buffer
-    (let* ((ghostel--process nil)
-           (ghostel--input-buffer nil)
-           (ghostel--input-timer nil)
-           (ghostel--last-send-time nil)
-           (ghostel-input-coalesce-delay 0.003)
-           (sent nil))
-      ;; Create a mock process
-      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
-                ((symbol-function 'process-send-string)
-                 (lambda (_proc str) (push str sent)))
+          (redraw-now-called nil)
+          (timer-scheduled nil))
+      (cl-letf (((symbol-function 'ghostel--redraw-now)
+                 (lambda (_buf) (setq redraw-now-called t)))
                 ((symbol-function 'run-with-timer)
-                 (lambda (_delay _repeat _fn &rest _args)
-                   ;; Return a fake timer but call function for test
-                   'fake-timer)))
-        (setq ghostel--process 'fake)
+                 (lambda (&rest _) (setq timer-scheduled t) 'fake-timer)))
+        (ghostel--invalidate)
+        (should redraw-now-called)
+        (should-not timer-scheduled)
+        (should-not ghostel--redraw-timer)))))
+
+(ert-deftest ghostel-test-invalidate-schedules-timer-when-send-stale ()
+  "With no recent keystroke, redraw is deferred to the coalescing timer.
+Bulk output (nothing sent within `ghostel-immediate-redraw-interval')
+must not redraw synchronously."
+  (with-temp-buffer
+    (let ((ghostel--last-send-time (time-subtract (current-time) 1))
+          (ghostel-immediate-redraw-interval 0.05)
+          (ghostel-adaptive-fps nil)
+          (ghostel--redraw-timer nil)
+          (redraw-now-called nil)
+          (timer-scheduled nil))
+      (cl-letf (((symbol-function 'ghostel--redraw-now)
+                 (lambda (_buf) (setq redraw-now-called t)))
+                ((symbol-function 'run-with-timer)
+                 (lambda (&rest _) (setq timer-scheduled t) 'fake-timer)))
+        (ghostel--invalidate)
+        (should-not redraw-now-called)
+        (should timer-scheduled)
+        (should (eq ghostel--redraw-timer 'fake-timer))))))
+
+(ert-deftest ghostel-test-invalidate-coalesces-pending-timer ()
+  "A pending redraw timer is reused, not duplicated, for bulk output.
+Without this guard a flood would spawn a storm of redraw timers."
+  (with-temp-buffer
+    (let ((ghostel--last-send-time (time-subtract (current-time) 1))
+          (ghostel-immediate-redraw-interval 0.05)
+          (ghostel-adaptive-fps nil)
+          (ghostel--redraw-timer 'existing-timer)
+          (redraw-now-called nil)
+          (timer-scheduled nil))
+      (cl-letf (((symbol-function 'ghostel--redraw-now)
+                 (lambda (_buf) (setq redraw-now-called t)))
+                ((symbol-function 'run-with-timer)
+                 (lambda (&rest _) (setq timer-scheduled t) 'fake-timer)))
+        (ghostel--invalidate)
+        (should-not redraw-now-called)
+        (should-not timer-scheduled)
+        (should (eq ghostel--redraw-timer 'existing-timer))))))
+
+(ert-deftest ghostel-test-send-string-writes-to-pty-and-records-send-time ()
+  "`ghostel--send-string' writes to the PTY boundary and records send time."
+  (with-temp-buffer
+    (let ((ghostel--term 'fake)
+          (ghostel--last-send-time nil)
+          sent)
+      (cl-letf (((symbol-function 'ghostel--write-pty)
+                 (lambda (_term str) (push str sent))))
         (ghostel--send-string "a")
-        ;; Should be buffered, not sent
-        (should (equal ghostel--input-buffer '("a")))
-        (should-not sent)))))
+        (should (equal sent '("a")))
+        (should ghostel--last-send-time)))))
 
-(ert-deftest ghostel-test-input-coalesce-disabled ()
-  "With coalesce delay 0, characters are sent immediately."
+(ert-deftest ghostel-test-send-encoded-fallback-writes-raw-key ()
+  "When native encoding fails, raw fallback writes through `ghostel--write-pty'."
   (with-temp-buffer
-    (let* ((ghostel--process nil)
-           (ghostel--input-buffer nil)
-           (ghostel--input-timer nil)
-           (ghostel--last-send-time nil)
-           (ghostel-input-coalesce-delay 0)
-           (sent nil))
-      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
-                ((symbol-function 'process-send-string)
-                 (lambda (_proc str) (push str sent))))
-        (setq ghostel--process 'fake)
-        (ghostel--send-string "a")
-        (should (member "a" sent))
-        (should-not ghostel--input-buffer)))))
-
-(ert-deftest ghostel-test-input-flush-sends-buffered ()
-  "Flushing input buffer sends concatenated characters."
-  (with-temp-buffer
-    (let* ((ghostel--process nil)
-           (ghostel--input-buffer '("c" "b" "a"))
-           (ghostel--input-timer nil)
-           (sent nil))
-      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
-                ((symbol-function 'process-send-string)
-                 (lambda (_proc str) (push str sent))))
-        (setq ghostel--process 'fake)
-        (ghostel--flush-input (current-buffer))
-        (should (equal sent '("abc")))
-        (should-not ghostel--input-buffer)))))
-
-(ert-deftest ghostel-test-flush-output-drains-coalesced-first ()
-  "`ghostel--flush-output' drains the coalesce buffer before its own write.
-This is the chokepoint for every direct PTY write from the Zig side
-\(key/mouse encoders, OSC query responses, focus events, VT write-back),
-so flushing here covers them all in one place."
-  :tags '(native)
-  (with-temp-buffer
-    (let ((ghostel--process 'fake)
-          (ghostel--input-buffer '("s" "l"))
-          (ghostel--input-timer nil)
-          (sent nil))
-      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
-                ((symbol-function 'process-send-string)
-                 (lambda (_proc str) (push str sent))))
-        (ghostel--flush-output "\r")
-        ;; Buffered "ls" must reach the PTY *before* the encoder's "\r".
-        (should (equal (nreverse sent) '("ls" "\r")))
-        (should-not ghostel--input-buffer)))))
-
-(ert-deftest ghostel-test-send-encoded-preserves-input-order ()
-  "End-to-end: RET via the encoder cannot overtake buffered self-insert bytes.
-The encode-key stub mimics Zig by calling `ghostel--flush-output', which is
-where the ordering invariant lives."
-  :tags '(native)
-  (with-temp-buffer
-    (let* ((ghostel--term 'fake)
-           (ghostel--process 'fake)
-           (ghostel--input-buffer '("s" "l"))
-           (ghostel--input-timer nil)
-           (ghostel--last-send-time nil)
-           (sent nil))
-      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
-                ((symbol-function 'process-send-string)
-                 (lambda (_proc str) (push str sent)))
-                ;; Mimic Zig: the real encoder calls ghostel--flush-output
-                ;; with the encoded bytes; let the production wrapper run.
-                ((symbol-function 'ghostel--encode-key)
-                 (lambda (_term _key _mods &optional _utf8)
-                   (ghostel--flush-output "\r")
-                   t)))
-        (ghostel--send-encoded "return" "")
-        (should (equal (nreverse sent) '("ls" "\r")))
-        (should-not ghostel--input-buffer)))))
+    (let ((ghostel--term 'fake)
+          sent)
+      (cl-letf (((symbol-function 'ghostel--encode-key)
+                 (lambda (_term _key _mods &optional _utf8) nil))
+                ((symbol-function 'ghostel--write-pty)
+                 (lambda (_term str) (push str sent))))
+        (ghostel--send-encoded "backspace" "")
+        (should (equal sent '("\x7f")))))))
 
 (ert-deftest ghostel-test-send-encoded-sets-send-time ()
   "When the native encoder succeeds, last-send-time is updated."
@@ -357,24 +262,16 @@ where the ordering invariant lives."
         (ghostel--send-encoded "backspace" "")
         (should ghostel--last-send-time)))))
 
-(ert-deftest ghostel-test-send-encoded-no-send-time-on-fallback ()
-  "When the encoder fails, last-send-time is set by send-key, not send-encoded."
+(ert-deftest ghostel-test-send-encoded-fallback-records-send-time ()
+  "Fallback key sends also record send time."
   (with-temp-buffer
     (let ((ghostel--term 'fake)
-          (ghostel--process nil)
-          (ghostel--last-send-time nil)
-          (ghostel--input-buffer nil)
-          (ghostel--input-timer nil)
-          (ghostel-input-coalesce-delay 0))
-      ;; Stub encode-key to return nil (failure) — triggers raw fallback
+          (ghostel--last-send-time nil))
+      ;; Stub encode-key to return nil (failure) — triggers raw fallback.
       (cl-letf (((symbol-function 'ghostel--encode-key)
                  (lambda (_term _key _mods &optional _utf8) nil))
-                ((symbol-function 'process-live-p) (lambda (_) t))
-                ((symbol-function 'process-send-string)
-                 (lambda (_proc _str) nil)))
-        (setq ghostel--process 'fake)
+                ((symbol-function 'ghostel--write-pty) #'ignore))
         (ghostel--send-encoded "backspace" "")
-        ;; send-key sets last-send-time via the fallback path
         (should ghostel--last-send-time)))))
 
 (ert-deftest ghostel-test-control-key-bindings ()
@@ -587,16 +484,10 @@ the ghostty encoder maps to a terminal byte are forwarded."
 Regression test for issue #239: these byte sequences match readline
 `.inputrc' rules of the form \"\\e\\<C-letter>\"."
   :tags '(native)
-  (let* ((term (ghostel--new 25 80 1000))
-         (sent nil))
-    (cl-letf (((symbol-function 'ghostel--flush-output)
-               (lambda (data) (setq sent data))))
-      (setq sent nil)
-      (should (ghostel--encode-key term "f" "ctrl,meta" nil))
-      (should (equal "\e\x06" sent))
-      (setq sent nil)
-      (should (ghostel--encode-key term "v" "ctrl,meta" nil))
-      (should (equal "\e\x16" sent)))))
+  (ghostel-test--with-pty-matrix backend
+    (pcase-dolist (`(,name ,expected) '(("f" "1b06") ("v" "1b16")))
+      (should (equal expected
+                     (ghostel-test--send-key-and-read-hex name "ctrl,meta" 2))))))
 
 (ert-deftest ghostel-test-encode-key-legacy-control-punct ()
   "Control punctuation encodes to the correct C0 byte in legacy mode.
@@ -604,30 +495,24 @@ C-] is the headline case (-> 0x1d); C-/ -> 0x1f.  Control-Meta prepends
 ESC, matching the bytes eat sends.  (Only the punctuation the ghostty
 encoder recognizes is forwarded; see `ghostel--define-terminal-keys'.)"
   :tags '(native)
-  (let* ((term (ghostel--new 25 80 1000))
-         (sent nil))
-    (cl-letf (((symbol-function 'ghostel--flush-output)
-               (lambda (data) (setq sent data))))
-      (pcase-dolist (`(,name ,bytes) '(("]" "\x1d") ("/" "\x1f")))
-        (setq sent nil)
-        (should (ghostel--encode-key term name "ctrl" nil))
-        (should (equal bytes sent)))
-      ;; Control-Meta prepends ESC: C-M-] -> 0x1b 0x1d, C-M-/ -> 0x1b 0x1f.
-      (pcase-dolist (`(,name ,bytes) '(("]" "\e\x1d") ("/" "\e\x1f")))
-        (setq sent nil)
-        (should (ghostel--encode-key term name "ctrl,meta" nil))
-        (should (equal bytes sent))))))
+  (ghostel-test--with-pty-matrix backend
+    (pcase-dolist (`(,name ,mods ,count ,expected)
+                   '(("]" "ctrl" 1 "1d")
+                     ("/" "ctrl" 1 "1f")
+                     ("]" "ctrl,meta" 2 "1b1d")
+                     ("/" "ctrl,meta" 2 "1b1f")))
+      (should (equal expected
+                     (ghostel-test--send-key-and-read-hex name mods count))))))
 
 (ert-deftest ghostel-test-send-encoded-meta-period ()
   "M-. sends ESC + period via raw fallback (legacy alt encoding)."
   :tags '(native)
-  (let* ((term (ghostel--new 25 80 1000))
-         (sent nil))
-    (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
-              ((symbol-function 'process-send-string)
-               (lambda (_proc str) (setq sent str))))
-      (setq ghostel--term term
-            ghostel--process 'fake)
+  (let ((ghostel--term 'fake)
+        sent)
+    (cl-letf (((symbol-function 'ghostel--encode-key)
+               (lambda (_term _key _mods &optional _utf8) nil))
+              ((symbol-function 'ghostel--write-pty)
+               (lambda (_term str) (setq sent str))))
       (ghostel--send-encoded "." "meta")
       (should (equal "\e." sent)))))
 

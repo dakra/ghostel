@@ -51,11 +51,11 @@ FOCUS-FN is a zero-arg function returning the current `frame-focus-state'."
   (let ((term (ghostel--new 25 80 1000)))
     (should (equal nil (ghostel--focus-event term t)))     ; focus ignored without mode 1004
     ;; Enable mode 1004 via DECSET
-    (ghostel--write-input term "\e[?1004h")
+    (ghostel--write-vt term "\e[?1004h")
     (should (equal t (ghostel--focus-event term t)))       ; focus sent with mode 1004
     (should (equal t (ghostel--focus-event term nil)))     ; focus-out sent with mode 1004
     ;; Disable mode 1004 via DECRST
-    (ghostel--write-input term "\e[?1004l")
+    (ghostel--write-vt term "\e[?1004l")
     (should (equal nil (ghostel--focus-event term t)))))   ; focus ignored after reset
 
 (ert-deftest ghostel-test-focus-window-selection ()
@@ -1461,8 +1461,8 @@ Emacs's regular `yank' so paste lands in the input region."
     (cl-letf (((symbol-function 'ghostel--paste-text)
                (lambda (text) (push text pasted)))
               ((symbol-function 'process-live-p) (lambda (_) t))
-              ((symbol-function 'process-send-string)
-               (lambda (_proc str) (setq erased str))))
+              ((symbol-function 'ghostel--write-pty)
+               (lambda (_term str) (setq erased str))))
       (ghostel-yank-pop)
       ;; Should have erased the previous paste (5 backspaces for "first")
       (should (= (length erased) 5))
