@@ -51,7 +51,7 @@ either of which would snap every marker in the buffer to `point-min'."
         (with-current-buffer buf
           (let* ((term (ghostel--new 5 40 1000))
                  (inhibit-read-only t))
-            (ghostel--write-input term "line one\r\nline two\r\nline three")
+            (ghostel--write-vt term "line one\r\nline two\r\nline three")
             (ghostel--redraw term t)
             ;; Anchor mark to "two" so its position sits well past point-min.
             (goto-char (point-min))
@@ -59,7 +59,7 @@ either of which would snap every marker in the buffer to `point-min'."
             (let ((target (point)))
               (set-marker (mark-marker) target)
               ;; Trigger a full redraw (erase-buffer path).
-              (ghostel--write-input term " more")
+              (ghostel--write-vt term " more")
               (ghostel--redraw term t)
               (should (= target (marker-position (mark-marker)))))))
       (kill-buffer buf))))
@@ -129,7 +129,7 @@ with TERM and must write MARK_TARGET, POINT_TARGET, and START_TARGET."
 (defun ghostel-test--write-position-preservation-lines (term count)
   "Write COUNT hard-wrapped rows containing the position target tokens to TERM."
   (dotimes (i count)
-    (ghostel--write-input
+    (ghostel--write-vt
      term
      (cond
       ((= i 3) "START_TARGET start-row\r\n")
@@ -139,21 +139,21 @@ with TERM and must write MARK_TARGET, POINT_TARGET, and START_TARGET."
 
 (defun ghostel-test--write-position-preservation-reflow-content (term)
   "Write content to TERM whose target rows survive a width-changing reflow."
-  (ghostel--write-input term "START_TARGET stable start row\r\n")
-  (ghostel--write-input term
-                        (concat "long row before mark "
-                                (make-string 45 ?a)
-                                " MARK_TARGET "
-                                (make-string 45 ?b)
-                                " POINT_TARGET tail\r\n"))
+  (ghostel--write-vt term "START_TARGET stable start row\r\n")
+  (ghostel--write-vt term
+                     (concat "long row before mark "
+                             (make-string 45 ?a)
+                             " MARK_TARGET "
+                             (make-string 45 ?b)
+                             " POINT_TARGET tail\r\n"))
   (dotimes (i 8)
-    (ghostel--write-input term (format "after-%02d\r\n" i))))
+    (ghostel--write-vt term (format "after-%02d\r\n" i))))
 
 (defun ghostel-test--write-position-preservation-alt-screen (term rows)
   "Write target tokens to TERM into ROWS of alt-screen content."
-  (ghostel--write-input term "\e[?1049h\e[H\e[2J")
+  (ghostel--write-vt term "\e[?1049h\e[H\e[2J")
   (dotimes (i rows)
-    (ghostel--write-input
+    (ghostel--write-vt
      term
      (format "\e[%d;1H%s" (1+ i)
              (pcase i
@@ -168,7 +168,7 @@ with TERM and must write MARK_TARGET, POINT_TARGET, and START_TARGET."
   (ghostel-test--with-position-preservation-case
    (buf term 8 80 2000 (lambda (term)
                          (ghostel-test--write-position-preservation-lines term 12)))
-   (ghostel--write-input term "\e[2;1Hdirty-row")
+   (ghostel--write-vt term "\e[2;1Hdirty-row")
    (ghostel--redraw term)))
 
 (ert-deftest ghostel-test-position-preservation-after-changed-length-line ()
@@ -176,17 +176,17 @@ with TERM and must write MARK_TARGET, POINT_TARGET, and START_TARGET."
   :tags '(native)
   (ghostel-test--with-position-preservation-case
    (buf term 12 80 2000 (lambda (term)
-                          (ghostel--write-input term "short mutable row\r\n")
-                          (ghostel--write-input term "START_TARGET start-row\r\n")
-                          (ghostel--write-input term "mark row MARK_TARGET here\r\n")
-                          (ghostel--write-input term "point row POINT_TARGET here\r\n")
+                          (ghostel--write-vt term "short mutable row\r\n")
+                          (ghostel--write-vt term "START_TARGET start-row\r\n")
+                          (ghostel--write-vt term "mark row MARK_TARGET here\r\n")
+                          (ghostel--write-vt term "point row POINT_TARGET here\r\n")
                           (dotimes (i 4)
-                            (ghostel--write-input term
-                                                  (format "tail-%02d\r\n" i)))))
+                            (ghostel--write-vt term
+                                               (format "tail-%02d\r\n" i)))))
    (let ((old-start (ghostel-test--token-position "START_TARGET"))
          (old-mark (ghostel-test--token-position "MARK_TARGET"))
          (old-point (ghostel-test--token-position "POINT_TARGET")))
-     (ghostel--write-input
+     (ghostel--write-vt
       term
       "\e[1;1H\e[2Kthis mutable row is now much longer than before")
      (ghostel--redraw term)
@@ -199,16 +199,16 @@ with TERM and must write MARK_TARGET, POINT_TARGET, and START_TARGET."
   :tags '(native)
   (ghostel-test--with-position-preservation-case
    (buf term 12 80 2000 (lambda (term)
-                          (ghostel--write-input
+                          (ghostel--write-vt
                            term
                            "short START_TARGET MARK_TARGET POINT_TARGET tail\r\n")
                           (dotimes (i 7)
-                            (ghostel--write-input term
-                                                  (format "tail-%02d\r\n" i)))))
+                            (ghostel--write-vt term
+                                               (format "tail-%02d\r\n" i)))))
    (let ((old-start (ghostel-test--token-position "START_TARGET"))
          (old-mark (ghostel-test--token-position "MARK_TARGET"))
          (old-point (ghostel-test--token-position "POINT_TARGET")))
-     (ghostel--write-input
+     (ghostel--write-vt
       term
       "\e[1;1H\e[2Kshort START_TARGET MARK_TARGET POINT_TARGET longer suffix")
      (ghostel--redraw term)
@@ -231,11 +231,11 @@ with TERM and must write MARK_TARGET, POINT_TARGET, and START_TARGET."
                  (ghostel--term-cols 80)
                  (inhibit-read-only t)
                  (win (selected-window)))
-            (ghostel--write-input
+            (ghostel--write-vt
              term
              "prefix START_TARGET middle MARK_TARGET more POINT_TARGET tail\r\n")
             (dotimes (i 7)
-              (ghostel--write-input term (format "tail-%02d\r\n" i)))
+              (ghostel--write-vt term (format "tail-%02d\r\n" i)))
             (ghostel--redraw term t)
             (set-window-start win
                               (ghostel-test--token-position "START_TARGET")
@@ -244,7 +244,7 @@ with TERM and must write MARK_TARGET, POINT_TARGET, and START_TARGET."
                         (ghostel-test--token-position "MARK_TARGET"))
             (goto-char (ghostel-test--token-position "POINT_TARGET"))
             (set-window-point win (point))
-            (ghostel--write-input term "\e[1;1H\e[2Kshort")
+            (ghostel--write-vt term "\e[1;1H\e[2Kshort")
             (ghostel--redraw term)
             (let* ((line-end (save-excursion
                                (goto-char (point-min))
@@ -275,7 +275,7 @@ with TERM and must write MARK_TARGET, POINT_TARGET, and START_TARGET."
   (ghostel-test--with-position-preservation-case
    (buf term 6 80 4000 (lambda (term)
                          (ghostel-test--write-position-preservation-lines term 16)))
-   (ghostel--write-input term "new-row-after-anchors\r\n")
+   (ghostel--write-vt term "new-row-after-anchors\r\n")
    (ghostel--redraw term)))
 
 (ert-deftest ghostel-test-position-preservation-width-reflow ()
@@ -323,7 +323,7 @@ with TERM and must write MARK_TARGET, POINT_TARGET, and START_TARGET."
   (ghostel-test--with-position-preservation-case
    (buf term 6 80 4096 (lambda (term)
                          (dotimes (i 140)
-                           (ghostel--write-input
+                           (ghostel--write-vt
                             term
                             (cond
                              ((= i 105) "START_TARGET start-row\r\n")
@@ -332,7 +332,7 @@ with TERM and must write MARK_TARGET, POINT_TARGET, and START_TARGET."
                              (t (format "initial-%03d content\r\n" i)))))))
    (let ((old-start (window-start win)))
      (dotimes (i 60)
-       (ghostel--write-input term (format "later-%03d content\r\n" i)))
+       (ghostel--write-vt term (format "later-%03d content\r\n" i)))
      (ghostel--redraw term)
      (should (< (point-min) old-start)))))
 
@@ -344,7 +344,7 @@ with TERM and must write MARK_TARGET, POINT_TARGET, and START_TARGET."
   "Test SGR escape sequences set cell styles."
   :tags '(native)
   (let ((term (ghostel--new 25 80 1000)))
-    (ghostel--write-input term "\e[1;31mHELLO\e[0m normal")
+    (ghostel--write-vt term "\e[1;31mHELLO\e[0m normal")
     (should (equal "HELLO normal" (ghostel-test--row0 term)))))
 
 (ert-deftest ghostel-test-dim-text ()
@@ -362,7 +362,7 @@ with TERM and must write MARK_TARGET, POINT_TARGET, and START_TARGET."
                                     (concat "#000000" "#ff0000" rest
                                             "#ffffff" "#000000")))
             ;; Dim text with default foreground
-            (ghostel--write-input term "\e[2mDIM\e[0m ok")
+            (ghostel--write-vt term "\e[2mDIM\e[0m ok")
             (ghostel--redraw term)
             (goto-char (point-min))
             (let ((face (get-text-property (point) 'face)))
@@ -396,7 +396,7 @@ the buffer-local override installed by `ghostel-mode', strips every
               (ghostel--set-palette term
                                     (concat "#000000" "#ff0000" rest
                                             "#ffffff" "#000000")))
-            (ghostel--write-input term "\e[31mRED\e[0m normal")
+            (ghostel--write-vt term "\e[31mRED\e[0m normal")
             (ghostel--redraw term t)
             (goto-char (point-min))
             (let ((face-before (get-text-property (point) 'face)))
@@ -426,7 +426,7 @@ the buffer-local override installed by `ghostel-mode', strips every
         (with-current-buffer buf
           (let* ((term (ghostel--new 5 40 100))
                  (inhibit-read-only t))
-            (ghostel--write-input term "\e[32m┌──┐\e[0m text")
+            (ghostel--write-vt term "\e[32m┌──┐\e[0m text")
             (ghostel--redraw term)
             (let ((content (buffer-substring-no-properties (point-min) (point-max))))
               (should (string-match-p "┌──┐" content))    ; box drawing rendered
@@ -449,7 +449,7 @@ than the full terminal `cols'."
           (let* ((term (ghostel--new 5 cols 100))
                  (inhibit-read-only t))
             ;; Feed a wide emoji — occupies 2 terminal cells
-            (ghostel--write-input term "🟢")
+            (ghostel--write-vt term "🟢")
             (ghostel--redraw term t)
             ;; First rendered line should have visual width 2 (the
             ;; emoji) and no trailing padding from the spacer cell.
@@ -476,7 +476,7 @@ are retained — only unwritten padding cells are trimmed."
           (let* ((term (ghostel--new 3 40 100))
                  (inhibit-read-only t))
             ;; Write `hi` at the top-left and redraw.
-            (ghostel--write-input term "\e[H\e[2Jhi")
+            (ghostel--write-vt term "\e[H\e[2Jhi")
             (ghostel--redraw term t)
             (let ((lines (split-string (buffer-substring-no-properties
                                         (point-min) (point-max))
@@ -487,7 +487,7 @@ are retained — only unwritten padding cells are trimmed."
               (dolist (row (cdr lines))
                 (should (string-empty-p row))))
             ;; Shell-written trailing space is preserved.
-            (ghostel--write-input term "\e[H\e[2J$ ")
+            (ghostel--write-vt term "\e[H\e[2J$ ")
             (ghostel--redraw term t)
             (let ((lines (split-string (buffer-substring-no-properties
                                         (point-min) (point-max))
@@ -503,7 +503,7 @@ are retained — only unwritten padding cells are trimmed."
         (with-current-buffer buf
           (let* ((term (ghostel--new 3 20 100))
                  (inhibit-read-only t))
-            (ghostel--write-input term "\e[H\e[2Jhi\e[1;11H")
+            (ghostel--write-vt term "\e[H\e[2Jhi\e[1;11H")
             (ghostel--redraw term t)
             (should (equal '(10 . 0) ghostel--cursor-pos))
             (goto-char ghostel--cursor-char-pos)
@@ -522,9 +522,9 @@ are retained — only unwritten padding cells are trimmed."
         (with-current-buffer buf
           (let* ((term (ghostel--new 3 20 100))
                  (inhibit-read-only t))
-            (ghostel--write-input term "\e[H\e[2Jhi\e[1;11H")
+            (ghostel--write-vt term "\e[H\e[2Jhi\e[1;11H")
             (ghostel--redraw term t)
-            (ghostel--write-input term "\e[2;6H")
+            (ghostel--write-vt term "\e[2;6H")
             (ghostel--redraw term)
             (should (equal '(5 . 1) ghostel--cursor-pos))
             (let ((lines (split-string (buffer-substring-no-properties
@@ -545,7 +545,7 @@ are retained — only unwritten padding cells are trimmed."
           (let* ((term (ghostel--new 5 20 100))
                  (inhibit-read-only t))
             ;; Write a line longer than 20 columns — should soft-wrap
-            (ghostel--write-input term "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+            (ghostel--write-vt term "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
             (ghostel--redraw term)
             (let ((content (buffer-substring-no-properties (point-min) (point-max))))
               (should (string-match-p "ABCDEFGHIJKLMNOPQRST\n" content))) ; wrapped content has newline
@@ -593,7 +593,7 @@ new terminal. Regression guard against color flickering."
             (ghostel--init-buffer buf)
             (with-current-buffer buf
               (let ((inhibit-read-only t))
-                (ghostel--write-input ghostel--term "hello")
+                (ghostel--write-vt ghostel--term "hello")
                 (ghostel--redraw ghostel--term t))))
           (should calls)
           (dolist (call calls)
@@ -614,7 +614,7 @@ new terminal. Regression guard against color flickering."
               (ghostel--set-palette term
                                     (concat "#000000" "#ff0000" rest)))
             ;; Write red text (SGR 31 = ANSI red = palette index 1)
-            (ghostel--write-input term "\e[31mRED\e[0m")
+            (ghostel--write-vt term "\e[31mRED\e[0m")
             (ghostel--redraw term)
             (should (string-match-p "RED"                  ; red text rendered
                                     (buffer-substring-no-properties
@@ -760,7 +760,7 @@ and typed text was invisible."
   "Test OSC 2 title change."
   :tags '(native)
   (let ((term (ghostel--new 25 80 1000)))
-    (ghostel--write-input term "\e]2;My Title\e\\")
+    (ghostel--write-vt term "\e]2;My Title\e\\")
     (should (equal "My Title" (ghostel--get-title term)))))
 
 
@@ -778,7 +778,7 @@ This is the vterm-style growing-buffer model that lets `isearch' and
                  (inhibit-read-only t))
             ;; Write 12 lines into a 5-row terminal — 7 should scroll off.
             (dotimes (i 12)
-              (ghostel--write-input term (format "row-%02d\r\n" i)))
+              (ghostel--write-vt term (format "row-%02d\r\n" i)))
             (ghostel--redraw term t)
             (let ((content (buffer-substring-no-properties (point-min) (point-max))))
               ;; Earliest row that scrolled off must now live in the buffer.
@@ -805,11 +805,11 @@ instead of fetching the real content from libghostty."
                  (inhibit-read-only t))
             ;; Render the initial (nearly empty) viewport so the buffer
             ;; has 5 rows of stale content — simulates a fresh terminal.
-            (ghostel--write-input term "$ \r\n")
+            (ghostel--write-vt term "$ \r\n")
             (ghostel--redraw term t)
             ;; Now a burst of output overflows the viewport.
             (dotimes (i 15)
-              (ghostel--write-input term (format "line-%02d\r\n" i)))
+              (ghostel--write-vt term (format "line-%02d\r\n" i)))
             (ghostel--redraw term t)
             ;; The scrollback region (above the viewport) must contain
             ;; the actual output, not blank lines from the old viewport.
@@ -839,14 +839,14 @@ instead of fetching the real content from libghostty."
                  (inhibit-read-only t))
             ;; First batch: write 8 lines, redraw.
             (dotimes (i 8)
-              (ghostel--write-input term (format "first-%02d\r\n" i)))
+              (ghostel--write-vt term (format "first-%02d\r\n" i)))
             (ghostel--redraw term t)
             (let ((content (buffer-substring-no-properties (point-min) (point-max))))
               (should (string-match-p "first-00" content))
               (should (string-match-p "first-07" content)))
             ;; Second batch: write more lines, redraw again.
             (dotimes (i 6)
-              (ghostel--write-input term (format "second-%02d\r\n" i)))
+              (ghostel--write-vt term (format "second-%02d\r\n" i)))
             (ghostel--redraw term t)
             (let ((content (buffer-substring-no-properties (point-min) (point-max))))
               ;; All earlier scrollback rows survive the second redraw.
@@ -870,12 +870,12 @@ buffer."
                  (inhibit-read-only t))
             ;; Write a small initial batch
             (dotimes (i 20)
-              (ghostel--write-input term (format "early-%05d\r\n" i)))
+              (ghostel--write-vt term (format "early-%05d\r\n" i)))
             (ghostel--redraw term t)
             ;; Write a large batch in many small chunks with renders in between
             (dotimes (x 200)
               (dotimes (i 100)
-                (ghostel--write-input term (format "late-%05d\r\n" i)))
+                (ghostel--write-vt term (format "late-%05d\r\n" i)))
               (ghostel--redraw term t))
             (let ((content (buffer-substring-no-properties (point-min) (point-max))))
               (should (string-match-p "late-" content))
@@ -895,11 +895,11 @@ second redraw must evict the first-batch rows from the Emacs buffer."
                  (inhibit-read-only t))
             ;; Write a small initial batch
             (dotimes (i 20)
-              (ghostel--write-input term (format "early-%05d\r\n" i)))
+              (ghostel--write-vt term (format "early-%05d\r\n" i)))
             (ghostel--redraw term t)
             ;; Write a huge amount in one shot
             (dotimes (i 200000)
-              (ghostel--write-input term (format "late-%05d\r\n" i)))
+              (ghostel--write-vt term (format "late-%05d\r\n" i)))
             (ghostel--redraw term t)
             (let ((content (buffer-substring-no-properties (point-min) (point-max))))
               (should (string-match-p "late-" content))
@@ -923,7 +923,7 @@ scrolling libghostty's viewport."
           (setq ghostel--term (ghostel--new 5 80 100))
           ;; Seed enough content to create scrollback, then clear only the
           ;; visible viewport.
-          (ghostel--write-input
+          (ghostel--write-vt
            ghostel--term
            (mapconcat (lambda (i) (format "clear-test-%d\r\n" i))
                       (number-sequence 0 14) ""))
@@ -948,7 +948,7 @@ scrolling libghostty's viewport."
           (let ((inhibit-read-only t))
             ;; Fill screen + scrollback with 10 lines
             (dotimes (i 10)
-              (ghostel--write-input ghostel--term (format "line %d\r\n" i)))
+              (ghostel--write-vt ghostel--term (format "line %d\r\n" i)))
             (ghostel--redraw ghostel--term t)
             ;; Verify lines materialized in the buffer
             (let ((content (buffer-substring-no-properties (point-min) (point-max))))
@@ -987,7 +987,7 @@ single redraw):
                  (inhibit-read-only t))
             ;; Phase 1: fill scrollback with 10 "before" rows and redraw.
             (dotimes (i 10)
-              (ghostel--write-input term (format "before-%02d\r\n" i)))
+              (ghostel--write-vt term (format "before-%02d\r\n" i)))
             (ghostel--redraw term t)
             ;; Confirm before-00..before-05 are now in the buffer's scrollback
             ;; and before-06..before-09 are in the viewport.
@@ -999,9 +999,9 @@ single redraw):
             ;; write 5 "after" rows — no redraw in between.  before-06..before-09
             ;; scroll off into libghostty's freshly-cleared scrollback as the
             ;; after-* rows push through the viewport.
-            (ghostel--write-input term "\e[3J")
+            (ghostel--write-vt term "\e[3J")
             (dotimes (i 5)
-              (ghostel--write-input term (format "after-%02d\r\n" i)))
+              (ghostel--write-vt term (format "after-%02d\r\n" i)))
             ;; Phase 3: single redraw — must rebuild from libghostty.
             (ghostel--redraw term t)
             (let ((content (buffer-substring-no-properties (point-min) (point-max))))
@@ -1035,9 +1035,9 @@ scrollback; rows that were already in scrollback must not survive."
             ;; scrollback rows (old-sb-00..old-sb-05) after redraw, with
             ;; old-vp-06..old-vp-09 in the active viewport.
             (dotimes (i 6)
-              (ghostel--write-input term (format "old-sb-%02d\r\n" i)))
+              (ghostel--write-vt term (format "old-sb-%02d\r\n" i)))
             (dotimes (i 4)
-              (ghostel--write-input term (format "old-vp-%02d\r\n" (+ i 6))))
+              (ghostel--write-vt term (format "old-vp-%02d\r\n" (+ i 6))))
             (ghostel--redraw term t)
             (let ((before (buffer-substring-no-properties (point-min) (point-max))))
               (should (string-match-p "old-sb-00" before))
@@ -1047,7 +1047,7 @@ scrollback; rows that were already in scrollback must not survive."
             ;; enough rows to recreate exactly 6 scrollback rows: the 4 old
             ;; viewport rows plus new-00 and new-01.  This keeps the row count
             ;; unchanged while changing the contents of the cleared region.
-            (ghostel--write-input
+            (ghostel--write-vt
              term
              (concat "\e[3J"
                      (mapconcat (lambda (i) (format "new-%02d\r\n" i))
@@ -1083,9 +1083,9 @@ stale row."
         (with-current-buffer buf
           (let* ((term (ghostel--new 5 80 1000))
                  (inhibit-read-only t))
-            (ghostel--write-input term "wrong\r\n")
+            (ghostel--write-vt term "wrong\r\n")
             (ghostel--redraw term t)
-            (ghostel--write-input term "\e[Hfoobar\e[5;0Hyolo\r\n")
+            (ghostel--write-vt term "\e[Hfoobar\e[5;0Hyolo\r\n")
             (ghostel--redraw term t)
             (goto-char (point-min))
             (let ((line (buffer-substring-no-properties (line-beginning-position)
@@ -1106,7 +1106,7 @@ only the row count must leave existing scrollback lines untouched."
                  (inhibit-read-only t))
             ;; 8 rows into a 5-row terminal → lines 0-2 scroll into scrollback.
             (dotimes (i 8)
-              (ghostel--write-input term (format "row-%02d\r\n" i)))
+              (ghostel--write-vt term (format "row-%02d\r\n" i)))
             (ghostel--redraw term t)
             ;; Stamp every line with the sentinel after the initial full render.
             (ghostel-test--mark-all-lines-clean)
@@ -1131,7 +1131,7 @@ but rows that remain in scrollback must not be rerendered."
                  (inhibit-read-only t))
             ;; 20 rows into a 5-row terminal → 15 scrollback rows in the buffer.
             (dotimes (i 20)
-              (ghostel--write-input term (format "row-%02d\r\n" i)))
+              (ghostel--write-vt term (format "row-%02d\r\n" i)))
             (ghostel--redraw term t)
             (ghostel-test--mark-all-lines-clean)
             ;; Expand to 8 rows.  The resize render re-renders the last 8 lines,
@@ -1154,11 +1154,11 @@ already in scrollback must remain untouched."
                  (inhibit-read-only t))
             ;; 8 rows → lines 0-2 are scrollback after the initial render.
             (dotimes (i 8)
-              (ghostel--write-input term (format "first-%02d\r\n" i)))
+              (ghostel--write-vt term (format "first-%02d\r\n" i)))
             (ghostel--redraw term t)
             (ghostel-test--mark-all-lines-clean)
             ;; One more row scrolls through the viewport.
-            (ghostel--write-input term "extra\r\n")
+            (ghostel--write-vt term "extra\r\n")
             (ghostel--redraw term)
             ;; The 3 pre-existing scrollback rows must not have been rebuilt.
             (should (ghostel-test--line-clean-p 0))
@@ -1180,11 +1180,11 @@ and `forward-line' for clean ones.  Only the dirty row loses the sentinel."
             ;; initial draw.  This avoids dirtying row 4 on the second
             ;; render: a cursor move from row 4 → row 2 would dirty both
             ;; rows, breaking the single-dirty-row assertion below.
-            (ghostel--write-input term "row-0\r\nrow-1\r\nrow-2\r\nrow-3\r\nrow-4\e[3;1H")
+            (ghostel--write-vt term "row-0\r\nrow-1\r\nrow-2\r\nrow-3\r\nrow-4\e[3;1H")
             (ghostel--redraw term t)
             (ghostel-test--mark-all-lines-clean)
             ;; Cursor is already on row 2; overwrite it in place.
-            (ghostel--write-input term "modified")
+            (ghostel--write-vt term "modified")
             (ghostel--redraw term)
             ;; Row 2 was dirty and must have been rebuilt (sentinel gone).
             (should-not (ghostel-test--line-clean-p 2))
@@ -1203,7 +1203,7 @@ and `forward-line' for clean ones.  Only the dirty row loses the sentinel."
         (with-current-buffer buf
           (let* ((term (ghostel--new 5 40 100))
                  (inhibit-read-only t))
-            (ghostel--write-input term "line-A\r\nline-B\r\nline-C")
+            (ghostel--write-vt term "line-A\r\nline-B\r\nline-C")
             (ghostel--redraw term)
             (let ((content (buffer-substring-no-properties (point-min) (point-max))))
               (should (string-match-p "line-A" content))   ; initial row0
@@ -1211,7 +1211,7 @@ and `forward-line' for clean ones.  Only the dirty row loses the sentinel."
               (should (string-match-p "line-C" content)))  ; initial row2
 
             ;; Write more text on row 2 — only that row should be dirty
-            (ghostel--write-input term " updated")
+            (ghostel--write-vt term " updated")
             (ghostel--redraw term)
             (let ((content (buffer-substring-no-properties (point-min) (point-max))))
               (should (string-match-p "line-A" content))       ; row0 preserved
@@ -1233,10 +1233,10 @@ and `forward-line' for clean ones.  Only the dirty row loses the sentinel."
         (with-current-buffer buf
           (let* ((term (ghostel--new 5 80 1000))
                  (inhibit-read-only t))
-            (ghostel--write-input term "\e[?1049h")
-            (ghostel--write-input term "\e[1;3r")
+            (ghostel--write-vt term "\e[?1049h")
+            (ghostel--write-vt term "\e[1;3r")
             (dotimes (i 10)
-              (ghostel--write-input term (format "ROW-%02d\r\n" i)))
+              (ghostel--write-vt term (format "ROW-%02d\r\n" i)))
             (ghostel--redraw term t)
             (should (= 5 (count-lines (point-min) (point-max))))))
       (kill-buffer buf))))
@@ -1259,7 +1259,7 @@ must be identical after each resize."
                  (inhibit-read-only t))
             ;; Write 20 rows into a 5-row terminal → 15 rows in scrollback.
             (dotimes (i 20)
-              (ghostel--write-input term (format "row-%02d\r\n" i)))
+              (ghostel--write-vt term (format "row-%02d\r\n" i)))
             (ghostel--redraw term t)
             (let ((baseline (buffer-substring-no-properties (point-min) (point-max))))
               ;; Expand to 8 rows — within the 15-row scrollback, so no
@@ -1285,7 +1285,7 @@ the written content; all remaining lines must be empty."
         (with-current-buffer buf
           (let* ((term (ghostel--new 5 80 1000))
                  (inhibit-read-only t))
-            (ghostel--write-input term "hello\r\n")
+            (ghostel--write-vt term "hello\r\n")
             (ghostel--redraw term t)
             (ghostel--set-size term 3 80)
             (ghostel--redraw term)
@@ -1309,9 +1309,9 @@ the written content; all remaining lines must be empty."
         (with-current-buffer buf
           (let* ((term (ghostel--new 5 80 1000))
                  (inhibit-read-only t))
-            (ghostel--write-input term "\e[?1049h")
+            (ghostel--write-vt term "\e[?1049h")
             (dotimes (i 5)
-              (ghostel--write-input term (format "\e[%d;1HROW-%d" (1+ i) i)))
+              (ghostel--write-vt term (format "\e[%d;1HROW-%d" (1+ i) i)))
             (ghostel--redraw term t)
             (ghostel--set-size term 3 80)
             (ghostel--redraw term)
@@ -1326,9 +1326,9 @@ the written content; all remaining lines must be empty."
         (with-current-buffer buf
           (let* ((term (ghostel--new 3 80 1000))
                  (inhibit-read-only t))
-            (ghostel--write-input term "\e[?1049h")
+            (ghostel--write-vt term "\e[?1049h")
             (dotimes (i 3)
-              (ghostel--write-input term (format "\e[%d;1HROW-%d" (1+ i) i)))
+              (ghostel--write-vt term (format "\e[%d;1HROW-%d" (1+ i) i)))
             (ghostel--redraw term t)
             (ghostel--set-size term 5 80)
             (ghostel--redraw term)
@@ -1351,7 +1351,7 @@ Now the erasure is deferred into redraw() under `inhibit-redisplay'."
                  (inhibit-read-only t))
             ;; Fill the viewport with identifiable content.
             (dotimes (i 10)
-              (ghostel--write-input term (format "LINE-%02d\r\n" i)))
+              (ghostel--write-vt term (format "LINE-%02d\r\n" i)))
             (ghostel--redraw term t)
             (let ((pre-content (buffer-substring-no-properties
                                 (point-min) (point-max))))
@@ -1386,16 +1386,16 @@ Now the erasure is deferred into redraw() under `inhibit-redisplay'."
                  (inhibit-read-only t))
             ;; Enter alt screen and simulate a complete synchronized
             ;; update cycle before resizing.
-            (ghostel--write-input term "\e[?1049h")
+            (ghostel--write-vt term "\e[?1049h")
             (dotimes (i 9)
-              (ghostel--write-input term (format "line %d\r\n" i)))
-            (ghostel--write-input term "prompt> ")
+              (ghostel--write-vt term (format "line %d\r\n" i)))
+            (ghostel--write-vt term "prompt> ")
             (should (ghostel--mode-enabled term 1049))
-            (ghostel--write-input term "\e[?2026h\e[H\e[2J")
+            (ghostel--write-vt term "\e[?2026h\e[H\e[2J")
             (dotimes (i 9)
-              (ghostel--write-input term (format "new %d\r\n" i)))
-            (ghostel--write-input term "new prompt> ")
-            (ghostel--write-input term "\e[?2026l")
+              (ghostel--write-vt term (format "new %d\r\n" i)))
+            (ghostel--write-vt term "new prompt> ")
+            (ghostel--write-vt term "\e[?2026l")
             (should-not (ghostel--mode-enabled term 2026))
             (ghostel--set-size term 6 40)
             (ghostel--redraw term)
@@ -1420,15 +1420,15 @@ for new size inside BSU/ESU → verify buffer shows new content."
                  (inhibit-read-only t))
             ;; 1) Enter alt screen and fill with "old" content using
             ;;    cursor positioning (like a TUI app would).
-            (ghostel--write-input term "\e[?1049h")  ; alt screen on
+            (ghostel--write-vt term "\e[?1049h")  ; alt screen on
             (dotimes (i 10)
-              (ghostel--write-input term (format "\e[%d;1HOLD-LINE-%02d" (1+ i) i)))
+              (ghostel--write-vt term (format "\e[%d;1HOLD-LINE-%02d" (1+ i) i)))
             (ghostel--redraw term t)
             (let ((content (buffer-substring-no-properties (point-min) (point-max))))
               (should (string-match-p "OLD-LINE-00" content))
               (should (string-match-p "OLD-LINE-09" content)))
 
-            ;; 2) Simulate what ghostel--window-adjust-process-window-size does:
+            ;; 2) Simulate what ghostel--adjust-size does:
             ;;    resize VT, synchronous redraw, set force flag.
             (ghostel--set-size term 6 40)
             (ghostel--redraw term t)
@@ -1436,11 +1436,11 @@ for new size inside BSU/ESU → verify buffer shows new content."
 
             ;; 3) Simulate the app's SIGWINCH-triggered redraw with BSU/ESU.
             ;;    The app clears screen and redraws for the new 6-row size.
-            (ghostel--write-input term "\e[?2026h")     ; BSU
-            (ghostel--write-input term "\e[H\e[2J")     ; clear
+            (ghostel--write-vt term "\e[?2026h")     ; BSU
+            (ghostel--write-vt term "\e[H\e[2J")     ; clear
             (dotimes (i 6)
-              (ghostel--write-input term (format "\e[%d;1HNEW-LINE-%02d" (1+ i) i)))
-            (ghostel--write-input term "\e[?2026l")     ; ESU
+              (ghostel--write-vt term (format "\e[%d;1HNEW-LINE-%02d" (1+ i) i)))
+            (ghostel--write-vt term "\e[?2026l")     ; ESU
 
             ;; 4) Simulate what ghostel--redraw-now does:
             ;;    check BSU gate, flush, redraw.
@@ -1464,7 +1464,8 @@ app redraws all rows at new width via the filter pipeline."
           (set-window-buffer (selected-window) (current-buffer))
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 6 80 100))
-          (let* ((proc (start-process "ghostel-test-w" buf "sleep" "60"))
+          (let* ((ghostel-detect-password-prompts nil)
+                 (proc (start-process "ghostel-test-w" buf "sleep" "60"))
                  (ghostel--process proc)
                  (inhibit-read-only t))
             (set-process-coding-system proc 'binary 'binary)
@@ -1473,10 +1474,10 @@ app redraws all rows at new width via the filter pipeline."
             (unwind-protect
                 (progn
                   ;; Alt screen, fill all rows at 80 columns.
-                  (ghostel--write-input ghostel--term "\e[?1049h\e[H\e[2J")
+                  (ghostel--write-vt ghostel--term "\e[?1049h\e[H\e[2J")
                   (dotimes (i 6)
-                    (ghostel--write-input ghostel--term
-                                          (format "\e[%d;1H%-80s" (1+ i) (format "WIDE-R%02d" i))))
+                    (ghostel--write-vt ghostel--term
+                                       (format "\e[%d;1H%-80s" (1+ i) (format "WIDE-R%02d" i))))
                   (ghostel--redraw ghostel--term t)
                   (let ((c (buffer-substring-no-properties (point-min) (point-max))))
                     (should (string-match-p "WIDE-R00" c))
@@ -1527,7 +1528,8 @@ rendered by `ghostel--redraw-now'.  This is the exact real-world path."
           (set-window-buffer (selected-window) (current-buffer))
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 10 40 100))
-          (let* ((process-environment
+          (let* ((ghostel-detect-password-prompts nil)
+                 (process-environment
                   (append (list "TERM=xterm-256color" "COLUMNS=40" "LINES=10")
                           process-environment))
                  (proc (start-process "ghostel-test-pipe" buf "sleep" "60")))
@@ -1538,10 +1540,10 @@ rendered by `ghostel--redraw-now'.  This is the exact real-world path."
             (unwind-protect
                 (let ((inhibit-read-only t))
                   ;; Initial content on alt screen (written directly to VT).
-                  (ghostel--write-input ghostel--term "\e[?1049h\e[H\e[2J")
+                  (ghostel--write-vt ghostel--term "\e[?1049h\e[H\e[2J")
                   (dotimes (i 10)
-                    (ghostel--write-input ghostel--term
-                                          (format "\e[%d;1H%-40s" (1+ i) (format "OLD-%02d" i))))
+                    (ghostel--write-vt ghostel--term
+                                       (format "\e[%d;1H%-40s" (1+ i) (format "OLD-%02d" i))))
                   (ghostel--redraw ghostel--term t)
                   (should (string-match-p "OLD-00"
                                           (buffer-substring-no-properties (point-min) (point-max))))
@@ -1623,7 +1625,7 @@ When the buffer reappears, it is immediately redrawn."
                    (ghostel--term term)
                    (ghostel--term-rows 5)
                    (inhibit-read-only t))
-              (ghostel--write-input term "initial\r\n")
+              (ghostel--write-vt term "initial\r\n")
               (ghostel--redraw term t)
               (should (string-match-p "initial" (buffer-string)))
 
@@ -1632,7 +1634,7 @@ When the buffer reappears, it is immediately redrawn."
 
               ;; Output arrives while hidden but does not appear; make
               ;; run-with-timer fire synchronously so no sleep is needed.
-              (ghostel--write-input term "while-hidden\r\n")
+              (ghostel--write-vt term "while-hidden\r\n")
               (cl-letf (((symbol-function 'run-with-timer)
                          (lambda (_delay _repeat fn &rest args)
                            (apply fn args) nil)))
@@ -1666,7 +1668,7 @@ When the buffer reappears, it is immediately redrawn."
                    (ghostel--term term)
                    (ghostel--term-rows 5)
                    (inhibit-read-only t))
-              (ghostel--write-input term "initial\r\n")
+              (ghostel--write-vt term "initial\r\n")
               (ghostel--redraw term t)
               (should (string-match-p "initial" (buffer-string)))
 
@@ -1726,7 +1728,7 @@ subtracts old_line_len from the newly-created page whose char_len is
             ;; Write enough wrapped lines to push the active row onto
             ;; a new libghostty page.
             (dotimes (_ 231)
-              (ghostel--write-input term line))
+              (ghostel--write-vt term line))
             ;; Incremental redraw (no force-full): the buffer retains
             ;; the content from the first render, so the renderer takes
             ;; the replace path.  Without the fix it underflows
@@ -1761,7 +1763,7 @@ Used by bold-color tests so palette mapping is observable."
             (ghostel--apply-bold-config term)
 
             ;; Write bold red text
-            (ghostel--write-input term "\e[1;31mBOLD\e[0m")
+            (ghostel--write-vt term "\e[1;31mBOLD\e[0m")
             (ghostel--redraw term)
             (goto-char (point-min))
             (let ((face (get-text-property (point) 'face)))
@@ -1781,7 +1783,7 @@ Used by bold-color tests so palette mapping is observable."
             (ghostel--apply-bold-config term)
 
             ;; Write bold text without color
-            (ghostel--write-input term "\e[1mBOLD\e[0m")
+            (ghostel--write-vt term "\e[1mBOLD\e[0m")
             (ghostel--redraw term)
             (goto-char (point-min))
             (let ((face (get-text-property (point) 'face)))
@@ -1801,7 +1803,7 @@ Used by bold-color tests so palette mapping is observable."
             (ghostel--set-palette term (ghostel-test--bold-color-palette))
             (ghostel--apply-bold-config term)
             ;; Bold red (palette 1) must stay red — no brightening to palette 9.
-            (ghostel--write-input term "\e[1;31mBOLD\e[0m")
+            (ghostel--write-vt term "\e[1;31mBOLD\e[0m")
             (ghostel--redraw term)
             (goto-char (point-min))
             (let ((face (get-text-property (point) 'face)))
@@ -1824,7 +1826,7 @@ the bright variant just like in `bright' mode."
             (ghostel--apply-bold-config term)
             ;; Bold red (palette 1) → bright red (palette 9 = #00ff00),
             ;; NOT the fixed color #abcdef.
-            (ghostel--write-input term "\e[1;31mBOLD\e[0m")
+            (ghostel--write-vt term "\e[1;31mBOLD\e[0m")
             (ghostel--redraw term)
             (goto-char (point-min))
             (let ((face (get-text-property (point) 'face)))
@@ -1843,7 +1845,7 @@ the bright variant just like in `bright' mode."
             (ghostel--set-palette term (ghostel-test--bold-color-palette))
             (ghostel--apply-bold-config term)
             ;; SGR 91 selects palette 9 directly; bold must not shift it further.
-            (ghostel--write-input term "\e[1;91mBOLD\e[0m")
+            (ghostel--write-vt term "\e[1;91mBOLD\e[0m")
             (ghostel--redraw term)
             (goto-char (point-min))
             (let ((face (get-text-property (point) 'face)))
@@ -1851,6 +1853,160 @@ the bright variant just like in `bright' mode."
               (should (eq 'bold (plist-get face :weight))))))
       (kill-buffer buf))))
 
+
+;;; OSC 133 semantic property rendering
+
+(ert-deftest ghostel-test-osc133-text-properties ()
+  "OSC 133 prompt markers render `ghostel-prompt' text properties."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-osc133*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            ;; Simulate a prompt: A, prompt text, B, command, output, D.
+            (ghostel--write-vt term "\e]133;A\e\\")
+            (ghostel--write-vt term "$ ")
+            (ghostel--redraw term)
+            (ghostel--write-vt term "\e]133;B\e\\")
+            (ghostel--write-vt term "echo hi\r\n")
+            (ghostel--write-vt term "hi\r\n")
+            (ghostel--write-vt term "\e]133;D;0\e\\")
+            (ghostel--redraw term)
+
+            (goto-char (point-min))
+            (should (text-property-any (point-min) (point-max)
+                                       'ghostel-prompt t))
+
+            ;; Property should survive a full redraw.
+            (ghostel--redraw term)
+            (should (text-property-any (point-min) (point-max)
+                                       'ghostel-prompt t))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-osc133-input-text-property ()
+  "Cells between OSC 133 B and C should be marked `ghostel-input'.
+This is what keeps `ghostel--detect-urls' from linkifying the user's
+in-progress command line — the renderer marks input cells, the elisp
+scanner skips them."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-osc133-input*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--write-vt
+             term "\e]133;A\e\\$ \e]133;B\e\\cd src/main.rs")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (should (search-forward "cd src/main.rs" nil t))
+            (let ((path-beg (- (point) (length "cd src/main.rs")))
+                  (path-end (point)))
+              (should (get-text-property path-beg 'ghostel-input))
+              (should (get-text-property (1- path-end) 'ghostel-input))
+              ;; The "$ " prompt prefix should NOT be marked as input.
+              (should (null (get-text-property
+                             (point-min) 'ghostel-input))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-osc133-prompt-stops-at-input ()
+  "`ghostel-prompt' must end where `ghostel-input' begins on the row.
+Without this, the historical prompt row carries `ghostel-prompt'
+across the typed command, and `ghostel--detect-urls-skip-p' refuses
+to linkify paths in past commands — even though they are outside the
+active input range."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-osc133-prompt-input*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--write-vt
+             term "\e]133;A\e\\$ \e]133;B\e\\ls /etc/hosts")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (should (search-forward "ls /etc/hosts" nil t))
+            (let ((path-beg (- (point) (length "ls /etc/hosts")))
+                  (path-end (point)))
+              (should (get-text-property 1 'ghostel-prompt))
+              (should (get-text-property 2 'ghostel-prompt))
+              (should (null (get-text-property path-beg 'ghostel-prompt)))
+              (should (null (get-text-property (1- path-end) 'ghostel-prompt)))
+              (should (get-text-property path-beg 'ghostel-input))
+              (should (get-text-property (1- path-end) 'ghostel-input)))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-osc133-historical-input-linkifies ()
+  "Historical typed commands keep their links after the prompt advances.
+After the row scrolls past the active prompt the typed `/etc/hosts'
+must gain a `fileref:' help-echo when `ghostel--detect-urls' runs.
+Active prompt rows must NOT — RET on a linkified active-input cell
+hijacks the keystroke in tty Emacs."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-osc133-historical-link*"))
+        (target "/etc/hosts"))
+    (skip-unless (file-exists-p target))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t)
+                 (ghostel-enable-url-detection nil)
+                 (ghostel-enable-file-detection t))
+            ;; First prompt: still the active row.  Cursor is on the typed
+            ;; line, so the path inside the input span must NOT be
+            ;; linkified.
+            (ghostel--write-vt
+             term (format "\e]133;A\e\\$ \e]133;B\e\\ls %s" target))
+            (ghostel--redraw term)
+            (let ((path-beg (save-excursion
+                              (goto-char (point-min))
+                              (search-forward target)
+                              (- (point) (length target)))))
+              ;; Point sits at the live cursor after redraw; that is the
+              ;; row `ghostel--detect-urls' treats as active.  Don't move it.
+              (ghostel--detect-urls)
+              (should (null (get-text-property path-beg 'help-echo))))
+
+            ;; End the input, advance to a fresh prompt — the previous row
+            ;; is now history.  Its `/etc/hosts' should become a fileref.
+            (ghostel--write-vt
+             term "\e]133;C\e\\\r\n\e]133;D;0\e\\\e]133;A\e\\$ \e]133;B\e\\")
+            (ghostel--redraw term)
+            (let ((path-beg (save-excursion
+                              (goto-char (point-min))
+                              (search-forward target)
+                              (- (point) (length target)))))
+              (ghostel--detect-urls)
+              (let ((he (get-text-property path-beg 'help-echo)))
+                (should (and he (string-prefix-p "fileref:" he)))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-osc133-input-wide-char-boundary ()
+  "Wide input chars take one Emacs char of `ghostel-input'.
+The libghostty spacer-tail cell that follows a wide char produces
+no Emacs char and must not extend the property region.  Trailing
+narrow input after the wide char keeps growing the region."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-osc133-input-wide*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--write-vt
+             term "\e]133;A\e\\$ \e]133;B\e\\日a")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (should (search-forward "日a" nil t))
+            ;; "$ " is 2 narrow cells (positions 1-2); "日" is wide
+            ;; (1 emacs char at position 3, occupying terminal cols 2-3);
+            ;; "a" is narrow (position 4, terminal col 4).
+            (should (null (get-text-property 1 'ghostel-input)))
+            (should (null (get-text-property 2 'ghostel-input)))
+            (should (get-text-property 3 'ghostel-input))
+            (should (get-text-property 4 'ghostel-input))
+            ;; The newline after "a" is past the input range.
+            (should (null (get-text-property 5 'ghostel-input)))))
+      (kill-buffer buf))))
 
 (provide 'ghostel-render-test)
 ;;; ghostel-render-test.el ends here

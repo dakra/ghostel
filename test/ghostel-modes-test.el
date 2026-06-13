@@ -15,61 +15,61 @@ The delayed redraw path always preserves point in Emacs mode,
 unlike semi-char mode where it tracks the terminal cursor."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (buf term 5 80 1000)
-    (set-window-buffer (selected-window) buf)
-    ;; Write some rows and redraw to populate the buffer.
-    (dotimes (i 10)
-      (ghostel--write-input term
-                            (format "row-%02d\r\n" i)))
-    (let ((inhibit-read-only t))
-      (ghostel--redraw term t))
-    ;; Enter emacs mode and navigate to the top.
-    (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore))
-      (ghostel-emacs-mode))
-    (goto-char (point-min))
-    (let ((mark (point)))
-      ;; More output streams in. Run the delayed redraw
-      ;; synchronously (as the timer would).
-      (dotimes (i 5)
-        (ghostel--write-input term
-                              (format "new-%02d\r\n" i)))
-      (ghostel--redraw-now buf)
-      ;; Point still at point-min — emacs mode preserved it.
-      (should (= (point) mark)))
-    ;; New rows are visible in the buffer.
-    (let ((content (buffer-substring-no-properties
-                    (point-min) (point-max))))
-      (should (string-match-p "new-04" content)))))
+				      (set-window-buffer (selected-window) buf)
+				      ;; Write some rows and redraw to populate the buffer.
+				      (dotimes (i 10)
+					(ghostel--write-vt term
+							   (format "row-%02d\r\n" i)))
+				      (let ((inhibit-read-only t))
+					(ghostel--redraw term t))
+				      ;; Enter emacs mode and navigate to the top.
+				      (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore))
+					(ghostel-emacs-mode))
+				      (goto-char (point-min))
+				      (let ((mark (point)))
+					;; More output streams in. Run the delayed redraw
+					;; synchronously (as the timer would).
+					(dotimes (i 5)
+					  (ghostel--write-vt term
+							     (format "new-%02d\r\n" i)))
+					(ghostel--redraw-now buf)
+					;; Point still at point-min — emacs mode preserved it.
+					(should (= (point) mark)))
+				      ;; New rows are visible in the buffer.
+				      (let ((content (buffer-substring-no-properties
+						      (point-min) (point-max))))
+					(should (string-match-p "new-04" content)))))
 
 (ert-deftest ghostel-test-copy-mode-freezes-redraws ()
   "In copy mode, `ghostel--redraw-now' is a no-op."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (buf term 5 80 1000)
-    (dotimes (i 3)
-      (ghostel--write-input term
-                            (format "initial-%d\r\n" i)))
-    (let ((inhibit-read-only t))
-      (ghostel--redraw term t))
-    (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore))
-      (ghostel-copy-mode))
-    (let ((snapshot (buffer-substring-no-properties
-                     (point-min) (point-max))))
-      ;; Feed more output and attempt a redraw.
-      (dotimes (i 3)
-        (ghostel--write-input term
-                              (format "frozen-%d\r\n" i)))
-      (ghostel--redraw-now buf)
-      ;; Buffer is unchanged — copy mode gated the redraw.
-      (should (equal snapshot
-                     (buffer-substring-no-properties
-                      (point-min) (point-max)))))
-    ;; Exiting copy mode lets the redraw catch up.
-    (cl-letf (((symbol-function 'ghostel--anchor-window) #'ignore))
-      (ghostel-readonly-exit))
-    (let ((inhibit-read-only t))
-      (ghostel--redraw term t))
-    (let ((content (buffer-substring-no-properties
-                    (point-min) (point-max))))
-      (should (string-match-p "frozen-2" content)))))
+				      (dotimes (i 3)
+					(ghostel--write-vt term
+							   (format "initial-%d\r\n" i)))
+				      (let ((inhibit-read-only t))
+					(ghostel--redraw term t))
+				      (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore))
+					(ghostel-copy-mode))
+				      (let ((snapshot (buffer-substring-no-properties
+						       (point-min) (point-max))))
+					;; Feed more output and attempt a redraw.
+					(dotimes (i 3)
+					  (ghostel--write-vt term
+							     (format "frozen-%d\r\n" i)))
+					(ghostel--redraw-now buf)
+					;; Buffer is unchanged — copy mode gated the redraw.
+					(should (equal snapshot
+						       (buffer-substring-no-properties
+							(point-min) (point-max)))))
+				      ;; Exiting copy mode lets the redraw catch up.
+				      (cl-letf (((symbol-function 'ghostel--anchor-window) #'ignore))
+					(ghostel-readonly-exit))
+				      (let ((inhibit-read-only t))
+					(ghostel--redraw term t))
+				      (let ((content (buffer-substring-no-properties
+						      (point-min) (point-max))))
+					(should (string-match-p "frozen-2" content)))))
 
 (ert-deftest ghostel-test-copy-mode-cursor ()
   "Test that copy-mode restores cursor visibility when terminal hid it."
@@ -512,7 +512,7 @@ unlike semi-char mode where it tracks the terminal cursor."
                 (funcall (car case))
                 (should (equal mode-line-process (cdr case)))
                 (should (functionp (get-text-property 0 'help-echo
-                                                     mode-line-process)))
+                                                      mode-line-process)))
                 (ghostel-semi-char-mode)
                 (should (null mode-line-process))))))
       (kill-buffer buf))))
@@ -607,6 +607,7 @@ scrollback."
         (with-current-buffer buf
           (ghostel-mode)
           (let ((ghostel--term 'fake)
+                (ghostel-detect-password-prompts nil)
                 (ghostel--redraw-timer nil))
             (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
                       ((symbol-function 'ghostel--anchor-window) #'ignore))
@@ -636,6 +637,7 @@ scrollback."
         (with-current-buffer buf
           (ghostel-mode)
           (let ((ghostel--term 'fake)
+                (ghostel-detect-password-prompts nil)
                 (ghostel--redraw-timer nil))
             (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
                       ((symbol-function 'ghostel--anchor-window) #'ignore))
@@ -718,6 +720,7 @@ Exiting returns to whatever mode the user was in beforehand, mirroring
         (with-current-buffer buf
           (ghostel-mode)
           (let ((ghostel--term 'fake)
+                (ghostel-detect-password-prompts nil)
                 (ghostel--redraw-timer nil))
             (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore))
               ;; semi-char → emacs → (toggle) semi-char
@@ -781,6 +784,7 @@ Exiting returns to whatever mode the user was in beforehand, mirroring
         (with-current-buffer buf
           (ghostel-mode)
           (let ((ghostel--term 'fake)
+                (ghostel-detect-password-prompts nil)
                 (ghostel--redraw-timer nil)
                 (ghostel-mark-activation-input-mode 'copy)
                 ;; Batch Emacs has no transient-mark-mode, which makes
@@ -883,6 +887,40 @@ global mark command, whose activation `ghostel--mark-activated' handles."
   (should (functionp (lookup-key ghostel-semi-char-mode-map (kbd "C-@"))))
   (dolist (key '("C-SPC" "C-@"))
     (should (functionp (lookup-key ghostel-char-mode-map (kbd key))))))
+
+(ert-deftest ghostel-test-line-mode-enters-without-osc133 ()
+  "Line mode enters successfully in a REPL with no shell integration.
+Reproduces the python3 case: no `ghostel-prompt' chars anywhere,
+but the cursor is at the end of the REPL's prompt."
+  (let ((buf (generate-new-buffer " *ghostel-test-line-nointegration*"))
+        (sent nil)
+        (encoded nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (insert ">>> \n")
+          (setq ghostel--term 'fake)
+          (setq ghostel--term-rows 1)
+          (setq ghostel--process 'fake-proc)
+          (cl-letf (((symbol-function 'ghostel--mode-enabled)
+                     (lambda (&rest _) nil))
+                    (ghostel--cursor-char-pos 4)
+                    ((symbol-function 'process-live-p) (lambda (_p) t))
+                    ((symbol-function 'ghostel--write-pty)
+                     (lambda (_term s) (setq sent s)))
+                    ((symbol-function 'ghostel--send-encoded)
+                     (lambda (key _mods &optional _utf8)
+                       (setq encoded key)))
+                    ((symbol-function 'ghostel--redraw) #'ignore)
+                    ((symbol-function 'ghostel--invalidate) #'ignore))
+            (ghostel-line-mode)
+            (should (eq ghostel--input-mode 'line))
+            (goto-char (marker-position ghostel--line-input-end))
+            (insert "1+1")
+            (ghostel-line-mode-send)
+            (should (equal sent "1+1"))
+            (should (equal encoded "return"))))
+      (kill-buffer buf))))
 
 (provide 'ghostel-modes-test)
 ;;; ghostel-modes-test.el ends here

@@ -456,7 +456,7 @@ now we verify only the arguments the native module hands off."
 			  ;; Kitty transmit-and-place a 1x1 red PNG, quiet=1
 			  ;; (suppress success responses).  Payload is the
 			  ;; ghostty/example/c-vt-kitty-graphics 1x1 red PNG.
-			  (ghostel--write-input
+			  (ghostel--write-vt
 			   term (concat "\e_Ga=T,f=100,q=1;"
 							"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA"
 							"DUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="

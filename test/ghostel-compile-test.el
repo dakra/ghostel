@@ -1544,5 +1544,41 @@ It must also raise `read-process-output-max'.  Same reason as
             (when (process-live-p proc)
               (delete-process proc))))))))
 
+(ert-deftest ghostel-test-environment-applies-to-compile ()
+  "`ghostel-compile--spawn' must prepend `ghostel-environment'.
+The splice lives in the compile spawn (separate from `ghostel--spawn-pty'),
+so this path needs its own coverage — without it, users setting
+`CC=clang' would see it take effect in shells but silently miss for
+compile jobs.  Also pins the position: `compilation-environment'
+entries must precede `ghostel-environment', and both must precede
+ghostel's own `INSIDE_EMACS=...,compile' marker."
+  (let ((captured-env nil)
+        (orig-make-process (symbol-function #'make-process)))
+    (cl-letf (((symbol-function #'make-process)
+               (lambda (&rest plist)
+                 (setq captured-env process-environment)
+                 (apply orig-make-process plist))))
+      (with-temp-buffer
+        (let* ((default-directory "/tmp/")
+               (compilation-environment '("COMPENV=first"))
+               (ghostel-environment '("CC=clang"))
+               (proc (ghostel-compile--spawn "true" (current-buffer) 24 80)))
+          (unwind-protect
+              (let ((compenv-idx (seq-position captured-env "COMPENV=first"))
+                    (cc-idx      (seq-position captured-env "CC=clang"))
+                    (inside-idx  (cl-position-if
+                                  (lambda (s)
+                                    (string-prefix-p "INSIDE_EMACS=" s))
+                                  captured-env)))
+                (should compenv-idx)
+                (should cc-idx)
+                (should inside-idx)
+                (should (< compenv-idx cc-idx))
+                (should (< cc-idx inside-idx)))
+            (when (process-live-p proc)
+              (set-process-sentinel proc #'ignore)
+              (delete-process proc))))))))
+
+
 (provide 'ghostel-compile-test)
 ;;; ghostel-compile-test.el ends here

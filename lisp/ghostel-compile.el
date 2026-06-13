@@ -12,11 +12,11 @@
 ;; behave as they would in an interactive shell.
 ;;
 ;; Each `ghostel-compile' invocation spawns a fresh process via
-;; `shell-file-name -c COMMAND' through a PTY owned by the ghostel
-;; renderer — no interactive shell sits between the command and the
-;; user.  Multi-line scripts are passed verbatim to the shell.  No
-;; OSC 133 / shell integration is required; completion is detected
-;; by the process sentinel, which delivers the real exit status.
+;; `shell-file-name -c COMMAND' through a PTY rendered by ghostel — no
+;; interactive shell sits between the command and the user.  Multi-line
+;; scripts are passed verbatim to the shell.  No OSC 133 / shell
+;; integration is required; completion is detected by the process
+;; sentinel, which delivers the real exit status.
 ;;
 ;; The buffer mimics `compilation-mode': a "Compilation started at"
 ;; header, a "Compilation finished at ..., duration ..." footer, and
@@ -69,7 +69,7 @@
 (require 'compile)
 
 (declare-function ghostel--set-size "ghostel-module")
-(declare-function ghostel--write-input "ghostel-module")
+(declare-function ghostel--write-vt "ghostel-module")
 
 
 ;;; Customization
@@ -297,10 +297,7 @@ into our buffer."
     (setq ghostel--process nil))
   (when (bound-and-true-p ghostel--redraw-timer)
     (cancel-timer ghostel--redraw-timer)
-    (setq ghostel--redraw-timer nil))
-  (when (bound-and-true-p ghostel--input-timer)
-    (cancel-timer ghostel--input-timer)
-    (setq ghostel--input-timer nil)))
+    (setq ghostel--redraw-timer nil)))
 
 (defun ghostel-compile--trim-trailing-blanks (start)
   "Delete trailing whitespace-only content in START..(point-max).
@@ -329,7 +326,7 @@ to column 0 at the start of each line; a bare LF only advances the
 cursor one row and would stack the lines diagonally."
   (when (and ghostel--term (> (length header) 0))
     (let ((crlf (replace-regexp-in-string "\n" "\r\n" header t t)))
-      (ghostel--write-input ghostel--term crlf))
+      (ghostel--write-vt ghostel--term crlf))
     (when ghostel--redraw-timer
       (cancel-timer ghostel--redraw-timer)
       (setq ghostel--redraw-timer nil))
@@ -539,8 +536,7 @@ local machine happens to have)."
     (set-process-window-size proc height width)
     (when compilation-always-kill
       (set-process-query-on-exit-flag proc nil))
-    (process-put proc 'adjust-window-size-function
-                 #'ghostel--window-adjust-process-window-size)
+    (process-put proc 'adjust-window-size-function nil)
     proc))
 
 
@@ -556,7 +552,7 @@ its window, matching `M-x recompile').
 
 If the existing buffer has a live process, prompt via `yes-or-no-p'
 before killing it, unless `compilation-always-kill' is non-nil or
-the process has its query-on-exit flag cleared.
+the process does not query on exit.
 
 Creates the terminal directly — no interactive shell is spawned —
 so there is no remote-integration round-trip on TRAMP buffers.
@@ -575,7 +571,8 @@ resize hooks
   (let ((existing (get-buffer name)))
     (when existing
       (with-current-buffer existing
-        (let ((proc (bound-and-true-p ghostel--process)))
+        (let ((proc (or (bound-and-true-p ghostel--process)
+						(bound-and-true-p ghostel--event-pipe))))
           (when (process-live-p proc)
             (if (or (eq (process-query-on-exit-flag proc) nil)
                     compilation-always-kill
@@ -602,10 +599,7 @@ resize hooks
           (setq ghostel--process nil))
         (when (bound-and-true-p ghostel--redraw-timer)
           (cancel-timer ghostel--redraw-timer)
-          (setq ghostel--redraw-timer nil))
-        (when (bound-and-true-p ghostel--input-timer)
-          (cancel-timer ghostel--input-timer)
-          (setq ghostel--input-timer nil)))))
+          (setq ghostel--redraw-timer nil)))))
   (ghostel--load-module t)
   (let* ((buffer (get-buffer-create name))
          (win (or (get-buffer-window buffer t) (selected-window)))
@@ -730,7 +724,7 @@ any other code that walks `compilation-arguments') re-runs via
       ;; to the output window *before* rendering the header, otherwise
       ;; the header and the command's early output wrap at the wrong
       ;; column and look garbled until the user's first resize triggers
-      ;; `ghostel--window-adjust-process-window-size'.
+      ;; `ghostel--adjust-size'.
       (when (and outwin ghostel--term)
         (let ((oh (max 1 (with-selected-window outwin
                            (floor (window-screen-lines)))))

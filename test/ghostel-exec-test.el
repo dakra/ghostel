@@ -91,6 +91,50 @@ buffer eventually shows up."
               (should (equal ghostel--buffer-identity "identity")))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-exec-cat-roundtrip ()
+  "Bytes written to a `ghostel-exec' PTY reach the child."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/cat"))
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-exec-buffer (buf proc "/bin/cat")
+      (ghostel--write-pty ghostel--term "GHOSTEL_CAT_OK\r")
+      (ghostel-test--wait-for-text "GHOSTEL_CAT_OK" proc 5))))
+
+(ert-deftest ghostel-test-exec-keeps-final-output-after-exit ()
+  "Final `ghostel-exec' output remains readable after process exit."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-exec-buffer
+        (buf proc "/bin/sh" '("-c" "printf GHOSTEL_FINAL_OUTPUT"))
+      (ghostel-test--wait-for-text "GHOSTEL_FINAL_OUTPUT" nil 5)
+      (ghostel-test--wait-until
+       (lambda () (not (process-live-p proc))) nil 5)
+      (should (buffer-live-p buf))
+      (should (string-match-p "GHOSTEL_FINAL_OUTPUT"
+                              (ghostel-test--terminal-text))))))
+
+(ert-deftest ghostel-test-exec-kill-buffer-kills-process ()
+  "Killing a `ghostel-exec' buffer tears down its process."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (ghostel-test--with-pty-matrix backend
+    (let ((buf (generate-new-buffer " *ghostel-test-kill-lifecycle*"))
+          proc)
+      (unwind-protect
+          (progn
+            (with-current-buffer buf
+              (let ((ghostel-kill-buffer-on-exit nil))
+                (setq proc (ghostel-exec
+                            buf "/bin/sh"
+                            '("-c" "printf GHOSTEL_SLEEP_READY; sleep 30")))
+                (ghostel-test--wait-for-text "GHOSTEL_SLEEP_READY" proc 5)))
+            (kill-buffer buf)
+            (ghostel-test--wait-until
+             (lambda () (not (process-live-p proc))) nil 5))
+        (when (buffer-live-p buf)
+          (ghostel-test--cleanup-exec-buffer buf))))))
+
 (ert-deftest ghostel-test-eshell-visual-command-mode-toggles-advice ()
   "Enabling/disabling the mode adds/removes the `eshell-exec-visual' advice."
   (let ((was-on ghostel-eshell-visual-command-mode))
@@ -140,6 +184,31 @@ unmodified so later visual buffers still send `q' to the program."
           ;; ...but the shared map is untouched (no leak, issue #372).
           (should-not (lookup-key ghostel-semi-char-mode-map (kbd "q"))))
       (kill-buffer buf))))
+
+(ert-deftest ghostel-test-exec-calls-spawn-pty-with-expected-args ()
+  "`ghostel-exec' forwards PROGRAM, ARGS, size, stty flags, and remote-p."
+  (let ((buf (generate-new-buffer " *ghostel-exec-test*"))
+        captured)
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--load-module) #'ignore)
+                  ((symbol-function 'ghostel--new)
+                   (lambda (&rest _) 'fake-term))
+                  ((symbol-function 'ghostel--set-size-with-cell-dims) #'ignore)
+                  ((symbol-function 'ghostel--apply-palette) #'ignore)
+                  ((symbol-function 'ghostel--spawn-pty)
+                   (lambda (&rest args) (setq captured args) 'fake-proc)))
+          (ghostel-exec buf "less" '("/etc/hosts"))
+          ;; Signature: program args height width stty-flags extra-env remote-p
+          (should (equal (nth 0 captured) "less"))
+          (should (equal (nth 1 captured) '("/etc/hosts")))
+          (should (numberp (nth 2 captured)))
+          (should (numberp (nth 3 captured)))
+          (should (equal (nth 4 captured) ghostel--default-stty))
+          (should (null (nth 5 captured)))
+          ;; Local default-directory — no TRAMP — so remote-p must be nil.
+          (should (null (nth 6 captured))))
+      (kill-buffer buf))))
+
 
 (provide 'ghostel-exec-test)
 ;;; ghostel-exec-test.el ends here

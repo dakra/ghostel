@@ -60,7 +60,7 @@ After all ops, a final incremental redraw is compared with a full redraw."
                      (kind (ghostel-hypothesis--get op "op")))
                 (cond
                  ((equal kind "write")
-                  (ghostel--write-input
+                  (ghostel--write-vt
                    term
                    (base64-decode-string
                     (ghostel-hypothesis--get op "data"))))

@@ -15,10 +15,16 @@ pub fn FixedArrayList(comptime T: type, comptime buffer_capacity: usize) type {
 
         /// Appends a single item
         pub fn append(self: *Self, value: T) error{Overflow}!void {
-            if (self.len >= capacity) return error.Overflow;
+            if ((self.len + 1) > capacity) return error.Overflow;
 
             self.buffer[self.len] = value;
             self.len += 1;
+        }
+
+        /// Appends several items
+        pub fn appendSlice(self: *Self, slice: []const T) error{Overflow}!void {
+            const dst = try self.addManyAsSlice(slice.len);
+            @memcpy(dst, slice);
         }
 
         /// Resizes the array, adding n uninitialized elements and returns a
@@ -88,6 +94,23 @@ test "append: errors on overflow" {
     try list.append(123);
     try list.append(456);
     try std.testing.expectError(error.Overflow, list.append(789));
+}
+
+test "appendSlice: adds multiple elements" {
+    var list: FixedArrayList(i32, 10) = .{};
+    try list.appendSlice(&[_]i32{ 1, 2, 3 });
+    try std.testing.expectEqual(3, list.len);
+    try std.testing.expectEqual(1, list.buffer[0]);
+    try std.testing.expectEqual(2, list.buffer[1]);
+    try std.testing.expectEqual(3, list.buffer[2]);
+}
+
+test "appendSlice: errors on overflow" {
+    var list: FixedArrayList(i32, 2) = .{};
+    try std.testing.expectError(
+        error.Overflow,
+        list.appendSlice(&[_]i32{ 1, 2, 3 }),
+    );
 }
 
 test "addManyAsSlice: returns slice at end" {
