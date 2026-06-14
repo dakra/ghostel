@@ -48,6 +48,10 @@ Options:
   --quick          Quick run (100KB data, 3 iterations, single size)
   --e2e            Run only the end-to-end backend benchmarks (composes
                    with --quick, --size, --iterations)
+  --backends       Run only the native-vs-Emacs PTY comparison (composes
+                   with --quick, --size, --iterations)
+  --typing         Run only the typing-latency comparison (native vs Emacs
+                   PTY); --quick uses fewer keystrokes
   --no-vterm       Skip vterm benchmarks
   --no-eat         Skip eat benchmarks
   --no-term        Skip Emacs built-in term benchmarks
@@ -64,6 +68,8 @@ Examples:
   $(basename "$0") --quick        # Quick sanity check
   $(basename "$0") --e2e          # Only the end-to-end section
   $(basename "$0") --quick --e2e  # Quick end-to-end-only run
+  $(basename "$0") --backends     # Only native-vs-Emacs PTY comparison
+  $(basename "$0") --typing       # Only typing-latency comparison
   $(basename "$0") --ghostty      # Include ghostty comparison data
 EOF
     exit 0
@@ -74,6 +80,8 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --quick)      MODE="quick"; shift ;;
         --e2e)        SECTION="e2e"; shift ;;
+        --backends)   SECTION="backends"; shift ;;
+        --typing)     SECTION="typing"; shift ;;
         --no-vterm)   INCLUDE_VTERM="nil"; shift ;;
         --no-eat)     INCLUDE_EAT="nil"; shift ;;
         --no-term)    INCLUDE_TERM="nil"; shift ;;
@@ -139,6 +147,16 @@ if [ "$SECTION" = "e2e" ]; then
         EVAL="$EVAL (setq ghostel-bench-data-size (* 100 1024) ghostel-bench-iterations 2)"
     fi
     EVAL="$EVAL (ghostel-bench-run-e2e))"
+elif [ "$SECTION" = "backends" ]; then
+    if [ "$MODE" = "quick" ]; then
+        EVAL="$EVAL (setq ghostel-bench-data-size (* 100 1024) ghostel-bench-iterations 2)"
+    fi
+    EVAL="$EVAL (ghostel-bench-run-backends))"
+elif [ "$SECTION" = "typing" ]; then
+    if [ "$MODE" = "quick" ]; then
+        EVAL="$EVAL (setq ghostel-bench-typing-count 50)"
+    fi
+    EVAL="$EVAL (ghostel-bench-typing-latency))"
 elif [ "$MODE" = "quick" ]; then
     EVAL="$EVAL (ghostel-bench-run-quick))"
 else

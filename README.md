@@ -1304,12 +1304,15 @@ terminal emulators: [vterm](https://github.com/akermu/emacs-libvterm) (native
 module), [eat](https://codeberg.org/akib/emacs-eat) (pure Elisp), and Emacs
 built-in `term`.
 
-The primary benchmark streams 1 MB of data through a real process pipe,
-matching actual terminal usage.  The default local path parses PTY output
-asynchronously in the native module and notifies Emacs when the rendered
-buffer needs an update.  All backends are configured with ~1,000 lines of
-scrollback (matching vterm's default).  Results on Apple M4 Max, Emacs
-31.0.50:
+The cross-emulator benchmark streams 1 MB of data through a real process
+pipe and routes it through each backend's production filter, matching actual
+terminal usage.  To keep the comparison fair, every backend — ghostel
+included — is driven on this common Emacs-process path; ghostel's *default*
+local path is the native Zig PTY, which reads asynchronously off the main
+thread and is faster still (measured separately below under
+[Native vs Emacs PTY](#native-vs-emacs-pty)).  All backends are configured
+with ~1,000 lines of scrollback (matching vterm's default).  Results on
+Apple M4 Max, Emacs 31.0.50:
 
 | Backend              | Plain ASCII | URL-heavy |
 |----------------------|------------:|----------:|
@@ -1326,6 +1329,22 @@ row shows what you get with `ghostel-enable-url-detection` and
 `ghostel-enable-file-detection` set to nil.  The other emulators do not have
 this feature.
 
+### Native vs Emacs PTY
+
+The table above drives ghostel on the Emacs-process path so it can be
+compared apples-to-apples against vterm/eat/term.  For local shells ghostel
+defaults to its own native PTY (`ghostel-use-native-pty`), where a Zig
+background thread reads the PTY and feeds libghostty-vt directly, waking
+Emacs only when the read would block.  This avoids running the per-chunk
+filter on the main thread, so bulk output is faster and the UI stays
+responsive during floods.
+
+`bench/run-bench.sh --backends` runs the same `cat` workload through both
+backends and reports the ratio.  On a sustained multi-MB dump the native
+path runs roughly 2x the Emacs path, and the gap widens with size — the
+remaining distance to a standalone GPU terminal is Emacs's own
+buffer-materialization and redisplay cost, which both backends share.
+
 ### Typing latency
 
 Interactive keystrokes are optimized separately from bulk throughput.  When
@@ -1340,6 +1359,7 @@ Run the benchmarks yourself:
 ```sh
 bench/run-bench.sh              # full suite (throughput)
 bench/run-bench.sh --quick      # quick sanity check
+bench/run-bench.sh --backends   # native vs Emacs PTY (ghostel only)
 ```
 
 The typing latency benchmark can be run from Elisp:
