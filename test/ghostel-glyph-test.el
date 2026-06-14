@@ -146,10 +146,16 @@ SPECS is a plist with these keys:
                  (should (equal (cadr (assq 'min-width disp)) '(2))))))))
       (kill-buffer buf))))
 
-(ert-deftest ghostel-test-glyph-adjust-single-width-small ()
-  "An oversized single-width glyph gets a scale < 1.0 to fit the cell."
+(ert-deftest ghostel-test-glyph-adjust-clamps-on-ascent ()
+  "An oversized glyph is clamped by its ascent when only the ascent overflows.
+The default font is 10 ascent / 10 descent.  This glyph's ascent (20)
+exceeds the default ascent while its descent (5) fits, so the row would
+grow above the baseline.  The scale must bound the ascent side
+\(10/(20+1) ~ 0.476\), which is stricter than the sum ratio
+\(20/(25+1) ~ 0.769\) the old height-based code used and which would have
+left the ascent over the line."
   :tags '(native)
-  (let ((buf (generate-new-buffer " *ghostel-test-glyph-1*")))
+  (let ((buf (generate-new-buffer " *ghostel-test-glyph-ascent*")))
     (unwind-protect
         (save-window-excursion
           (with-selected-window (display-buffer buf)
@@ -159,10 +165,10 @@ SPECS is a plist with these keys:
                    (ghostel--term-rows 5)
                    (inhibit-read-only t)
                    (df (ghostel-test--make-font ghostel-test--default-font-info))
-                   ;; Glyph: 12px wide x 25px tall (larger than 10x20 cell)
+                   ;; ascent 20 > default 10; descent 5 < default 10.
                    (glyph-font (ghostel-test--make-font
-                                ["MockGlyph" "mock.ttf" 12 120 12 13 12 12 0]
-                                [[0 1 ?\u0100 0 12 0 0 12 13 0]])))
+                                ["MockGlyph" "mock.ttf" 12 120 20 5 10 10 0]
+                                [[0 1 ?\u0100 0 10 0 0 20 5 0]])))
               ;; Write a character above the coverage threshold.
               (ghostel--write-input term "\u0100")
               (ghostel-test--with-glyph-mocks
@@ -174,7 +180,45 @@ SPECS is a plist with these keys:
                  (should disp)
                  (let ((scale (cadr (assq 'height disp))))
                    (should scale)
-                   (should (< scale 1.0))))))))
+                   ;; Bound by the ascent side, not the looser sum ratio.
+                   (should (< (abs (- scale (/ 10.0 (1+ 20)))) 1e-6))
+                   (should (< scale (/ 20.0 (1+ 25))))))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-glyph-adjust-clamps-on-descent ()
+  "An oversized glyph is clamped by its descent when only the descent overflows.
+Mirror of the ascent case: this glyph's descent (20) exceeds the default
+descent (10) while its ascent (5) fits.  The scale must bound the descent
+side \(10/(20+1) ~ 0.476\); the sum ratio \(20/(25+1) ~ 0.769\) would
+leave the descent below the line."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-glyph-descent*")))
+    (unwind-protect
+        (save-window-excursion
+          (with-selected-window (display-buffer buf)
+            (ghostel-mode)
+            (let* ((term (ghostel--new 5 80 1000))
+                   (ghostel--term term)
+                   (ghostel--term-rows 5)
+                   (inhibit-read-only t)
+                   (df (ghostel-test--make-font ghostel-test--default-font-info))
+                   ;; ascent 5 < default 10; descent 20 > default 10.
+                   (glyph-font (ghostel-test--make-font
+                                ["MockGlyph" "mock.ttf" 12 120 5 20 10 10 0]
+                                [[0 1 ?\u0100 0 10 0 0 5 20 0]])))
+              (ghostel--write-input term "\u0100")
+              (ghostel-test--with-glyph-mocks
+               (:default-font df
+                              :glyph-font glyph-font)
+               (ghostel--redraw term t)
+               (goto-char (point-min))
+               (let ((disp (get-text-property (point) 'display)))
+                 (should disp)
+                 (let ((scale (cadr (assq 'height disp))))
+                   (should scale)
+                   ;; Bound by the descent side, not the looser sum ratio.
+                   (should (< (abs (- scale (/ 10.0 (1+ 20)))) 1e-6))
+                   (should (< scale (/ 20.0 (1+ 25))))))))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-glyph-adjust-double-width-small ()
@@ -328,7 +372,7 @@ SPECS is a plist with these keys:
 (ert-deftest ghostel-test-glyph-scale-floor-clamps-scale ()
   "A non-zero `ghostel-glyph-scale-floor' prevents shrinking below the floor.
 Sets floor to 1.0 and feeds a glyph larger than the cell.  With floor
-0.0 the glyph would be scaled to ~0.8; with floor 1.0 it stays at 1.0."
+0.0 the glyph would be scaled to ~0.71; with floor 1.0 it stays at 1.0."
   :tags '(native)
   (let ((buf (generate-new-buffer " *ghostel-test-glyph-floor*")))
     (unwind-protect
@@ -342,7 +386,7 @@ Sets floor to 1.0 and feeds a glyph larger than the cell.  With floor
                    (inhibit-read-only t)
                    (df (ghostel-test--make-font ghostel-test--default-font-info))
                    ;; Glyph: 12px wide x 25px tall (larger than 10x20 cell);
-                   ;; without floor this would scale to ~0.8.
+                   ;; without floor this would scale to ~0.71.
                    (glyph-font (ghostel-test--make-font
                                 ["MockGlyph" "mock.ttf" 12 120 12 13 12 12 0]
                                 [[0 1 ?\u0100 0 12 0 0 12 13 0]])))

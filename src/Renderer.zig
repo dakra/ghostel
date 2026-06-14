@@ -70,7 +70,8 @@ const MaterializedPage = struct {
 
 const FontInfo = struct {
     width: u32,
-    height: u32,
+    ascent: u32,
+    descent: u32,
     coverage: u32,
     glyph_scale_floor: f64,
     metrics_cache: GlyphMetricsCache = .{},
@@ -232,7 +233,8 @@ fn updateFontInfo(self: *Self, alloc: Allocator, env: emacs.Env) bool {
 
         self.font_info = .{
             .width = env.cast(u32, env.vecGet(default_font_info, 6)),
-            .height = cell_ascent + cell_descent,
+            .ascent = cell_ascent,
+            .descent = cell_descent,
             .coverage = probeCoverage(env, new_font),
             .glyph_scale_floor = floor,
         };
@@ -605,7 +607,9 @@ fn adjustGlyph(
     var slot_width = default_font_info.width * char_width;
 
     // Skip adjustments if size already matches perfectly
-    if (metrics.width == slot_width and metrics.height == default_font_info.height) return;
+    if (metrics.width == slot_width and
+        metrics.ascent == default_font_info.ascent and
+        metrics.descent == default_font_info.descent) return;
 
     // Let's check if we can claim some space after the glyph to be able to render
     // it larger than the cell size while still maintaining alignment.
@@ -615,9 +619,9 @@ fn adjustGlyph(
         slot_width = default_font_info.width * char_width;
     }) {
         const cell_aspect = @as(f64, @floatFromInt(slot_width)) /
-            @as(f64, @floatFromInt(default_font_info.height));
+            @as(f64, @floatFromInt(default_font_info.ascent + default_font_info.descent));
         const glyph_aspect = @as(f64, @floatFromInt(metrics.width)) /
-            @as(f64, @floatFromInt(metrics.height));
+            @as(f64, @floatFromInt(metrics.ascent + metrics.descent));
         // If the aspect of the glyph is narrower than that of the cell, we're done
         if (glyph_aspect < cell_aspect) break;
 
@@ -639,12 +643,22 @@ fn adjustGlyph(
         }
     }
 
-    // We add a fudge factor of +1 to the denominator to ensure fit
+    // We add a fudge factor of +1 to the denominator to ensure fit.
+    //
+    // Height is clamped per side, not on the sum: the row realizes
+    // max(ascent) + max(descent) across all glyphs sharing the baseline, so a
+    // glyph grows the row if either its ascent exceeds the default ascent or
+    // its descent exceeds the default descent.  Scaling by the sum ratio
+    // (default_height / glyph_height) can leave one side over the line — e.g. a
+    // glyph that is tall above the baseline but shallow below it.  Bounding
+    // each side independently is the exact clamp.
     const scale_width = @as(f64, @floatFromInt(slot_width)) /
         @as(f64, @floatFromInt(metrics.width + 1));
-    const scale_height = @as(f64, @floatFromInt(default_font_info.height)) /
-        @as(f64, @floatFromInt(metrics.height + 1));
-    const computed_scale = @min(scale_width, scale_height);
+    const scale_ascent = @as(f64, @floatFromInt(default_font_info.ascent)) /
+        @as(f64, @floatFromInt(metrics.ascent + 1));
+    const scale_descent = @as(f64, @floatFromInt(default_font_info.descent)) /
+        @as(f64, @floatFromInt(metrics.descent + 1));
+    const computed_scale = @min(scale_width, @min(scale_ascent, scale_descent));
     const scale = @max(computed_scale, default_font_info.glyph_scale_floor);
 
     const min_width_spec = env.list(.{ s.@"min-width", env.list(.{char_width}) });
@@ -682,15 +696,21 @@ fn getGlyphMetrics(
     // [FONT-OBJECT CHAR ...]
     const font = env.vecGet(header, 0);
     const font_info = env.f("ghostel--query-font-cached", .{font});
+    // Keep ascent and descent separate: the line height is max(ascent) +
+    // max(descent) over the row, so a glyph fits only when its ascent and
+    // descent each fit the default font's — the sum is not enough.
     const ascent = env.cast(i64, env.vecGet(font_info, 4));
     const descent = env.cast(i64, env.vecGet(font_info, 5));
-    const height = ascent + descent;
 
     // Each element is a vector containing information of a glyph in this format:
     // [FROM-IDX TO-IDX C CODE WIDTH LBEARING RBEARING ASCENT DESCENT ADJUSTMENT]
     const width = env.cast(u32, env.vecGet(glyph, 4));
 
-    const metrics = GlyphMetricsCache.Metrics{ .width = width, .height = height };
+    const metrics = GlyphMetricsCache.Metrics{
+        .width = width,
+        .ascent = ascent,
+        .descent = descent,
+    };
     if (self.font_info) |*fi| {
         try fi.metrics_cache.put(alloc, borrowed_key, metrics);
     }
