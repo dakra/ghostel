@@ -17,9 +17,10 @@
 
 (require 'cl-lib)
 (require 'subr-x)
-(require 'dape)
 
+(declare-function dape "dape")
 (declare-function dired-get-file-for-visit "dired")
+(defvar dape-configs)
 
 (defconst ghostel-dape--source-directory
   (when-let* ((file (or load-file-name buffer-file-name)))
@@ -63,6 +64,8 @@ Set to nil to skip automatic compilation."
 
 (defun ghostel-dape--launch-emacs (&rest args)
   "Launch batch Emacs with ARGS under Dape/lldb-dap."
+  (unless (require 'dape nil t)
+    (user-error "Package `dape' is required to launch Ghostel Dape helpers"))
   (let* ((root (file-name-as-directory (expand-file-name (ghostel-dape--root))))
          (base (or (cdr (assoc 'lldb-dap dape-configs))
                    (user-error "No `lldb-dap' entry in `dape-configs'")))
