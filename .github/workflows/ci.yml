@@ -109,7 +109,7 @@ jobs:
           emacs --batch -Q -L /tmp/compat -L /tmp/evil -L lisp -L extensions/evil-ghostel \
             -l ert \
             -l test/evil-ghostel-test.el \
-            -f evil-ghostel-test-run-elisp
+            -f evil-ghostel-test-run
 
   build-native:
     strategy:
