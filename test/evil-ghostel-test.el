@@ -21,21 +21,24 @@
   "Create a ghostel buffer with ROWS x COLS, feed TEXT, render, then run BODY.
 The buffer has evil-mode and evil-ghostel-mode active.
 The variable `term' is bound to the terminal handle.
-Requires the native module."
+Requires the native module; without it the test is skipped
+(e.g. CI's elisp-only `test-evil' job)."
   (declare (indent 3) (debug t))
-  `(let* ((ghostel-max-scrollback 100)
-          (buf (ghostel--create " *evil-ghostel-test*" nil ,rows ,cols))
-          (term (buffer-local-value 'ghostel--term buf)))
-     (unwind-protect
-         (with-current-buffer buf
-           (ghostel--write-input term ,text)
-           (evil-local-mode 1)
-           (evil-ghostel-mode 1)
-           (let ((inhibit-read-only t))
-             (ghostel--redraw term t))
-           ,@body)
-       (when (buffer-live-p buf)
-         (kill-buffer buf)))))
+  `(progn
+     (skip-unless (fboundp 'ghostel--new))
+     (let* ((ghostel-max-scrollback 100)
+            (buf (ghostel--create " *evil-ghostel-test*" nil ,rows ,cols))
+            (term (buffer-local-value 'ghostel--term buf)))
+       (unwind-protect
+           (with-current-buffer buf
+             (ghostel--write-input term ,text)
+             (evil-local-mode 1)
+             (evil-ghostel-mode 1)
+             (let ((inhibit-read-only t))
+               (ghostel--redraw term t))
+             ,@body)
+         (when (buffer-live-p buf)
+           (kill-buffer buf))))))
 
 (defmacro evil-ghostel-test--with-evil-buffer (&rest body)
   "Set up a ghostel buffer with evil-mode active (no native module).
@@ -109,6 +112,39 @@ overwrite the position evil assigns at operator/visual completion."
    (should-not evil-ghostel-mode)
    (should-not (memq 'evil-ghostel--insert-state-entry
                      evil-insert-state-entry-hook))))
+
+(ert-deftest evil-ghostel-test-visual-inhibits-mark-copy-mode ()
+  "Entering evil visual must not flip ghostel into read-only copy mode.
+`ghostel-mode' wires `ghostel--mark-activated' onto `activate-mark-hook',
+which (for vanilla users) switches semi-char -> read-only `copy' mode when
+the mark activates.  Evil's `v' activates the mark, so without suppression
+the buffer goes read-only and the visual operators hit \"Buffer is
+read-only\".  `evil-ghostel-mode' sets `ghostel--inhibit-mark-activation'
+so that chain yields to evil's own selection model."
+  (evil-ghostel-test--with-evil-buffer
+   ;; Preconditions the major mode established (mirrors a live buffer):
+   (should (eq ghostel--input-mode 'semi-char))
+   (should (memq #'ghostel--mark-activated activate-mark-hook))
+   ;; The minor mode set the inhibit buffer-locally:
+   (should ghostel--inhibit-mark-activation)
+   (let (copied)
+     (cl-letf (((symbol-function 'ghostel-copy-mode)
+                (lambda (&rest _) (setq copied t))))
+       ;; Inhibited -> activating the mark is a no-op, mode stays editable.
+       (ghostel--mark-activated)
+       (should-not copied)
+       ;; Control (proves the test is not vacuous): with the inhibit cleared,
+       ;; the same hook DOES switch -> the inhibit is exactly what gates it.
+       (let ((ghostel--inhibit-mark-activation nil))
+         (ghostel--mark-activated)
+         (should copied))))))
+
+(ert-deftest evil-ghostel-test-disable-restores-mark-activation ()
+  "Disabling `evil-ghostel-mode' restores ghostel's mark-activation behavior."
+  (evil-ghostel-test--with-evil-buffer
+   (should (local-variable-p 'ghostel--inhibit-mark-activation))
+   (evil-ghostel-mode -1)
+   (should-not (local-variable-p 'ghostel--inhibit-mark-activation))))
 
 (ert-deftest evil-ghostel-test-advice-survives-disable-in-other-buffer ()
   "Global `ghostel--redraw' / cursor-style advice survives one buffer disabling.
@@ -278,51 +314,6 @@ advice must not restore point or visual markers there."
    ;; Advice bypassed → the mock's point placement (point-min) wins.
    (should (= (point-min) (point)))))
 
-(ert-deftest evil-ghostel-test-around-redraw-snaps-point-on-prompt-line ()
-  "Point follows the new cursor line in normal state when on the prompt.
-Output that grows scrollback must not strand point above the live
-prompt."
-  (evil-ghostel-test--with-buffer 5 40 "$ "
-                                  (evil-normal-state)
-                                  ;; Start on the cursor line.
-                                  (evil-ghostel--reset-cursor-point)
-                                  (should (evil-ghostel--point-on-cursor-line-p))
-                                  ;; Stream output that overflows the 5-row viewport, growing
-                                  ;; scrollback.  The prompt-following heuristic should keep
-                                  ;; point on the live cursor row.
-                                  (ghostel--write-input term "\r\n")
-                                  (dotimes (i 8)
-                                    (ghostel--write-input term (format "out-%d\r\n" i)))
-                                  (ghostel--write-input term "$ ")
-                                  (let ((inhibit-read-only t))
-                                    (ghostel--redraw term nil))
-                                  ;; Point lands on the new cursor line, not above it.
-                                  (should (evil-ghostel--point-on-cursor-line-p))))
-
-(ert-deftest evil-ghostel-test-around-redraw-preserves-point-off-prompt ()
-  "Point is preserved in normal state when parked off the prompt line.
-Scrollback navigation must not be disturbed by output redraws."
-  (evil-ghostel-test--with-buffer 5 40 "alpha\r\nbeta\r\ngamma\r\n$ "
-                                  (evil-normal-state)
-                                  (save-window-excursion
-                                    (switch-to-buffer (current-buffer))
-                                  ;; Park point on a non-cursor line above the prompt.
-                                  (goto-char (point-min))
-                                  (search-forward "beta")
-                                  (beginning-of-line)
-                                  (should-not (evil-ghostel--point-on-cursor-line-p))
-                                  ;; Drive a redraw that doesn't grow scrollback (still fits).
-                                  (ghostel--write-input term "x")
-                                  (let ((inhibit-read-only t))
-                                    (ghostel--redraw term nil))
-                                  ;; Point still on the same content line, not snapped to cursor.
-                                  (should (string-match-p
-                                           "beta"
-                                           (buffer-substring-no-properties
-                                            (line-beginning-position)
-                                            (line-end-position))))
-                                    (should-not (evil-ghostel--point-on-cursor-line-p)))))
-
 ;; -----------------------------------------------------------------------
 ;; Test: reset-cursor-point
 ;; -----------------------------------------------------------------------
@@ -410,6 +401,7 @@ algorithm; this one walks scrollback math and viewport offsets too)."
 `ghostel--cursor-pos' holds viewport-relative rows, so a buffer
 line N must be converted to viewport row N-scrollback before
 diffing — otherwise dy is wrong by the scrollback line count."
+  (skip-unless (fboundp 'ghostel--new))
   (let ((term (ghostel--new 5 40 1000)))
     ;; Push 12 rows so the viewport shows rows 8..12 plus a trailing
     ;; cursor row.
@@ -449,10 +441,11 @@ diffing — otherwise dy is wrong by the scrollback line count."
 ;; -----------------------------------------------------------------------
 
 (ert-deftest evil-ghostel-test-redraw-preserves-point-normal ()
-  "Test that redraws preserve point in evil normal state.
-Specifically when point is parked off the cursor's buffer line —
-on-cursor-line normal state intentionally follows the cursor across
-redraws so the prompt isn't left behind by output."
+  "Redraws preserve point in evil normal state.
+Unlike vterm, the renderer does not snap point to the terminal cursor;
+in normal state point stays wherever the user navigated (the rewrite
+dropped the old prompt-following heuristic — only insert / emacs state
+sync point to the cursor)."
   (evil-ghostel-test--with-buffer 5 40 "first\r\nsecond\r\nthird"
                                   (evil-normal-state)
                                   (save-window-excursion
@@ -587,34 +580,6 @@ through when the cell at the cursor is non-blank typed text."
      ;; Cell at cursor (pos 2, "i") is non-blank typed text → the
      ;; guard falls through; target = (1+ point) = 3.
      (should (= 3 (point)))
-     (should (eq 'insert evil-state)))))
-
-(ert-deftest evil-ghostel-test-insert-on-rprompt-clamps-to-row-end ()
-  "Regression: `evil-ghostel-insert' on a padding/RPROMPT cell clamps target.
-Symmetric to `evil-ghostel-test-append-at-cursor-does-not-advance':
-when point sits past typed input (in the padding gap or on
-RPROMPT cells), `i' must drive the cursor to row-end rather than
-the raw point — otherwise N right-arrows are sent, the shell
-clamps them silently, and Emacs `point' ends up past the live
-cursor."
-  (evil-ghostel-test--with-evil-buffer
-   (setq-local ghostel--term t)
-   (let ((inhibit-read-only t))
-     (insert "word")
-     (insert (make-string 10 ?\s))
-     (insert "rprompt"))
-   (cl-letf* ((target-pos nil)
-              ((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-              ((symbol-function 'evil-ghostel-goto-input-position)
-               (lambda (pos &rest _) (setq target-pos pos) (goto-char pos) t))
-              ((symbol-function 'evil-ghostel--insert-state-entry) #'ignore)
-              (ghostel--cursor-pos '(4 . 0))
-              (ghostel--cursor-char-pos 5))
-     (evil-normal-state)
-     (goto-char 12) ; point inside the padding gap
-     (evil-ghostel-insert)
-     ;; Target clamped to row-end (= 5 — end of "word"), NOT raw point (12).
-     (should (= 5 target-pos))
      (should (eq 'insert evil-state)))))
 
 (ert-deftest evil-ghostel-test-append-before-cursor-uses-vanilla ()
@@ -778,30 +743,7 @@ arrows are sent (which the old `sync-inhibit' path mistakenly did)."
                                     (should (= 5 (cl-count "backspace" keys-sent :test #'equal))))))
 
 ;; -----------------------------------------------------------------------
-;; Test: meaningful-input-length helper (render padding stripping)
-;; -----------------------------------------------------------------------
-
-(ert-deftest evil-ghostel-test-meaningful-length-strips-trailing ()
-  "Trailing whitespace counts only when TEXT spans multiple lines.
-Single-line `\"word \"' is real user content (e.g. `dw' over a word
-plus its trailing space); multi-line ranges may contain TUI box
-padding that should be stripped per line.
-
-The implementation lives in `evil-ghostel--meaningful-input-length'."
-  (should (= 0 (evil-ghostel--meaningful-input-length "")))
-  (should (= 3 (evil-ghostel--meaningful-input-length "AAA")))
-  ;; Single-line: trailing whitespace is preserved (real content).
-  (should (= 9 (evil-ghostel--meaningful-input-length "AAA      ")))
-  (should (= 5 (evil-ghostel--meaningful-input-length "word ")))
-  ;; Multi-line: per-line trailing whitespace stripped (TUI padding).
-  (should (= 7 (evil-ghostel--meaningful-input-length "AAA      \nBBB     ")))
-  (should (= 4 (evil-ghostel--meaningful-input-length "AAA      \n")))
-  ;; Inner whitespace preserved either way.
-  (should (= 7 (evil-ghostel--meaningful-input-length "A B C  ")))
-  (should (= 8 (evil-ghostel--meaningful-input-length "A B C  D"))))
-
-;; -----------------------------------------------------------------------
-;; Test: input-region helpers (cursor-row-end, point-in-input, clamp)
+;; Test: input-region helpers (input-end, clamp)
 ;; -----------------------------------------------------------------------
 
 (defmacro evil-ghostel-test--with-input-fixture (prompt input &rest body)
@@ -831,186 +773,6 @@ without a real native module."
                       (lambda (&rest _) nil)))
              ,@body))
        (kill-buffer buf))))
-
-(ert-deftest evil-ghostel-test-cursor-row-end-point-returns-eol ()
-  "`evil-ghostel--cursor-row-end-point' is end-of-line at the cursor's row."
-  (evil-ghostel-test--with-input-fixture "$ " "hello"
-    (should (= (point-max) (evil-ghostel--cursor-row-end-point)))))
-
-(ert-deftest evil-ghostel-test-cursor-row-end-point-respects-input-property ()
-  "OSC 133;B `ghostel-input' cells win over the gap heuristic.
-A row painted with bash/zsh shell integration carries `ghostel-input'
-on every input cell; the helper returns the position right after the
-rightmost such cell, regardless of trailing renderer cells."
-  (let ((buf (generate-new-buffer " *evil-ghostel-test-input-prop*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (ghostel-mode)
-          (let ((inhibit-read-only t))
-            (insert (propertize "$ " 'ghostel-prompt t))
-            ;; OSC 133;B span over the typed input.
-            (insert (propertize "hello" 'ghostel-input t))
-            ;; Padding + autosuggest hint past the input (no input prop).
-            (insert "   hint"))
-          (setq ghostel--term 'fake)
-          (setq ghostel--term-rows 1)
-          ;; Cursor at end of typed input (between "hello" and the padding).
-          (setq ghostel--cursor-char-pos 8) ; just after "hello"
-          (setq ghostel--cursor-pos '(7 . 0))
-          ;; End-of-input is right after the last `ghostel-input' cell.
-          (should (= 8 (evil-ghostel--cursor-row-end-point))))
-      (kill-buffer buf))))
-
-(ert-deftest evil-ghostel-test-cursor-row-end-point-uses-first-input-region ()
-  "Issue #264 fish repro: libghostty tags BOTH typed input cells AND
-right-prompt cells as SEMANTIC_INPUT (the latter via its cell-
-positioning heuristic when fish jumps the cursor to draw the right
-prompt).  Two disjoint `ghostel-input' regions separated by the
-padding gap.  The helper must return the end of the *first* region
-\(typed input), not the rightmost cell (inside the right prompt)."
-  (let ((buf (generate-new-buffer " *evil-ghostel-test-fish-rprompt*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (ghostel-mode)
-          (let ((inhibit-read-only t))
-            (insert (propertize "$ " 'ghostel-prompt t))
-            (insert (propertize "foo bar" 'ghostel-input t))
-            (insert (make-string 20 ?\s))
-            (insert (propertize "main *" 'ghostel-input t)))
-          (setq ghostel--term 'fake)
-          (setq ghostel--term-rows 1)
-          ;; Cursor at end of typed "foo bar" (col 9, pos 10).
-          (setq ghostel--cursor-char-pos 10)
-          (setq ghostel--cursor-pos '(9 . 0))
-          ;; First `ghostel-input' region ends at pos 10 (after "foo bar").
-          ;; Rightmost region (the right prompt) is ignored.
-          (should (= 10 (evil-ghostel--cursor-row-end-point))))
-      (kill-buffer buf))))
-
-(ert-deftest evil-ghostel-test-cursor-row-end-point-clamps-at-right-prompt-gap ()
-  "Bug A (#264): fish-style right prompt is excluded by the gap heuristic.
-With no `ghostel-input' property on the row (fish without OSC 133;B),
-a whitespace gap of `evil-ghostel-right-prompt-gap' or more columns
-between typed input and right-aligned content marks the boundary."
-  (let ((buf (generate-new-buffer " *evil-ghostel-test-rprompt*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (ghostel-mode)
-          (let ((inhibit-read-only t))
-            (insert (propertize "$ " 'ghostel-prompt t))
-            (insert "nslookup")
-            (insert (make-string 20 ?\s)) ; >> gap threshold
-            (insert "main *"))
-          (setq ghostel--term 'fake)
-          (setq ghostel--term-rows 1)
-          ;; Cursor at end of typed "nslookup" (col 10, pos 11).
-          (setq ghostel--cursor-char-pos 11)
-          (setq ghostel--cursor-pos '(10 . 0))
-          ;; End-of-input is pos 11 (just after "nslookup"), NOT the
-          ;; position after "main *" — the gap excludes the right prompt.
-          (should (= 11 (evil-ghostel--cursor-row-end-point))))
-      (kill-buffer buf))))
-
-(ert-deftest evil-ghostel-test-cursor-row-end-point-tight-gap-keeps-input ()
-  "Normal input with double-space (gap < threshold) stays whole.
-A `cmd  arg' pattern (2 spaces between tokens) must not trigger the
-right-prompt heuristic — input includes both words and the spaces."
-  (let ((buf (generate-new-buffer " *evil-ghostel-test-tight*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (ghostel-mode)
-          (let ((inhibit-read-only t))
-            (insert (propertize "$ " 'ghostel-prompt t))
-            (insert "cmd  arg")) ; 2-space gap, < threshold (6)
-          (setq ghostel--term 'fake)
-          (setq ghostel--term-rows 1)
-          (setq ghostel--cursor-char-pos 11) ; just after "arg"
-          (setq ghostel--cursor-pos '(10 . 0))
-          (should (= 11 (evil-ghostel--cursor-row-end-point))))
-      (kill-buffer buf))))
-
-(ert-deftest evil-ghostel-test-end-of-line-clamps-past-right-prompt ()
-  "Bug A (#264) end-to-end: `$' lands at end of input, not on the right prompt."
-  (let ((buf (generate-new-buffer " *evil-ghostel-test-end-of-line-rprompt*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (ghostel-mode)
-          (let ((inhibit-read-only t))
-            (insert (propertize "$ " 'ghostel-prompt t))
-            (insert "cmd")
-            (insert (make-string 20 ?\s))
-            (insert "branch *"))
-          (setq ghostel--term 'fake)
-          (setq ghostel--term-rows 1)
-          (setq ghostel--cursor-char-pos 6) ; just after "cmd"
-          (setq ghostel--cursor-pos '(5 . 0))
-          (evil-local-mode 1)
-          (evil-ghostel-mode 1)
-          (cl-letf (((symbol-function 'ghostel--mode-enabled)
-                     (lambda (&rest _) nil)))
-            (evil-normal-state)
-            (goto-char 3) ; on first input char
-            (evil-ghostel-end-of-line 1))
-          ;; Clamped to end-of-input (after "cmd" = pos 6), NOT into
-          ;; "branch *" past the 20-space gap.  Without the right-prompt
-          ;; clamp `$' would have landed somewhere inside "branch *".
-          (should (= 6 (point))))
-      (kill-buffer buf))))
-
-(ert-deftest evil-ghostel-test-point-in-input-p-true-between-prompt-and-eol ()
-  "Returns t when point is on the cursor row between input-start and EOL."
-  (evil-ghostel-test--with-input-fixture "$ " "hello"
-    ;; Right after the prompt — first char of input.
-    (should (evil-ghostel-point-in-input-p 3))
-    ;; At the cursor itself.
-    (should (evil-ghostel-point-in-input-p ghostel--cursor-char-pos))))
-
-(ert-deftest evil-ghostel-test-point-in-input-p-false-on-prompt-char ()
-  "Returns nil when POS is inside the prompt prefix."
-  (evil-ghostel-test--with-input-fixture "$ " "hello"
-    ;; Position 1 ($ char) and 2 (space) are part of the prompt.
-    (should-not (evil-ghostel-point-in-input-p 1))
-    (should-not (evil-ghostel-point-in-input-p 2))))
-
-(ert-deftest evil-ghostel-test-clamp-to-input-narrows-on-cursor-row ()
-  "A range with endpoints inside the prompt is clamped to the input region."
-  (evil-ghostel-test--with-input-fixture "$ " "hello"
-    (let ((clamped (evil-ghostel--clamp-to-input
-                    (cons 1 ghostel--cursor-char-pos))))
-      ;; BEG was in the prompt (1) → bumped to input-start (3).
-      (should (= 3 (car clamped)))
-      ;; END was at the cursor → unchanged.
-      (should (= ghostel--cursor-char-pos (cdr clamped))))))
-
-(ert-deftest evil-ghostel-test-clamp-to-input-trims-end-past-cursor ()
-  "A range whose END walks past the live cursor is trimmed back."
-  (evil-ghostel-test--with-input-fixture "$ " "hello"
-    ;; Pretend the renderer wrote some padding after the cursor (TUI box).
-    (let ((inhibit-read-only t))
-      (save-excursion (insert "   ")))
-    (let* ((past-cursor (+ ghostel--cursor-char-pos 3))
-           (clamped (evil-ghostel--clamp-to-input (cons 3 past-cursor))))
-      (should (= 3 (car clamped)))
-      (should (= ghostel--cursor-char-pos (cdr clamped))))))
-
-(ert-deftest evil-ghostel-test-clamp-to-input-passes-through-off-row ()
-  "Ranges that touch a non-cursor row are returned unchanged."
-  (let ((buf (generate-new-buffer " *evil-ghostel-test-clamp-off-row*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (ghostel-mode)
-          (let ((inhibit-read-only t))
-            (insert "scrollback\n")
-            (insert (propertize "$ " 'ghostel-prompt t))
-            (insert "input"))
-          (setq ghostel--term 'fake)
-          (setq ghostel--term-rows 2)
-          (setq ghostel--cursor-char-pos (point))
-          (setq ghostel--cursor-pos (cons (current-column) 1))
-          ;; Range spans first row (off cursor row) and cursor row.
-          (let ((input (cons 1 ghostel--cursor-char-pos)))
-            (should (equal input (evil-ghostel--clamp-to-input input)))))
-      (kill-buffer buf))))
 
 (ert-deftest evil-ghostel-test-goto-input-position-sends-arrows-unit ()
   "Unit: |dx| left arrows are sent when point is left of the cursor."
@@ -1232,37 +994,6 @@ line)."
        (should (= 9 (cl-count '("backspace" . "") keys-sent :test #'equal)))
        (should-not (cl-find '("u" . "ctrl") keys-sent :test #'equal))))))
 
-(ert-deftest evil-ghostel-test-delete-line-strips-render-padding ()
-  "Regression for #218: multi-line `dd' does not backspace TUI box-padding.
-TUIs that draw a fixed-width input box (e.g. prompt_toolkit) write
-spaces past the user's input out to the box border; those land in
-the Emacs buffer but are not characters in the TUI's input model.
-Backspace count equals trimmed line length + newline.
-
-Forces the multi-line backspace path by placing the terminal
-cursor on a different row than point."
-  (evil-ghostel-test--with-evil-buffer
-   (setq-local ghostel--term t)
-   ;; "AAA" + 77 box-padding spaces + newline + "BBB" + 77 box-padding spaces.
-   (insert (concat "AAA" (make-string 77 ?\s) "\n"
-                   "BBB" (make-string 77 ?\s)))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ;; Terminal cursor on row 1 (BBB); point will be on row 0 (AAA).
-             (ghostel--cursor-pos '(0 . 1))
-             ((symbol-function 'evil-ghostel-goto-input-position) #'ignore))
-     (evil-normal-state)
-     (goto-char (point-min))
-     (let ((bs-count 0))
-       (cl-letf (((symbol-function 'ghostel--send-encoded)
-                  (lambda (key _mods &rest _)
-                    (when (equal key "backspace")
-                      (cl-incf bs-count)))))
-         ;; Line 1 spans bol..bol-of-line-2 (81 chars including newline).
-         (evil-ghostel-delete (point-min) (line-beginning-position 2)
-                              'line nil nil))
-       ;; Trimmed: "AAA\n" = 4 backspaces, not 81.
-       (should (= 4 bs-count))))))
-
 (ert-deftest evil-ghostel-test-delete-char ()
   "`evil-ghostel-delete-char' (x) routes through PTY and stays in normal."
   (evil-ghostel-test--with-evil-buffer
@@ -1338,37 +1069,6 @@ cursor on a different row than point."
          (evil-ghostel-replace 1 4 'inclusive ?X))
        (should (= 3 bs-count))
        (should (equal "XXX" pasted))))))
-
-(ert-deftest evil-ghostel-test-replace-counts-match-on-trailing-space ()
-  "Regression: paste count and delete count agree on multi-line ranges.
-Both `evil-ghostel-delete-input-region' and the paste in
-`evil-ghostel-replace' use `evil-ghostel--meaningful-input-length' on
-the same substring, so the values agree even when trailing
-whitespace handling differs (multi-line ranges strip per-line
-padding; single-line ranges don't)."
-  (evil-ghostel-test--with-evil-buffer
-   (setq-local ghostel--term t)
-   ;; Multi-line range with TUI-style padding on the first row.
-   ;; meaningful-input-length strips per-line padding → 4 chars: "AB\nC".
-   (insert "AB   \nC")
-   (goto-char (point-min))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             (ghostel--cursor-pos '(0 . 0))
-             ((symbol-function 'evil-ghostel-goto-input-position) #'ignore))
-     (evil-normal-state)
-     (let ((bs-count 0)
-           (pasted nil))
-       (cl-letf (((symbol-function 'ghostel--send-encoded)
-                  (lambda (key _mods &rest _)
-                    (when (equal key "backspace")
-                      (cl-incf bs-count))))
-                 ((symbol-function 'ghostel--paste-text)
-                  (lambda (text) (setq pasted text))))
-         (evil-ghostel-replace 1 8 'inclusive ?X))
-       ;; Pre-fix: bs-count read meaningful-length (4) but pasted used
-       ;; raw substring length (7), leaving a stray "XXX" on screen.
-       (should (= 4 bs-count))
-       (should (equal "XXXX" pasted))))))
 
 ;; -----------------------------------------------------------------------
 ;; Test: evil-paste advice
@@ -1782,44 +1482,6 @@ rather than silently dropping the keystroke."
 ;; Test: beginning-of-line lands at input start, not column 0
 ;; -----------------------------------------------------------------------
 
-(ert-deftest evil-ghostel-test-beginning-of-line-skips-prompt ()
-  "`0' / `^' jump to start of input on a prompt row, not column 0.
-Without this, `0' lands point on top of the `$ ' prompt and `0i'
-inserts at the prompt position rather than at the input start."
-  (evil-ghostel-test--with-evil-buffer
-   (setq-local ghostel--term t)
-   (insert "$ command")
-   ;; Mark the prompt prefix so ghostel-beginning-of-input-or-line
-   ;; treats it as a prompt row.
-   (put-text-property 1 3 'ghostel-prompt t)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
-     (evil-normal-state)
-     (goto-char (point-max))
-     (evil-ghostel-beginning-of-line)
-     ;; Lands at col 2 (after "$ "), not col 0.
-     (should (= 2 (current-column)))
-     (goto-char (point-max))
-     (evil-ghostel-first-non-blank)
-     (should (= 2 (current-column))))))
-
-(ert-deftest evil-ghostel-test-beginning-of-line-falls-through-no-prompt ()
-  "On rows without a prompt property `0' / `^' keep their default
-column-0 / first-non-blank behaviour — scrollback navigation must
-not be hijacked.
-
-`ghostel-beginning-of-input-or-line' itself handles the fall-through
-\(it calls `move-beginning-of-line' when no prompt prop / line-mode
-marker is in play), so the new motion still does the right thing
-even when active-p is true."
-  (evil-ghostel-test--with-evil-buffer
-   (setq-local ghostel--term t)
-   (insert "  output line")  ; no ghostel-prompt property anywhere
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
-     (evil-normal-state)
-     (goto-char (point-max))
-     (evil-ghostel-beginning-of-line)
-     (should (= 0 (current-column))))))
-
 ;; (Removed: evil-ghostel-test-shadow-cursor-tracks-cursor-to-point and
 ;; evil-ghostel-test-shadow-cursor-tracks-delete-region.  The shadow-cursor
 ;; model is gone — the new operators read `ghostel--cursor-pos' directly
@@ -1851,54 +1513,12 @@ backspaces — leaving a stray `w' behind.)"
          (evil-ghostel-delete 6 11 'exclusive nil nil))
        (should (= 5 bs-count))))))
 
-(ert-deftest evil-ghostel-test-forward-word-stops-at-input-end ()
-  "`evil-ghostel-forward-word-begin' clamps point to the input row's end.
-Vanilla `evil-forward-word-begin' would scan into the blank renderer
-rows below the prompt; the wrapper clamps point to
-`evil-ghostel--cursor-row-end-point' so `w' from the last input word stays
-on the cursor row."
-  (evil-ghostel-test--with-evil-buffer
-   (setq-local ghostel--term t)
-   (let ((inhibit-read-only t))
-     (insert (propertize "% " 'ghostel-prompt t))
-     (insert "word word")
-     (insert "\n\n\n\n"))
-   (goto-char 8) ; start of last "word" in input
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             (ghostel--cursor-pos '(7 . 0))
-             (ghostel--cursor-char-pos 8))
-     (evil-normal-state)
-     (evil-ghostel-forward-word-begin 1)
-     ;; Clamped to row-end (past "word" on row 0), not point-of-next-line.
-     (should (= 1 (line-number-at-pos))))))
-
-(ert-deftest evil-ghostel-test-forward-word-falls-through-off-cursor-row ()
-  "Off the cursor row, the wrapper delegates to `evil-forward-word-begin'.
-Scrollback navigation must keep working — clamping only kicks in on
-the cursor's row where empty cells past end-of-input are not real
-content."
-  (evil-ghostel-test--with-evil-buffer
-   (setq-local ghostel--term t)
-   (let ((inhibit-read-only t))
-     (insert "hello world\n")
-     (insert (propertize "% " 'ghostel-prompt t))
-     (insert "cmd"))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ;; Cursor on row 1; we'll move point onto row 0 (scrollback).
-             (ghostel--cursor-pos '(5 . 1))
-             (ghostel--cursor-char-pos 18))
-     (evil-normal-state)
-     (goto-char (point-min)) ; point on row 0 (scrollback row)
-     (evil-ghostel-forward-word-begin 1)
-     ;; Vanilla forward-word-begin from "hello" lands on "world" (col 6).
-     (should (= 6 (current-column))))))
-
 (ert-deftest evil-ghostel-test-delete-word-on-last-word-clamps-overshoot ()
   "Regression: `dw' on the last input word clamps motion overshoot.
 With input `\"word word\"' and cursor mid-input, the motion `w'
 walks off the cursor row (no next word on this line) so END
 lands on a buffer row below the cursor.  The operator-level
-clamp trims END to `evil-ghostel--cursor-row-end-point' so backspaces
+clamp trims END to `evil-ghostel--input-end' so backspaces
 target only the typed characters, not the renderer-painted
 padding/blanks past end-of-input."
   (evil-ghostel-test--with-evil-buffer
@@ -2036,83 +1656,6 @@ sticks."
 ;; Test: forward-char / backward-char / end-of-line clamps
 ;; -----------------------------------------------------------------------
 
-(ert-deftest evil-ghostel-test-forward-char-clamps-at-row-end ()
-  "`evil-ghostel-forward-char' stops at `evil-ghostel--cursor-row-end-point'
-on the cursor row.  Trailing renderer cells (stale glyphs from prior
-input, RPROMPT padding) sit between cursor and physical EOL; vanilla
-`evil-forward-char' walks through them, the wrapper clamps it back."
-  (evil-ghostel-test--with-evil-buffer
-   (setq-local ghostel--term t)
-   (let ((inhibit-read-only t))
-     (insert (propertize "$ " 'ghostel-prompt t))
-     ;; "cmd" + 10 spaces of trailing renderer padding, then \n.
-     (insert "cmd          \n"))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ;; Live cursor at end of "cmd" (col 5, pos 6).
-             (ghostel--cursor-pos '(5 . 0))
-             (ghostel--cursor-char-pos 6))
-     (evil-normal-state)
-     (goto-char 3) ; start of "cmd"
-     ;; Try to walk 8 chars right — vanilla would land in trailing padding.
-     (evil-ghostel-forward-char 8)
-     ;; Clamped to end of "cmd" on the cursor row (pos 6).
-     (should (= 6 (point))))))
-
-(ert-deftest evil-ghostel-test-forward-char-falls-through-off-cursor-row ()
-  "Off the cursor row, `evil-ghostel-forward-char' delegates to vanilla.
-Scrollback navigation keeps working — clamping only kicks in on
-the cursor's row."
-  (evil-ghostel-test--with-evil-buffer
-   (setq-local ghostel--term t)
-   (let ((inhibit-read-only t))
-     (insert "hello world\n")
-     (insert (propertize "$ " 'ghostel-prompt t))
-     (insert "cmd"))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             ;; Cursor on row 1; we'll move point onto row 0 (scrollback).
-             (ghostel--cursor-pos '(5 . 1))
-             (ghostel--cursor-char-pos 18))
-     (evil-normal-state)
-     (goto-char (point-min)) ; row 0 (scrollback)
-     (evil-ghostel-forward-char 5)
-     ;; Vanilla forward-char advances 5 columns.
-     (should (= 5 (current-column))))))
-
-(ert-deftest evil-ghostel-test-backward-char-clamps-at-input-start ()
-  "`evil-ghostel-backward-char' stops at `ghostel-input-start-point' on
-the cursor row, so `h' can't walk into the prompt prefix."
-  (evil-ghostel-test--with-evil-buffer
-   (setq-local ghostel--term t)
-   (let ((inhibit-read-only t))
-     (insert (propertize "$ " 'ghostel-prompt t))
-     (insert "cmd"))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             (ghostel--cursor-pos '(5 . 0))
-             (ghostel--cursor-char-pos 6))
-     (evil-normal-state)
-     (goto-char 6) ; end of "cmd"
-     (evil-ghostel-backward-char 100)
-     ;; Clamped to input-start (just past "$ ").
-     (should (= 3 (point))))))
-
-(ert-deftest evil-ghostel-test-end-of-line-clamps-at-row-end ()
-  "`evil-ghostel-end-of-line' (`$') stops at the last input char, not
-on trailing renderer cells.  With `(insert \"cmd   \")' the buffer's
-physical end-of-line is at column 5 but only `cmd' is input."
-  (evil-ghostel-test--with-evil-buffer
-   (setq-local ghostel--term t)
-   (let ((inhibit-read-only t))
-     (insert (propertize "$ " 'ghostel-prompt t))
-     (insert "cmd   "))  ; trailing renderer padding
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
-             (ghostel--cursor-pos '(5 . 0))
-             (ghostel--cursor-char-pos 6))
-     (evil-normal-state)
-     (goto-char 3) ; start of "cmd"
-     (evil-ghostel-end-of-line 1)
-     ;; Clamped to end-of-input (after "cmd"), not after the trailing spaces.
-     (should (= 6 (point))))))
-
 (ert-deftest evil-ghostel-test-end-of-line-falls-through-off-cursor-row ()
   "Off the cursor row, `$' falls through to vanilla `evil-end-of-line'."
   (evil-ghostel-test--with-evil-buffer
@@ -2201,7 +1744,7 @@ prompt instead of the (post-cursor) end of buffer."
 
 (ert-deftest evil-ghostel-test-append-before-cursor-clamps-to-row-end ()
   "Regression: `a' before the cursor must clamp the `forward-char'
-landing position to `evil-ghostel--cursor-row-end-point'.  Without
+landing position to `evil-ghostel--input-end'.  Without
 the clamp `forward-char' can walk past end-of-input onto trailing
 renderer cells (RPROMPT, autosuggest, stale glyphs) and the visual
 cursor jumps to the right edge of the window."
@@ -2273,98 +1816,275 @@ except `z' (kept for `evil-emacs-state' escape hatch)."
 ;; Runner
 ;; -----------------------------------------------------------------------
 
-(defconst evil-ghostel-test--elisp-tests
-  '(evil-ghostel-test-mode-activation
-    evil-ghostel-test-mode-deactivation
-    evil-ghostel-test-advice-survives-disable-in-other-buffer
-    evil-ghostel-test-escape-stay
-    evil-ghostel-test-insert-drives-shell-cursor
-    evil-ghostel-test-append-drives-shell-cursor
-    evil-ghostel-test-append-at-cursor-does-not-advance
-    evil-ghostel-test-append-after-cursor-moved-mid-input-advances
-    evil-ghostel-test-insert-on-rprompt-clamps-to-row-end
-    evil-ghostel-test-append-before-cursor-uses-vanilla
-    evil-ghostel-test-insert-line-sends-arrows-to-input-start
-    evil-ghostel-test-append-line-sends-arrows-to-row-end
-    evil-ghostel-test-insert-line-pins-point-at-input-start
-    evil-ghostel-test-append-line-pins-point-at-row-end
-    evil-ghostel-test-change-eol-snaps-point-to-cursor
-    evil-ghostel-test-insert-state-entry-no-op-outside-ghostel
-    evil-ghostel-test-meaningful-length-strips-trailing
-    evil-ghostel-test-cursor-row-end-point-returns-eol
-    evil-ghostel-test-cursor-row-end-point-respects-input-property
-    evil-ghostel-test-cursor-row-end-point-clamps-at-right-prompt-gap
-    evil-ghostel-test-cursor-row-end-point-uses-first-input-region
-    evil-ghostel-test-cursor-row-end-point-tight-gap-keeps-input
-    evil-ghostel-test-end-of-line-clamps-past-right-prompt
-    evil-ghostel-test-point-in-input-p-true-between-prompt-and-eol
-    evil-ghostel-test-point-in-input-p-false-on-prompt-char
-    evil-ghostel-test-clamp-to-input-narrows-on-cursor-row
-    evil-ghostel-test-clamp-to-input-trims-end-past-cursor
-    evil-ghostel-test-clamp-to-input-passes-through-off-row
-    evil-ghostel-test-goto-input-position-sends-arrows-unit
-    evil-ghostel-test-goto-input-position-no-op-at-target
-    evil-ghostel-test-sync-render-forces-deferred-redraw
-    evil-ghostel-test-sync-render-no-op-when-nothing-deferred
-    evil-ghostel-test-sync-render-drain-loop-respects-cap
-    evil-ghostel-test-delete-input-region-sends-backspaces
-    evil-ghostel-test-replace-input-region-deletes-then-pastes
-    evil-ghostel-test-delete-sends-backspace-keys
-    evil-ghostel-test-delete-line-same-row-uses-backspaces
-    evil-ghostel-test-change-line-same-row-uses-backspaces
-    evil-ghostel-test-delete-line-multiline-syncs-cursor
-    evil-ghostel-test-delete-line-strips-render-padding
-    evil-ghostel-test-replace-counts-match-on-trailing-space
-    evil-ghostel-test-delete-char
-    evil-ghostel-test-change-deletes-and-inserts
-    evil-ghostel-test-replace-deletes-and-inserts
-    evil-ghostel-test-paste-after
-    evil-ghostel-test-undo-sends-ctrl-underscore
-    evil-ghostel-test-change-whole-line
-    evil-ghostel-test-delete-no-op-outside-ghostel
-    evil-ghostel-test-escape-init-from-defcustom
-    evil-ghostel-test-escape-mode-terminal-sends-pty
-    evil-ghostel-test-escape-terminal-runs-user-input-hook
-    evil-ghostel-test-escape-mode-evil-stays
-    evil-ghostel-test-escape-auto-altscreen-sends-pty
-    evil-ghostel-test-escape-auto-no-altscreen-stays
-    evil-ghostel-test-escape-toggle-cycle
-    evil-ghostel-test-escape-toggle-prefix-set
-    evil-ghostel-test-escape-toggle-prefix-invalid
-    evil-ghostel-test-escape-mode-buffer-local
-    evil-ghostel-test-escape-evil-fallback-when-lookup-nil
-    evil-ghostel-test-beginning-of-line-skips-prompt
-    evil-ghostel-test-beginning-of-line-falls-through-no-prompt
-    evil-ghostel-test-delete-word-with-trailing-space
-    evil-ghostel-test-delete-word-on-last-word-clamps-overshoot
-    evil-ghostel-test-forward-word-stops-at-input-end
-    evil-ghostel-test-forward-word-falls-through-off-cursor-row
-    evil-ghostel-test-change-partial-no-post-delete-sync
-    evil-ghostel-test-insert-entry-same-viewport-row-with-scrollback
-    evil-ghostel-test-forward-char-clamps-at-row-end
-    evil-ghostel-test-forward-char-falls-through-off-cursor-row
-    evil-ghostel-test-backward-char-clamps-at-input-start
-    evil-ghostel-test-end-of-line-clamps-at-row-end
-    evil-ghostel-test-end-of-line-falls-through-off-cursor-row
-    evil-ghostel-test-next-line-clamps-at-cursor-row
-    evil-ghostel-test-next-line-falls-through-outside-semi-char
-    evil-ghostel-test-goto-cursor-resets-to-cursor
-    evil-ghostel-test-goto-cursor-falls-through-outside-semi-char
-    evil-ghostel-test-append-before-cursor-clamps-to-row-end
-    evil-ghostel-test-delete-key-sends-pty
-    evil-ghostel-test-delete-key-bound-in-insert-state
-    evil-ghostel-test-prompt-nav-bound-in-normal
-    evil-ghostel-test-ctrl-passthrough-includes-vterm-set
-    evil-ghostel-test-ctrl-passthrough-sends-in-alt-screen)
-  "Tests that require only Elisp (no native module).")
+;; -----------------------------------------------------------------------
+;; Test: input-region boundary (vterm-style; input-end + clamp)
+;; -----------------------------------------------------------------------
 
-(defun evil-ghostel-test-run-elisp ()
-  "Run only pure Elisp tests (no native module required)."
-  (ert-run-tests-batch-and-exit
-   `(member ,@evil-ghostel-test--elisp-tests)))
+(ert-deftest evil-ghostel-test-input-end-returns-eol-no-property ()
+  "`evil-ghostel--input-end' strips trailing whitespace when no OSC 133.
+Without a `ghostel-input' property it falls back to end-of-line with
+renderer padding stripped."
+  (evil-ghostel-test--with-input-fixture "$ " "hello"
+    (should (= (point-max) (evil-ghostel--input-end)))))
+
+(ert-deftest evil-ghostel-test-input-end-empty-prompt-is-cursor ()
+  "On an empty prompt the input end is the cursor, not inside the prompt.
+The fallback strips trailing whitespace from EOL; on `\"$ \"' with no
+typed input that would strip the prompt's own trailing space and land
+the boundary at col 1 (left of the live cursor), breaking `A' / `$' /
+the operator clamp.  It must floor at the cursor."
+  (evil-ghostel-test--with-input-fixture "$ " ""
+    ;; Cursor sits just after the prompt (point-max here).
+    (should (= ghostel--cursor-char-pos (evil-ghostel--input-end)))
+    ;; And the operator clamp is not inverted there.
+    (let ((c (evil-ghostel--clamp ghostel--cursor-char-pos
+                                  ghostel--cursor-char-pos)))
+      (should (<= (car c) (cdr c))))))
+
+(ert-deftest evil-ghostel-test-input-end-via-input-property ()
+  "OSC 133;B `ghostel-input' cells decide the input end.
+Padding / hint cells past the input (no `ghostel-input') are ignored."
+  (let ((buf (generate-new-buffer " *eg-input-prop*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((inhibit-read-only t))
+            (insert (propertize "$ " 'ghostel-prompt t))
+            (insert (propertize "hello" 'ghostel-input t))
+            (insert "   hint"))
+          (setq ghostel--term 'fake ghostel--term-rows 1
+                ghostel--cursor-char-pos 8 ghostel--cursor-pos '(7 . 0))
+          (should (= 8 (evil-ghostel--input-end))))
+      (kill-buffer buf))))
+
+(ert-deftest evil-ghostel-test-input-end-uses-first-region ()
+  "Two `ghostel-input' regions (typed input + a right prompt that
+libghostty also tags input): the end of the FIRST region wins."
+  (let ((buf (generate-new-buffer " *eg-fish-rprompt*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((inhibit-read-only t))
+            (insert (propertize "$ " 'ghostel-prompt t))
+            (insert (propertize "foo bar" 'ghostel-input t))
+            (insert (make-string 20 ?\s))
+            (insert (propertize "main *" 'ghostel-input t)))
+          (setq ghostel--term 'fake ghostel--term-rows 1
+                ghostel--cursor-char-pos 10 ghostel--cursor-pos '(9 . 0))
+          (should (= 10 (evil-ghostel--input-end))))
+      (kill-buffer buf))))
+
+(ert-deftest evil-ghostel-test-input-end-excludes-autosuggestion ()
+  "A faint autosuggestion after the cursor is not counted as input.
+zsh / fish render POSTDISPLAY in a dimmer foreground; the typed input
+ends at the cursor, so `evil-ghostel--input-end' stops there."
+  (let ((buf (generate-new-buffer " *eg-autosuggest*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((inhibit-read-only t))
+            (insert (propertize "$ " 'ghostel-prompt t))
+            ;; Typed input: bright foreground.
+            (insert (propertize "echo" 'ghostel-input t
+                                'face '(:foreground "#ffffff")))
+            ;; Autosuggestion: same `ghostel-input', faint foreground.
+            (insert (propertize " world" 'ghostel-input t
+                                'face '(:foreground "#4d4d4d"))))
+          (setq ghostel--term 'fake ghostel--term-rows 1
+                ;; Cursor sits at the typed/suggestion boundary (after "echo").
+                ghostel--cursor-char-pos 7 ghostel--cursor-pos '(6 . 0))
+          ;; Input ends at the cursor (7), not at the end of " world" (13).
+          (should (= 7 (evil-ghostel--input-end))))
+      (kill-buffer buf))))
+
+(ert-deftest evil-ghostel-test-input-end-excludes-brighter-suggestion ()
+  "A suggestion is excluded even when it is BRIGHTER than the typed text.
+fish paints an invalid command red (`#ee0000', darker than its own grey
+`#4d4d4d' suggestion), so a luminance test misses the suggestion; the
+color-difference test still finds it because the trailing run is a
+uniform color distinct from the typed char."
+  (let ((buf (generate-new-buffer " *eg-autosuggest-bright*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((inhibit-read-only t))
+            (insert (propertize "$ " 'ghostel-prompt t))
+            ;; Typed "ec": red, DARKER than the grey suggestion.
+            (insert (propertize "ec" 'ghostel-input t 'face '(:foreground "#ee0000")))
+            ;; Suggestion: grey, BRIGHTER than the red typed text.
+            (insert (propertize "ho hello" 'ghostel-input t
+                                'face '(:foreground "#4d4d4d"))))
+          (setq ghostel--term 'fake ghostel--term-rows 1
+                ;; Cursor at the typed/suggestion boundary (after "ec").
+                ghostel--cursor-char-pos 5 ghostel--cursor-pos '(4 . 0))
+          ;; Input ends at the cursor (5), not at the end of the brighter
+          ;; suggestion (13).
+          (should (= 5 (evil-ghostel--input-end))))
+      (kill-buffer buf))))
+
+(ert-deftest evil-ghostel-test-input-end-keeps-input-when-cursor-at-start ()
+  "Trailing colored input is NOT mistaken for a suggestion at the line start.
+After deleting the first word the cursor sits at the input start over
+recolored real input (fish repaints it red).  With no typed text before
+the cursor there can be no suggestion, so the whole line stays editable —
+the luminance test used to compare the red input against the white prompt
+space and collapse the region."
+  (let ((buf (generate-new-buffer " *eg-no-suggest-at-start*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((inhibit-read-only t))
+            (insert (propertize "$ " 'ghostel-prompt t))
+            ;; Real input, recolored (red command, cyan arg); cursor at its start.
+            (insert (propertize "hello" 'ghostel-input t 'face '(:foreground "#ee0000")))
+            (insert (propertize " world" 'ghostel-input t
+                                'face '(:foreground "#00cdcd"))))
+          (setq ghostel--term 'fake ghostel--term-rows 1
+                ;; Cursor at the input start (3) — no typed text precedes it.
+                ghostel--cursor-char-pos 3 ghostel--cursor-pos '(2 . 0))
+          ;; Input runs to the real end (14), not collapsed to the cursor.
+          (should (= 14 (evil-ghostel--input-end))))
+      (kill-buffer buf))))
+
+(ert-deftest evil-ghostel-test-input-end-keeps-mid-input-colored-tail ()
+  "A saturated uniform tail under a mid-input cursor is NOT a suggestion.
+With the terminal cursor parked on the last word (e.g. a cyan argument),
+the run from the cursor to the line end is one color distinct from the
+char before it — but it is a *saturated* syntax color, not the greyed-out
+autosuggestion style, so the editable input must still run to the real
+end (else `D'/`C'/`$' under-act)."
+  (let ((buf (generate-new-buffer " *eg-mid-input-tail*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((inhibit-read-only t))
+            (insert (propertize "$ " 'ghostel-prompt t))
+            ;; Typed "echo " (white) then a cyan argument "bar".
+            (insert (propertize "echo " 'ghostel-input t 'face '(:foreground "#ffffff")))
+            (insert (propertize "bar" 'ghostel-input t 'face '(:foreground "#00cdcd"))))
+          (setq ghostel--term 'fake ghostel--term-rows 1
+                ;; Terminal cursor parked on "bar" (pos 8), mid-input.
+                ghostel--cursor-char-pos 8 ghostel--cursor-pos '(7 . 0))
+          ;; "bar" is bright/saturated, not greyed-out → input runs to 11,
+          ;; not collapsed to the cursor (8).
+          (should (= 11 (evil-ghostel--input-end))))
+      (kill-buffer buf))))
+
+(ert-deftest evil-ghostel-test-clamp-narrows-on-cursor-row ()
+  "`evil-ghostel--clamp' raises BEG to the prompt boundary."
+  (evil-ghostel-test--with-input-fixture "$ " "hello"
+    (let ((clamped (evil-ghostel--clamp 1 ghostel--cursor-char-pos)))
+      (should (= 3 (car clamped)))
+      (should (= ghostel--cursor-char-pos (cdr clamped))))))
+
+(ert-deftest evil-ghostel-test-clamp-trims-end-past-input ()
+  "`evil-ghostel--clamp' lowers END to the end of typed input."
+  (evil-ghostel-test--with-input-fixture "$ " "hello"
+    (let ((inhibit-read-only t))
+      (save-excursion (insert "   ")))  ; renderer padding past the cursor
+    (let ((clamped (evil-ghostel--clamp 3 (+ ghostel--cursor-char-pos 3))))
+      (should (= 3 (car clamped)))
+      (should (= ghostel--cursor-char-pos (cdr clamped))))))
+
+(ert-deftest evil-ghostel-test-clamp-leaves-beg-without-prompt ()
+  "Without a detectable prompt, BEG is left alone (no collapse).
+`ghostel-input-start-point' degenerates to the cursor when no prompt
+is found; `evil-ghostel--input-start' returns nil there so the clamp
+does not push BEG up to the cursor and collapse the range."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   (insert "word1 word2")
+   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+             (ghostel--cursor-pos '(11 . 0))
+             (ghostel--cursor-char-pos (point)))
+     (let ((clamped (evil-ghostel--clamp 1 7)))
+       (should (= 1 (car clamped)))
+       (should (= 7 (cdr clamped)))))))
+
+(ert-deftest evil-ghostel-test-end-of-line-stops-at-last-typed-char ()
+  "`$' lands on the last typed char, not on trailing renderer padding."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   (let ((inhibit-read-only t))
+     (insert (propertize "$ " 'ghostel-prompt t))
+     (insert "cmd   "))  ; trailing renderer padding
+   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+             (ghostel--cursor-pos '(5 . 0))
+             (ghostel--cursor-char-pos 6))
+     (evil-normal-state)
+     (goto-char 3)
+     (evil-ghostel-end-of-line 1)
+     ;; Last typed char is 'd' at pos 5 (col 4), before the padding.
+     (should (= 5 (point))))))
+
+(ert-deftest evil-ghostel-test-end-of-line-excludes-autosuggestion ()
+  "`$' stops at the last typed char even with a faint suggestion after it."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   (let ((inhibit-read-only t))
+     (insert (propertize "$ " 'ghostel-prompt t))
+     (insert (propertize "echo" 'ghostel-input t 'face '(:foreground "#ffffff")))
+     (insert (propertize " ls" 'ghostel-input t 'face '(:foreground "#4d4d4d"))))
+   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+             (ghostel--cursor-pos '(6 . 0))
+             (ghostel--cursor-char-pos 7))  ; after "echo"
+     (evil-normal-state)
+     (goto-char 3)
+     (evil-ghostel-end-of-line 1)
+     ;; Last typed char 'o' is pos 6 (col 5); the " ls" suggestion is skipped.
+     (should (= 6 (point))))))
+
+(ert-deftest evil-ghostel-test-first-non-blank-skips-prompt ()
+  "`^' jumps to the first input char on a prompt row, not column 0."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   (insert "$ command")
+   (put-text-property 1 3 'ghostel-prompt t)
+   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+     (evil-normal-state)
+     (goto-char (point-max))
+     (evil-ghostel-first-non-blank)
+     (should (= 2 (current-column))))))
+
+(ert-deftest evil-ghostel-test-replace-count-excludes-soft-wraps ()
+  "`r' deletes and re-pastes the same count, excluding soft-wrap newlines.
+A `ghostel-wrap' newline is a renderer line break, not a real input
+character, so it must not consume a backspace or a replacement char."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   ;; "AB" + soft-wrap newline + "C" -> 3 real input chars.
+   (let ((inhibit-read-only t))
+     (insert "AB")
+     (insert (propertize "\n" 'ghostel-wrap t))
+     (insert "C"))
+   ;; Terminal cursor at the end of input (after "C"), as right after
+   ;; typing; the input region spans the whole buffer.
+   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+             (ghostel--cursor-pos '(1 . 0))
+             (ghostel--cursor-char-pos (point-max))
+             ((symbol-function 'evil-ghostel-goto-input-position) #'ignore))
+     (evil-normal-state)
+     (let ((bs-count 0) (pasted nil))
+       (cl-letf (((symbol-function 'ghostel--send-encoded)
+                  (lambda (key _mods &rest _)
+                    (when (equal key "backspace") (cl-incf bs-count))))
+                 ((symbol-function 'ghostel--paste-text)
+                  (lambda (text) (setq pasted text))))
+         (evil-ghostel-replace (point-min) (point-max) 'inclusive ?X))
+       (should (= 3 bs-count))
+       (should (equal "XXX" pasted))))))
+
+(ert-deftest evil-ghostel-test-change-registered-for-cw-to-ce ()
+  "`evil-ghostel-change' is registered in `evil-change-commands' so
+`cw' / `cW' behave like `ce' / `cE' (stop at the word end)."
+  (should (memq 'evil-ghostel-change evil-change-commands)))
 
 (defun evil-ghostel-test-run ()
-  "Run all evil-ghostel tests."
+  "Run all evil-ghostel tests.
+Most tests mock the native module; the few that drive a real terminal
+guard themselves with `skip-unless', so this one regex runner serves both
+`make test-evil' (module built, all run) and CI's elisp-only `test-evil'
+job (native tests skipped)."
   (ert-run-tests-batch-and-exit "^evil-ghostel-test-"))
 
 ;;; evil-ghostel-test.el ends here

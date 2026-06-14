@@ -28,6 +28,10 @@
   (should (equal "\x01" (ghostel--raw-key-sequence "a" "ctrl")))      ; ctrl-a
   (should (equal "\x03" (ghostel--raw-key-sequence "c" "ctrl")))      ; ctrl-c
   (should (equal "\x1a" (ghostel--raw-key-sequence "z" "ctrl")))      ; ctrl-z
+  ;; Ctrl + C0 symbol chars (@ A-Z [ \ ] ^ _) fold to (char & #x1f)
+  (should (equal "\x1f" (ghostel--raw-key-sequence "_" "ctrl")))      ; ctrl-_ (undo)
+  (should (equal "\x1e" (ghostel--raw-key-sequence "^" "ctrl")))      ; ctrl-^
+  (should (equal "\x00" (ghostel--raw-key-sequence "@" "ctrl")))      ; ctrl-@ (NUL)
   ;; Function keys
   (should (equal "\eOP" (ghostel--raw-key-sequence "f1" "")))         ; f1
   (should (equal "\e[15~" (ghostel--raw-key-sequence "f5" "")))       ; f5
