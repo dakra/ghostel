@@ -16,7 +16,7 @@
   :tags '(native)
   (ghostel-test--with-terminal-buffer (_buf term 5 80 1000)
                                       (let ((inhibit-read-only t))
-                                        (ghostel--write-input term "\e]8;;https://example.com\e\\link text\e]8;;\e\\")
+                                        (ghostel--write-vt term "\e]8;;https://example.com\e\\link text\e]8;;\e\\")
                                         (ghostel--redraw term t)
                                         (goto-char (point-min))
                                         (let* ((end (search-forward "link text" nil t))
@@ -31,7 +31,7 @@
   :tags '(native)
   (ghostel-test--with-terminal-buffer (_buf term 5 80 1000)
                                       (let ((inhibit-read-only t))
-                                        (ghostel--write-input term "plain text")
+                                        (ghostel--write-vt term "plain text")
                                         (ghostel--redraw term t)
                                         (goto-char (point-min))
                                         (should (null (get-text-property (point) 'help-echo))))))
@@ -43,7 +43,7 @@ Distinct ids and implicit (no-id) links each get unique values, so elisp
   :tags '(native)
   (ghostel-test--with-terminal-buffer (_buf term 5 80 1000)
                                       (let ((inhibit-read-only t))
-                                        (ghostel--write-input
+                                        (ghostel--write-vt
                                          term
                                          (concat
                                           "\e]8;id=A;https://shared.example\e\\foo\e]8;;\e\\ "
@@ -79,7 +79,7 @@ row.  Navigation should land on the link only once, not on each chunk."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (_buf term 5 80 1000)
                                       (let ((inhibit-read-only t))
-                                        (ghostel--write-input
+                                        (ghostel--write-vt
                                          term
                                          (concat
                                           "\e]8;id=wrap;https://wrapped.example\e\\http://exa\e]8;;\e\\\r\n"
@@ -111,7 +111,7 @@ row.  Navigation should land on the link only once, not on each chunk."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (_buf term 5 80 1000)
                                       (let ((inhibit-read-only t))
-                                        (ghostel--write-input
+                                        (ghostel--write-vt
                                          term
                                          (concat "\e]8;;https://first.example\e\\first\e]8;;\e\\"
                                                  " and "
@@ -516,6 +516,7 @@ E.g. `compilation-mode' error loci in `ghostel-compile-view-mode'."
                 (ghostel--input-mode 'emacs)
                 (ghostel-enable-url-detection t)
                 (ghostel-enable-file-detection nil)
+                (ghostel-detect-password-prompts nil)
                 (scheduled-count 0)
                 timer-delay timer-repeat timer-fn timer-args)
             ;; FIXME: `ghostel--redraw' is stubbed because `ghostel--term'
@@ -572,6 +573,7 @@ E.g. `compilation-mode' error loci in `ghostel-compile-view-mode'."
                 (ghostel--input-mode 'emacs)
                 (ghostel-enable-url-detection t)
                 (ghostel-enable-file-detection nil)
+                (ghostel-detect-password-prompts nil)
                 (scheduled-count 0)
                 timer-repeat timer-fn timer-args)
             (cl-letf (((symbol-function 'run-with-timer)
@@ -678,7 +680,8 @@ E.g. `compilation-mode' error loci in `ghostel-compile-view-mode'."
             (setq ghostel-kill-buffer-on-exit nil
                   ghostel--plain-link-detection-timer
                   (run-with-timer 60 nil #'ignore))
-            (ghostel--sentinel proc "finished\n")
+            (cl-letf (((symbol-function 'ghostel--kill-native-process) #'ignore))
+              (ghostel--sentinel proc "finished\n"))
             (should-not ghostel--plain-link-detection-timer))
           (when (process-live-p proc)
             (delete-process proc)))
@@ -885,7 +888,7 @@ attached."
                  (ghostel-enable-url-detection t)
                  (ghostel-enable-file-detection nil))
             ;; Write a row with a URL while it's in the viewport.
-            (ghostel--write-input term "see https://example.com here\r\n")
+            (ghostel--write-vt term "see https://example.com here\r\n")
             ;; Run the supported redraw path; zero delay keeps the deferred
             ;; post-processing deterministic while still exercising it.
             (ghostel--redraw-now buf)
@@ -897,7 +900,7 @@ attached."
               (should (equal "https://example.com"
                              (get-text-property (- url-pos 19) 'help-echo))))
             ;; Now scroll the URL row off the active screen.
-            (dotimes (_ 6) (ghostel--write-input term "filler\r\n"))
+            (dotimes (_ 6) (ghostel--write-vt term "filler\r\n"))
             (ghostel--redraw-now buf)
             ;; The URL row now lives in the scrollback region of the buffer.
             (goto-char (point-min))

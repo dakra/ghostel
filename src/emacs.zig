@@ -54,13 +54,9 @@ pub const Env = struct {
         return .{ .raw = raw };
     }
 
-    // --- Symbol interning ---
-
     pub fn intern(self: Env, name: [*:0]const u8) Value {
         return self.raw.intern.?(self.raw, name);
     }
-
-    // --- Function calls ---
 
     pub fn funcall(self: Env, func: Value, args: []const Value) Value {
         return self.raw.funcall.?(self.raw, func, @intCast(args.len), @constCast(args.ptr));
@@ -82,8 +78,6 @@ pub const Env = struct {
         return self.funcall(@field(sym, func), &self.makeValues(args));
     }
 
-    // --- Accessing values ---
-
     pub fn set(self: Env, comptime symbol: []const u8, value: anytype) void {
         _ = self.f("set", .{ @field(sym, symbol), value });
     }
@@ -91,8 +85,6 @@ pub const Env = struct {
     pub fn symbolValue(self: Env, comptime symbol: []const u8) Value {
         return self.f("symbol-value", .{@field(sym, symbol)});
     }
-
-    // --- Type constructors ---
 
     pub fn list(self: Env, items: anytype) Value {
         return self.f("list", items);
@@ -169,8 +161,6 @@ pub const Env = struct {
         return @ptrCast(@alignCast(raw_ptr));
     }
 
-    // --- Type extraction ---
-
     pub fn cast(self: Env, T: type, val: Value) T {
         const ty = @typeInfo(T);
         return switch (ty) {
@@ -197,11 +187,11 @@ pub const Env = struct {
         return self.extractFloat(self.f("float", .{val}));
     }
 
-    pub fn extractString(self: Env, val: Value, buf: []u8) ![]const u8 {
+    pub fn extractString(self: Env, val: Value, buf: []u8) ![:0]const u8 {
         var len: isize = @intCast(buf.len);
         if (self.raw.copy_string_contents.?(self.raw, val, buf.ptr, &len)) {
             // len includes the null terminator
-            return buf[0..(@as(usize, @intCast(len)) - 1)];
+            return @ptrCast(buf[0..(@as(usize, @intCast(len)) - 1)]);
         }
         // Clear the non-local exit so callers (e.g. extractStringAlloc
         // fallback) can make further API calls.
@@ -209,7 +199,7 @@ pub const Env = struct {
         return error.ExtractStringFailed;
     }
 
-    pub fn extractStringAlloc(self: Env, alloc: Allocator, val: Value, buf: *?[]u8) ![]u8 {
+    pub fn extractStringAlloc(self: Env, alloc: Allocator, val: Value, buf: *?[]u8) ![:0]u8 {
         // Probe the required size with a NULL buffer: Emacs sets `*len` and
         // returns true without signaling.  Passing an undersized non-NULL
         // buffer would instead signal `memory-buffer-too-small', and although
@@ -234,10 +224,8 @@ pub const Env = struct {
         }
 
         // len includes the null terminator
-        return buf.*.?[0 .. required - 1];
+        return @ptrCast(buf.*.?[0 .. required - 1]);
     }
-
-    // --- Type checking ---
 
     pub fn isNil(self: Env, val: Value) bool {
         return !self.isNotNil(val);
@@ -251,8 +239,6 @@ pub const Env = struct {
         return self.raw.eq.?(self.raw, a, b);
     }
 
-    // --- Global references ---
-
     pub fn makeGlobalRef(self: Env, val: Value) Value {
         return self.raw.make_global_ref.?(self.raw, val);
     }
@@ -260,8 +246,6 @@ pub const Env = struct {
     pub fn freeGlobalRef(self: Env, val: Value) void {
         self.raw.free_global_ref.?(self.raw, val);
     }
-
-    // --- Vectors ---
 
     pub fn vecGet(self: Env, vec: Value, i: c_long) Value {
         return self.raw.vec_get.?(self.raw, vec, i);
@@ -275,8 +259,6 @@ pub const Env = struct {
         return self.raw.vec_size.?(self.raw, vec);
     }
 
-    // --- Non-local exit handling ---
-
     pub fn nonLocalExitCheck(self: Env) FuncallExit {
         return @enumFromInt(self.raw.non_local_exit_check.?(self.raw));
     }
@@ -289,8 +271,6 @@ pub const Env = struct {
         self.raw.non_local_exit_signal.?(self.raw, symbol, data);
     }
 
-    // --- Function registration ---
-
     pub fn makeFunction(
         self: Env,
         min_arity: i32,
@@ -301,8 +281,6 @@ pub const Env = struct {
     ) Value {
         return self.raw.make_function.?(self.raw, min_arity, max_arity, func, docstring, data);
     }
-
-    // --- Convenience helpers ---
 
     pub fn nil(_: Env) Value {
         return sym.nil;
@@ -348,7 +326,9 @@ pub const Env = struct {
         return func(self.raw, str.ptr, @intCast(str.len));
     }
 
-    // --- Logging and debugging ---
+    pub fn openChannel(self: Env, pipe: Value) std.posix.fd_t {
+        return self.raw.open_channel.?(self.raw, pipe);
+    }
 
     /// Signal an error with a message string.
     pub fn signalError(self: Env, comptime msg: []const u8, objects: anytype) void {
@@ -435,6 +415,7 @@ const interned_symbols = [_][:0]const u8{
     "cons",
     "dash",
     "default",
+    "default-directory",
     "delete-region",
     "ding",
     "display",
@@ -461,7 +442,6 @@ const interned_symbols = [_][:0]const u8{
     "ghostel--cursor-char-pos",
     "ghostel--cursor-pos",
     "ghostel--debug-log-vt",
-    "ghostel--flush-output",
     "ghostel--handle-notification",
     "ghostel--kitty-clear",
     "ghostel--kitty-display-image",
@@ -470,6 +450,7 @@ const interned_symbols = [_][:0]const u8{
     "ghostel--osc133-marker",
     "ghostel--osc52-eval",
     "ghostel--osc52-handle",
+    "ghostel--process",
     "ghostel--query-font-cached",
     "ghostel--rendered-font",
     "ghostel--set-buffer-face",
@@ -505,11 +486,16 @@ const interned_symbols = [_][:0]const u8{
     "point",
     "point-max",
     "pos-bol",
+    "process-environment",
+    "process-live-p",
+    "process-send-string",
+    "process-tty-name",
     "provide",
     "put-text-property",
     "selected-window",
     "set",
     "set-marker",
+    "set-process-window-size",
     "set-window-point",
     "set-window-start",
     "space",

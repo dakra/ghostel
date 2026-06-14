@@ -1,39 +1,33 @@
 /// Terminal state management wrapping libghostty-vt.
 ///
-/// Holds the resources for a single instance of a Ghostel terminal
-///
+/// Holds the resources for one Ghostel terminal, including rendering state
+/// and, for native PTY sessions, the process reader.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const emacs = @import("emacs.zig");
 const gt = @import("ghostty-vt");
-const GhostelHandler = @import("GhostelHandler.zig");
+const GhostelHandler = @import("handler.zig").GhostelHandler;
 const Renderer = @import("Renderer.zig");
 const input = @import("input.zig");
 const kitty_graphics = @import("kitty_graphics.zig");
 const utils = @import("utils.zig");
 const parseHexColor = utils.parseHexColor;
+const PtyProcess = @import("PtyProcess.zig");
+const NativeProcess = @import("NativeProcess.zig");
+const pty_utils = @import("pty_utils.zig");
 
 const Self = @This();
 
-/// Allocator used for all owned allocations; injected at init time.
 alloc: Allocator,
-
-/// The libghostty Terminal.
 terminal: gt.Terminal,
-
-/// The libghostty Stream, wrapped in our `GhostelHandler` so we can
-/// intercept OSC actions (PWD, clipboard, notifications, color queries,
-/// semantic prompt) without re-parsing the bytes ourselves.
-stream: gt.Stream(GhostelHandler),
-
-/// Reusable and dynamically growing buffer for VT writes.
-buffer: ?[]u8 = null,
-
+stream: gt.Stream(GhostelHandler(*Self)),
+string_buffer: ?[]u8 = null,
 renderer: Renderer,
+process: ?*NativeProcess = null,
 
 /// Create a new terminal with the given dimensions and scrollback.
-pub fn init(alloc: Allocator, cols: u16, rows: u16, max_scrollback: usize, effects: gt.TerminalStream.Handler.Effects) !*Self {
+pub fn init(alloc: Allocator, cols: u16, rows: u16, max_scrollback: usize) !*Self {
     if (cols == 0 or rows == 0) return error.InvalidSize;
 
     const opts = gt.Terminal.Options{
@@ -57,9 +51,7 @@ pub fn init(alloc: Allocator, cols: u16, rows: u16, max_scrollback: usize, effec
     };
     errdefer term.terminal.deinit(alloc);
 
-    var handler = GhostelHandler.init(&term.terminal);
-    handler.inner.effects = effects;
-    term.stream = .initAlloc(alloc, handler);
+    term.stream = .initAlloc(alloc, .init(term, &term.terminal));
     errdefer term.stream.deinit();
 
     term.renderer = try .init(alloc, &term.terminal);
@@ -69,11 +61,39 @@ pub fn init(alloc: Allocator, cols: u16, rows: u16, max_scrollback: usize, effec
 
 /// Free all ghostty resources.
 pub fn deinit(self: *Self) void {
+    if (self.process) |process| {
+        process.deinit();
+        self.alloc.destroy(process);
+    }
+
     self.renderer.deinit(self.alloc);
     self.stream.deinit();
     self.terminal.deinit(self.alloc);
-    if (self.buffer) |buf| self.alloc.free(buf);
+    if (self.string_buffer) |buf| self.alloc.free(buf);
     self.alloc.destroy(self);
+}
+
+pub fn redraw(self: *Self, force_full: bool) !void {
+    self.lockTerm();
+    defer self.unlockTerm();
+
+    const env = emacs.current_env orelse return;
+    const pre_size = .{ self.terminal.cols, self.terminal.rows };
+    try self.renderer.redraw(self.alloc, env, force_full);
+    _ = env.f("ghostel--kitty-clear", .{});
+    try kitty_graphics.emitPlacements(env, self);
+    const post_size = .{ self.terminal.cols, self.terminal.rows };
+
+    if (self.isProcessLive() and !std.meta.eql(pre_size, post_size)) {
+        if (self.process) |proc| {
+            try proc.process.pty.resize(post_size[0], post_size[1]);
+        } else {
+            _ = env.f(
+                "set-process-window-size",
+                .{ env.symbolValue("ghostel--process"), post_size[1], post_size[0] },
+            );
+        }
+    }
 }
 
 /// Set default foreground color.
@@ -126,16 +146,176 @@ pub fn enableKittyGraphics(
     }
 }
 
-/// Feed VT data from the PTY into the terminal.
 pub fn vtWrite(self: *Self, data: []const u8) void {
+    self.lockTerm();
     self.stream.nextSlice(data);
+    self.unlockTerm();
+}
+
+pub fn ptyWrite(self: *Self, data: []const u8) !void {
+    if (!self.isProcessLive()) return;
+
+    if (self.process) |proc| {
+        try proc.process.pty.write(data);
+    } else if (emacs.current_env) |env| {
+        _ = env.f(
+            "process-send-string",
+            .{ env.symbolValue("ghostel--process"), data },
+        );
+    }
+}
+
+pub fn funcall(_: *Self, comptime func: []const u8, args: anytype) void {
+    if (emacs.current_env) |env| {
+        _ = env.f(func, args);
+    }
+}
+
+pub fn encode(
+    self: *Self,
+    key: gt.input.Key,
+    mods: gt.input.KeyMods,
+    utf8: ?[]const u8,
+) !bool {
+    const options = gt.input.KeyEncodeOptions.fromTerminal(&self.terminal);
+    var event = gt.input.KeyEvent{ .action = .press, .key = key, .mods = mods };
+    if (utf8) |text| {
+        event.utf8 = text;
+    }
+
+    // Encode
+    var buf: [128]u8 = undefined;
+    var writer = std.io.Writer.fixed(&buf);
+    try gt.input.encodeKey(&writer, event, options);
+    const encoded = writer.buffered();
+
+    if (encoded.len == 0) return false;
+    try self.ptyWrite(encoded);
+    return true;
+}
+
+pub fn encodeMouse(
+    self: *Self,
+    action: i64,
+    button: i64,
+    row: i64,
+    col: i64,
+    mods_val: i64,
+) !bool {
+    const options = gt.input.MouseEncodeOptions.fromTerminal(&self.terminal, .{
+        .screen = .{
+            .width = self.terminal.cols,
+            .height = self.terminal.rows,
+        },
+        .cell = .{ .width = 1, .height = 1 },
+        .padding = .{ .top = 0, .bottom = 0, .right = 0, .left = 0 },
+    });
+
+    const event = gt.input.MouseEncodeEvent{
+        .action = @enumFromInt(action),
+        .button = @enumFromInt(button),
+        .mods = @bitCast(@as(i16, @truncate(mods_val))),
+        .pos = .{ .x = @floatFromInt(col), .y = @floatFromInt(row) },
+    };
+
+    // Encode
+    var buf: [128]u8 = undefined;
+    var writer = std.io.Writer.fixed(&buf);
+    try gt.input.encodeMouse(&writer, event, options);
+    const encoded = writer.buffered();
+
+    if (encoded.len == 0) return false;
+    try self.ptyWrite(encoded);
+    return true;
+}
+
+pub fn encodeFocus(self: *Self, gained: bool) !bool {
+    const event = if (gained) gt.input.FocusEvent.gained else gt.input.FocusEvent.lost;
+    var buf: [8]u8 = undefined;
+    var writer = std.io.Writer.fixed(&buf);
+    gt.input.encodeFocus(&writer, event) catch return false;
+    const encoded = writer.buffered();
+    if (encoded.len == 0) return false;
+    try self.ptyWrite(encoded);
+    return true;
 }
 
 /// Resize the terminal. The col/row size gets committed on next redraw in order
 /// to ensure that the we fully render the very latest state in case any rows
 /// get promoted to scrollback due to vertical shrinking of the viewport.
-pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) void {
+pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u16, cell_h: u16) !void {
+    self.lockTerm();
     self.renderer.resize(cols, rows, cell_w, cell_h);
+    self.unlockTerm();
+}
+
+pub fn lockTerm(self: *Self) void {
+    if (self.process) |process| process.lockTerm();
+}
+
+pub fn unlockTerm(self: *Self) void {
+    if (self.process) |handler| handler.unlockTerm();
+}
+
+pub fn spawnNativeProcess(
+    self: *Self,
+    command: [][:0]const u8,
+    env: *const std.process.EnvMap,
+    cwd: [:0]const u8,
+    event_pipe: std.posix.fd_t,
+) !void {
+    if (command.len == 0) return error.InvalidCommand;
+
+    var pty_process = try PtyProcess.init(
+        self.alloc,
+        self.terminal.cols,
+        self.terminal.rows,
+        .{ .file = command[0], .args = command, .env = env, .cwd = cwd },
+    );
+    errdefer pty_process.deinitAndWait();
+    const process = try self.alloc.create(NativeProcess);
+    errdefer self.alloc.destroy(process);
+    try process.init(self.alloc, pty_process, &self.terminal, event_pipe);
+    self.process = process;
+}
+
+pub fn killNativeProcess(self: *Self) void {
+    if (self.process) |process| {
+        process.deinit();
+        self.alloc.destroy(process);
+        self.process = null;
+    }
+}
+
+pub fn isProcessLive(self: *Self) bool {
+    if (self.process != null) {
+        return true;
+    } else if (emacs.current_env) |env| {
+        return env.isNotNil(env.f("process-live-p", .{env.symbolValue("ghostel--process")}));
+    }
+
+    return false;
+}
+
+pub fn isPasswordMode(self: *Self) !bool {
+    if (!self.isProcessLive()) return false;
+
+    if (self.process) |process| {
+        return pty_utils.isPasswordMode(process.replicaName());
+    } else if (emacs.current_env) |env| {
+        const tty_name_val = env.f(
+            "process-tty-name",
+            .{env.symbolValue("ghostel--process")},
+        );
+        const tty_name = try env.extractStringAlloc(
+            self.alloc,
+            tty_name_val,
+            &self.string_buffer,
+        );
+        return pty_utils.isPasswordMode(tty_name);
+    }
+
+    return false;
 }
 
 var module_alloc: Allocator = undefined;
@@ -152,66 +332,27 @@ fn terminalFinalize(ptr: ?*anyopaque) callconv(.c) void {
     }
 }
 
-/// Called when the terminal needs to write response data back to the PTY.
-fn writePtyCallback(_: *gt.TerminalStream.Handler, data: [:0]const u8) void {
-    const env = emacs.current_env orelse return;
-    if (data.len == 0) return;
-    _ = env.f("ghostel--flush-output", .{data});
-}
+fn getProcessEnvironment(alloc: Allocator, env: emacs.Env) !std.process.EnvMap {
+    var buf: ?[]u8 = null;
+    defer if (buf) |b| alloc.free(b);
 
-/// Called when the terminal receives BEL.
-fn bellCallback(_: *gt.TerminalStream.Handler) void {
-    const env = emacs.current_env orelse return;
-    _ = env.f("ding", .{});
-}
+    var env_map = std.process.EnvMap.init(alloc);
+    errdefer env_map.deinit();
 
-// TODO: DeviceAttributes is not exported from ghostty-vt for some reason.
-//       We should file an issue.
-const DeviceAttributesFn = @typeInfo(
-    @typeInfo(
-        @FieldType(gt.TerminalStream.Handler.Effects, "device_attributes"),
-    ).optional.child,
-).pointer.child;
-const DeviceAttributes = @typeInfo(DeviceAttributesFn).@"fn".return_type.?;
-
-/// Called when the terminal receives a device attributes query (DA1/DA2/DA3).
-/// Reports as a VT220-compatible terminal with ANSI color support.
-fn deviceAttributesCallback(_: *gt.TerminalStream.Handler) DeviceAttributes {
-    return .{
-        .primary = .{
-            .conformance_level = .vt220,
-            .features = &.{.ansi_color},
-        },
-        .secondary = .{
-            .device_type = .vt220,
-            .firmware_version = 1,
-            .rom_cartridge = 0,
-        },
-        .tertiary = .{
-            .unit_id = 0,
-        },
-    };
-}
-
-/// Called for XTWINOPS size queries (CSI 14/16/18 t).
-fn sizeCallback(handler: *gt.TerminalStream.Handler) ?gt.size_report.Size {
-    const term: *Self = @fieldParentPtr("terminal", handler.terminal);
-    return .{
-        .rows = term.terminal.rows,
-        .columns = term.terminal.cols,
-        .cell_width = term.terminal.width_px / term.terminal.cols,
-        .cell_height = term.terminal.height_px / term.terminal.rows,
-    };
-}
-
-/// Called when the terminal title changes.
-fn titleChangedCallback(handler: *gt.TerminalStream.Handler) void {
-    const term: *Self = @fieldParentPtr("terminal", handler.terminal);
-    const env = emacs.current_env orelse return;
-    const title = term.terminal.getTitle();
-    if (title) |t| {
-        _ = env.f("ghostel--set-title", .{t});
+    var penv = env.symbolValue("process-environment");
+    while (!env.isNil(penv)) : (penv = env.f("cdr", .{penv})) {
+        const item = env.f("car", .{penv});
+        const str = try env.extractStringAlloc(alloc, item, &buf);
+        if (std.mem.indexOfScalar(u8, str, '=')) |pos| {
+            const key = str[0..pos];
+            const value = str[(pos + 1)..str.len];
+            if (env_map.get(key) == null) {
+                try env_map.put(key, value);
+            }
+        }
     }
+
+    return env_map;
 }
 
 // ---------------------------------------------------------------------------
@@ -263,13 +404,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     (std.math.cast(u32, env.cast(i64, args[4])) orelse 0)
                 else
                     0;
-                var effects: gt.TerminalStream.Handler.Effects = .readonly;
-                effects.write_pty = &writePtyCallback;
-                effects.bell = &bellCallback;
-                effects.device_attributes = &deviceAttributesCallback;
-                effects.title_changed = &titleChangedCallback;
-                effects.size = &sizeCallback;
-                const term = try init(module_alloc, cols, rows, max_scrollback, effects);
+                const term = try init(module_alloc, cols, rows, max_scrollback);
                 errdefer term.deinit();
                 // Set default colors (light gray on black)
                 term.setColorForeground(.{ .r = 204, .g = 204, .b = 204 });
@@ -288,19 +423,40 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         },
     },
     .{
-        .name = "ghostel--write-input",
+        .name = "ghostel--write-vt",
         .arity = .{ 2, 2 },
         .doc =
         \\Write raw bytes to the terminal.
         \\
-        \\(ghostel--write-input TERM DATA)
+        \\(ghostel--write-vt TERM DATA)
         ,
         .impl = struct {
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
-                const raw = try env.extractStringAlloc(module_alloc, args[1], &term.buffer);
+                const raw = try env.extractStringAlloc(module_alloc, args[1], &term.string_buffer);
                 term.vtWrite(raw);
                 return env.nil();
+            }
+        },
+    },
+    .{
+        .name = "ghostel--write-pty",
+        .arity = .{ 2, 2 },
+        .doc =
+        \\Write raw bytes to TERM's PTY.
+        \\
+        \\DATA is sent to the native PTY process when TERM owns one, or to
+        \\the buffer-local Emacs process for Emacs-managed PTY sessions.
+        \\
+        \\(ghostel--write-pty TERM DATA)
+        ,
+        .impl = struct {
+            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
+                if (env.isNil(args[0])) return env.nil();
+                const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
+                const raw = try env.extractStringAlloc(module_alloc, args[1], &term.string_buffer);
+                try term.ptyWrite(raw);
+                return env.t();
             }
         },
     },
@@ -325,17 +481,17 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 // pre-cast) value would propagate into the OPT_SIZE answer, and
                 // some apps treat zero cell sizes as "kitty graphics not
                 // supported" and fall back to half-block rendering.
-                const cell_w: u32 = if (nargs > 3 and env.isNotNil(args[3])) blk: {
+                const cell_w: u16 = if (nargs > 3 and env.isNotNil(args[3])) blk: {
                     const raw = env.cast(i64, args[3]);
                     if (raw < 1) break :blk 1;
-                    break :blk std.math.cast(u32, raw) orelse 1;
+                    break :blk std.math.cast(u16, raw) orelse 1;
                 } else 1;
-                const cell_h: u32 = if (nargs > 4 and env.isNotNil(args[4])) blk: {
+                const cell_h: u16 = if (nargs > 4 and env.isNotNil(args[4])) blk: {
                     const raw = env.cast(i64, args[4]);
                     if (raw < 1) break :blk 1;
-                    break :blk std.math.cast(u32, raw) orelse 1;
+                    break :blk std.math.cast(u16, raw) orelse 1;
                 } else 1;
-                term.resize(cols, rows, cell_w, cell_h);
+                try term.resize(cols, rows, cell_w, cell_h);
                 return env.nil();
             }
         },
@@ -351,6 +507,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .impl = struct {
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
+                term.lockTerm();
+                defer term.unlockTerm();
                 const title = term.terminal.getTitle();
                 return if (title) |t| env.makeString(t) else env.nil();
             }
@@ -367,6 +525,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .impl = struct {
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
+                term.lockTerm();
+                defer term.unlockTerm();
                 const pwd = term.terminal.getPwd();
                 return if (pwd) |p| env.makeString(p) else env.nil();
             }
@@ -384,9 +544,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
             pub fn call(env: emacs.Env, nargs: isize, args: [*c]emacs.Value) !emacs.Value {
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
                 const force_full = nargs > 1 and env.isNotNil(args[1]);
-                try term.renderer.redraw(term.alloc, env, force_full);
-                _ = env.f("ghostel--kitty-clear", .{});
-                try kitty_graphics.emitPlacements(env, term);
+                try term.redraw(force_full);
                 return env.nil();
             }
         },
@@ -401,6 +559,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         ,
         .impl = struct {
             pub fn call(env: emacs.Env, nargs: isize, args: [*c]emacs.Value) !emacs.Value {
+                if (env.isNil(args[0])) return env.nil();
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
                 var key_buf: [64]u8 = undefined;
                 const key_name = env.extractString(args[1], &key_buf) catch return env.nil();
@@ -413,7 +572,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     null;
                 const key = input.mapKey(key_name);
                 const mods = input.parseMods(mod_str);
-                const sent = try input.encodeAndSend(env, term, key, mods, utf8);
+                const sent = try term.encode(key, mods, utf8);
                 return if (sent) env.t() else env.nil();
             }
         },
@@ -428,13 +587,14 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         ,
         .impl = struct {
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
+                if (env.isNil(args[0])) return env.nil();
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
                 const action = env.cast(i64, args[1]);
                 const button = env.cast(i64, args[2]);
                 const row = env.cast(i64, args[3]);
                 const col = env.cast(i64, args[4]);
                 const mods = env.cast(i64, args[5]);
-                const sent = try input.encodeAndSendMouse(env, term, action, button, row, col, mods);
+                const sent = try term.encodeMouse(action, button, row, col, mods);
                 return if (sent) env.t() else env.nil();
             }
         },
@@ -449,19 +609,13 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         ,
         .impl = struct {
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
+                if (env.isNil(args[0])) return env.nil();
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
                 if (!term.terminal.modes.get(gt.modes.Mode.focus_event)) {
                     return env.nil();
                 }
                 const gained = env.isNotNil(args[1]);
-                const event = if (gained) gt.input.FocusEvent.gained else gt.input.FocusEvent.lost;
-                var buf: [8]u8 = undefined;
-                var writer = std.io.Writer.fixed(&buf);
-                gt.input.encodeFocus(&writer, event) catch return env.nil();
-                const encoded = writer.buffered();
-                if (encoded.len == 0) return env.nil();
-                _ = env.f("ghostel--flush-output", .{encoded});
-                return env.t();
+                return if (try term.encodeFocus(gained)) env.t() else env.nil();
             }
         },
     },
@@ -479,6 +633,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 var str_buf: [2048]u8 = undefined;
                 const colors_str = try env.extractString(args[1], &str_buf);
                 if (colors_str.len < 16 * 7) return error.InvalidPaletteLength;
+                term.lockTerm();
+                defer term.unlockTerm();
                 var palette = term.terminal.colors.palette.current;
                 var idx: usize = 0;
                 while (idx < 16) : (idx += 1) {
@@ -505,6 +661,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 var bg_buf: [16]u8 = undefined;
                 const fg_str = try env.extractString(args[1], &fg_buf);
                 const bg_str = try env.extractString(args[2], &bg_buf);
+                term.lockTerm();
+                defer term.unlockTerm();
                 term.setColorForeground(try parseHexColor(fg_str));
                 term.setColorBackground(try parseHexColor(bg_str));
                 return env.t();
@@ -556,6 +714,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 const mode = std.meta.intToEnum(gt.modes.Mode, mode_int) catch {
                     return error.InvalidModeValue;
                 };
+                term.lockTerm();
+                defer term.unlockTerm();
                 return if (term.terminal.modes.get(mode)) env.t() else env.nil();
             }
         },
@@ -571,6 +731,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .impl = struct {
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
+                term.lockTerm();
+                defer term.unlockTerm();
                 return if (term.terminal.screens.active_key == .alternate) env.t() else env.nil();
             }
         },
@@ -591,6 +753,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     .unwrap = true,
                     .trim = true,
                 };
+                term.lockTerm();
+                defer term.unlockTerm();
                 var formatter = gt.formatter.TerminalFormatter.init(&term.terminal, options);
                 var writer = std.io.Writer.Allocating.init(module_alloc);
                 defer writer.deinit();
@@ -598,6 +762,92 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 const written = writer.written();
                 if (written.len == 0) return env.nil();
                 return env.makeString(written);
+            }
+        },
+    },
+    .{
+        .name = "ghostel--spawn-native-process",
+        .arity = .{ 3, 3 },
+        .doc =
+        \\Spawn COMMAND for TERM using the native PTY reader.
+        \\
+        \\COMMAND is a list of argv strings.  PIPE is an Emacs pipe process;
+        \\the reader writes Lisp event forms to it when terminal state changes
+        \\or a terminal callback must run in Emacs.
+        \\
+        \\(ghostel--spawn-native-process TERM COMMAND PIPE)
+        ,
+        .impl = struct {
+            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
+                const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
+                var cmd_list = args[1];
+                const pipe_val = args[2];
+                var cmd: std.ArrayList([:0]const u8) = .empty;
+                defer {
+                    for (cmd.items) |item| module_alloc.free(item);
+                    cmd.deinit(module_alloc);
+                }
+                var buf: ?[]u8 = null;
+                defer if (buf) |b| module_alloc.free(b);
+                while (env.isNotNil(cmd_list)) : (cmd_list = env.f("cdr", .{cmd_list})) {
+                    const arg = env.f("car", .{cmd_list});
+                    try cmd.append(
+                        module_alloc,
+                        try module_alloc.dupeZ(u8, try env.extractStringAlloc(module_alloc, arg, &buf)),
+                    );
+                }
+                var process_env = try getProcessEnvironment(module_alloc, env);
+                defer process_env.deinit();
+                const cwd = try module_alloc.dupeZ(u8, try env.extractStringAlloc(
+                    module_alloc,
+                    env.symbolValue("default-directory"),
+                    &buf,
+                ));
+                defer module_alloc.free(cwd);
+                try term.spawnNativeProcess(
+                    cmd.items,
+                    &process_env,
+                    cwd,
+                    env.openChannel(pipe_val),
+                );
+                return env.nil();
+            }
+        },
+    },
+    .{
+        .name = "ghostel--kill-native-process",
+        .arity = .{ 1, 1 },
+        .doc =
+        \\Stop TERM's native PTY reader and reap its child process.
+        \\
+        \\No-op when TERM is not using the native PTY path.
+        \\
+        \\(ghostel--kill-native-process TERM)
+        ,
+        .impl = struct {
+            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
+                const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
+                term.killNativeProcess();
+                return env.nil();
+            }
+        },
+    },
+    .{
+        .name = "ghostel--pty-password-input-p",
+        .arity = .{ 1, 1 },
+        .doc =
+        \\Return t when TERM's foreground PTY appears to be reading a password.
+        \\
+        \\This checks the active PTY's terminal attributes and returns nil when
+        \\there is no live process or the PTY is not in canonical no-echo mode.
+        \\
+        \\(ghostel--pty-password-input-p TERM)
+        ,
+        .impl = struct {
+            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
+                if (env.isNil(args[0])) return env.nil();
+                const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
+                return if (try term.isPasswordMode()) env.t() else env.nil();
             }
         },
     },

@@ -135,7 +135,7 @@ SPECS is a plist with these keys:
                      [[0 1 ?⚠ 0 17 0 0 10 10 0]]))
                    (composition-gstring
                     (ghostel-test--mock-font-gstring composition-font)))
-              (ghostel--write-input term "⚠️")
+              (ghostel--write-vt term "⚠️")
               (ghostel-test--with-glyph-mocks
                (:default-font df
                               :composition-gstring composition-gstring)
@@ -170,7 +170,7 @@ left the ascent over the line."
                                 ["MockGlyph" "mock.ttf" 12 120 20 5 10 10 0]
                                 [[0 1 ?\u0100 0 10 0 0 20 5 0]])))
               ;; Write a character above the coverage threshold.
-              (ghostel--write-input term "\u0100")
+              (ghostel--write-vt term "\u0100")
               (ghostel-test--with-glyph-mocks
                (:default-font df
                               :glyph-font glyph-font)
@@ -206,7 +206,7 @@ leave the descent below the line."
                    (glyph-font (ghostel-test--make-font
                                 ["MockGlyph" "mock.ttf" 12 120 5 20 10 10 0]
                                 [[0 1 ?\u0100 0 10 0 0 5 20 0]])))
-              (ghostel--write-input term "\u0100")
+              (ghostel--write-vt term "\u0100")
               (ghostel-test--with-glyph-mocks
                (:default-font df
                               :glyph-font glyph-font)
@@ -239,7 +239,7 @@ leave the descent below the line."
                                 ["MockGlyph" "mock.ttf" 12 120 10 10 18 18 0]
                                 [[0 1 ?あ 0 18 0 0 10 10 0]])))
               ;; Write a CJK character (double-width).
-              (ghostel--write-input term "あ")
+              (ghostel--write-vt term "あ")
               (ghostel-test--with-glyph-mocks
                (:default-font df
                               :glyph-font glyph-font)
@@ -268,7 +268,7 @@ leave the descent below the line."
                    (glyph-font (ghostel-test--make-font
                                 ["MockGlyph" "mock.ttf" 12 120 10 10 10 10 0]
                                 [[0 1 ?\u0100 0 10 0 0 10 10 0]])))
-              (ghostel--write-input term "\u0100")
+              (ghostel--write-vt term "\u0100")
               (ghostel-test--with-glyph-mocks
                (:default-font df
                               :glyph-font glyph-font)
@@ -296,7 +296,7 @@ leave the descent below the line."
                                 ["MockGlyph" "mock.ttf" 12 120 10 10 12 12 0]
                                 [[0 1 ?\u0100 0 12 0 0 10 10 0]])))
               ;; Write: [wide-glyph][space]
-              (ghostel--write-input term "\u0100 ")
+              (ghostel--write-vt term "\u0100 ")
               (ghostel-test--with-glyph-mocks
                (:default-font df
                               :glyph-font glyph-font)
@@ -326,7 +326,7 @@ leave the descent below the line."
                    (glyph-font (ghostel-test--make-font
                                 ["MockGlyph" "mock.ttf" 12 120 5 5 25 25 0]
                                 [[0 1 ?\u0100 0 25 0 0 5 5 0]])))
-              (ghostel--write-input term "\u0100")
+              (ghostel--write-vt term "\u0100")
               (ghostel-test--with-glyph-mocks
                (:default-font df
                               :glyph-font glyph-font)
@@ -354,8 +354,8 @@ leave the descent below the line."
                    (glyph-font (ghostel-test--make-font
                                 ["MockGlyph" "mock.ttf" 12 120 5 5 15 15 0]
                                 [[0 1 ?\u0100 0 15 0 0 5 5 0]])))
-              (ghostel--write-input term "\e[1;10H")
-              (ghostel--write-input term "\u0100")
+              (ghostel--write-vt term "\e[1;10H")
+              (ghostel--write-vt term "\u0100")
               (ghostel-test--with-glyph-mocks
                (:default-font df
                               :glyph-font glyph-font)
@@ -390,7 +390,7 @@ Sets floor to 1.0 and feeds a glyph larger than the cell.  With floor
                    (glyph-font (ghostel-test--make-font
                                 ["MockGlyph" "mock.ttf" 12 120 12 13 12 12 0]
                                 [[0 1 ?\u0100 0 12 0 0 12 13 0]])))
-              (ghostel--write-input term "\u0100")
+              (ghostel--write-vt term "\u0100")
               (ghostel-test--with-glyph-mocks
                (:default-font df
                               :glyph-font glyph-font)
@@ -422,7 +422,7 @@ Sets floor to 1.0 and feeds a glyph larger than the cell.  With floor
                    (glyph-font (ghostel-test--make-font
                                 ["MockGlyph" "mock.ttf" 12 120 12 13 12 12 0]
                                 [[0 1 ?\u0100 0 12 0 0 12 13 0]])))
-              (ghostel--write-input term "\u0100")
+              (ghostel--write-vt term "\u0100")
               (ghostel-test--with-glyph-mocks
                (:default-font df
                               :glyph-font glyph-font)
@@ -466,7 +466,7 @@ Sets floor to 1.0 and feeds a glyph larger than the cell.  With floor
                    (bold-font (ghostel-test--make-font
                                ["BoldGlyph" "bold.ttf" 12 120 10 10 30 30 0]
                                [[0 1 ?\u0100 0 30 0 0 10 10 0]])))
-              (ghostel--write-input term "\u0100 \e[1m\u0100")
+              (ghostel--write-vt term "\u0100 \e[1m\u0100")
               (ghostel-test--with-glyph-mocks
                (:default-font df)
                (cl-letf (((symbol-function 'font-at)
@@ -504,7 +504,7 @@ Sets floor to 1.0 and feeds a glyph larger than the cell.  With floor
                    (ghostel--term-rows 5)
                    (inhibit-read-only t)
                    (df (ghostel-test--make-font ghostel-test--default-font-info)))
-              (ghostel--write-input term "a")
+              (ghostel--write-vt term "a")
               ;; Tripwire: if the code wrongly tried to adjust this glyph it
               ;; would call `font-at', and the deliberately-broken stub below
               ;; would fail the test.

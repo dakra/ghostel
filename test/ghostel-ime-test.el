@@ -191,7 +191,7 @@ drop the buffer-local `input-method-function' wrapper installed by
       (set-window-buffer (selected-window) buf)
       (setq ghostel--process 'fake-proc)
       ;; Establish a prompt so line mode can locate the input boundary.
-      (ghostel--write-input term "\e]133;A\e\\$ \e]133;B\e\\")
+      (ghostel--write-vt term "\e]133;A\e\\$ \e]133;B\e\\")
       (let ((inhibit-read-only t))
         (ghostel--redraw term t))
       (ghostel-ime-mode 1)

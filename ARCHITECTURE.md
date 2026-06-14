@@ -2,6 +2,16 @@
 
 This document is a work in progress. It is not a complete architecture guide yet, but contains the things we have found important to document.
 
+## PTY and process ownership
+
+Ghostel has two PTY paths behind the same Elisp input and rendering API.
+
+Local buffers use the native PTY path by default.  Zig opens the PTY, spawns the child process, reads output on a background thread, and feeds the bytes directly into libghostty-vt.  The reader writes Lisp event forms to an Emacs pipe process when terminal callbacks need to run in Emacs or when the buffer should be invalidated for redraw.  This means high-volume output can update terminal state without running in an Emacs process filter.
+
+Remote TRAMP buffers use Emacs process machinery.  TRAMP owns the remote spawn and delivers output to `ghostel--filter`, which feeds the same terminal model synchronously from Emacs.  This preserves TRAMP file-handler behavior while sharing the renderer and input code with the native path.
+
+Input is written immediately through `ghostel--write-pty`.  The native path writes to the native PTY master; the Emacs path delegates to the buffer-local process.
+
 ## Renderer and buffer positions
 
 ### Renderer-owned buffer position preservation

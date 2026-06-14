@@ -28,7 +28,7 @@ Requires the native module."
           (term (buffer-local-value 'ghostel--term buf)))
      (unwind-protect
          (with-current-buffer buf
-           (ghostel--write-input term ,text)
+           (ghostel--write-vt term ,text)
            (evil-local-mode 1)
            (evil-ghostel-mode 1)
            (let ((inhibit-read-only t))
@@ -227,10 +227,10 @@ prompt."
                                   ;; Stream output that overflows the 5-row viewport, growing
                                   ;; scrollback.  The prompt-following heuristic should keep
                                   ;; point on the live cursor row.
-                                  (ghostel--write-input term "\r\n")
+                                  (ghostel--write-vt term "\r\n")
                                   (dotimes (i 8)
-                                    (ghostel--write-input term (format "out-%d\r\n" i)))
-                                  (ghostel--write-input term "$ ")
+                                    (ghostel--write-vt term (format "out-%d\r\n" i)))
+                                  (ghostel--write-vt term "$ ")
                                   (let ((inhibit-read-only t))
                                     (ghostel--redraw term nil))
                                   ;; Point lands on the new cursor line, not above it.
@@ -249,7 +249,7 @@ Scrollback navigation must not be disturbed by output redraws."
                                   (beginning-of-line)
                                   (should-not (evil-ghostel--point-on-cursor-line-p))
                                   ;; Drive a redraw that doesn't grow scrollback (still fits).
-                                  (ghostel--write-input term "x")
+                                  (ghostel--write-vt term "x")
                                   (let ((inhibit-read-only t))
                                     (ghostel--redraw term nil))
                                   ;; Point still on the same content line, not snapped to cursor.
@@ -299,8 +299,8 @@ point in the scrollback region instead of the visible viewport."
    ;; final row ("last-11") is in the viewport; earlier rows live in
    ;; scrollback above.
    (dotimes (i 12)
-     (ghostel--write-input term (format "row-%02d\r\n" i)))
-   (ghostel--write-input term "last-11")
+     (ghostel--write-vt term (format "row-%02d\r\n" i)))
+   (ghostel--write-vt term "last-11")
    (let ((inhibit-read-only t))
      (ghostel--redraw term t))
    ;; Walk point back into the scrollback region.
@@ -349,7 +349,7 @@ point in the scrollback region instead of the visible viewport."
                                   ;; Terminal cursor at col 5
                                   ;; Move cursor left in terminal, then redraw so ghostel--cursor-pos
                                   ;; reflects the new position (col 2).
-                                  (ghostel--write-input term "\e[3D") ; cursor left 3 → col 2
+                                  (ghostel--write-vt term "\e[3D") ; cursor left 3 → col 2
                                   (let ((inhibit-read-only t)) (ghostel--redraw term t))
                                   (goto-char (point-min))
                                   (move-to-column 4) ; point at col 4
@@ -385,8 +385,8 @@ and the helper sends arrows that move the cursor off the input."
    ;; Push 7 rows into scrollback so the viewport shows
    ;; rows 8..12 plus the trailing cursor row.
    (dotimes (i 12)
-     (ghostel--write-input term (format "row-%02d\r\n" i)))
-   (ghostel--write-input term "tail")
+     (ghostel--write-vt term (format "row-%02d\r\n" i)))
+   (ghostel--write-vt term "tail")
    (let ((inhibit-read-only t))
      (ghostel--redraw term t))
    ;; Terminal cursor is on the last viewport row; move point to the

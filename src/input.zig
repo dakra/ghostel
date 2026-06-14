@@ -8,67 +8,9 @@ const gt = @import("ghostty-vt");
 const emacs = @import("emacs.zig");
 const GhostelTerm = @import("GhostelTerm.zig");
 
-const Key = gt.input.Key;
-const Mods = gt.input.KeyMods;
-
-/// Encode a key event and send the result to the PTY via Elisp callback.
-/// Returns true if bytes were sent, false if the key produces no output (not an error).
-pub fn encodeAndSend(env: emacs.Env, term: *GhostelTerm, key: Key, mods: Mods, utf8: ?[]const u8) !bool {
-    const options = gt.input.KeyEncodeOptions.fromTerminal(&term.terminal);
-    var event = gt.input.KeyEvent{ .action = .press, .key = key, .mods = mods };
-    if (utf8) |text| {
-        event.utf8 = text;
-    }
-
-    // Encode
-    var buf: [128]u8 = undefined;
-    var writer = std.io.Writer.fixed(&buf);
-    try gt.input.encodeKey(&writer, event, options);
-    const encoded = writer.buffered();
-
-    if (encoded.len == 0) return false;
-
-    // Send encoded bytes to the PTY via Elisp
-    _ = env.f("ghostel--flush-output", .{encoded});
-
-    return true;
-}
-
-/// Encode a mouse event and send the result to the PTY.
-/// Returns true if bytes were sent, false if the event produces no output (not an error).
-pub fn encodeAndSendMouse(env: emacs.Env, term: *GhostelTerm, action: i64, button: i64, row: i64, col: i64, mods_val: i64) !bool {
-    const options = gt.input.MouseEncodeOptions.fromTerminal(&term.terminal, .{
-        .screen = .{
-            .width = term.terminal.cols,
-            .height = term.terminal.rows,
-        },
-        .cell = .{ .width = 1, .height = 1 },
-        .padding = .{ .top = 0, .bottom = 0, .right = 0, .left = 0 },
-    });
-
-    const event = gt.input.MouseEncodeEvent{
-        .action = @enumFromInt(action),
-        .button = @enumFromInt(button),
-        .mods = @bitCast(@as(i16, @truncate(mods_val))),
-        .pos = .{ .x = @floatFromInt(col), .y = @floatFromInt(row) },
-    };
-
-    // Encode
-    var buf: [128]u8 = undefined;
-    var writer = std.io.Writer.fixed(&buf);
-    try gt.input.encodeMouse(&writer, event, options);
-    const encoded = writer.buffered();
-
-    if (encoded.len == 0) return false;
-
-    // Send to PTY
-    _ = env.f("ghostel--flush-output", .{encoded});
-    return true;
-}
-
 /// Map an Emacs key name to a GhosttyKey.
 /// Returns GHOSTTY_KEY_UNIDENTIFIED for unknown keys.
-pub fn mapKey(key_name: []const u8) Key {
+pub fn mapKey(key_name: []const u8) gt.input.Key {
     // Single character keys
     if (key_name.len == 1) {
         const ch = key_name[0];
@@ -127,8 +69,8 @@ pub fn mapKey(key_name: []const u8) Key {
 
 /// Parse Emacs modifier flags from a modifier string.
 /// The string format is comma-separated: "shift,ctrl,meta"
-pub fn parseMods(mod_str: []const u8) Mods {
-    var mods: Mods = .{};
+pub fn parseMods(mod_str: []const u8) gt.input.KeyMods {
+    var mods: gt.input.KeyMods = .{};
     var iter = std.mem.splitSequence(u8, mod_str, ",");
     while (iter.next()) |part| {
         const trimmed = std.mem.trim(u8, part, " ");
