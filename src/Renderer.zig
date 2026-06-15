@@ -643,8 +643,6 @@ fn adjustGlyph(
         }
     }
 
-    // We add a fudge factor of +1 to the denominator to ensure fit.
-    //
     // Height is clamped per side, not on the sum: the row realizes
     // max(ascent) + max(descent) across all glyphs sharing the baseline, so a
     // glyph grows the row if either its ascent exceeds the default ascent or
@@ -653,11 +651,11 @@ fn adjustGlyph(
     // glyph that is tall above the baseline but shallow below it.  Bounding
     // each side independently is the exact clamp.
     const scale_width = @as(f64, @floatFromInt(slot_width)) /
-        @as(f64, @floatFromInt(metrics.width + 1));
+        @as(f64, @floatFromInt(metrics.width));
     const scale_ascent = @as(f64, @floatFromInt(default_font_info.ascent)) /
-        @as(f64, @floatFromInt(metrics.ascent + 1));
+        @as(f64, @floatFromInt(metrics.ascent));
     const scale_descent = @as(f64, @floatFromInt(default_font_info.descent)) /
-        @as(f64, @floatFromInt(metrics.descent + 1));
+        @as(f64, @floatFromInt(metrics.descent));
     const computed_scale = @min(scale_width, @min(scale_ascent, scale_descent));
     const scale = @max(computed_scale, default_font_info.glyph_scale_floor);
 

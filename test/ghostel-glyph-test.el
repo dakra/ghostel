@@ -151,9 +151,9 @@ SPECS is a plist with these keys:
 The default font is 10 ascent / 10 descent.  This glyph's ascent (20)
 exceeds the default ascent while its descent (5) fits, so the row would
 grow above the baseline.  The scale must bound the ascent side
-\(10/(20+1) ~ 0.476\), which is stricter than the sum ratio
-\(20/(25+1) ~ 0.769\) the old height-based code used and which would have
-left the ascent over the line."
+\(10/20 = 0.5\), which is stricter than the sum ratio
+\(20/25 = 0.8\) the old height-based code used and which would have left
+the ascent over the line."
   :tags '(native)
   (let ((buf (generate-new-buffer " *ghostel-test-glyph-ascent*")))
     (unwind-protect
@@ -181,16 +181,16 @@ left the ascent over the line."
                  (let ((scale (cadr (assq 'height disp))))
                    (should scale)
                    ;; Bound by the ascent side, not the looser sum ratio.
-                   (should (< (abs (- scale (/ 10.0 (1+ 20)))) 1e-6))
-                   (should (< scale (/ 20.0 (1+ 25))))))))))
+                   (should (< (abs (- scale (/ 10.0 20))) 1e-6))
+                   (should (< scale (/ 20.0 25)))))))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-glyph-adjust-clamps-on-descent ()
   "An oversized glyph is clamped by its descent when only the descent overflows.
 Mirror of the ascent case: this glyph's descent (20) exceeds the default
 descent (10) while its ascent (5) fits.  The scale must bound the descent
-side \(10/(20+1) ~ 0.476\); the sum ratio \(20/(25+1) ~ 0.769\) would
-leave the descent below the line."
+side \(10/20 = 0.5\); the sum ratio \(20/25 = 0.8\) would leave the
+descent below the line."
   :tags '(native)
   (let ((buf (generate-new-buffer " *ghostel-test-glyph-descent*")))
     (unwind-protect
@@ -217,8 +217,8 @@ leave the descent below the line."
                  (let ((scale (cadr (assq 'height disp))))
                    (should scale)
                    ;; Bound by the descent side, not the looser sum ratio.
-                   (should (< (abs (- scale (/ 10.0 (1+ 20)))) 1e-6))
-                   (should (< scale (/ 20.0 (1+ 25))))))))))
+                   (should (< (abs (- scale (/ 10.0 20))) 1e-6))
+                   (should (< scale (/ 20.0 25)))))))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-glyph-adjust-double-width-small ()
@@ -372,7 +372,7 @@ leave the descent below the line."
 (ert-deftest ghostel-test-glyph-scale-floor-clamps-scale ()
   "A non-zero `ghostel-glyph-scale-floor' prevents shrinking below the floor.
 Sets floor to 1.0 and feeds a glyph larger than the cell.  With floor
-0.0 the glyph would be scaled to ~0.71; with floor 1.0 it stays at 1.0."
+0.0 the glyph would be scaled to ~0.77; with floor 1.0 it stays at 1.0."
   :tags '(native)
   (let ((buf (generate-new-buffer " *ghostel-test-glyph-floor*")))
     (unwind-protect
@@ -386,7 +386,7 @@ Sets floor to 1.0 and feeds a glyph larger than the cell.  With floor
                    (inhibit-read-only t)
                    (df (ghostel-test--make-font ghostel-test--default-font-info))
                    ;; Glyph: 12px wide x 25px tall (larger than 10x20 cell);
-                   ;; without floor this would scale to ~0.71.
+                   ;; without floor this would scale to ~0.77.
                    (glyph-font (ghostel-test--make-font
                                 ["MockGlyph" "mock.ttf" 12 120 12 13 12 12 0]
                                 [[0 1 ?\u0100 0 12 0 0 12 13 0]])))
