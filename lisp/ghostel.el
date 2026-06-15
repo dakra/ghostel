@@ -793,10 +793,6 @@ Mouse selection is governed separately by `ghostel-mouse-drag-input-mode'."
                  (const :tag "Emacs mode"          emacs)
                  (const :tag "Do not switch"       nil)))
 
-(defvar ghostel--inhibit-mark-activation nil
-  "When non-nil, `ghostel--mark-activated' is a no-op.
-Bound by the mouse handlers, which pick the input mode themselves.")
-
 (defcustom ghostel-word-boundary-string " \t\"'`|:;,()[]{}<>$│"
   "Characters that terminate words in ghostel buffers.
 
@@ -2670,9 +2666,9 @@ in an already-focused frame, before focusing it, for
     (if (ghostel--mouse-tracking-active-p)
         (ghostel--mouse-press event)
       ;; `mouse-drag-region' activates the mark mid-drag; the release
-      ;; handler picks the input mode, so keep the hook out of it.
-      (let ((ghostel--inhibit-mark-activation t))
-        (mouse-drag-region event)))))
+      ;; handler picks the input mode.  `ghostel--mark-activated' ignores
+      ;; activations made under the mouse handlers, so the hook stays out of it.
+      (mouse-drag-region event))))
 
 (defun ghostel-mouse-release-or-set-point (event &optional promote-to-region)
   "Forward EVENT to the terminal, or set point / switch input mode.
@@ -2698,8 +2694,7 @@ in semi-char (skipped when `ghostel-mouse-drag-input-mode' is nil)."
      ;; Multi-click, or a single click in an already-selected window: set
      ;; point/selection, then freeze (a focus click never reaches here).
      (t
-      (let ((ghostel--inhibit-mark-activation t))
-        (mouse-set-point event promote-to-region))
+      (mouse-set-point event promote-to-region)
       (when active
         (pcase ghostel-mouse-drag-input-mode
           ('copy  (ghostel-copy-mode))
@@ -2726,8 +2721,7 @@ so a focus click stays in semi-char like a plain click."
         (posn-point (event-end event)))
     (ghostel-mouse-release-or-set-point event))
    (t
-    (let ((ghostel--inhibit-mark-activation t))
-      (mouse-set-region event))
+    (mouse-set-region event)
     (when (eq ghostel--input-mode 'semi-char)
       (pcase ghostel-mouse-drag-input-mode
         ('copy  (ghostel-copy-mode))
@@ -3109,7 +3103,13 @@ returns to whichever input mode was active before."
 On buffer-local `activate-mark-hook'; the keyboard analog of
 `ghostel-mouse-drag-or-set-region'.  Runs after the activating
 command set the region, so the selection survives the switch."
-  (when (and (not ghostel--inhibit-mark-activation)
+  ;; Mouse gestures pick the input mode in the mouse handlers themselves; the
+  ;; command loop can finalize their (often empty) mark activation after the
+  ;; handler has returned, so gate on the originating command rather than a
+  ;; dynamic binding the activation outlives.
+  (when (and (not (memq this-command '(ghostel-mouse-press-or-copy-mode
+                                       ghostel-mouse-release-or-set-point
+                                       ghostel-mouse-drag-or-set-region)))
              (eq ghostel--input-mode 'semi-char))
     (pcase ghostel-mark-activation-input-mode
       ('copy  (ghostel-copy-mode))

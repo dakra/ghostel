@@ -20,19 +20,25 @@ All notable changes to this project will be documented in this file.
 - Char mode now captures GUI `C-SPC` and forwards it to the terminal as NUL;
   previously only the TTY `C-@` representation was bound, so a GUI
   Ctrl+Space in char mode fell through to the global `set-mark-command`.
-- A single left-click that gives an Emacs frame input focus — clicking back
-  into Emacs from another application, or into another Emacs frame — no longer
-  enters copy mode; it is treated as a pure focus click like a click in a
-  previously-unselected window (#403).  The refocus click is now detected from
-  the focus-in event itself rather than a tracked focus transition, so it keeps
-  working when the window system's focus state is stale — notably on macOS (NS),
-  where a dropped focus-out can leave `frame-focus-state' stuck reporting focus
-  and previously made every refocus click enter copy mode after a while.
-- A focus click into an inactive Ghostel window no longer enters copy mode when
-  a tiny involuntary pointer movement makes Emacs report it as `drag-mouse-1`
-  instead of `mouse-1`.  Such a micro-drag selects nothing, so it now stays in
-  semi-char and snaps point to the live cursor, like the single-click focus path
-  (#403).
+- A left-click that only focuses a Ghostel window — bringing the frame to the
+  foreground from another application or Emacs frame, or selecting an unfocused
+  window in the current frame — is now treated as a pure focus click and never
+  enters copy mode (#403).  It snaps point to the live cursor and stays in
+  semi-char.  This closes every path that previously froze such a click:
+  - The refocus click is detected from the focus-in event itself rather than a
+    tracked focus transition, so it keeps working when the window system's focus
+    state is stale — notably on macOS (NS), where a dropped focus-out can leave
+    `frame-focus-state' stuck reporting focus and previously made every refocus
+    click enter copy mode after a while.
+  - A tiny involuntary pointer movement that makes Emacs report the click as
+    `drag-mouse-1' instead of `mouse-1' selects nothing, so the micro-drag is
+    handled like a plain single click rather than a region drag.
+  - Selecting a previously-unselected window leaves an empty region active, whose
+    activation the command loop finalized after the press handler returned;
+    `ghostel--mark-activated' now ignores mark activations that originate from the
+    mouse handlers (gating on `this-command'), so that deferred activation no
+    longer freezes the buffer.  Mouse selection stays governed by
+    `ghostel-mouse-drag-input-mode' alone.
 
 ## [0.34.0] — 2026-06-08
 

@@ -871,11 +871,40 @@ Exiting returns to whatever mode the user was in beforehand, mirroring
                       ((symbol-function 'mouse-set-region)
                        (lambda (_event) (push-mark (point) t t))))
               ;; A real drag selecting a region (distinct start/end points).
-              (ghostel-mouse-drag-or-set-region
-               `(drag-mouse-1 (,(selected-window) 1 (1 . 1) 0)
-                              (,(selected-window) 5 (5 . 1) 0)))
+              ;; `this-command' is what the command loop binds when dispatching
+              ;; the drag; `ghostel--mark-activated' reads it to stay out of
+              ;; mouse gestures, so the test must set it like a real dispatch.
+              (let ((this-command 'ghostel-mouse-drag-or-set-region))
+                (ghostel-mouse-drag-or-set-region
+                 `(drag-mouse-1 (,(selected-window) 1 (1 . 1) 0)
+                                (,(selected-window) 5 (5 . 1) 0))))
               ;; The mouse knob picked the mode — the hook stayed out.
               (should (eq ghostel--input-mode 'emacs)))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-mark-activation-ignores-focus-click ()
+  "A focus click on an unselected window must not freeze into copy mode.
+Selecting a previously-unselected window via `mouse-drag-region' leaves an
+empty region active; the command loop finalizes that activation after the
+press handler returns, with `this-command' still the press command.
+`ghostel--mark-activated' must ignore it so the focus click stays in
+semi-char."
+  (let ((buf (generate-new-buffer " *ghostel-test-mark-focus-click*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake)
+                (ghostel--redraw-timer nil)
+                (ghostel-mark-activation-input-mode 'copy)
+                ;; The deferred activation runs with `this-command' bound to
+                ;; the press command that triggered the click gesture.
+                (this-command 'ghostel-mouse-press-or-copy-mode))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--anchor-window) #'ignore))
+              (insert "some terminal output")
+              ;; An empty region (point == mark), like a window-selecting click.
+              (push-mark (point) t t)
+              (should (eq ghostel--input-mode 'semi-char)))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-ctrl-space-keybindings ()
