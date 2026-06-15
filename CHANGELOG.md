@@ -23,7 +23,11 @@ All notable changes to this project will be documented in this file.
 - A single left-click that gives an Emacs frame input focus — clicking back
   into Emacs from another application, or into another Emacs frame — no longer
   enters copy mode; it is treated as a pure focus click like a click in a
-  previously-unselected window (#403).
+  previously-unselected window (#403).  The refocus click is now detected from
+  the focus-in event itself rather than a tracked focus transition, so it keeps
+  working when the window system's focus state is stale — notably on macOS (NS),
+  where a dropped focus-out can leave `frame-focus-state' stuck reporting focus
+  and previously made every refocus click enter copy mode after a while.
 
 ## [0.34.0] — 2026-06-08
 

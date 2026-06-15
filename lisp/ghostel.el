@@ -2659,7 +2659,7 @@ in an already-focused frame, before focusing it, for
   (let* ((win (posn-window (event-start event)))
          (frame (window-frame win))
          ;; First press since the frame gained focus, or press dispatched
-         ;; before the focus-in (nil, not `unknown'): a focus click (#403).
+         ;; before the focus-in (nil, not `unknown'): a focus click.
          (refocused (or (frame-parameter frame 'ghostel--frame-refocused)
                         (null (frame-focus-state frame)))))
     (set-frame-parameter frame 'ghostel--frame-refocused nil)
@@ -5330,17 +5330,21 @@ and the buffer is the active selection within it)."
                      (eq win (frame-selected-window frame)))))
             (get-buffer-window-list buf nil t)))
 
+(defun ghostel--frame-focus-flags (&rest _)
+  "Flag each focused frame so its next left-press is a focus click.
+For `ghostel-mouse-press-or-copy-mode'; called after a frame focus change."
+  ;; The refocusing click delivers a focus-in just before the press, so flag
+  ;; whichever frame reports focus at the event.  Read it fresh each time, not
+  ;; diffed against a stored value that a dropped focus-out can leave stale.
+  (dolist (frame (frame-list))
+    (set-frame-parameter frame 'ghostel--frame-refocused
+                         (eq (frame-focus-state frame) t))))
+
 (defun ghostel--focus-change (&rest _)
-  "Update focus state for every live ghostel buffer.
+  "Send terminal focus events for every live ghostel buffer.
 Called from `after-focus-change-function', `window-selection-change-functions',
 `window-buffer-change-functions'.  Sends a focus event only when the buffer's
-logical focus state transitions.  Further gates on terminal mode 1004.
-Also flags just-refocused frames for `ghostel-mouse-press-or-copy-mode'."
-  (dolist (frame (frame-list))
-    (let ((focused (eq (frame-focus-state frame) t)))
-      (unless (eq focused (frame-parameter frame 'ghostel--frame-focused))
-        (set-frame-parameter frame 'ghostel--frame-focused focused)
-        (set-frame-parameter frame 'ghostel--frame-refocused focused))))
+logical focus state transitions.  Further gates on terminal mode 1004."
   (dolist (buf (buffer-list))
     (when (buffer-live-p buf)
       (with-current-buffer buf
@@ -6428,6 +6432,7 @@ a Ghostel window making it lose its anchoring."
   (shell-completion-vars)
   (setq ghostel--input-mode 'semi-char)
   (use-local-map ghostel-semi-char-mode-map)
+  (add-function :after after-focus-change-function #'ghostel--frame-focus-flags)
   (add-function :after after-focus-change-function #'ghostel--focus-change)
   (add-hook 'window-selection-change-functions #'ghostel--focus-change)
   (add-hook 'window-buffer-change-functions #'ghostel--focus-change)

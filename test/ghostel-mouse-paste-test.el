@@ -593,7 +593,7 @@ outcome via `copy-mode-called' (reset by each click) and point."
 
 (ert-deftest ghostel-test-mouse-1-click-refocused-frame-is-focus-click ()
   "First click after the frame regains focus only focuses; the second freezes.
-The window stays selected while the frame is in the background (#403)."
+The window stays selected while the frame is in the background."
   :tags '(native)
   (ghostel-test--with-click t
     (insert "hello world")
@@ -623,32 +623,54 @@ Treating `unknown' as unfocused would break click->copy-mode on ttys."
     (click)
     (should copy-mode-called)))
 
-(ert-deftest ghostel-test-focus-change-flags-refocused-frame ()
-  "`ghostel--focus-change' sets the refocus flag on focus gain, clears on loss."
+(ert-deftest ghostel-test-mouse-1-click-stale-focus-is-focus-click ()
+  "Refocus click is a focus click even when `frame-focus-state' reports stale t.
+On NS a frame can keep reporting focus after losing it; the refocusing
+click still delivers a focus-in, which `ghostel--frame-focus-flags' turns
+into a pending flag, so the press is a focus click."
+  :tags '(native)
+  (ghostel-test--with-click t
+    (insert "hello world")
+    (setq-local ghostel--cursor-char-pos 11)
+    (goto-char 8)
+    ;; Frame reports focus with no pending flag yet.
+    (set-frame-parameter nil 'ghostel--frame-refocused nil)
+    ;; The refocusing click delivers a focus-in -> after-focus-change ->
+    (ghostel--frame-focus-flags)
+    (click)
+    (should-not copy-mode-called)
+    (should (= (point) 11))             ; snapped to the live cursor
+    ;; A genuine second interaction click (no new focus-in) freezes.
+    (click)
+    (should copy-mode-called)))
+
+(ert-deftest ghostel-test-frame-focus-flags-event-based ()
+  "`ghostel--frame-focus-flags' flags every frame that reports focus.
+It reads the current focus state on each event, so a frame already
+reporting t is flagged.  `unknown' (ttys) is not t, so unflagged."
   :tags '(native)
   (let ((state nil))
     (unwind-protect
         (cl-letf (((symbol-function 'frame-focus-state)
-                   (lambda (&optional _f) state))
-                  ;; Keep the buffer focus-event loop inert.
-                  ((symbol-function 'buffer-list) (lambda () nil)))
-          (set-frame-parameter nil 'ghostel--frame-focused nil)
-          (set-frame-parameter nil 'ghostel--frame-refocused nil)
-          (ghostel--focus-change)
-          (should-not (frame-parameter nil 'ghostel--frame-refocused))
-          (setq state t)
-          (ghostel--focus-change)
-          (should (frame-parameter nil 'ghostel--frame-refocused))
-          ;; No transition: a consumed flag stays consumed.
-          (set-frame-parameter nil 'ghostel--frame-refocused nil)
-          (ghostel--focus-change)
-          (should-not (frame-parameter nil 'ghostel--frame-refocused))
-          ;; Losing focus clears a pending flag.
+                   (lambda (&optional _f) state)))
+          ;; Unfocused: no flag (and a stale flag is cleared).
           (set-frame-parameter nil 'ghostel--frame-refocused t)
-          (setq state nil)
-          (ghostel--focus-change)
+          (ghostel--frame-focus-flags)
+          (should-not (frame-parameter nil 'ghostel--frame-refocused))
+          ;; Focus-in: flag set.
+          (setq state t)
+          (ghostel--frame-focus-flags)
+          (should (frame-parameter nil 'ghostel--frame-refocused))
+          ;; Flag consumed by a press; a fresh focus-in re-flags a frame
+          ;; that still reports focus.
+          (set-frame-parameter nil 'ghostel--frame-refocused nil)
+          (ghostel--frame-focus-flags)
+          (should (frame-parameter nil 'ghostel--frame-refocused))
+          ;; `unknown' is not t: treated as unfocused, no flag.
+          (setq state 'unknown)
+          (set-frame-parameter nil 'ghostel--frame-refocused nil)
+          (ghostel--frame-focus-flags)
           (should-not (frame-parameter nil 'ghostel--frame-refocused)))
-      (set-frame-parameter nil 'ghostel--frame-focused nil)
       (set-frame-parameter nil 'ghostel--frame-refocused nil))))
 
 (ert-deftest ghostel-test-mouse-1-release-tracking-forwards ()
