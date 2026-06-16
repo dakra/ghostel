@@ -37,7 +37,8 @@
                     ((symbol-function 'ghostel--spawn-pty)
                      (lambda (&rest args) (setq captured args) 'fake-proc)))
             (ghostel-exec buf "ls" nil)
-            (should (nth 6 captured))))
+            ;; Signature: (program args extra-env remote-p).
+            (should (nth 3 captured))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-exec-uses-default-size-when-buffer-not-displayed ()
@@ -322,7 +323,7 @@ unmodified so later visual buffers still send `q' to the program."
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-exec-calls-spawn-pty-with-expected-args ()
-  "`ghostel-exec' forwards PROGRAM, ARGS, size, stty flags, and remote-p."
+  "`ghostel-exec' forwards PROGRAM, ARGS, extra-env, and remote-p."
   (let ((buf (generate-new-buffer " *ghostel-exec-test*"))
         captured)
     (unwind-protect
@@ -334,15 +335,12 @@ unmodified so later visual buffers still send `q' to the program."
                   ((symbol-function 'ghostel--spawn-pty)
                    (lambda (&rest args) (setq captured args) 'fake-proc)))
           (ghostel-exec buf "less" '("/etc/hosts"))
-          ;; Signature: program args height width stty-flags extra-env remote-p
+          ;; Signature: (program args extra-env remote-p).
           (should (equal (nth 0 captured) "less"))
           (should (equal (nth 1 captured) '("/etc/hosts")))
-          (should (numberp (nth 2 captured)))
-          (should (numberp (nth 3 captured)))
-          (should (equal (nth 4 captured) ghostel--default-stty))
-          (should (null (nth 5 captured)))
+          (should (null (nth 2 captured)))
           ;; Local default-directory — no TRAMP — so remote-p must be nil.
-          (should (null (nth 6 captured))))
+          (should (null (nth 3 captured))))
       (kill-buffer buf))))
 
 

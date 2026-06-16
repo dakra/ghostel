@@ -23,19 +23,24 @@ runs with the stub in place."
 
 (defmacro ghostel-test--with-spawn-process-capture (capture &rest body)
   "Run BODY while capturing the inputs at the PTY spawn boundary.
-CAPTURE is set to a plist with the shell command, `process-environment',
-buffering bindings, current buffer, and `default-directory' observed at
+CAPTURE is set to a plist with the spawned :program and :args,
+:remote-p, the `process-environment', the buffering bindings, the
+current :buffer, and `default-directory' observed at
 `ghostel--spawn-process' \(the single dispatcher over the native/Emacs
 spawners).  The dispatcher is stubbed, so no process is spawned.
 
-This captures what `ghostel--spawn-pty' builds, which is identical for
-both backends, so there is no need to exercise the PTY matrix here."
+The dispatcher sees the same program/args/env for both backends — only
+how they reach the PTY differs (native execs directly; the Emacs path
+wraps them in `/bin/sh -c', see
+`ghostel-test-spawn-via-emacs-builds-stty-wrapper') — so there is no
+need to exercise the PTY matrix here."
   (declare (indent 1))
   `(let (,capture)
      (cl-letf (((symbol-function 'ghostel--spawn-process)
-                (lambda (shell-command remote-p)
+                (lambda (program program-args remote-p)
                   (setq ,capture
-                        (list :command (copy-tree shell-command)
+                        (list :program program
+                              :args (copy-tree program-args)
                               :env (copy-sequence process-environment)
                               :adaptive process-adaptive-read-buffering
                               :read-max read-process-output-max
@@ -64,6 +69,26 @@ both backends, so there is no need to exercise the PTY matrix here."
 Writes `GHOSTEL_WINSIZE_INIT:ROWS,COLS' at startup and
 `GHOSTEL_WINSIZE_WINCH:ROWS,COLS' on every SIGWINCH, so tests can assert
 the dimensions the child actually sees on each PTY backend.")
+
+(defconst ghostel-test--pty-read-dc1-script
+  (string-join
+   '("import sys"
+     ;; Announce readiness only after the PTY is configured (the Emacs
+     ;; path runs `stty -ixon' before exec'ing us), so the test knows
+     ;; when it is safe to send C-q without racing the flag setup.
+     "sys.stdout.write('GHOSTEL_READY\\r\\n')"
+     "sys.stdout.flush()"
+     "line = sys.stdin.buffer.readline()"
+     "tag = 'DC1' if b'\\x11' in line else 'NONE'"
+     "sys.stdout.write('GHOSTEL_GOTBYTE:%s\\r\\n' % tag)"
+     "sys.stdout.flush()")
+   "\n")
+  "Python code that reads one cooked-mode line from its PTY and reports it.
+Writes `GHOSTEL_READY' once its PTY is set up, then `GHOSTEL_GOTBYTE:DC1'
+if the line it reads contained a DC1 byte (0x11) or
+`GHOSTEL_GOTBYTE:NONE' otherwise.  With XON/XOFF flow control (`ixon')
+enabled, the line discipline swallows DC1 before the child sees it, so
+this distinguishes a PTY that honors `-ixon' from one that does not.")
 
 (defun ghostel-test--latest-winsize (tag)
   "Return the most recent (ROWS . COLS) reported for TAG, or nil.
@@ -256,48 +281,8 @@ written by `ghostel-test--pty-winsize-script'."
                            "-c" "exec -l /bin/bash --login --posix")
                          (cdr spawn))))))))
 
-(ert-deftest ghostel-test-start-process-sets-size-via-stty-not-env ()
-  "Initial terminal size must be baked into the `stty' wrapper, not env vars.
-Setting `LINES'/`COLUMNS' env vars freezes ncurses apps like htop at
-start-up size and breaks live resize."
-  (ghostel-test--with-spawn-process-capture capture
-    (with-temp-buffer
-      (setq-local ghostel--term-rows 43
-                  ghostel--term-cols 137)
-      (let* ((process-environment '("PATH=/usr/bin:/bin" "HOME=/tmp"))
-             (ghostel-shell "/bin/sh")
-             (ghostel-shell-integration nil)
-             (ghostel-macos-login-shell nil)
-             (default-directory "/tmp/"))
-        (ghostel--start-process)
-        (let ((cmd (plist-get capture :command))
-              (env (plist-get capture :env)))
-          (should (equal '("/bin/sh" "-c") (seq-take cmd 2)))
-          (should (string-match-p "stty .* rows 43 columns 137"
-                                  (nth 2 cmd)))
-          (should (string-match-p "-ixon" (nth 2 cmd)))
-          (should-not (seq-some (lambda (s) (string-prefix-p "LINES=" s))
-                                env))
-          (should-not (seq-some (lambda (s) (string-prefix-p "COLUMNS=" s))
-                                env))
-          (should (member "TERM=xterm-ghostty" env))
-          (should (member "TERM_PROGRAM=ghostty" env))
-          ;; Match by regex so version bumps don't break the test — the
-          ;; contract is "exported and parseable as semver", not a literal string.
-          (should (seq-some (lambda (s)
-                              (string-match-p
-                               "\\`TERM_PROGRAM_VERSION=[0-9]+\\.[0-9]+\\.[0-9]+\\'"
-                               s))
-                            env))
-          (should (seq-some (lambda (s) (string-prefix-p "TERMINFO=" s))
-                            env))
-          (should (member "COLORTERM=truecolor" env)))))))
-
-(ert-deftest ghostel-test-start-process-local-bash-integration-keeps-early-echo ()
-  "Local bash integration must keep `stty echo' in the wrapper.
-Old bash versions can initialize readline before the ENV-injected
-integration script runs, so input echo must be enabled before exec.
-`sane' in `ghostel--default-stty' is what guarantees echo here."
+(ert-deftest ghostel-test-start-process-local-bash-integration-adds-env ()
+  "Local bash integration adds `--posix' and ENV injection for bash."
   (ghostel-test--with-spawn-process-capture capture
     (with-temp-buffer
       (setq-local ghostel--term-rows 25
@@ -311,14 +296,9 @@ integration script runs, so input echo must be enabled before exec.
              (ghostel-macos-login-shell nil)
              (default-directory "/tmp/"))
         (ghostel--start-process)
-        (let ((cmd (plist-get capture :command))
-              (env (plist-get capture :env)))
-          (should (equal '("/bin/sh" "-c") (seq-take cmd 2)))
-          (should (string-match-p
-                   (concat "stty " (regexp-quote ghostel--default-stty))
-                   (nth 2 cmd)))
-          (should (string-match-p "\\bsane\\b" (nth 2 cmd)))
-          (should (string-match-p "exec /bin/bash --posix" (nth 2 cmd)))
+        (let ((env (plist-get capture :env)))
+          (should (equal "/bin/bash" (plist-get capture :program)))
+          (should (equal '("--posix") (plist-get capture :args)))
           (should (member "GHOSTEL_BASH_INJECT=1" env))
           (should (seq-some (lambda (s) (string-prefix-p "ENV=" s))
                             env)))))))
@@ -329,9 +309,25 @@ It must also raise `read-process-output-max'.  Before Emacs 31 the
 former defaulted to t and throttled bursty TUI redraws."
   (ghostel-test--with-spawn-process-capture capture
     (with-temp-buffer
-      (ghostel--spawn-pty "/bin/sh" nil 24 80 "-ixon" nil nil)
+      (ghostel--spawn-pty "/bin/sh" nil nil nil)
       (should (null (plist-get capture :adaptive)))
       (should (>= (plist-get capture :read-max) (* 1024 1024))))))
+
+(ert-deftest ghostel-test-spawn-emacs-pty-enables-input-echo ()
+  "The Emacs PTY path enables input echo before PROGRAM reads."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let ((ghostel-use-native-pty nil))
+    (ghostel-test--with-terminal-buffer (buf term 8 80 200)
+      (let ((proc (ghostel--spawn-pty
+                   "/bin/sh"
+                   '("-c" "printf 'GHOSTEL_ECHO_READY\r\n'; IFS= read -r _line; printf 'GHOSTEL_ECHO_DONE\r\n'")
+                   nil nil)))
+        (ghostel-test--wait-for-text "GHOSTEL_ECHO_READY" proc 5)
+        (ghostel--write-pty ghostel--term "GHOSTEL_ECHO_TOKEN\r")
+        (ghostel-test--wait-for-text "GHOSTEL_ECHO_DONE" proc 5)
+        (should (string-match-p "GHOSTEL_ECHO_TOKEN"
+                                (ghostel-test--terminal-text)))))))
 
 (ert-deftest ghostel-test-spawn-initial-winsize-reaches-child ()
   "The child PTY is sized to the terminal dimensions at spawn.
@@ -349,6 +345,33 @@ child through both backends and asserts the size it sees."
         (let ((got (ghostel-test--wait-until
                     (lambda () (ghostel-test--latest-winsize "INIT")) proc 6)))
           (should (equal (cons ghostel--term-rows ghostel--term-cols) got)))))))
+
+(ert-deftest ghostel-test-spawn-ixon-disabled-c-q-reaches-child ()
+  "DC1 (0x11) reaches the child instead of being eaten by XON/XOFF flow control.
+With `ixon' enabled (the PTY default) the line discipline swallows
+DC1 and DC3; ghostel disables it — natively in C
+\(`PtyProcess'), and via `-ixon' in the Emacs-path `stty' wrapper — so
+the direct key binding and send-next-key can deliver these bytes.
+Driven through both PTY backends."
+  :tags '(native)
+  (let ((python (executable-find "python3")))
+    (skip-unless python)
+    (ghostel-test--with-pty-matrix backend
+      (ghostel-test--with-exec-buffer
+          (buf proc python (list "-c" ghostel-test--pty-read-dc1-script))
+        ;; Wait until the child has configured its PTY and is reading,
+        ;; so `-ixon' is in effect before C-q arrives (otherwise the
+        ;; byte races the Emacs-path `stty' and is eaten while IXON is
+        ;; still on).
+        (should (ghostel-test--wait-for-text "GHOSTEL_READY" proc 6))
+        ;; Send C-q (DC1, 0x11) then Enter to flush the cooked-mode line.
+        (ghostel--write-pty ghostel--term (string ?\C-q ?\r))
+        (let ((report (ghostel-test--wait-until
+                       (lambda ()
+                         (let ((txt (ghostel-test--terminal-text)))
+                           (and (string-match-p "GHOSTEL_GOTBYTE:" txt) txt)))
+                       proc 6)))
+          (should (string-match-p "GHOSTEL_GOTBYTE:DC1" report)))))))
 
 (ert-deftest ghostel-test-resize-redraw-delivers-new-winsize-to-child ()
   "Resize + redraw delivers SIGWINCH carrying the NEW size to the child.

@@ -5556,7 +5556,7 @@ Reads the local integration script, writes it (with any necessary
 preamble) to a temporary file on the remote host.  When the bundled
 terminfo is available locally, also pushes it to a remote temp dir
 over the same TRAMP connection and adds `TERMINFO=...' to the env.
-Returns a plist (:env :args :stty :temp-files :temp-dirs) for
+Returns a plist (:env :args :temp-files :temp-dirs) for
 `ghostel--start-process'.
 Returns nil on failure."
   (condition-case err
@@ -5591,7 +5591,7 @@ Returns nil on failure."
                                           "fi\n"
                                           integration))
              (list :env nil :args (list "--rcfile" path)
-                   :stty ghostel--default-stty :temp-files (list temp))))
+                   :temp-files (list temp))))
           ;; Zsh: ZDOTDIR replaces .zshenv search, so we restore it,
           ;; source the user's .zshenv, then load integration.
           ('zsh
@@ -5620,7 +5620,7 @@ Returns nil on failure."
                                           "    'builtin' 'unset' '_ghostel_file'\n"
                                           "}\n"))
              (list :env (list (format "ZDOTDIR=%s" remote-dir))
-                   :args nil :stty ghostel--default-stty
+                   :args nil
                    :temp-dirs (list temp-dir))))
           ;; Fish: -C runs after config, so just source the script.
           ('fish
@@ -5631,7 +5631,7 @@ Returns nil on failure."
              (list :env nil
                    :args (list "-C" (format "source %s"
                                             (shell-quote-argument path)))
-                   :stty ghostel--default-stty :temp-files (list temp)))))))
+                   :temp-files (list temp)))))))
         (if tinfo
             (ghostel--merge-integration-plists base tinfo)
           base))
@@ -5771,41 +5771,20 @@ verbatim.  `COLORTERM=truecolor' is exported unconditionally."
     (concat "TERM=" (shell-quote-argument ghostel-term)
             "; COLORTERM=truecolor; export TERM COLORTERM; "))))
 
-(defun ghostel--spawn-pty (program program-args height width stty-flags
-                                   extra-env &optional remote-p)
+(defun ghostel--spawn-pty (program program-args extra-env &optional remote-p)
   "Spawn PROGRAM with PROGRAM-ARGS as a PTY-backed process in the current buffer.
 
-Wraps PROGRAM in `/bin/sh -c' so that `stty' can configure the PTY
-\(with STTY-FLAGS plus rows=HEIGHT columns=WIDTH) and the screen is
-cleared before PROGRAM is exec'd.  EXTRA-ENV is prepended to
-`process-environment'.  Non-nil REMOTE-P spawns the process via the
-TRAMP file handler (for remote shells).
+The native local path execs PROGRAM directly and configures the PTY
+in C (see `ghostel--spawn-via-native').  The Emacs path wraps PROGRAM
+in `/bin/sh -c' so `stty' can configure the PTY before PROGRAM reads
+its terminal attributes (see `ghostel--spawn-via-emacs').  EXTRA-ENV
+is prepended to `process-environment'.  Non-nil REMOTE-P spawns the
+process via the TRAMP file handler (for remote shells).
 
 Returns the lifecycle process object for the PTY path: the shell
 process for Emacs-owned PTYs, or the event pipe process that stands in
 for the native child process."
-  ;; Wrap the program in /bin/sh -c so we can configure the PTY
-  ;; before the program reads its terminal attributes.  See
-  ;; `ghostel--default-stty' for the default flag set and rationale;
-  ;; STTY-FLAGS is whatever the caller picked (typically that default
-  ;; or a remote-integration variant).  The clear-screen hides the
-  ;; stty output.  exec replaces the wrapper so only the target
-  ;; program remains.
-  (let* ((shell-command
-          (list "/bin/sh" "-c"
-                (concat
-                 ;; Remote spawns: pick TERM via an on-remote probe
-                 (and remote-p (ghostel--remote-term-preamble))
-                 "stty " stty-flags
-                 (format " rows %d columns %d" height width)
-                 " 2>/dev/null; "
-                 "printf '\\033[H\\033[2J'; exec "
-                 (shell-quote-argument program)
-                 (and program-args
-                      (concat " "
-                              (mapconcat #'shell-quote-argument
-                                         program-args " "))))))
-         (process-environment
+  (let* ((process-environment
           (append
            ghostel-environment
            (cons "INSIDE_EMACS=ghostel"
@@ -5832,32 +5811,50 @@ for the native child process."
     ;; `setenv' to inject/override entries that the child inherits.
     ;; See `ghostel-pre-spawn-hook'.
     (run-hooks 'ghostel-pre-spawn-hook)
-    (ghostel--spawn-process shell-command remote-p)))
+    (ghostel--spawn-process program program-args remote-p)))
 
-(defun ghostel--spawn-process (shell-command remote-p)
-  "Dispatch SHELL-COMMAND to the native or Emacs PTY spawner.
+(defun ghostel--spawn-process (program program-args remote-p)
+  "Dispatch the spawn of PROGRAM (with PROGRAM-ARGS) to native or Emacs.
 Local buffers use the native PTY path when `ghostel-use-native-pty'
 is non-nil; remote (REMOTE-P) buffers always go through Emacs so
 TRAMP can manage the remote shell."
   (setq ghostel--process
         (if (and ghostel-use-native-pty (not remote-p))
-            (ghostel--spawn-via-native shell-command)
-          (ghostel--spawn-via-emacs shell-command remote-p))))
+            (ghostel--spawn-via-native (cons program program-args))
+          (ghostel--spawn-via-emacs program program-args remote-p))))
 
-(defun ghostel--spawn-via-emacs (shell-command &optional remote-p)
-  "Spawn SHELL-COMMAND through Emacs process machinery.
-REMOTE-P is passed as `:file-handler' so TRAMP can run remote
-commands.  The returned process owns the PTY and receives
-`ghostel--filter' and `ghostel--sentinel'."
-  (let ((proc (make-process
-               :name "ghostel"
-               :buffer (current-buffer)
-               :command shell-command
-               :connection-type 'pty
-               :file-handler remote-p
-               :filter #'ghostel--filter
-               :sentinel #'ghostel--sentinel
-               :noquery t)))
+(defun ghostel--spawn-via-emacs (program program-args &optional remote-p)
+  "Spawn PROGRAM with PROGRAM-ARGS through Emacs process machinery.
+PROGRAM is wrapped in `/bin/sh -c' so that `stty' (with
+`ghostel--default-stty') can configure the PTY line discipline before
+PROGRAM reads its terminal attributes; the screen is then cleared to
+hide the stty output and `exec' replaces the wrapper so only PROGRAM
+remains.  See `ghostel--default-stty' for the default flag set and
+rationale.  REMOTE-P is passed as `:file-handler' so TRAMP can run
+remote commands, and selects an on-remote TERM probe preamble.  The
+returned process owns the PTY and receives `ghostel--filter' and
+`ghostel--sentinel'."
+  (let* ((shell-command
+          (list "/bin/sh" "-c"
+                (concat
+                 ;; Remote spawns: pick TERM via an on-remote probe
+                 (and remote-p (ghostel--remote-term-preamble))
+                 "stty " ghostel--default-stty " 2>/dev/null; "
+                 "printf '\033[H\033[2J'; exec "
+                 (shell-quote-argument program)
+                 (and program-args
+                      (concat " "
+                              (mapconcat #'shell-quote-argument
+                                         program-args " "))))))
+         (proc (make-process
+                :name "ghostel"
+                :buffer (current-buffer)
+                :command shell-command
+                :connection-type 'pty
+                :file-handler remote-p
+                :filter #'ghostel--filter
+                :sentinel #'ghostel--sentinel
+                :noquery t)))
     (setq ghostel--pid (process-id proc))
     ;; Raw binary I/O — no encoding/decoding by Emacs
     (set-process-coding-system proc 'binary 'binary)
@@ -5867,18 +5864,18 @@ commands.  The returned process owns the PTY and receives
     (process-put proc 'adjust-window-size-function nil)
     proc))
 
-(defun ghostel--spawn-via-native (shell-command)
-  "Spawn SHELL-COMMAND through the native PTY implementation.
-Returns the event pipe process used as the Emacs-side handle for the
-native child process.  The native reader writes terminal events to the
-pipe, and its detached reaper writes a final exit status before closing
-it."
+(defun ghostel--spawn-via-native (command)
+  "Spawn COMMAND through the native PTY implementation.
+COMMAND is a list of argv strings.  Returns the event pipe process used
+as the Emacs-side handle for the native child process.  The native
+reader writes terminal events to the pipe, and its detached reaper
+writes a final exit status before closing it."
   (let* ((pipe (make-pipe-process
                 :name "ghostel-native-process"
                 :buffer (current-buffer)
                 :filter #'ghostel--events-filter
                 :noquery t))
-         (pid (ghostel--spawn-native-process ghostel--term shell-command pipe)))
+         (pid (ghostel--spawn-native-process ghostel--term command pipe)))
     (setq ghostel--pid pid)
 
     (set-process-sentinel pipe
@@ -5904,15 +5901,7 @@ it."
 Local buffers use the native PTY path when `ghostel-use-native-pty'
 is non-nil.  Remote TRAMP buffers spawn through Emacs so TRAMP can
 run the shell on the remote host."
-  ;; Read dims from the buffer-locals set by `ghostel--init-buffer'.
-  ;; Recomputing from `(window-body-height)' here
-  ;; would query the *selected* window, which can differ from the
-  ;; buffer's window when the buffer is shown in a popup that didn't
-  ;; get selected — leaving the PTY and the libghostty terminal sized
-  ;; against different windows (issue #192).
-  (let* ((height (max 1 ghostel--term-rows))
-         (width (max 1 ghostel--term-cols))
-         (remote-p (file-remote-p default-directory))
+  (let* ((remote-p (file-remote-p default-directory))
          (shell-spec (ghostel--resolve-shell-spec))
          (shell (car shell-spec))
          (extra-shell-args (cdr shell-spec))
@@ -5980,9 +5969,6 @@ run the shell on the remote host."
                              (list "--posix"))
                             (t nil)))
          (shell-args (append extra-shell-args integration-args))
-         (stty-flags (if remote-integration
-                         (plist-get remote-integration :stty)
-                       ghostel--default-stty))
          (extra-env (append
                      (unless remote-p
                        (list (format "EMACS_GHOSTEL_PATH=%s" ghostel-dir)))
@@ -5997,8 +5983,8 @@ run the shell on the remote host."
                        (cons shell shell-args)))
          (spawn-program (car spawn-spec))
          (spawn-args (cdr spawn-spec))
-         (proc (ghostel--spawn-pty spawn-program spawn-args height width
-                                   stty-flags extra-env remote-p)))
+         (proc (ghostel--spawn-pty spawn-program spawn-args
+                                   extra-env remote-p)))
     (when remote-integration
       (ghostel--cleanup-temp-paths
        (plist-get remote-integration :temp-files)
@@ -6614,12 +6600,10 @@ Returns the buffer."
 
 BUFFER is switched into `ghostel-mode' (if not already) and a new
 terminal is created sized to the window displaying BUFFER, or
-80x24 if BUFFER is not currently displayed.  No shell integration
-is applied — PROGRAM is exec'd directly via `ghostel--spawn-pty'.
-PROGRAM is shell-quoted before it is passed to `/bin/sh -c', so
-shell metacharacters are not interpreted; pass extra tokens via
-ARGS, a list of strings.  Returns the lifecycle process object for
-the selected PTY path.
+80x24 if BUFFER is not currently displayed.  No shell integration is applied.
+PROGRAM and ARGS are passed as distinct argv entries, so shell metacharacters
+are not interpreted; pass extra tokens via ARGS, a list of strings.  Returns
+the lifecycle process object for the selected PTY path.
 
 Signals `user-error' if BUFFER already has a live ghostel process."
   (ghostel--load-module t)
@@ -6641,8 +6625,7 @@ Signals `user-error' if BUFFER already has a live ghostel process."
     (with-current-buffer buffer
       (ghostel--init-buffer buffer height width)
       (let ((remote-p (file-remote-p default-directory)))
-        (ghostel--spawn-pty program args ghostel--term-rows ghostel--term-cols
-                            ghostel--default-stty nil remote-p)))))
+        (ghostel--spawn-pty program args nil remote-p)))))
 
 ;;;###autoload
 (defun ghostel-project (&optional arg)

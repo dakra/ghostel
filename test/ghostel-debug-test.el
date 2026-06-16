@@ -178,8 +178,7 @@ sections all materialize."
                                 :remote-p t
                                 :program "/bin/bash"
                                 :program-args nil
-                                :height 24 :width 80
-                                :stty-flags ghostel--default-stty
+                                :cols 80 :rows 24
                                 :extra-env nil
                                 :process-environment
                                 '("INSIDE_EMACS=ghostel"
@@ -327,8 +326,7 @@ byte delta."
                                 :remote-p nil
                                 :program "/bin/sh"
                                 :program-args nil
-                                :height 24 :width 80
-                                :stty-flags ghostel--default-stty
+                                :cols 80 :rows 24
                                 :extra-env nil
                                 :process-environment process-environment
                                 :command '("/bin/sh" "-c" "exec /bin/sh")
@@ -400,8 +398,7 @@ so no actual shell is spawned."
                        (setq-local ghostel--term-rows 24)
                        (setq-local ghostel--term-cols 80)
                        (cl-incf calls)
-                       (ghostel--spawn-pty "/bin/sh" nil 24 80
-                                           "-ixon" nil nil)))))
+                       (ghostel--spawn-pty "/bin/sh" nil nil nil)))))
           (unwind-protect
               (progn
                 (ghostel-debug-ghostel)
@@ -418,8 +415,8 @@ so no actual shell is spawned."
                 (let ((cap (buffer-local-value
                             'ghostel-debug--spawn-capture buf)))
                   (should cap)
-                  (should (eq 24 (plist-get cap :height)))
-                  (should (eq 80 (plist-get cap :width)))
+                  (should (eq 80 (plist-get cap :cols)))
+                  (should (eq 24 (plist-get cap :rows)))
                   (should (equal "/bin/sh" (plist-get cap :program)))
                   ;; :command is the wrapper ghostel passed to make-process
                   ;; — captured via cl-letf* on make-process *before* the

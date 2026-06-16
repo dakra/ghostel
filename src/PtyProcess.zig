@@ -8,6 +8,7 @@ const c = @cImport({
     @cInclude("fcntl.h");
     @cInclude("sys/ioctl.h");
     @cInclude("sys/wait.h");
+    @cInclude("termios.h");
 });
 
 const Self = @This();
@@ -21,16 +22,16 @@ const Pty = struct {
         var self: @This() = .{};
         self.primary_fd = c.posix_openpt(c.O_RDWR | c.O_NOCTTY | c.O_CLOEXEC);
         if (posix.errno(self.primary_fd) != .SUCCESS) {
-            return error.PtyOpenFailed;
+            return error.OpenPtFailed;
         }
         errdefer posix.close(self.primary_fd);
 
         if (posix.errno(c.grantpt(self.primary_fd)) != .SUCCESS) {
-            return error.PtyGrantFailed;
+            return error.OpenPtFailed;
         }
 
         if (posix.errno(c.unlockpt(self.primary_fd)) != .SUCCESS) {
-            return error.PtyUnlockFailed;
+            return error.OpenPtFailed;
         }
 
         const ptsname_err = posix.errno(c.ptsname_r(
@@ -39,7 +40,7 @@ const Pty = struct {
             self.replica_name.len,
         ));
         if (ptsname_err != .SUCCESS) {
-            return error.PtsnameFailed;
+            return error.OpenPtFailed;
         }
 
         self.replica_fd = try posix.openZ(
@@ -47,6 +48,26 @@ const Pty = struct {
             .{ .ACCMODE = .RDWR },
             0,
         );
+        errdefer posix.close(self.replica_fd);
+
+        // Configure the line discipline on the replica.  On macOS/BSD the
+        // master (ptm) fd rejects termios ioctls with ENOTTY — only the
+        // replica carries the terminal attributes — so this must run on
+        // `replica_fd', not `primary_fd'.
+        var attrs: c.termios = undefined;
+        if (c.tcgetattr(self.replica_fd, &attrs) != 0) {
+            return error.OpenPtFailed;
+        }
+        // Enable UTF-8 mode so backspace erases multi-byte characters.
+        attrs.c_iflag |= c.IUTF8;
+        // Disable XON/XOFF flow control so C-q (DC1) and C-s (DC3) pass
+        // through to the application instead of being swallowed by the
+        // line discipline.  Ghostel's send-next-key escape hatch and the
+        // direct C-q binding rely on these bytes reaching the child.
+        attrs.c_iflag &= ~@as(@TypeOf(attrs.c_iflag), c.IXON);
+        if (c.tcsetattr(self.replica_fd, c.TCSANOW, &attrs) != 0) {
+            return error.OpenPtFailed;
+        }
 
         return self;
     }

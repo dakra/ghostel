@@ -91,37 +91,16 @@ succeeds."
     result))
 
 (defmacro ghostel-test--with-pty-matrix (backend &rest body)
-  "Run BODY once per currently available local PTY backend.
+  "Run BODY once per local PTY backend.
 BACKEND is bound to `emacs-pty' and `native-pty' in turn.  The
 corresponding `ghostel-use-native-pty' value is let-bound around
-BODY, and failures include the backend name in ERT output.
-
-Unexpected per-backend `ert-skip' signals are not swallowed: a
-parity test should not pass after silently dropping one leg.  The
-only backend-specific availability exception handled here is native
-PTY creation failing with PtyOpenFailed."
+BODY, and failures include the backend name in ERT output."
   (declare (indent 1))
-  `(let ((ghostel-test--ran-backend nil)
-         (ghostel-test--skip-reasons nil))
-     (dolist (entry '((emacs-pty . nil) (native-pty . t)))
-       (let ((,backend (car entry))
-             (ghostel-use-native-pty (cdr entry)))
-         (ert-info ((format "backend: %S" ,backend))
-           (condition-case err
-               (progn
-                 ,@body
-                 (setq ghostel-test--ran-backend t))
-             (error
-              (if (and (eq ,backend 'native-pty)
-                       (string-match-p "PtyOpenFailed"
-                                       (error-message-string err)))
-                  (push (error-message-string err) ghostel-test--skip-reasons)
-                (signal (car err) (cdr err))))))))
-     (unless ghostel-test--ran-backend
-       (ert-skip (mapconcat #'identity
-                            (or ghostel-test--skip-reasons
-                                '("No PTY backend available"))
-                            "; ")))))
+  `(dolist (entry '((emacs-pty . nil) (native-pty . t)))
+     (let ((,backend (car entry))
+           (ghostel-use-native-pty (cdr entry)))
+       (ert-info ((format "backend: %S" ,backend))
+         ,@body))))
 
 (defun ghostel-test--lifecycle-process (&optional buffer)
   "Return BUFFER's active ghostel lifecycle process, if any.

@@ -460,8 +460,7 @@ below it."
     (ghostel-test--with-pty-matrix backend
 				   (ghostel-test--with-terminal-buffer (buf term 8 80 200)
 								       (setq-local ghostel-detect-password-prompts nil)
-								       (let ((proc (ghostel--spawn-pty "/bin/zsh" '("-fi") 8 80
-												       ghostel--default-stty nil nil)))
+								       (let ((proc (ghostel--spawn-pty "/bin/zsh" '("-fi") nil nil)))
 									 ;; Wait for the initial default prompt to reach the terminal.
 									 (ghostel-test--wait-until
 									  (lambda ()
@@ -522,7 +521,6 @@ below it."
 									       (buffer-substring-no-properties
 										(line-beginning-position)
 										(line-end-position)))))))))))
-
 (ert-deftest ghostel-test-zsh-prompt-cells-tagged-with-self-reorder-theme ()
   "Tag prompt cells when a self-reordering theme overrides PROMPT.
 Prompt themes that re-assert their position at the END of
@@ -552,8 +550,7 @@ checks that the most recent prompt's `top-line' row carries the
     (ghostel-test--with-pty-matrix backend
 				   (ghostel-test--with-terminal-buffer (buf term 8 80 200)
 								       (setq-local ghostel-detect-password-prompts nil)
-								       (let ((proc (ghostel--spawn-pty "/bin/zsh" '("-fi") 8 80
-												       ghostel--default-stty nil nil)))
+								       (let ((proc (ghostel--spawn-pty "/bin/zsh" '("-fi") nil nil)))
 									 (ghostel-test--wait-until
 									  (lambda ()
 									    (not (string-empty-p (ghostel-test--rendered-terminal-text))))
@@ -604,7 +601,6 @@ checks that the most recent prompt's `top-line' row carries the
 									   (goto-char (point-max))
 									   (should (search-backward "top-line" nil t))
 									   (should (get-text-property (point) 'ghostel-prompt))))))))
-
 (ert-deftest ghostel-test-pty-password-input-p-tracks-noecho ()
   "Password-mode probing tracks canonical no-echo state."
   :tags '(native)

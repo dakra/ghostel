@@ -87,17 +87,21 @@ Local spawns must not get the preamble; their TERM still rides in
         (ghostel-environment nil)
         captured-env
         captured-cmd)
-    (cl-letf (((symbol-function #'ghostel--spawn-via-emacs)
-               (lambda (shell-command &optional _remote-p)
-                 (setq captured-env process-environment
-                       captured-cmd shell-command)
-                 'fake-proc)))
+    (cl-letf (((symbol-function 'make-process)
+               (lambda (&rest args)
+                 (setq captured-env (copy-sequence process-environment)
+                       captured-cmd (plist-get args :command))
+                 'fake-proc))
+              ((symbol-function 'process-id) (lambda (_proc) 12345))
+              ((symbol-function 'set-process-coding-system) #'ignore)
+              ((symbol-function 'set-process-window-size) #'ignore)
+              ((symbol-function 'process-put) #'ignore))
       ;; Remote spawn → preamble in wrapper, TERM/TERMINFO not
       ;; added by ghostel.  Use a clean `process-environment' so
       ;; the assertion is about ghostel's contribution, not the
       ;; test runner's ambient env.
       (let ((process-environment '("PATH=/usr/bin:/bin" "HOME=/tmp")))
-        (ghostel--spawn-pty "/bin/sh" nil 25 80 "-ixon" nil t)
+        (ghostel--spawn-pty "/bin/sh" nil nil t)
         (let ((script (nth 2 captured-cmd)))
           (should (string-match-p "infocmp xterm-ghostty" script))
           (should (string-match-p "export TERM COLORTERM" script))
@@ -113,7 +117,7 @@ Local spawns must not get the preamble; their TERM still rides in
       (setq captured-env nil
             captured-cmd nil)
       (let ((process-environment '("PATH=/usr/bin:/bin" "HOME=/tmp")))
-        (ghostel--spawn-pty "/bin/sh" nil 25 80 "-ixon" nil nil)
+        (ghostel--spawn-pty "/bin/sh" nil nil nil)
         (let ((script (nth 2 captured-cmd)))
           (should-not (string-match-p "infocmp" script))
           (should (member "TERM=xterm-ghostty" captured-env)))))))

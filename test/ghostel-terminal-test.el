@@ -34,9 +34,9 @@
 (ert-deftest ghostel-test-write-input-preserves-bare-lf-on-primary ()
   "On the primary screen, a bare LF preserves the column.
 The emulator never synthesizes a CR: cooked-mode \\n is turned into
-CRLF by the PTY's ONLCR (enabled via `stty sane' in the spawn
-wrapper), and raw-mode apps that emit bare LF mean a column-preserving
-linefeed.  Synthesizing a CR collapsed inline TUIs that position with
+CRLF by the PTY's ONLCR (on by default in the line discipline), and
+raw-mode apps that emit bare LF mean a column-preserving linefeed.
+Synthesizing a CR collapsed inline TUIs that position with
 column-preserving LF + relative CUB to the left margin (issue #388,
 the Antigravity CLI logo)."
   :tags '(native)

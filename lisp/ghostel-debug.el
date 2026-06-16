@@ -61,7 +61,7 @@ Populated by `ghostel-debug-ghostel'.  A plist with:
   :time, :default-directory, :remote-p
   :start-process-time — when `ghostel--start-process' was entered
                         (just before any TRAMP shell-detection round-trip)
-  :program, :program-args, :height, :width, :stty-flags, :extra-env
+  :program, :program-args, :cols, :rows, :extra-env
   :command          — the wrapper command ghostel passed to
                       `make-process' (the ((\"/bin/sh\" \"-c\" \"<wrapper>\"))
                       list).  Captured via `cl-letf*' on `make-process'
@@ -1081,9 +1081,7 @@ delta is what ghostel + TRAMP actually contributed."
     (insert (format "Program args:        %s\n"
                     (if args (format "%S" args) "(none)"))))
   (insert (format "Geometry:            %sx%s (cols x rows)\n"
-                  (plist-get cap :width) (plist-get cap :height)))
-  (insert (format "stty flags:          %s\n"
-                  (plist-get cap :stty-flags)))
+                  (plist-get cap :cols) (plist-get cap :rows)))
   (let ((extra (plist-get cap :extra-env)))
     (insert "extra-env:           ")
     (if (null extra)
@@ -1412,12 +1410,11 @@ it into the spawn-capture plist.  Self-removing — fires at most once."
   (apply orig args))
 
 (defun ghostel-debug--capture-spawn-pty
-    (orig program program-args height width stty-flags extra-env
-          &optional remote-p)
+    (orig program program-args extra-env &optional remote-p)
   "Around-advice on `ghostel--spawn-pty' that snapshots the spawn.
-ORIG is the original function; PROGRAM, PROGRAM-ARGS, HEIGHT, WIDTH,
-STTY-FLAGS, EXTRA-ENV, REMOTE-P are forwarded verbatim and recorded
-into `ghostel-debug--spawn-capture'.  Self-removing — fires at most once.
+ORIG is the original function; PROGRAM, PROGRAM-ARGS, EXTRA-ENV, and
+REMOTE-P are forwarded verbatim and recorded into
+`ghostel-debug--spawn-capture'.  Self-removing — fires at most once.
 
 Captures the wrapper command via `cl-letf*' on `make-process' rather
 than reading `process-command' on the returned process: on TRAMP's
@@ -1459,8 +1456,7 @@ two differ, the renderer flags it."
                       (setq intercepted-cmd
                             (plist-get plist :command)))
                     (apply orig-make-process plist))))
-              (funcall orig program program-args height width
-                       stty-flags extra-env remote-p))))
+              (funcall orig program program-args extra-env remote-p))))
       ;; `ghostel--spawn-pty' runs in the new ghostel buffer (the
       ;; spawn target), so `setq-local' here lands on the right
       ;; buffer-local.
@@ -1471,9 +1467,8 @@ two differ, the renderer flags it."
                   :remote-p (and remote-p t)
                   :program program
                   :program-args program-args
-                  :height height
-                  :width width
-                  :stty-flags stty-flags
+                  :cols ghostel--term-cols
+                  :rows ghostel--term-rows
                   :extra-env extra-env
                   :process-environment spawn-env
                   :command intercepted-cmd
