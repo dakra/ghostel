@@ -824,9 +824,9 @@ on the next redraw - neither copy nor Emacs mode is entered."
       (should-not emacs-mode-called))))
 
 (ert-deftest ghostel-test-mouse-1-drag-focus-click-microdrag-stays-semi-char ()
-  "A focus-click micro-drag (drag-mouse-1, no region) stays in semi-char.
+  "A focus-click micro-drag (no region) stays in semi-char.
 A tiny pointer wiggle on a click that only focuses the window makes Emacs
-report `drag-mouse-1' with equal start/end points; it sets no region, snaps
+report a drag with equal start/end points; it sets no region, snaps
 to the live cursor, and does not enter copy mode."
   :tags '(native)
   (let ((fake-event `(drag-mouse-1

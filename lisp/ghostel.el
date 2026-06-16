@@ -2114,11 +2114,15 @@ Falls back to raw escape sequences if the encoder doesn't produce output."
 Returns the sequence string, or nil for unknown keys."
   (let ((mod-num (ghostel--modifier-number mods)))
     (cond
-     ;; Ctrl + single letter
+     ;; Ctrl + a single ASCII char with a C0 control code.  Both a-z and
+     ;; the @ A-Z [ \ ] ^ _ range fold to (char & #x1f): ctrl-a=1,
+     ;; ctrl-z=26, ctrl-^=#x1e, ctrl-_=#x1f (readline / zle undo).
      ((and (= (length key-name) 1)
-           (<= ?a (aref key-name 0)) (<= (aref key-name 0) ?z)
+           (let ((c (aref key-name 0)))
+             (or (and (<= ?a c) (<= c ?z))
+                 (and (<= ?@ c) (<= c ?_))))
            (> (logand mod-num 4) 0))        ; ctrl bit
-      (string (- (aref key-name 0) 96)))    ; ctrl-a=1, ctrl-z=26
+      (string (logand (aref key-name 0) #x1f)))
      ;; Meta + printable ASCII → ESC + char (legacy alt encoding)
      ((and (= (length key-name) 1)
            (let ((c (aref key-name 0)))
@@ -2709,8 +2713,8 @@ handler so the selection survives release; without this,
 intercept keeps `mouse-set-region' from re-establishing the region.
 When the buffer is in semi-char mode, switches input mode once the
 region is set to the mode configured in `ghostel-mouse-drag-input-mode'.
-An empty drag, a click that wiggled into a `drag-mouse-1' without selecting
-anything, is dispatched to `ghostel-mouse-release-or-set-point',
+An empty drag (a click that wiggled into a drag event without selecting
+anything) is dispatched to `ghostel-mouse-release-or-set-point',
 so a focus click stays in semi-char like a plain click."
   (interactive "e")
   (cond
