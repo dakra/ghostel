@@ -613,22 +613,32 @@ fn adjustGlyph(
 
     // Let's check if we can claim some space after the glyph to be able to render
     // it larger than the cell size while still maintaining alignment.
-    const pre_char_width = char_width;
-    while (cell.col + char_width < self.term.cols) : ({
+    const initial_char_width = char_width;
+    while (cell.col + char_width < self.term.cols) {
         char_width += 1;
         slot_width = default_font_info.width * char_width;
-    }) {
         const cell_aspect = @as(f64, @floatFromInt(slot_width)) /
             @as(f64, @floatFromInt(default_font_info.ascent + default_font_info.descent));
         const glyph_aspect = @as(f64, @floatFromInt(metrics.width)) /
             @as(f64, @floatFromInt(metrics.ascent + metrics.descent));
-        // If the aspect of the glyph is narrower than that of the cell, we're done
-        if (glyph_aspect < cell_aspect) break;
+        // If the aspect of the glyph fits in the current slot width, undo the
+        // increment — the glyph doesn't need this extra column.
+        if (glyph_aspect <= cell_aspect) {
+            char_width -= 1;
+            slot_width = default_font_info.width * char_width;
+            break;
+        }
 
-        const claim_pos = row_start + cell.char_end + (char_width - pre_char_width);
+        const claim_pos = row_start + cell.char_end + (char_width - initial_char_width);
         // Lines are right-trimmed of trailing spaces, so positions at and past
-        // the newline represent empty space we can freely claim.
-        if (claim_pos >= row_end - 1) continue;
+        // the newline represent empty space that we could freely claim, but
+        // doing so always makes the last glyph on a line larger than its
+        // mid-line counterparts.
+        if (claim_pos >= row_end - 1) {
+            char_width -= 1;
+            slot_width = default_font_info.width * char_width;
+            break;
+        }
 
         const c = env.cast(i64, env.f("char-after", .{claim_pos}));
         if (c == ' ') {
@@ -639,6 +649,8 @@ fn adjustGlyph(
                 env.cons(s.space, env.list(.{ s.@":width", 0 })),
             });
         } else {
+            char_width -= 1;
+            slot_width = default_font_info.width * char_width;
             break;
         }
     }
