@@ -382,7 +382,7 @@ state from the wrong buffer after feeding output to the native module."
       (kill-buffer other-buf))))
 
 (ert-deftest ghostel-test-events-filter-preserves-buffer ()
-  "Native event-pipe callbacks do not leak buffer switches into invalidation."
+  "Native event callbacks do not leak buffer switches into invalidation."
   (let ((ghostel-buf (generate-new-buffer " *ghostel-test-events-buf*"))
         (other-buf (generate-new-buffer " *ghostel-test-events-other*"))
         invalidate-called)

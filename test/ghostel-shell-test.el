@@ -1185,7 +1185,6 @@ stubbing `active-minibuffer-window' / `window-buffer' to return it."
    proc
    (with-current-buffer (process-buffer proc)
      (let ((ghostel--process proc)
-           (ghostel--event-pipe nil)
            (ghostel-query-before-killing 'auto)
            (ghostel--command-running t)
            asked)
@@ -1200,7 +1199,6 @@ stubbing `active-minibuffer-window' / `window-buffer' to return it."
    proc
    (with-current-buffer (process-buffer proc)
      (let ((ghostel--process proc)
-           (ghostel--event-pipe nil)
            (ghostel-query-before-killing 'auto)
            (ghostel--command-running nil))
        (cl-letf (((symbol-function 'yes-or-no-p)
@@ -1213,7 +1211,6 @@ stubbing `active-minibuffer-window' / `window-buffer' to return it."
    proc
    (with-current-buffer (process-buffer proc)
      (let ((ghostel--process proc)
-           (ghostel--event-pipe nil)
            (ghostel-query-before-killing nil)
            (ghostel--command-running t))
        (cl-letf (((symbol-function 'yes-or-no-p)
@@ -1226,7 +1223,6 @@ stubbing `active-minibuffer-window' / `window-buffer' to return it."
    proc
    (with-current-buffer (process-buffer proc)
      (let ((ghostel--process proc)
-           (ghostel--event-pipe nil)
            (ghostel-query-before-killing t)
            (ghostel--command-running nil)
            asked)
@@ -1242,7 +1238,6 @@ stubbing `active-minibuffer-window' / `window-buffer' to return it."
    (with-current-buffer (process-buffer proc)
      (delete-process proc)
      (let ((ghostel--process proc)
-           (ghostel--event-pipe nil)
            (ghostel-query-before-killing 'auto)
            (ghostel--command-running t))
        (cl-letf (((symbol-function 'yes-or-no-p)

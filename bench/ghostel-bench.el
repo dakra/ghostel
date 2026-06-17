@@ -603,15 +603,11 @@ covers the full read -> libghostty -> buffer pipeline."
           (when (window-live-p (selected-window))
             (set-window-buffer (selected-window) buf))
           (ghostel--start-process)
-          ;; The lifecycle process is `ghostel--process' (Emacs path) or
-          ;; `ghostel--event-pipe' (native).  Native: the reader writes
-          ;; `(delete-process ghostel--event-pipe)' after draining the
-          ;; child's final output, so the pipe dying means everything has
-          ;; reached libghostty.  Emacs: the sentinel fires on `cat' exit.
-          (let ((life (or ghostel--process ghostel--event-pipe))
-                (deadline (+ (float-time) 120)))
-            (while (and life (process-live-p life) (< (float-time) deadline))
-              (accept-process-output life 0.05))
+          (let ((deadline (+ (float-time) 120)))
+            (while (and ghostel--process
+                        (process-live-p ghostel--process)
+                        (< (float-time) deadline))
+              (accept-process-output ghostel--process 0.05))
             ;; Include the final frame; drain any pending redraw timer.
             (when (buffer-live-p buf)
               (ghostel--redraw-now buf)
@@ -1297,30 +1293,29 @@ showing up in the rendered ghostel buffer."
           (when (window-live-p (selected-window))
             (set-window-buffer (selected-window) buf))
           (ghostel--start-process)
-          (let ((life (or ghostel--process ghostel--event-pipe)))
-            ;; Wait for `cat' to be up (grid shows the READY marker).
-            (let ((deadline (+ (float-time) 5)))
-              (while (and (not (string-search
-                                "GHOSTEL_TYPING_READY"
-                                (or (ghostel--copy-all-text ghostel--term) "")))
-                          (< (float-time) deadline))
-                (accept-process-output life 0.01)))
-            (cl-flet ((tap (ch)
-                        ;; Send CH; return ms until the redraw materializes the
-                        ;; echo.  `buffer-chars-modified-tick' bumps on every
-                        ;; redraw, so detection is O(1) and unaffected by line
-                        ;; wrapping or how large the buffer has grown — unlike
-                        ;; rescanning the buffer, whose cost would creep into
-                        ;; the measurement as more text accumulates.
-                        (let ((tick (buffer-chars-modified-tick))
-                              (send-time (current-time))
-                              (deadline (+ (float-time) 2)))
-                          (ghostel--send-string ch)
-                          (while (and (= (buffer-chars-modified-tick) tick)
-                                      (< (float-time) deadline))
-                            (accept-process-output life 0.001))
-                          (* 1000 (float-time
-                                   (time-subtract (current-time) send-time))))))
+          ;; Wait for `cat' to be up (grid shows the READY marker).
+          (let ((deadline (+ (float-time) 5)))
+            (while (and (not (string-search
+                              "GHOSTEL_TYPING_READY"
+                              (or (ghostel--copy-all-text ghostel--term) "")))
+                        (< (float-time) deadline))
+              (accept-process-output ghostel--process 0.01)))
+          (cl-flet ((tap (ch)
+                      ;; Send CH; return ms until the redraw materializes the
+                      ;; echo.  `buffer-chars-modified-tick' bumps on every
+                      ;; redraw, so detection is O(1) and unaffected by line
+                      ;; wrapping or how large the buffer has grown — unlike
+                      ;; rescanning the buffer, whose cost would creep into
+                      ;; the measurement as more text accumulates.
+                      (let ((tick (buffer-chars-modified-tick))
+                            (send-time (current-time))
+                            (deadline (+ (float-time) 2)))
+                        (ghostel--send-string ch)
+                        (while (and (= (buffer-chars-modified-tick) tick)
+                                    (< (float-time) deadline))
+                          (accept-process-output ghostel--process 0.001))
+                        (* 1000 (float-time
+                                 (time-subtract (current-time) send-time))))))
               ;; Warm up native trampolines, redraw caches, and the echo path;
               ;; these samples are discarded so cold-start cost doesn't skew
               ;; the tail.
@@ -1332,7 +1327,7 @@ showing up in the rendered ghostel buffer."
               (let ((gc-cons-threshold (max gc-cons-threshold
                                             (* 256 1024 1024))))
                 (dotimes (i count)
-                  (push (tap (string (+ ?a (% i 26)))) results))))))
+                  (push (tap (string (+ ?a (% i 26)))) results)))))
       (when (buffer-live-p buf)
         (when ghostel--term
           (ignore-errors (ghostel--kill-native-process ghostel--term)))

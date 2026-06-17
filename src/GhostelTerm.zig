@@ -263,7 +263,7 @@ pub fn spawnNativeProcess(
     env: *const std.process.EnvMap,
     cwd: [:0]const u8,
     event_pipe: std.posix.fd_t,
-) !void {
+) !std.posix.pid_t {
     if (command.len == 0) return error.InvalidCommand;
 
     var pty_process = try PtyProcess.init(
@@ -272,11 +272,12 @@ pub fn spawnNativeProcess(
         self.terminal.rows,
         .{ .file = command[0], .args = command, .env = env, .cwd = cwd },
     );
-    errdefer pty_process.deinitAndWait();
+    errdefer _ = pty_process.deinitAndWait();
     const process = try self.alloc.create(NativeProcess);
     errdefer self.alloc.destroy(process);
     try process.init(self.alloc, pty_process, &self.terminal, event_pipe);
     self.process = process;
+    return process.process.pid;
 }
 
 pub fn killNativeProcess(self: *Self) void {
@@ -771,9 +772,10 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .doc =
         \\Spawn COMMAND for TERM using the native PTY reader.
         \\
-        \\COMMAND is a list of argv strings.  PIPE is an Emacs pipe process;
-        \\the reader writes Lisp event forms to it when terminal state changes
-        \\or a terminal callback must run in Emacs.
+        \\COMMAND is a list of argv strings.  PIPE is an Emacs pipe process
+        \\that acts as the Emacs-side process handle.  The native reader writes
+        \\Lisp event forms to it, and the native reaper writes a final numeric
+        \\exit status before closing it.
         \\
         \\(ghostel--spawn-native-process TERM COMMAND PIPE)
         ,
@@ -804,13 +806,13 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     &buf,
                 ));
                 defer module_alloc.free(cwd);
-                try term.spawnNativeProcess(
+                const pid = try term.spawnNativeProcess(
                     cmd.items,
                     &process_env,
                     cwd,
                     env.openChannel(pipe_val),
                 );
-                return env.nil();
+                return env.makeInteger(pid);
             }
         },
     },
@@ -818,9 +820,12 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .name = "ghostel--kill-native-process",
         .arity = .{ 1, 1 },
         .doc =
-        \\Stop TERM's native PTY reader and reap its child process.
+        \\Stop TERM's native PTY reader without waiting for child exit.
         \\
-        \\No-op when TERM is not using the native PTY path.
+        \\This closes the PTY and stops the reader; it does not send SIGKILL.
+        \\The detached native reaper waits for the child asynchronously and
+        \\signals completion through the event pipe.  No-op when TERM is not
+        \\using the native PTY path.
         \\
         \\(ghostel--kill-native-process TERM)
         ,

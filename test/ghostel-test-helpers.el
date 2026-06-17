@@ -125,11 +125,9 @@ PTY creation failing with PtyOpenFailed."
 
 (defun ghostel-test--lifecycle-process (&optional buffer)
   "Return BUFFER's active ghostel lifecycle process, if any.
-For the Emacs PTY path this is `ghostel--process'; for the native
-PTY path this is `ghostel--event-pipe'.  BUFFER defaults to the
-current buffer."
+BUFFER defaults to the current buffer."
   (with-current-buffer (or buffer (current-buffer))
-    (or ghostel--process ghostel--event-pipe)))
+    ghostel--process))
 
 (defun ghostel-test--cleanup-exec-buffer (buffer)
   "Best-effort cleanup for a ghostel exec BUFFER."
@@ -137,9 +135,8 @@ current buffer."
     (with-current-buffer buffer
       (when ghostel--term
         (ignore-errors (ghostel--kill-native-process ghostel--term)))
-      (dolist (proc (delq nil (list ghostel--process ghostel--event-pipe)))
-        (when (process-live-p proc)
-          (ignore-errors (delete-process proc))))
+      (when (process-live-p ghostel--process)
+        (ignore-errors (delete-process ghostel--process)))
       (when ghostel--redraw-timer
         (cancel-timer ghostel--redraw-timer)
         (setq ghostel--redraw-timer nil))
@@ -289,7 +286,7 @@ Return the matching payload.  PROCESS and TIMEOUT are passed to
 (defun ghostel-test--wait-until (pred &optional process timeout)
   "Poll until PRED returns non-nil, or TIMEOUT seconds elapse.
 PROCESS, when non-nil, is passed to `accept-process-output' so both
-Emacs PTY and native event-pipe output can be drained."
+Emacs PTY and native event output can be drained."
   (let* ((timeout (or timeout 5))
          (deadline (+ (float-time) timeout))
          result)

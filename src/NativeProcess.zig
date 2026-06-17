@@ -124,11 +124,20 @@ fn run(self: *Self) void {
         log.warn("ghostel: error in read loop: {any}", .{err});
     };
 
-    _ = self.process.deinitAndWait();
-
-    self.writeEvent("(delete-process ghostel--event-pipe)") catch {};
-    self.flushEvents() catch {};
-    posix.close(self.event_pipe);
+    // The reader thread must not waitpid here: it may be joined from Emacs
+    // during buffer teardown, and blocking that path would freeze Emacs.  Hand
+    // the child and event pipe to a detached reaper instead.  The pipe stays
+    // open until the reaper observes child exit, mirroring Emacs process
+    // lifetime semantics for the Lisp-side pipe process.
+    const reaper_thread = std.Thread.spawn(
+        .{ .stack_size = 1024 * 1024 },
+        reapChild,
+        .{ self.process, self.event_pipe },
+    ) catch |err| {
+        log.err("Failed to spawn reaper thread: {any}", .{err});
+        return;
+    };
+    reaper_thread.detach();
 }
 
 fn loop(self: *Self) !void {
@@ -244,6 +253,20 @@ fn drainSigpipe() void {
         var sig: c_int = undefined;
         _ = c.sigwait(&wait_sigs, &sig);
     }
+}
+
+fn reapChild(process: PtyProcess, event_pipe: posix.fd_t) void {
+    var proc = process;
+    const exit_code = proc.deinitAndWait();
+
+    // A bare number is not a terminal callback; the Elisp event filter treats
+    // it as the child's exit status and deletes the pipe process to run its
+    // sentinel.  Closing the fd after the write releases Emacs' pipe once the
+    // native child is truly gone.
+    var exit_code_buf: [3]u8 = undefined;
+    const str = std.fmt.bufPrint(&exit_code_buf, "{}", .{exit_code}) catch unreachable;
+    _ = posix.write(event_pipe, str) catch {};
+    posix.close(event_pipe);
 }
 
 pub fn deinit(self: *Self) void {

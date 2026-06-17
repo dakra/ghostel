@@ -163,7 +163,9 @@ pub fn init(alloc: Allocator, initial_cols: u16, initial_rows: u16, params: Proc
     std.c._exit(1);
 }
 
-pub fn deinitAndWait(self: *Self) void {
+pub fn deinitAndWait(self: *Self) u8 {
     self.pty.deinit();
-    _ = posix.waitpid(self.pid, 0);
+    if (self.pid == -1) return 0;
+    const result = posix.waitpid(self.pid, 0);
+    return @intCast(c.WEXITSTATUS(@as(c_int, @bitCast(result.status))));
 }

@@ -91,6 +91,41 @@ buffer eventually shows up."
               (should (equal ghostel--buffer-identity "identity")))))
       (kill-buffer buf))))
 
+(defun ghostel-test-exec--pid-live-p (pid)
+  "Return non-nil when PID names a live process."
+  (and (integerp pid)
+       (= 0 (call-process "/bin/sh" nil nil nil
+                          "-c" (format "kill -0 %d" pid)))))
+
+(defun ghostel-test-exec--wait-for-file (file &optional process timeout)
+  "Wait until FILE exists and return FILE.
+PROCESS and TIMEOUT are passed to `ghostel-test--wait-until'."
+  (ghostel-test--wait-until
+   (lambda () (and (file-exists-p file) file))
+   process timeout))
+
+(defun ghostel-test-exec--loop-script (&optional hup-file ignore-hup)
+  "Return a shell script that loops forever.
+When HUP-FILE is non-nil, SIGHUP is trapped, recorded there, and exits
+unless IGNORE-HUP is non-nil.  When IGNORE-HUP is non-nil and HUP-FILE
+is nil, SIGHUP is ignored."
+  (concat
+   (cond
+    (hup-file
+     (format "trap 'echo HUP > %s%s' HUP; "
+             (shell-quote-argument hup-file)
+             (if ignore-hup "" "; exit 0")))
+    (ignore-hup
+     "trap '' HUP; ")
+    (t ""))
+   "printf GHOSTEL_LIFECYCLE_READY; "
+   "while :; do sleep 1; done"))
+
+(defun ghostel-test-exec--kill-pid (pid)
+  "Best-effort SIGKILL for PID."
+  (when (ghostel-test-exec--pid-live-p pid)
+    (ignore-errors (signal-process pid 'KILL))))
+
 (ert-deftest ghostel-test-exec-cat-roundtrip ()
   "Bytes written to a `ghostel-exec' PTY reach the child."
   :tags '(native)
@@ -114,26 +149,127 @@ buffer eventually shows up."
       (should (string-match-p "GHOSTEL_FINAL_OUTPUT"
                               (ghostel-test--terminal-text))))))
 
-(ert-deftest ghostel-test-exec-kill-buffer-kills-process ()
-  "Killing a `ghostel-exec' buffer tears down its process."
+(ert-deftest ghostel-test-exec-kill-buffer-sends-sighup ()
+  "Killing a `ghostel-exec' buffer sends SIGHUP to the child."
   :tags '(native)
   (skip-unless (file-executable-p "/bin/sh"))
   (ghostel-test--with-pty-matrix backend
-    (let ((buf (generate-new-buffer " *ghostel-test-kill-lifecycle*"))
-          proc)
+    (let* ((dir (make-temp-file (expand-file-name "ghostel-life-" default-directory) t))
+           (hup-file (expand-file-name "hup" dir))
+           (buf (generate-new-buffer " *ghostel-test-kill-hup*"))
+           proc pid)
       (unwind-protect
           (progn
             (with-current-buffer buf
               (let ((ghostel-kill-buffer-on-exit nil))
                 (setq proc (ghostel-exec
                             buf "/bin/sh"
-                            '("-c" "printf GHOSTEL_SLEEP_READY; sleep 30")))
-                (ghostel-test--wait-for-text "GHOSTEL_SLEEP_READY" proc 5)))
+                            (list "-c" (ghostel-test-exec--loop-script
+                                        hup-file))))
+                (ghostel-test--wait-for-text "GHOSTEL_LIFECYCLE_READY" proc 5)
+                (setq pid ghostel--pid)))
             (kill-buffer buf)
+            (ghostel-test-exec--wait-for-file hup-file nil 5)
             (ghostel-test--wait-until
-             (lambda () (not (process-live-p proc))) nil 5))
+             (lambda () (not (process-live-p proc))) nil 5)
+            (should-not (ghostel-test-exec--pid-live-p pid)))
+        (ghostel-test-exec--kill-pid pid)
         (when (buffer-live-p buf)
-          (ghostel-test--cleanup-exec-buffer buf))))))
+          (ghostel-test--cleanup-exec-buffer buf))
+        (delete-directory dir t)))))
+
+(ert-deftest ghostel-test-exec-kill-buffer-leaves-sighup-ignoring-child-live ()
+  "A child that ignores SIGHUP keeps the lifecycle process alive after buffer kill."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (ghostel-test--with-pty-matrix backend
+    (let* ((dir (make-temp-file (expand-file-name "ghostel-life-" default-directory) t))
+           (buf (generate-new-buffer " *ghostel-test-kill-ignore-hup*"))
+           proc pid)
+      (unwind-protect
+          (progn
+            (with-current-buffer buf
+              (let ((ghostel-kill-buffer-on-exit nil))
+                (setq proc (ghostel-exec
+                            buf "/bin/sh"
+                            (list "-c" (ghostel-test-exec--loop-script
+                                        nil t))))
+                (ghostel-test--wait-for-text "GHOSTEL_LIFECYCLE_READY" proc 5)
+                (setq pid ghostel--pid)))
+            (kill-buffer buf)
+            ;; Give process deletion paths a chance to run.  The assertion that
+            ;; PROC is still live also guards against blocking Emacs here: if
+            ;; teardown waited synchronously for the child, this test would hang
+            ;; before reaching the assertion.
+            (accept-process-output proc 0.2)
+            (should (ghostel-test-exec--pid-live-p pid))
+            (should (process-live-p proc)))
+        (ghostel-test-exec--kill-pid pid)
+        (when (process-live-p proc)
+          (ghostel-test--wait-until
+           (lambda () (not (process-live-p proc))) nil 5))
+        (when (buffer-live-p buf)
+          (ghostel-test--cleanup-exec-buffer buf))
+        (delete-directory dir t)))))
+
+(ert-deftest ghostel-test-exec-child-kill-runs-exit-lifecycle ()
+  "Killing the child process runs the normal Ghostel exit lifecycle."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (ghostel-test--with-pty-matrix backend
+    (let* ((dir (make-temp-file (expand-file-name "ghostel-life-" default-directory) t))
+           (buf (generate-new-buffer " *ghostel-test-child-kill*"))
+           proc pid exit-buffer exit-event)
+      (unwind-protect
+          (progn
+            (with-current-buffer buf
+              (let ((ghostel-kill-buffer-on-exit t))
+                (setq proc (ghostel-exec
+                            buf "/bin/sh"
+                            (list "-c" (ghostel-test-exec--loop-script))))
+                (add-hook 'ghostel-exit-functions
+                          (lambda (buffer event)
+                            (setq exit-buffer buffer
+                                  exit-event event))
+                          nil t)
+                (ghostel-test--wait-for-text "GHOSTEL_LIFECYCLE_READY" proc 5)
+                (setq pid ghostel--pid)))
+            (signal-process pid 'TERM)
+            (ghostel-test--wait-until (lambda () exit-event) proc 5)
+            (should (eq exit-buffer buf))
+            (should-not (buffer-live-p buf))
+            (should-not (process-live-p proc)))
+        (ghostel-test-exec--kill-pid pid)
+        (when (buffer-live-p buf)
+          (ghostel-test--cleanup-exec-buffer buf))
+        (delete-directory dir t)))))
+
+(ert-deftest ghostel-test-exec-delete-process-kills-sighup-ignoring-child ()
+  "Deleting the lifecycle process kills the child even when it ignores SIGHUP."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (ghostel-test--with-pty-matrix backend
+    (let* ((dir (make-temp-file (expand-file-name "ghostel-life-" default-directory) t))
+           (buf (generate-new-buffer " *ghostel-test-delete-process*"))
+           proc pid)
+      (unwind-protect
+          (progn
+            (with-current-buffer buf
+              (let ((ghostel-kill-buffer-on-exit nil))
+                (setq proc (ghostel-exec
+                            buf "/bin/sh"
+                            (list "-c" (ghostel-test-exec--loop-script
+                                        nil t))))
+                (ghostel-test--wait-for-text "GHOSTEL_LIFECYCLE_READY" proc 5)
+                (setq pid ghostel--pid)))
+            (delete-process proc)
+            (ghostel-test--wait-until
+             (lambda () (not (ghostel-test-exec--pid-live-p pid))) nil 5)
+            (should-not (process-live-p proc)))
+        (ghostel-test-exec--kill-pid pid)
+        (when (buffer-live-p buf)
+          (ghostel-test--cleanup-exec-buffer buf))
+        (delete-directory dir t)))))
 
 (ert-deftest ghostel-test-eshell-visual-command-mode-toggles-advice ()
   "Enabling/disabling the mode adds/removes the `eshell-exec-visual' advice."

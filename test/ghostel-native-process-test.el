@@ -2,7 +2,7 @@
 
 ;;; Commentary:
 
-;; Native PTY event-pipe serialization and Elisp event-filter parsing.
+;; Native PTY event serialization and Elisp event-filter parsing.
 
 ;;; Code:
 
@@ -20,8 +20,8 @@
 
 (defun ghostel-test-native-process--with-events-filter (fn)
   "Call FN in a buffer-local `ghostel--events-filter' unit-test context.
-FN receives a fake PROCESS value and a zero-argument function returning
-the number of redraw invalidations requested."
+FN receives a fake pipe process value and a zero-argument function
+returning the number of redraw invalidations requested."
   (let ((buffer (generate-new-buffer " *ghostel-test-events-filter*")))
     (unwind-protect
         (with-current-buffer buffer
@@ -115,7 +115,7 @@ must not leave `ghostel--event-buf' in a poisoned state."
                     "backslash \\\") (setq ghostel-test-native-process--evil 'backslash) (\" title"
                     "newline\n\")\n(setq ghostel-test-native-process--evil 'newline)\n(\" title")))
     (ghostel-test--with-raw-cat-buffer (buf proc)
-      (should ghostel--event-pipe)
+      (should ghostel--process)
       (cl-letf (((symbol-function 'ghostel--set-title)
                  (lambda (title) (push title titles))))
         (dolist (payload payloads)

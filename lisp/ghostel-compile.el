@@ -571,8 +571,7 @@ resize hooks
   (let ((existing (get-buffer name)))
     (when existing
       (with-current-buffer existing
-        (let ((proc (or (bound-and-true-p ghostel--process)
-						(bound-and-true-p ghostel--event-pipe))))
+        (let ((proc (bound-and-true-p ghostel--process)))
           (when (process-live-p proc)
             (if (or (eq (process-query-on-exit-flag proc) nil)
                     compilation-always-kill

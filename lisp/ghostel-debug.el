@@ -659,7 +659,6 @@ omit it when the connection itself is the suspected fault."
           (let (buf-name maj-mode dir remote modes
                 proc cmd shell shell-integ tramp-integ detected
                 term term-rows term-cols force timer input-mode
-                event-pipe
                 buf-size buf-lines pt dec2026 alt-scr
                 dln-on dln-style spawn-capture)
             (with-current-buffer ghostel-buf
@@ -686,7 +685,6 @@ omit it when the connection itself is the suspected fault."
                     force ghostel--force-next-redraw
                     timer (and ghostel--redraw-timer t)
                     input-mode ghostel--input-mode
-                    event-pipe ghostel--event-pipe
                     buf-size (buffer-size)
                     buf-lines (count-lines (point-min) (point-max))
                     pt (point)
@@ -787,11 +785,6 @@ omit it when the connection itself is the suspected fault."
                     (insert (format "Force next redraw:   %s\n" force))
                     (insert (format "Redraw timer:        %s\n"
                                     (if timer "pending" "none")))
-                    (insert (format "Event pipe:          %s\n"
-                                    (cond ((null event-pipe) "nil")
-                                          ((process-live-p event-pipe) "live")
-                                          (t (format "dead (%s)"
-                                                     (process-status event-pipe))))))
                     (insert (format "Input mode:          %s\n"
                                     (or input-mode "(unknown)"))))
                 (insert "Term handle:         nil (no terminal)\n"))
@@ -1658,12 +1651,11 @@ mouse modes, alt screen, sync output), and process state."
   (let* ((buf (plist-get state :buffer))
          (out (get-buffer-create "*ghostel-debug-keypress*"))
          (calls (nreverse (plist-get state :calls)))
-         term proc event-pipe)
+         term proc)
     (when (buffer-live-p buf)
       (with-current-buffer buf
         (setq term ghostel--term
-              proc ghostel--process
-              event-pipe ghostel--event-pipe)))
+              proc ghostel--process)))
     (with-current-buffer out
       (let ((inhibit-read-only t))
         (erase-buffer)
@@ -1714,8 +1706,6 @@ mouse modes, alt screen, sync output), and process state."
         ;; Process
         (insert "\n--- Process ---\n")
         (cond
-         ((and (null proc) event-pipe)
-          (insert (format "Event pipe:          %s\n" (process-status event-pipe))))
          ((null proc)
           (insert "Process:             nil\n"))
          ((not (process-live-p proc))
