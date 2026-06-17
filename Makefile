@@ -10,6 +10,8 @@ MELPAZOID_DIR  ?= $(XDG_CACHE_HOME)/melpazoid
 EVIL_DIR       ?= $(XDG_CACHE_HOME)/evil
 LINT_ELPA_DIR  ?= $(XDG_CACHE_HOME)/ghostel-lint-elpa
 LINT_DEPS_STAMP := $(LINT_ELPA_DIR)/.deps-installed
+DOC_ELPA_DIR   ?= $(XDG_CACHE_HOME)/ghostel-doc-elpa
+DOC_DEPS_STAMP := $(DOC_ELPA_DIR)/.deps-installed
 
 ELISP_FILES := $(filter-out %-autoloads.el,$(wildcard lisp/ghostel*.el) \
                                       $(wildcard extensions/evil-ghostel/*.el))
@@ -35,7 +37,7 @@ endif
 ZIG_SOURCES := $(wildcard src/*.zig src/*.c build.zig build.zig.zon symbols.map) \
                $(wildcard vendor/*.h)
 
-.PHONY: all build test test-native test-zig test-hypothesis test-hypothesis-cases test-all test-evil lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel byte-compile docquotes bench bench-quick bench-e2e bench-tui-partial clean regen-terminfo
+.PHONY: all build test test-native test-zig test-hypothesis test-hypothesis-cases test-all test-evil lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel byte-compile docquotes bench bench-quick bench-e2e bench-tui-partial html clean regen-terminfo
 
 # Recommended invocation: `make -j$(nproc) all' on Linux,
 # `make -j$(sysctl -n hw.ncpu) all' on macOS.  GNU make 4+ also accepts
@@ -204,10 +206,46 @@ bench-tui-partial:
 	$(EMACS) --batch $(EMACSFLAGS) -Q -L lisp -l bench/ghostel-bench.el \
 		--eval '(progn (setq ghostel-bench-include-vterm nil ghostel-bench-include-eat nil ghostel-bench-include-term nil) (ghostel-bench--load-backends) (ghostel-bench--run-tui-partial-scenarios))'
 
+# htmlize provides source-block syntax highlighting for the HTML export.
+# Provision it into an isolated `package-user-dir' (mirrors the
+# package-lint setup above) so `make html' is standalone; CI picks it up
+# automatically via the `public/index.html' prerequisite.
+$(DOC_DEPS_STAMP):
+	$(EMACS) --batch $(EMACSFLAGS) -Q \
+		--eval "(require 'package)" \
+		--eval "(setq package-user-dir \"$(DOC_ELPA_DIR)\")" \
+		--eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\") t)" \
+		--eval "(package-initialize)" \
+		--eval "(package-refresh-contents)" \
+		--eval "(package-install 'htmlize)"
+	@touch $@
+
+# Export README.org to a themed single-page site (ReadTheOrg) for GitHub
+# Pages.  The explicit output filename sidesteps `#+export_file_name:
+# ghostel.texi' (which would otherwise make ox-html write ghostel.html).
+# Needs network access for the ReadTheOrg `#+SETUPFILE'.
+html: public/index.html
+
+public/index.html: README.org $(DOC_DEPS_STAMP)
+	@mkdir -p public
+	$(EMACS) --batch $(EMACSFLAGS) -Q \
+		--eval "(setq package-user-dir \"$(DOC_ELPA_DIR)\")" \
+		--eval "(package-initialize)" \
+		--eval "(require 'htmlize)" \
+		--eval "(require 'ox-html)" \
+		--eval "(setq make-backup-files nil \
+		              org-html-validation-link nil \
+		              org-export-with-broken-links 'mark \
+		              org-html-htmlize-output-type 'css \
+		              org-resource-download-policy 'safe \
+		              org-safe-remote-resources '(\"\\\\\`https://fniessen\\\\.github\\\\.io/\"))" \
+		--eval "(with-current-buffer (find-file-noselect \"README.org\") \
+		          (org-export-to-file 'html \"public/index.html\"))"
+
 clean:
 	rm -f ghostel-module.dylib ghostel-module.so
 	rm -f $(ELC)
-	rm -rf zig-out .zig-cache .build
+	rm -rf zig-out .zig-cache .build public
 
 # Maintainer-only: regenerate the bundled compiled terminfo from
 # `etc/terminfo/xterm-ghostty.terminfo'.  Run after bumping libghostty

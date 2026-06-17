@@ -10,3 +10,4 @@ ghostel-autoloads.el
 ghostel-pkg.el
 ghostel-module.*
 !ghostel-module.zig
+public/
