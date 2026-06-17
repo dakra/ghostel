@@ -16,6 +16,11 @@ All notable changes to this project will be documented in this file.
   Mouse selection still follows `ghostel-mouse-drag-input-mode`
   independently.
 
+### Changed
+- Ghostel now drains bounded bursts of ready PTY output from the
+  process filter, improving throughput for high-volume terminal
+  programs while preserving the existing redraw scheduling path.
+
 ### Fixed
 - Char mode now captures GUI `C-SPC` and forwards it to the terminal as NUL;
   previously only the TTY `C-@` representation was bound, so a GUI

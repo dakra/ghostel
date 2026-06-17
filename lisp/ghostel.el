@@ -333,6 +333,15 @@ and sent as a single write to the PTY.  This reduces per-key
 syscall overhead during fast typing.  Set to 0 to disable."
   :type 'number)
 
+(defcustom ghostel-output-drain-limit 256
+  "Maximum number of ready PTY output batches to drain per filter call.
+Emacs can return to the main event loop after one small PTY read, even
+when a bursty terminal program already has more output ready.
+Draining a bounded burst keeps high-throughput programs from stalling
+behind timer and redisplay scheduling while still yielding regularly.
+Set to 0 to disable burst draining."
+  :type 'natnum)
+
 (defcustom ghostel-full-redraw nil
   "When non-nil, always perform full redraws instead of incremental updates.
 Full redraws are more robust with TUI apps like Claude Code that do
@@ -5373,6 +5382,27 @@ logical focus state transitions.  Further gates on terminal mode 1004."
 
 ;;; Process management
 
+(defun ghostel--drain-process-output (process)
+  "Drain a bounded burst of ready output from PROCESS.
+This runs from `ghostel--filter' after the current chunk has been
+written to the terminal.  `accept-process-output' may invoke the same
+filter recursively, so a process property prevents nested drain
+loops while still allowing recursive filters to feed the terminal."
+  (let ((limit ghostel-output-drain-limit))
+    (when (and (integerp limit)
+               (> limit 0)
+               (eq process ghostel--process)
+               (process-live-p process)
+               (not (process-get process 'ghostel--filter-draining)))
+      (process-put process 'ghostel--filter-draining t)
+      (unwind-protect
+          (let ((count 0))
+            (while (and (< count limit)
+                        (process-live-p process)
+                        (accept-process-output process 0 nil t))
+              (setq count (1+ count))))
+        (process-put process 'ghostel--filter-draining nil)))))
+
 (defun ghostel--filter (process output)
   "Process filter: feed PTY output to the terminal.
 PROCESS is the shell process, OUTPUT is the raw byte string.
@@ -5400,7 +5430,8 @@ the redraw is performed immediately to minimize typing latency."
                     ghostel-immediate-redraw-interval))
             (ghostel--redraw-now (current-buffer))
           ;; Bulk output: schedule a later redraw.
-          (ghostel--invalidate))))))
+          (ghostel--invalidate))
+        (ghostel--drain-process-output process)))))
 
 (defun ghostel--sentinel (process event)
   "Process sentinel: clean up when shell exits.
