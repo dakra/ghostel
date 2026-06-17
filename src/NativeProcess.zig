@@ -249,6 +249,7 @@ fn flushEvents(self: *Self) !void {
 pub fn deinit(self: *Self) void {
     _ = posix.write(self.quit_pipe[1], "X") catch {};
     self.thread.join();
+    self.stream.deinit();
     posix.close(self.quit_pipe[1]);
     posix.close(self.quit_pipe[0]);
 }
