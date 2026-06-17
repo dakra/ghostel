@@ -17,10 +17,19 @@
 # Idempotency guard — skip if already loaded (e.g. auto-injected).
 (( $+functions[__ghostel_osc7] )) && return
 
+# Capture gethostname(2) once for OSC 7, matching Emacs `(system-name)'.
+# zsh canonicalizes $HOST to the FQDN under a DNS search domain, which
+# would make the local shell look remote and wrongly switch on TRAMP.
+# `hostname' reports gethostname(2) verbatim (as the bash and fish
+# integrations do); fall back to $HOST if it is missing or empty.  The
+# `|| ...' form keeps that fallback errexit-safe.
+__ghostel_host=$(command hostname 2>/dev/null) || __ghostel_host=$HOST
+[[ -n $__ghostel_host ]] || __ghostel_host=$HOST
+
 # Report working directory to the terminal via OSC 7
 __ghostel_osc7() {
     builtin emulate -L zsh -o no_warn_create_global -o no_aliases
-    builtin printf '\e]7;file://%s%s\a' "$HOST" "$PWD"
+    builtin printf '\e]7;file://%s%s\a' "$__ghostel_host" "$PWD"
 }
 
 # --- Semantic prompt markers (OSC 133) ---

@@ -439,6 +439,52 @@ sets libghostty's recorded cwd.  Mirrors the bash race test."
       ;; The LAST OSC 7 must be ours.
       (should-not (string-match-p "competing-host" (car (last osc7s)))))))
 
+(ert-deftest ghostel-test-zsh-osc7-uses-gethostname-not-fqdn ()
+  "Zsh OSC 7 must report gethostname(2), not the canonicalized $HOST (#417).
+
+zsh canonicalizes $HOST to the FQDN when a DNS search domain is set, which
+disagrees with gethostname(2) (Emacs function `system-name').  The integration
+must instead report the `hostname' command's value so the local-host comparison
+in `ghostel--update-directory' succeeds and the buffer is not misclassified as
+remote.  The probe pollutes $HOST with an FQDN (as zsh's canonicalization
+would) and puts a fake `hostname' on PATH; the integration must emit the fake
+`hostname' value, not the polluted $HOST.  Mirrors the bash sibling test
+`ghostel-test-bash-osc7-ignores-env-hostname'."
+  :tags '(native)
+  (skip-unless (executable-find "zsh"))
+  (let* ((root (or (ghostel--resource-root)
+                   (file-name-directory (locate-library "ghostel"))))
+         (shell-zsh (expand-file-name "etc/shell/ghostel.zsh" root)))
+    (skip-unless (file-exists-p shell-zsh))
+    (let ((bindir (make-temp-file "ghostel-fakebin" t))
+          (fake "ghostel-test-real-host")
+          (fqdn "ghostel-test-real-host.example.com"))
+      (unwind-protect
+          (let ((script (expand-file-name "hostname" bindir)))
+            (with-temp-file script
+              (insert "#!/bin/sh\nprintf '%s\\n' " fake "\n"))
+            (set-file-modes script #o755)
+            (let* ((process-environment
+                    (append (list (concat "PATH=" bindir ":" (getenv "PATH"))
+                                  "INSIDE_EMACS=ghostel")
+                            process-environment))
+                   ;; Pollute $HOST with the FQDN, as zsh does when a DNS
+                   ;; search domain is set — the integration must ignore it.
+                   (probe (format "cd /; HOST=%s; source %s; __ghostel_osc7"
+                                  fqdn shell-zsh))
+                   (output (with-temp-buffer
+                             (call-process "zsh" nil (current-buffer) nil
+                                           "-f" "-c" probe)
+                             (buffer-string))))
+              ;; Probe emits: \e]7;file://HOST/\a
+              (should (string-match "\e\\]7;file://\\([^/]*\\)/" output))
+              (let ((emitted (match-string 1 output)))
+                ;; Reports gethostname(2) (the fake `hostname'), …
+                (should (equal emitted fake))
+                ;; … not the canonicalized $HOST FQDN.
+                (should-not (equal emitted fqdn)))))
+        (delete-directory bindir t)))))
+
 (ert-deftest ghostel-test-osc7-parsing ()
   "Test that OSC 7 sequences are parsed by libghostty."
   :tags '(native)

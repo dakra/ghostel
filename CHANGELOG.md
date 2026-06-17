@@ -17,6 +17,14 @@ All notable changes to this project will be documented in this file.
   independently.
 
 ### Fixed
+- ZSH shell integration now reports gethostname(2) in its OSC 7 directory update
+  (matching the bash and fish integrations and Emacs `system-name`), instead of
+  zsh's `$HOST`, which is canonicalized to the fully qualified domain name when a
+  DNS search domain is configured.  Previously the FQDN disagreed with
+  `system-name` (the short hostname), so the local shell was misclassified as
+  remote and switched on TRAMP (#417).
+- Fish shell integration now caches the hostname once at load instead of forking
+  the `hostname` command on every prompt, matching the bash and zsh integrations.
 - Char mode now captures GUI `C-SPC` and forwards it to the terminal as NUL;
   previously only the TTY `C-@` representation was bound, so a GUI
   Ctrl+Space in char mode fell through to the global `set-mark-command`.
