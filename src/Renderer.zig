@@ -603,45 +603,16 @@ fn adjustGlyph(
         start_val,
         end_val,
     ) orelse return;
-    var char_width: i64 = if (cell.wide) 2 else 1;
-    var slot_width = default_font_info.width * char_width;
 
     // Skip adjustments if size already matches perfectly
-    if (metrics.width == slot_width and
+    const native_char_width: i64 = if (cell.wide) 2 else 1;
+    const native_slot_width = default_font_info.width * native_char_width;
+    if (metrics.width == native_slot_width and
         metrics.ascent == default_font_info.ascent and
         metrics.descent == default_font_info.descent) return;
 
-    // Let's check if we can claim some space after the glyph to be able to render
-    // it larger than the cell size while still maintaining alignment.
-    const pre_char_width = char_width;
-    while (cell.col + char_width < self.term.cols) : ({
-        char_width += 1;
-        slot_width = default_font_info.width * char_width;
-    }) {
-        const cell_aspect = @as(f64, @floatFromInt(slot_width)) /
-            @as(f64, @floatFromInt(default_font_info.ascent + default_font_info.descent));
-        const glyph_aspect = @as(f64, @floatFromInt(metrics.width)) /
-            @as(f64, @floatFromInt(metrics.ascent + metrics.descent));
-        // If the aspect of the glyph is narrower than that of the cell, we're done
-        if (glyph_aspect < cell_aspect) break;
-
-        const claim_pos = row_start + cell.char_end + (char_width - pre_char_width);
-        // Lines are right-trimmed of trailing spaces, so positions at and past
-        // the newline represent empty space we can freely claim.
-        if (claim_pos >= row_end - 1) continue;
-
-        const c = env.cast(i64, env.f("char-after", .{claim_pos}));
-        if (c == ' ') {
-            _ = env.f("put-text-property", .{
-                claim_pos,
-                claim_pos + 1,
-                s.display,
-                env.cons(s.space, env.list(.{ s.@":width", 0 })),
-            });
-        } else {
-            break;
-        }
-    }
+    const char_width = self.adjustWidth(env, row_start, row_end, cell, metrics);
+    const slot_width = default_font_info.width * char_width;
 
     // Height is clamped per side, not on the sum: the row realizes
     // max(ascent) + max(descent) across all glyphs sharing the baseline, so a
@@ -668,6 +639,62 @@ fn adjustGlyph(
         s.display,
         display_spec,
     });
+}
+
+fn adjustWidth(
+    self: *Self,
+    env: emacs.Env,
+    row_start: i64,
+    row_end: i64,
+    cell: *const RowContent.CellInfo,
+    metrics: GlyphMetricsCache.Metrics,
+) i64 {
+    const s = emacs.sym;
+    const default_font_info = self.font_info.?;
+
+    if (cell.wide) {
+        // Cell is already wide
+        return 2;
+    }
+
+    // Let's check if we can claim some space after the glyph to be able to render
+    // it larger than the cell size while still maintaining alignment.
+    const cell_aspect = @as(f64, @floatFromInt(default_font_info.width)) /
+        @as(f64, @floatFromInt(default_font_info.ascent + default_font_info.descent));
+    const glyph_aspect = @as(f64, @floatFromInt(metrics.width)) /
+        @as(f64, @floatFromInt(metrics.ascent + metrics.descent));
+
+    if (glyph_aspect < cell_aspect) {
+        // We don't even need more space
+        return 1;
+    }
+
+    if (cell.col + 1 >= self.term.cols) {
+        // Can't claim out of bounds
+        return 1;
+    }
+
+    const claim_pos = row_start + cell.char_end;
+    if (claim_pos >= row_end - 1) {
+        // Next position is after end of line but within bounds,
+        // can claim freely
+        return 2;
+    }
+
+    // Finally, check if we have a space after the character. If so hide it and
+    // then claim it.
+    const c = env.cast(i64, env.f("char-after", .{claim_pos}));
+    if (c == ' ') {
+        _ = env.f("put-text-property", .{
+            claim_pos,
+            claim_pos + 1,
+            s.display,
+            env.cons(s.space, env.list(.{ s.@":width", 0 })),
+        });
+        return 2;
+    }
+
+    return 1;
 }
 
 fn getGlyphMetrics(
