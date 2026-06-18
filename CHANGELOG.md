@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.35.4] — 2026-06-19
+
+### Fixed
+- Native PTY startup now opens the replica with `NOCTTY`, avoiding crashes when
+  launching terminals from Emacs daemon mode.
+
 ## [0.35.3] — 2026-06-18
 
 ### Added
