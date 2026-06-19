@@ -467,5 +467,58 @@ delta in the phase timings section."
       (kill-buffer buf))))
 
 
+(ert-deftest ghostel-test-vt-warnings-do-not-leak-to-stderr ()
+  "VT-parser warnings must not reach the module's stderr (#425).
+In `emacs -nw' the module's stderr is the controlling tty, so a stray
+write (e.g. lazygit triggering \"unimplemented mode: 9001\") paints raw
+bytes onto the screen outside Emacs's redisplay and lingers near the
+mode line.  A release build must stay silent on stderr; logs are
+available only via `ghostel-debug-start'.  Spawns a child batch Emacs
+that feeds the offending sequence and asserts its stderr is clean."
+  :tags '(native)
+  (let* ((emacs (expand-file-name invocation-name invocation-directory))
+         (lisp (file-name-directory (locate-library "ghostel")))
+         (stderr-file (make-temp-file "ghostel-stderr"))
+         ;; Replicate the parent's `load-path' so the bare `-Q' child can load
+         ;; ghostel and its deps (e.g. compat on Emacs < 30, which CI supplies
+         ;; via -L); `\e' is a real ESC byte parsed as the VT set/reset of 9001.
+         (code (format
+                (concat "(progn (setq load-path '%S) (require 'ghostel)"
+                        " (let ((tm (ghostel--new 25 80 1000)))"
+                        " (ghostel--write-vt tm \"\e[?9001h\")"
+                        " (ghostel--write-vt tm \"\e[?9001l\")))")
+                load-path)))
+    (unwind-protect
+        (with-temp-buffer
+          (let ((status (call-process emacs nil (list t stderr-file) nil
+                                      "--batch" "-Q" "-L" lisp
+                                      "--eval" code)))
+            (should (equal 0 status)))
+          (let ((stderr (with-temp-buffer
+                          (insert-file-contents stderr-file)
+                          (buffer-string))))
+            (should-not (string-match-p "unimplemented mode" stderr))
+            (should-not (string-match-p "warning(stream)" stderr))))
+      (delete-file stderr-file))))
+
+(ert-deftest ghostel-test-vt-log-still-routes-to-debug-buffer ()
+  "With `vt-log' enabled, parser warnings still reach the debug buffer.
+Guards that silencing stderr (#425) didn't break the opt-in diagnosis
+path: `ghostel--enable-vt-log' must route libghostty logs to
+`ghostel-debug--log-buffer' via `ghostel--debug-log-vt'."
+  :tags '(native)
+  (skip-unless (fboundp 'ghostel--enable-vt-log))
+  (let ((ghostel-debug--log-buffer (generate-new-buffer " *ghostel-vt-log*")))
+    (unwind-protect
+        (progn
+          (ghostel--enable-vt-log)
+          (let ((term (ghostel--new 25 80 1000)))
+            (ghostel--write-vt term "\e[?9001h"))
+          (with-current-buffer ghostel-debug--log-buffer
+            (should (string-match-p "unimplemented mode: 9001"
+                                    (buffer-string)))))
+      (ghostel--disable-vt-log)
+      (kill-buffer ghostel-debug--log-buffer))))
+
 (provide 'ghostel-debug-test)
 ;;; ghostel-debug-test.el ends here

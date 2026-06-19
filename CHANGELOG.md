@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- Internal libghostty VT-parser warnings no longer leak to the module's
+  stderr in release builds. In a terminal Emacs (`emacs -nw`) that stderr is
+  the controlling tty, so the warnings were painted onto the screen outside
+  Emacs's redisplay and lingered — e.g. `unimplemented mode: 9001` left a
+  stale line near the mode line after running lazygit (#425). Such logs are
+  now available only via `M-x ghostel-debug-start` (`*ghostel-debug*`);
+  debug builds keep console output as before.
+
 ## [0.35.4] — 2026-06-19
 
 ### Fixed

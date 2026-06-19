@@ -143,7 +143,10 @@ fn logFn(
     comptime format: []const u8,
     args: anytype,
 ) void {
-    std.log.defaultLog(message_level, scope, format, args);
+    // Debug only: in `emacs -nw' the module's stderr is the user's tty.
+    if (builtin.mode == .Debug) {
+        std.log.defaultLog(message_level, scope, format, args);
+    }
 
     if (!vt_log_active) return;
     const env = emacs.current_env orelse return;
