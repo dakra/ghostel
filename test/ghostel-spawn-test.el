@@ -329,6 +329,39 @@ former defaulted to t and throttled bursty TUI redraws."
         (should (string-match-p "GHOSTEL_ECHO_TOKEN"
                                 (ghostel-test--terminal-text)))))))
 
+(ert-deftest ghostel-test-spawn-process-resolves-bare-program-from-exec-path ()
+  "A bare local PROGRAM resolves via variable `exec-path' before backend dispatch.
+This deliberately makes variable `exec-path' and the child PATH disagree: the
+probe program exists only on variable `exec-path', not in `process-environment'."
+  :tags '(native)
+  (let* ((dir (file-name-as-directory (make-temp-file "ghostel-path-" t)))
+         (exec-dir (directory-file-name dir))
+         (program-name "ghostel-path-probe")
+         (program-path (expand-file-name program-name dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file program-path
+            (insert "#!/bin/sh\nprintf 'GHOSTEL_PATH_PROBE:%s\\n' \"$0\"\n"))
+          (set-file-modes program-path #o755)
+          (ghostel-test--with-pty-matrix backend
+            (let* ((child-path (string-join '("/usr/bin" "/bin")
+                                             path-separator))
+                   (process-environment `(,(format "PATH=%s" child-path) "HOME=/tmp"))
+                   (exec-path (list exec-dir "/usr/bin" "/bin"))
+                   (ghostel-kill-buffer-on-exit nil)
+                   (default-directory "/tmp/"))
+              (should-not (member exec-dir
+                                  (split-string (getenv "PATH") path-separator t)))
+              (let ((found (executable-find program-name)))
+                (should found)
+                (should (file-equal-p program-path found)))
+              (ghostel-test--with-terminal-buffer (buf term 24 80 1000)
+                (let ((proc (ghostel--spawn-process program-name nil nil)))
+                  (ghostel-test--wait-for-text "GHOSTEL_PATH_PROBE:" proc 3)
+                  (should (ghostel-test--terminal-text-line-p
+                           (format "GHOSTEL_PATH_PROBE:%s" program-path))))))))
+      (delete-directory dir t))))
+
 (ert-deftest ghostel-test-spawn-initial-winsize-reaches-child ()
   "The child PTY is sized to the terminal dimensions at spawn.
 On the native path the PTY is opened at the term's rows/cols; on the

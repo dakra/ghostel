@@ -5427,6 +5427,17 @@ which always returns a string — no extra args."
       (cons (ghostel--get-shell) nil)
     (ghostel--shell-program-and-args ghostel-shell)))
 
+(defun ghostel--resolve-local-executable (program)
+  "Return the absolute local executable path for PROGRAM.
+Bare program names are resolved via variable `exec-path'.  PROGRAM with a
+directory component is expanded relative to `default-directory'."
+  (let ((resolved (if (file-name-directory program)
+                      (expand-file-name program)
+                    (executable-find program))))
+    (unless (and resolved (file-executable-p resolved))
+      (error "Searching for program: No such file or directory, %s" program))
+    resolved))
+
 (defun ghostel--macos-login-wrap (program args)
   "Wrap PROGRAM/ARGS via `/usr/bin/login' to produce a macOS login shell.
 Returns (LOGIN-PROGRAM . LOGIN-ARGS).  Mirrors Ghostty's wrap:
@@ -5815,13 +5826,17 @@ for the native child process."
 
 (defun ghostel--spawn-process (program program-args remote-p)
   "Dispatch the spawn of PROGRAM (with PROGRAM-ARGS) to native or Emacs.
+Local PROGRAM is resolved to an absolute path before backend dispatch.
 Local buffers use the native PTY path when `ghostel-use-native-pty'
 is non-nil; remote (REMOTE-P) buffers always go through Emacs so
 TRAMP can manage the remote shell."
-  (setq ghostel--process
-        (if (and ghostel-use-native-pty (not remote-p))
-            (ghostel--spawn-via-native (cons program program-args))
-          (ghostel--spawn-via-emacs program program-args remote-p))))
+  (let ((program (if remote-p
+                     program
+                   (ghostel--resolve-local-executable program))))
+    (setq ghostel--process
+          (if (and ghostel-use-native-pty (not remote-p))
+              (ghostel--spawn-via-native (cons program program-args))
+            (ghostel--spawn-via-emacs program program-args remote-p)))))
 
 (defun ghostel--spawn-via-emacs (program program-args &optional remote-p)
   "Spawn PROGRAM with PROGRAM-ARGS through Emacs process machinery.
