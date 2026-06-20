@@ -407,7 +407,6 @@ fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps) !void {
             s.@"ghostel-output",
             env.t(),
         }),
-        else => {},
     }
 }
 

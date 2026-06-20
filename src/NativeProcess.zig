@@ -31,6 +31,10 @@ wake_pipe: [2]posix.fd_t = .{ -1, -1 },
 quit: bool = false,
 thread: std.Thread,
 
+/// Whether OSC 133 semantic markers have been seen. Set and read under
+/// `term_mutex`; `GhostelTerm.redraw` folds it into the renderer.
+semantic_output_enabled: bool = false,
+
 pub fn init(
     self: *Self,
     alloc: Allocator,
@@ -52,6 +56,11 @@ pub fn init(
         .wake_pipe = pipe,
         .thread = try std.Thread.spawn(.{}, Self.run, .{self}),
     };
+}
+
+/// Mark that OSC 133 semantic markers have been seen (native case).
+pub fn enableSemanticOutput(self: *Self) void {
+    self.semantic_output_enabled = true;
 }
 
 pub fn lockTerm(self: *Self) void {

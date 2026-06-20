@@ -78,6 +78,10 @@ pub fn redraw(self: *Self, force_full: bool) !void {
     defer self.unlockTerm();
 
     const env = emacs.current_env orelse return;
+    // A native process sees OSC 133 markers on its own thread; fold its flag in.
+    if (self.process) |proc| {
+        if (proc.semantic_output_enabled) self.renderer.semantic_output_enabled = true;
+    }
     const pre_size = .{ self.terminal.cols, self.terminal.rows };
     try self.renderer.redraw(self.alloc, env, force_full);
     _ = env.f("ghostel--kitty-clear", .{});
@@ -94,6 +98,11 @@ pub fn redraw(self: *Self, force_full: bool) !void {
             );
         }
     }
+}
+
+/// Mark that OSC 133 semantic markers have been seen (in-process case).
+pub fn enableSemanticOutput(self: *Self) void {
+    self.renderer.semantic_output_enabled = true;
 }
 
 /// Set default foreground color.
