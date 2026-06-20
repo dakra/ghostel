@@ -55,6 +55,11 @@ font_info: ?FontInfo = null,
 /// Bold text coloring configuration.
 bold_config: ?gt.Style.BoldColor = null,
 
+/// Whether OSC 133 semantic prompt markers have been seen for this terminal.
+/// Before this is true, `.output` is just libghostty's default cell semantic and
+/// should not become an Emacs text property.
+semantic_output_enabled: bool = false,
+
 /// Saved positions and pins for various buffer markers. Retained between
 /// rendering passes to avoid allocations.
 saved_markers: SavedBufferMarkers = .{},
@@ -313,10 +318,16 @@ fn createCellProps(
     props.hyperlink = resolveHyperlink(page, key.hyperlink_id);
     props.semantic_content = cell.raw.semantic_content;
 
-    return if (props.isDefault(
+    const is_default = props.isDefault(
         self.render_state.colors.foreground,
         self.render_state.colors.background,
-    )) null else props;
+    );
+
+    return if (is_default and
+        (props.semantic_content != .output or !self.semantic_output_enabled))
+        null
+    else
+        props;
 }
 
 /// Apply text properties to a region of the buffer.
@@ -388,6 +399,12 @@ fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps) !void {
             start_val,
             end_val,
             s.@"ghostel-input",
+            env.t(),
+        }),
+        .output => _ = env.f("put-text-property", .{
+            start_val,
+            end_val,
+            s.@"ghostel-output",
             env.t(),
         }),
         else => {},

@@ -138,6 +138,8 @@ pub fn GhostelHandler(Context: type) type {
         /// PARAM is the raw options string from the OSC - elisp parses it on
         /// demand (e.g. `(string-to-number param)` for the 'D' exit code).
         fn handleSemanticPrompt(self: *Self, sp: gt.osc.Command.SemanticPrompt) void {
+            self.context.renderer.semantic_output_enabled = true;
+
             const marker_char: u8 = switch (sp.action) {
                 .fresh_line_new_prompt, .new_command => 'A',
                 .prompt_start => 'P',

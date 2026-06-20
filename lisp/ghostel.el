@@ -3915,7 +3915,9 @@ pressing \\`C-a' gives the standard column-0 behaviour."
                 (and (> pos bol) (< pos eol) pos)))))
          ;; Regex fallback for shells/REPLs without OSC 133.
          (regex-target
-          (unless (or line-mode-target prop-target)
+          (unless (or line-mode-target
+                      prop-target
+                      (text-property-not-all bol eol 'ghostel-output nil))
             (ghostel--regex-prompt-end bol))))
     (cond
      (line-mode-target (goto-char line-mode-target))

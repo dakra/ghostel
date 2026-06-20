@@ -1909,6 +1909,47 @@ scanner skips them."
                              (point-min) 'ghostel-input))))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-osc133-output-text-property ()
+  "Cells between OSC 133 C and D should be marked `ghostel-output'."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-osc133-output*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 80 100))
+                 (inhibit-read-only t)
+                 (output "[44/48] Removing docker-ce-cli 100% | 14.3 KiB/s"))
+            (ghostel--write-vt
+             term (concat "\e]133;A\e\\$ \e]133;B\e\\dnf update\r\n"
+                          "\e]133;C\e\\" output "\r\n\e]133;D;0\e\\"))
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (should (search-forward output nil t))
+            (let ((output-beg (- (point) (length output)))
+                  (output-end (point)))
+              (should (get-text-property output-beg 'ghostel-output))
+              (should (get-text-property (1- output-end) 'ghostel-output))
+              (should (null (get-text-property output-beg 'ghostel-prompt)))
+              (should (null (get-text-property output-beg 'ghostel-input))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-plain-output-has-no-output-text-property ()
+  "Without OSC 133, default output cells are not marked `ghostel-output'."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-plain-output*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 80 100))
+                 (inhibit-read-only t)
+                 (output ">>> import os"))
+            (ghostel--write-vt term output)
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (should (search-forward output nil t))
+            (should (null (get-text-property
+                           (- (point) (length output))
+                           'ghostel-output)))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-osc133-prompt-stops-at-input ()
   "`ghostel-prompt' must end where `ghostel-input' begins on the row.
 Without this, the historical prompt row carries `ghostel-prompt'

@@ -934,6 +934,24 @@ Without prop, marker, or regex, the command falls through to BOL."
               (should (= (current-column) 0)))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-beginning-of-input-or-line-output-skips-regex ()
+  "`C-a' on OSC 133-marked output ignores prompt-regexp false positives."
+  (let ((buf (generate-new-buffer " *ghostel-test-c-a-output*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (insert (propertize
+                   "[44/48] Removing docker-ce-cli 100% | 14.3 KiB/s"
+                   'ghostel-output t))
+          (let ((ghostel--term 'fake)
+                (ghostel--process 'fake-proc))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore))
+              (ghostel-emacs-mode)
+              (search-backward "|")
+              (ghostel-beginning-of-input-or-line)
+              (should (= (current-column) 0)))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-beginning-of-input-or-line-regex-ps2-continuation ()
   "`C-a' on an empty PS2 continuation row lands past the prefix.
 The helper's `<=' check enables this — every fresh `RET' the user
