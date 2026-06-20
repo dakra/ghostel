@@ -166,22 +166,21 @@ pub fn init(alloc: Allocator, initial_cols: u16, initial_rows: u16, params: Proc
     }
 
     // This is the child
-    var stderr_buf: [1024]u8 = undefined;
-    const stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
-    var stderr = stderr_writer.interface;
-
     self.pty.setupReplica() catch |err| {
-        stderr.print("Failed to set up PTY replica: {s}", .{@errorName(err)}) catch {};
+        _ = posix.write(posix.STDERR_FILENO, "Failed to set up PTY replica: ") catch {};
+        _ = posix.write(posix.STDERR_FILENO, @errorName(err)) catch {};
         std.c._exit(1);
     };
 
     if (params.cwd) |cwd| posix.chdir(cwd) catch |err| {
-        stderr.print("Failed to change working directory: {s}", .{@errorName(err)}) catch {};
+        _ = posix.write(posix.STDERR_FILENO, "Failed to change working directory: ") catch {};
+        _ = posix.write(posix.STDERR_FILENO, @errorName(err)) catch {};
     };
 
     const err = posix.execvpeZ(params.file, args, env);
     // The above never returns on success, if we're here it means we failed
-    stderr.print("Failed to start subprocess: {s}", .{@errorName(err)}) catch {};
+    _ = posix.write(posix.STDERR_FILENO, "Failed to start subprocess: ") catch {};
+    _ = posix.write(posix.STDERR_FILENO, @errorName(err)) catch {};
     std.c._exit(1);
 }
 
