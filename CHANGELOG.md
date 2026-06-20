@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `isearch` and minibuffer navigation (`consult-line`, etc.) in semi-char mode
+  now switch to a read-only mode when they leave you parked in the scrollback,
+  mirroring a mouse click — so the next redraw no longer yanks point back to
+  the prompt.  The target mode is picked by the new
+  `ghostel-point-leave-input-mode` defcustom (`copy` default, `emacs`, or nil
+  to disable).  Wired into `isearch-mode-end-hook` and `minibuffer-exit-hook`;
+  for other jump packages (avy, flash, …) add the new command
+  `ghostel-maybe-leave-input` to their after-jump hook or as `:after` advice.
+  Mouse selection and region activation keep their independent
+  `ghostel-mouse-drag-input-mode` / `ghostel-mark-activation-input-mode` knobs.
+
 ### Changed
 - Internal libghostty VT-parser warnings no longer leak to the module's
   stderr in release builds. In a terminal Emacs (`emacs -nw`) that stderr is

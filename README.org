@@ -464,6 +464,27 @@ too.  Note that on a TTY Ctrl+Space is indistinguishable from =C-@= (NUL) and
 is forwarded to the terminal instead; in char mode Ctrl+Space always reaches
 the terminal as NUL (GUI and TTY alike).
 
+The same applies when a command merely *moves point* off the live input point
+without selecting anything.  =isearch= (via =isearch-mode-end-hook=) and
+minibuffer commands like =consult-line= (via =minibuffer-exit-hook=) switch to
+the mode picked by =ghostel-point-leave-input-mode= (=copy= by default,
+=emacs=, or =nil= to disable), so the position is frozen and the content is
+navigable instead of the next redraw yanking point back to the prompt.
+
+Other jump packages have no built-in hook, so wire them up with the command
+=ghostel-maybe-leave-input=.  It is a no-op unless, in semi-char mode, point has
+moved off the live cursor, in which case it applies =ghostel-point-leave-input-mode=.
+It ignores its arguments, so it serves as both a hook function and =:after= advice:
+
+#+begin_src emacs-lisp
+;; A package that runs a hook after jumping (e.g. flash):
+(add-hook 'flash-after-jump-hook #'ghostel-maybe-leave-input)
+
+;; A package without one (e.g. avy) — advise its jump action:
+(with-eval-after-load 'avy
+  (advice-add 'avy-action-goto :after #'ghostel-maybe-leave-input))
+#+end_src
+
 ** Line mode
 :properties:
 :custom_id: line-mode
@@ -1205,6 +1226,7 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 | =ghostel-readonly-fake-cursor=       | =t=                 | Draw a hint cursor at the live terminal position in copy/Emacs modes.                                                |
 | =ghostel-mouse-drag-input-mode=      | =copy=              | Mode to enter after a click/drag/multi-click selection: =copy=, =emacs=, or =nil=.                                         |
 | =ghostel-mark-activation-input-mode= | =copy=              | Mode to enter when a command activates the mark: =copy=, =emacs=, or =nil=.                                                |
+| =ghostel-point-leave-input-mode=     | =copy=              | Mode to enter when point leaves the input point (isearch/minibuffer): =copy=, =emacs=, or =nil=.                            |
 | =ghostel-word-boundary-string=       | (see docstring)   | Characters that terminate words for double-click selection and word motion (mirrors Ghostty's =selection-word-chars=). |
 | =ghostel-scroll-on-input=            | =t=                 | Jump to the bottom when typing while scrolled into scrollback.                                                       |
 | =ghostel-bold-color=                 | =nil=               | How bold text is colored: =nil=, =bright=, or a =#RRGGBB= string.                                                          |

@@ -955,5 +955,123 @@ but the cursor is at the end of the REPL's prompt."
             (should (equal encoded "return"))))
       (kill-buffer buf))))
 
+;;; Auto-leave: switch out of semi-char when point leaves the input point
+
+(defmacro ghostel-test--with-auto-leave-buffer (&rest body)
+  "Run BODY in a fresh semi-char `ghostel-mode' buffer set up for auto-leave.
+Inserts \"echo hi\", parks the live cursor at `point-max', and stubs the
+window-touching helpers `ghostel--invalidate' / `ghostel--anchor-window'
+so copy/Emacs mode entry runs without a live terminal or window."
+  (declare (indent 0) (debug t))
+  `(let ((buf (generate-new-buffer " *ghostel-test-auto-leave*")))
+     (unwind-protect
+         (with-current-buffer buf
+           (ghostel-mode)
+           (insert "echo hi")
+           (setq-local ghostel--term 'fake)
+           (setq-local ghostel--cursor-char-pos (point-max))
+           (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                     ((symbol-function 'ghostel--anchor-window) #'ignore))
+             ,@body))
+       (kill-buffer buf))))
+
+(ert-deftest ghostel-test-auto-leave-switches-to-copy ()
+  "Point leaving the live cursor in semi-char enters copy mode (the default)."
+  (ghostel-test--with-auto-leave-buffer
+    (let ((ghostel-point-leave-input-mode 'copy))
+      (goto-char (point-min))
+      (ghostel-maybe-leave-input)
+      (should (eq ghostel--input-mode 'copy)))))
+
+(ert-deftest ghostel-test-auto-leave-switches-to-emacs ()
+  "With the custom set to `emacs', point leaving enters Emacs mode."
+  (ghostel-test--with-auto-leave-buffer
+    (let ((ghostel-point-leave-input-mode 'emacs))
+      (goto-char (point-min))
+      (ghostel-maybe-leave-input)
+      (should (eq ghostel--input-mode 'emacs)))))
+
+(ert-deftest ghostel-test-auto-leave-stays-when-point-on-cursor ()
+  "Point coinciding with the live cursor keeps the buffer in semi-char."
+  (ghostel-test--with-auto-leave-buffer
+    (let ((ghostel-point-leave-input-mode 'copy))
+      (goto-char ghostel--cursor-char-pos)
+      (ghostel-maybe-leave-input)
+      (should (eq ghostel--input-mode 'semi-char)))))
+
+(ert-deftest ghostel-test-auto-leave-disabled-by-nil ()
+  "A nil custom disables the auto-switch even when point has moved."
+  (ghostel-test--with-auto-leave-buffer
+    (let ((ghostel-point-leave-input-mode nil))
+      (goto-char (point-min))
+      (ghostel-maybe-leave-input)
+      (should (eq ghostel--input-mode 'semi-char)))))
+
+(ert-deftest ghostel-test-auto-leave-only-from-semi-char ()
+  "The check is a no-op when not in semi-char (e.g. already in copy mode)."
+  (ghostel-test--with-auto-leave-buffer
+    (let ((ghostel-point-leave-input-mode 'copy))
+      (setq-local ghostel--input-mode 'copy)
+      (goto-char (point-min))
+      (ghostel-maybe-leave-input)
+      (should (eq ghostel--input-mode 'copy)))))
+
+(ert-deftest ghostel-test-auto-leave-skips-kbd-macro ()
+  "Executing a keyboard macro does not switch mode mid-playback."
+  (ghostel-test--with-auto-leave-buffer
+    (let ((ghostel-point-leave-input-mode 'copy)
+          (executing-kbd-macro [?x]))
+      (goto-char (point-min))
+      (ghostel-maybe-leave-input)
+      (should (eq ghostel--input-mode 'semi-char)))))
+
+(ert-deftest ghostel-test-auto-leave-preserves-point ()
+  "Switching modes leaves point where the jump landed it."
+  (ghostel-test--with-auto-leave-buffer
+    (let ((ghostel-point-leave-input-mode 'copy))
+      (goto-char 3)
+      (ghostel-maybe-leave-input)
+      (should (eq ghostel--input-mode 'copy))
+      (should (= (point) 3)))))
+
+(ert-deftest ghostel-test-auto-leave-isearch-hook-registered ()
+  "`ghostel-mode' wires the leave check into `isearch-mode-end-hook'."
+  (let ((buf (generate-new-buffer " *ghostel-test-auto-leave-hook*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (should (memq #'ghostel-maybe-leave-input
+                        (buffer-local-value 'isearch-mode-end-hook buf))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-anchor-window-emacs-mode-force ()
+  "`ghostel--anchor-window' anchors an Emacs-mode window only when FORCE is set.
+Auto-follow callers leave FORCE nil, so a buffer reading its scrollback in
+Emacs mode keeps its position.  Deliberate callers (paste/yank) pass FORCE to
+snap to the live cursor."
+  (let ((buf (generate-new-buffer " *ghostel-test-anchor-force*"))
+        (previous-buffer (window-buffer (selected-window))))
+    (unwind-protect
+        (progn
+          (set-window-buffer (selected-window) buf)
+          (with-current-buffer buf
+            (ghostel-mode)
+            (let ((rows (max 1 (window-body-height)))
+                  (inhibit-read-only t))
+              (dotimes (i (+ rows 20))
+                (insert (format "row-%02d\n" i))))
+            (setq ghostel--input-mode 'emacs)
+            (setq ghostel--cursor-char-pos (point-max))
+            (goto-char (point-min))
+            (set-window-start (selected-window) (point-min) t)
+            ;; Without FORCE: Emacs mode keeps its reading position.
+            (ghostel--anchor-window (selected-window))
+            (should (= (window-start (selected-window)) (point-min)))
+            ;; With FORCE: a deliberate anchor scrolls to the live cursor.
+            (ghostel--anchor-window (selected-window) t)
+            (should (> (window-start (selected-window)) (point-min)))))
+      (set-window-buffer (selected-window) previous-buffer)
+      (kill-buffer buf))))
+
 (provide 'ghostel-modes-test)
 ;;; ghostel-modes-test.el ends here

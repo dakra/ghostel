@@ -777,6 +777,17 @@ Mouse selection is governed separately by `ghostel-mouse-drag-input-mode'."
                  (const :tag "Emacs mode"          emacs)
                  (const :tag "Do not switch"       nil)))
 
+(defcustom ghostel-point-leave-input-mode 'copy
+  "Input mode to switch to when point leaves the live input point in semi-char.
+Triggered by any command that moves point off the terminal cursor without a
+mouse click or region activation.  Something like `isearch', `consult-line',
+`avy', `goto-line', wheel scrolling, etc.
+
+See also `ghostel-mouse-drag-input-mode', `ghostel-mark-activation-input-mode'."
+  :type '(choice (const :tag "Copy mode (default)" copy)
+                 (const :tag "Emacs mode"          emacs)
+                 (const :tag "Do not switch"       nil)))
+
 (defcustom ghostel-word-boundary-string " \t\"'`|:;,()[]{}<>$│"
   "Characters that terminate words in ghostel buffers.
 
@@ -2151,7 +2162,7 @@ Returns the sequence string, or nil for unknown keys."
              (memq ghostel--input-mode '(copy emacs)))
     (ghostel-readonly-exit))
   (when (and ghostel-scroll-on-input ghostel--term)
-    (ghostel--anchor-window)))
+    (ghostel--anchor-window nil t)))
 
 (defun ghostel--self-insert ()
   "Send the last typed character to the terminal."
@@ -3072,6 +3083,22 @@ command set the region, so the selection survives the switch."
       ('copy  (ghostel-copy-mode))
       ('emacs (ghostel-emacs-mode)))))
 
+(defun ghostel-maybe-leave-input (&rest _)
+  "Leave semi-char for `ghostel-point-leave-input-mode' if point left the input.
+A no-op unless, in semi-char mode, point has moved off the live terminal cursor.
+Wired into `isearch-mode-end-hook' and `minibuffer-exit-hook'.
+Add it to other jump commands as a hook or `:after' advice (see the README)."
+  (interactive)
+  (when (and ghostel-point-leave-input-mode
+             (eq ghostel--input-mode 'semi-char)
+             ghostel--term
+             ghostel--cursor-char-pos
+             (not executing-kbd-macro)
+             (/= (point) ghostel--cursor-char-pos))
+    (pcase ghostel-point-leave-input-mode
+      ('copy  (ghostel-copy-mode))
+      ('emacs (ghostel-emacs-mode)))))
+
 (defun ghostel-readonly-exit ()
   "Exit copy or Emacs mode and return to the mode active before entry."
   (interactive)
@@ -3086,7 +3113,7 @@ command set the region, so the selection survives the switch."
         ('char  (ghostel-char-mode))
         ('emacs (ghostel-emacs-mode))
         (_      (ghostel-semi-char-mode)))
-      (ghostel--anchor-window)
+      (ghostel--anchor-window nil t)
       (ghostel-force-redraw))
     (message "Read-only mode exited")))
 
@@ -6123,16 +6150,24 @@ the bottom of WINDOW."
               (start (nth 2 size)))
     (cons start (max 0 (- (nth 1 size) body-height)))))
 
-(defun ghostel--anchor-window (&optional window)
+(defun ghostel--anchor-window (&optional window force)
   "Scroll WINDOW so that the last row is aligned to the bottom of the window.
 In graphical frames, use Emacs's pixel layout for exact bottom alignment.
 In text frames, use line-count geometry with no vscroll.
-Do nothing unless WINDOW displays a live Ghostel terminal."
+Do nothing unless WINDOW displays a live Ghostel terminal.
+
+Copy mode is never anchored (the viewport is frozen).  Emacs mode is
+anchored only when FORCE is non-nil, reserved for deliberate anchors such
+as paste/yank that should scroll to the live cursor even in Emacs mode;
+auto-follow callers leave FORCE nil so a buffer reading its scrollback in
+Emacs mode keeps its position.  Semi-char/char/line always anchor."
   (when-let* ((window (or window (selected-window)))
               (buffer (window-buffer window))
               ((with-current-buffer buffer
                  (and (derived-mode-p 'ghostel-mode)
-                      (ghostel--terminal-live-p)))))
+                      (if (eq ghostel--input-mode 'emacs)
+                          force
+                        (ghostel--terminal-live-p))))))
     (with-selected-window window
       (with-current-buffer buffer
         (let ((target (point-max)))
@@ -6360,6 +6395,18 @@ a Ghostel window making it lose its anchoring."
                                   (eq (window-buffer win) buffer))
                          (ghostel--anchor-window win))))))))
 
+(defun ghostel--minibuffer-exit-maybe-leave ()
+  "Run `ghostel-maybe-leave-input' after a minibuffer command, deferred.
+Covers minibuffer-driven navigation such as `consult-line', whose marker-based
+point landing can lag minibuffer teardown.  Deferred so the originating window
+and point settle first.  See `ghostel-point-leave-input-mode'."
+  (run-at-time 0 nil
+               (lambda ()
+                 (when-let* ((buf (window-buffer (selected-window))))
+                   (with-current-buffer buf
+                     (when (derived-mode-p 'ghostel-mode)
+                       (ghostel-maybe-leave-input)))))))
+
 (defun ghostel--kill-buffer-query ()
   "Return non-nil when the current ghostel buffer may be killed.
 Honors `ghostel-query-before-killing' and `ghostel--command-running'
@@ -6415,7 +6462,9 @@ for both native and Emacs PTY paths."
   (add-hook 'window-buffer-change-functions #'ghostel--sync-tty-composition nil t)
   (add-hook 'window-size-change-functions #'ghostel--adjust-size nil t)
   (add-hook 'minibuffer-exit-hook #'ghostel--minibuffer-exit)
+  (add-hook 'minibuffer-exit-hook #'ghostel--minibuffer-exit-maybe-leave)
   (add-hook 'activate-mark-hook #'ghostel--mark-activated nil t)
+  (add-hook 'isearch-mode-end-hook #'ghostel-maybe-leave-input nil t)
   (add-hook 'kill-buffer-query-functions #'ghostel--kill-buffer-query nil t)
   ;; Show the hyperlink URI at point in eldoc.
   (add-hook 'eldoc-documentation-functions #'ghostel--eldoc-link nil t)
