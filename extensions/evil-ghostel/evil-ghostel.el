@@ -163,14 +163,14 @@ ORIG-FN is the advised function (TERM, FULL).  Skipped in alt-screen (1049)."
 
 ;; Cursor style: let evil control cursor shape
 
-(defun evil-ghostel--override-cursor-style (orig-fn style visible)
+(defun evil-ghostel--override-cursor-style (orig-fn)
   "Let evil control cursor shape instead of the terminal.
 ORIG-FN is the advised setter (STYLE, VISIBLE); deferred to in alt-screen."
   (if (and evil-ghostel-mode
            ghostel--term
            (not (ghostel--mode-enabled ghostel--term 1049)))
       (evil-refresh-cursor)
-    (funcall orig-fn style visible)))
+    (funcall orig-fn)))
 
 
 ;; Evil state hooks
@@ -868,7 +868,7 @@ Decides whether the global advice can be removed on the last disable."
   "Minor mode for evil integration in ghostel terminal buffers.
 Binds the `evil-ghostel-*' operators in `evil-ghostel-mode-map' and syncs
 the terminal cursor with point across evil state transitions.  It also advises
-`ghostel--redraw' and `ghostel--set-cursor-style' (to preserve point and the
+`ghostel--redraw' and `ghostel--apply-cursor-style' (to preserve point and the
 evil cursor style); since the mode is buffer-local but the advice global,
 the advice is installed on first enable and removed on the last disable."
   :lighter nil
@@ -893,7 +893,7 @@ the advice is installed on first enable and removed on the last disable."
         ;; `advice-add' is idempotent per (symbol, fn), so re-adding on
         ;; every enable is safe — no separate install flag needed.
         (advice-add 'ghostel--redraw :around #'evil-ghostel--around-redraw)
-        (advice-add 'ghostel--set-cursor-style :around
+        (advice-add 'ghostel--apply-cursor-style :around
                     #'evil-ghostel--override-cursor-style)
         (evil-refresh-cursor))
     (remove-hook 'evil-insert-state-entry-hook
@@ -903,7 +903,7 @@ the advice is installed on first enable and removed on the last disable."
     (kill-local-variable 'ghostel-mark-activation-input-mode)
     (unless (evil-ghostel--any-active-elsewhere-p (current-buffer))
       (advice-remove 'ghostel--redraw #'evil-ghostel--around-redraw)
-      (advice-remove 'ghostel--set-cursor-style
+      (advice-remove 'ghostel--apply-cursor-style
                      #'evil-ghostel--override-cursor-style))))
 
 (provide 'evil-ghostel)

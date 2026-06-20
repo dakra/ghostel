@@ -1680,7 +1680,8 @@ force the editor default; teardown must restore the saved value."
                       ((symbol-function 'ghostel--invalidate) #'ignore)
                       ((symbol-function 'ghostel--anchor-window) #'ignore))
               ;; Simulate a TUI that hid the cursor in semi-char mode.
-              (ghostel--set-cursor-style 1 nil)
+              (setq-local ghostel--cursor-style nil)
+              (ghostel--apply-cursor-style)
               (should (null cursor-type))
               ;; Enter line mode — cursor must be visible (default).
               (ghostel-line-mode)

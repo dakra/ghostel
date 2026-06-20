@@ -937,10 +937,14 @@ fn renderCursor(self: *Self, env: emacs.Env) !void {
         _ = env.set("ghostel--cursor-pos", env.nil());
     }
 
-    _ = env.f("ghostel--set-cursor-style", .{
-        @intFromEnum(self.render_state.cursor.visual_style),
-        if (self.render_state.cursor.visible) env.t() else env.nil(),
-    });
+    if (self.render_state.cursor.visible) {
+        env.set(
+            "ghostel--cursor-style",
+            @intFromEnum(self.render_state.cursor.visual_style),
+        );
+    } else {
+        env.set("ghostel--cursor-style", env.nil());
+    }
 }
 
 // Render all pages from start_pin through the end of the active area,

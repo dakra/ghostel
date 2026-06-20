@@ -1543,13 +1543,19 @@ Matches Ghostty 1.2.0's `bold-color' configuration."
              (when (and (derived-mode-p 'ghostel-mode) ghostel--term)
                (ghostel--apply-bold-config ghostel--term)
                (let ((inhibit-read-only t))
-                 (ghostel--redraw ghostel--term t)))))))
+                 (ghostel--redraw ghostel--term t))
+               (ghostel--apply-cursor-style))))))
 
 (defvar-local ghostel--cursor-pos nil
   "The terminal cursor as (COL . ROW) in viewport-relative coordinates.")
 
 (defvar-local ghostel--cursor-char-pos nil
   "The position of the terminal cursor in the buffer.")
+
+(defvar-local ghostel--cursor-style nil
+  "The terminal cursor visual style from the most recent render.
+Values match libghostty's cursor style enum: 0=bar, 1=block,
+2=underline, 3=hollow-block, or nil for hidden.")
 
 (defvar-local ghostel--rendered-font nil
   "The font last used for rendering.  Internally used by native code.")
@@ -3512,7 +3518,7 @@ in line mode (the interactive entry validates these)."
       ;; duration of line mode.  The user moves point freely here, so
       ;; the cursor must be visible regardless of any CSI ?25l the
       ;; running terminal app issued in semi-char/char mode.
-      ;; `ghostel--set-cursor-style' is a no-op in line mode, so
+      ;; `ghostel--apply-cursor-style' is a no-op in line mode, so
       ;; further terminal requests are ignored until teardown.
       (setq ghostel--line-mode-saved-cursor-type (list cursor-type))
       (setq cursor-type (default-value 'cursor-type))
@@ -5087,24 +5093,21 @@ Maps TITLE through `ghostel-buffer-name-function' and renames via
   (when ghostel-buffer-name-function
     (ghostel--rename-managed (funcall ghostel-buffer-name-function title))))
 
-(defun ghostel--set-cursor-style (style visible)
-  "Set the cursor style based on terminal state.
-STYLE is one of: 0=bar, 1=block, 2=underline, 3=hollow-block.
-VISIBLE is t or nil.
-Skipped in read-only input modes (copy, Emacs, line) where the
-user-facing cursor is managed by Emacs for navigation, or when
-`ghostel-ignore-cursor-change' is non-nil."
+(defun ghostel--apply-cursor-style ()
+  "Apply the terminal cursor style published by the native renderer.
+The renderer owns discovering terminal cursor state, but cursor
+application is intentionally kept in Elisp so input modes and
+integrations can decide whether `cursor-type' should change."
   (when (and (ghostel--buffer-editable-p)
              (not ghostel-ignore-cursor-change))
     (setq cursor-type
-          (if visible
-              (pcase style
-                (0 '(bar . 2))       ; bar
-                (1 'box)             ; block
-                (2 '(hbar . 2))      ; underline
-                (3 'hollow)          ; hollow block
-                (_ 'box))
-            nil))))
+		  (pcase ghostel--cursor-style
+			(0 '(bar . 2))       ; bar
+			(1 'box)             ; block
+			(2 '(hbar . 2))      ; underline
+			(3 'hollow)          ; hollow block
+			('nil nil)
+			(_ 'box)))))
 
 (defun ghostel--update-directory (dir)
   "Update `default-directory' from terminal's OSC 7 report.
@@ -6200,6 +6203,7 @@ live viewport."
                    (ghostel--query-font-cache (make-hash-table :test 'eq)))
               (with-selected-window render-win
                 (ghostel--redraw ghostel--term ghostel-full-redraw))
+              (ghostel--apply-cursor-style)
 
               (dolist (win anchored) (ghostel--anchor-window win))
 

@@ -75,7 +75,7 @@ literal key."
    (should (memq 'evil-ghostel--insert-state-entry
                  evil-insert-state-entry-hook))
    (should (advice--p (advice--symbol-function 'ghostel--redraw)))
-   (should (advice--p (advice--symbol-function 'ghostel--set-cursor-style)))
+   (should (advice--p (advice--symbol-function 'ghostel--apply-cursor-style)))
    ;; Editing operators are bound via [remap evil-FOO] in normal state.
    (should (eq #'evil-ghostel-delete
                (lookup-key (evil-get-auxiliary-keymap
@@ -174,13 +174,13 @@ wrapper from every other ghostel buffer."
           (should (advice-member-p #'evil-ghostel--around-redraw
                                    'ghostel--redraw))
           (should (advice-member-p #'evil-ghostel--override-cursor-style
-                                   'ghostel--set-cursor-style))
+                                   'ghostel--apply-cursor-style))
           ;; Disable in B — no buffers left, advice removed.
           (with-current-buffer b (evil-ghostel-mode -1))
           (should-not (advice-member-p #'evil-ghostel--around-redraw
                                        'ghostel--redraw))
           (should-not (advice-member-p #'evil-ghostel--override-cursor-style
-                                       'ghostel--set-cursor-style)))
+                                       'ghostel--apply-cursor-style)))
       (when (buffer-live-p a) (kill-buffer a))
       (when (buffer-live-p b) (kill-buffer b)))))
 
@@ -717,14 +717,14 @@ arrows are sent (which the old `sync-inhibit' path mistakenly did)."
 ;; -----------------------------------------------------------------------
 
 (ert-deftest evil-ghostel-test-cursor-style-override ()
-  "Test that `ghostel--set-cursor-style' defers to evil."
+  "Test that `ghostel--apply-cursor-style' defers to evil."
   (evil-ghostel-test--with-buffer 5 40 "hello"
                                   (evil-normal-state)
-                                  (let ((evil-called nil)
-                                        (orig-called nil))
+                                  (let ((evil-called nil))
                                     (cl-letf (((symbol-function 'evil-refresh-cursor)
                                                (lambda (&rest _) (setq evil-called t))))
-                                      (ghostel--set-cursor-style 0 t)
+                                      (setq-local ghostel--cursor-style 0)
+                                      (ghostel--apply-cursor-style)
                                       (should evil-called)))))
 
 ;; -----------------------------------------------------------------------

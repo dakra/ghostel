@@ -78,7 +78,8 @@ unlike semi-char mode where it tracks the terminal cursor."
         (with-current-buffer buf
           (ghostel-mode)
           ;; Simulate a terminal app hiding the cursor
-          (ghostel--set-cursor-style 1 nil)
+          (setq-local ghostel--cursor-style nil)
+          (ghostel--apply-cursor-style)
           (should (null cursor-type))                       ; cursor hidden
           ;; Enter copy mode — cursor should become visible
           (let ((ghostel--redraw-timer nil))

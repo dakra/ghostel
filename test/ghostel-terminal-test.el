@@ -139,6 +139,17 @@ modes (47 / 1047 / 1049) are handled uniformly."
     (ghostel--redraw term)
     (should (equal '(5 . 3) ghostel--cursor-pos))))
 
+(ert-deftest ghostel-test-redraw-publishes-cursor-style-buffer-locals ()
+  "Native redraw publishes cursor style data without applying it."
+  :tags '(native)
+  (let ((term (ghostel--new 25 80 1000)))
+    (with-temp-buffer
+      (setq-local cursor-type 'box)
+      (ghostel--write-vt term "\e[?25l")
+      (ghostel--redraw term)
+      (should-not ghostel--cursor-style)
+      (should (equal cursor-type 'box)))))
+
 (ert-deftest ghostel-test-erase ()
   "Test CSI erase sequences."
   :tags '(native)
@@ -404,6 +415,24 @@ state from the wrong buffer after feeding output to the native module."
       (kill-buffer ghostel-buf)
       (kill-buffer other-buf))))
 
+(ert-deftest ghostel-test-apply-cursor-style-from-render-state ()
+  "Apply cursor style from buffer-local render state."
+  (let ((buf (generate-new-buffer " *ghostel-test-apply-cursor*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (setq cursor-type 'box)
+          (setq-local ghostel--cursor-style 0)
+          (ghostel--apply-cursor-style)
+          (should (equal cursor-type '(bar . 2)))
+          (setq-local ghostel--cursor-style 2)
+          (ghostel--apply-cursor-style)
+          (should (equal cursor-type '(hbar . 2)))
+          (setq-local ghostel--cursor-style nil)
+          (ghostel--apply-cursor-style)
+          (should (null cursor-type)))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-ignore-cursor-change ()
   "Test that `ghostel-ignore-cursor-change' suppresses cursor style updates."
   (let ((buf (generate-new-buffer " *ghostel-test-ignore-cursor*")))
@@ -413,12 +442,14 @@ state from the wrong buffer after feeding output to the native module."
           ;; Default: cursor changes are applied
           (let ((ghostel-ignore-cursor-change nil))
             (setq cursor-type 'box)
-            (ghostel--set-cursor-style 2 t)
+            (setq-local ghostel--cursor-style 2)
+            (ghostel--apply-cursor-style)
             (should (equal cursor-type '(hbar . 2))))
           ;; With ignore: cursor changes are suppressed
           (let ((ghostel-ignore-cursor-change t))
             (setq cursor-type 'box)
-            (ghostel--set-cursor-style 1 t)
+            (setq-local ghostel--cursor-style 1)
+            (ghostel--apply-cursor-style)
             (should (equal cursor-type 'box))))  ; unchanged
       (kill-buffer buf))))
 
