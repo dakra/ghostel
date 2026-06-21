@@ -159,35 +159,18 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
 }
 
 fn invalidate(self: *Self, alloc: Allocator, env: emacs.Env) !bool {
-    // If the font metrics or related parameters changed, the cached metrics
-    // are no longer valid, so we rebuild.
-    if (self.updateFontInfo(alloc, env)) return true;
-
-    // Resizing can cause invalidation
-    if (try self.commitResize(alloc, env)) {
-        return true;
-    }
-
-    // If we are in no-scrollback mode, just redraw whenever we have a resize.
-    if (self.pending_resize != null and self.rendered_screen.no_scrollback) {
-        return true;
-    }
-
-    // Changing the active screen causes invalidation.
-    if (self.rendered_screen != self.term.screens.active) {
-        return true;
-    }
-
-    // If we had existing scrollback, the render pin should be below the top of
-    // the scrollback. If it isn't that means that the scrollback was cleared.
-    if (self.rows_in_buffer > self.term.rows and
+    const font_info_changed = self.updateFontInfo(alloc, env);
+    const resize_invalidation = try self.commitResize(alloc, env);
+    const screen_changed = self.rendered_screen != self.term.screens.active;
+    const scrollback_cleared =
+        self.rows_in_buffer > self.term.rows and
         self.render_pin != null and
-        self.render_pin.?.eql(self.rendered_screen.pages.getTopLeft(.screen)))
-    {
-        return true;
-    }
+        self.render_pin.?.eql(self.rendered_screen.pages.getTopLeft(.screen));
 
-    return false;
+    return font_info_changed or
+        resize_invalidation or
+        screen_changed or
+        scrollback_cleared;
 }
 
 /// Read the default font and rendering parameters from Emacs, compare
@@ -961,7 +944,7 @@ fn commitResize(self: *Self, alloc: Allocator, env: emacs.Env) !bool {
         self.pending_resize = null;
 
         const total_rows_changed = self.rows_in_buffer != self.term.screens.active.pages.total_rows;
-        return cols_changed or total_rows_changed;
+        return cols_changed or total_rows_changed or self.term.screens.active.no_scrollback;
     }
 
     return false;
