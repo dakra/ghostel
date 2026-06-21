@@ -1,10 +1,21 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const module_version = @import("src/version.zig").version;
 
 const vendored_emacs_module_dir = "vendor";
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const default_target: std.Target.Query = if (builtin.os.tag == .windows)
+        .{
+            .cpu_arch = builtin.cpu.arch,
+            .os_tag = .windows,
+            .abi = .gnu,
+        }
+    else
+        .{};
+    const target = explicitWindowsAbiTarget(b, b.standardTargetOptions(.{
+        .default_target = default_target,
+    }));
     const optimize = b.standardOptimizeOption(.{});
     const ghostty_optimize = b.option(
         std.builtin.OptimizeMode,
@@ -12,7 +23,8 @@ pub fn build(b: *std.Build) void {
         "Optimization mode for the ghostty dependency (defaults to the main optimize option)",
     ) orelse optimize;
     const is_release = optimize != .Debug;
-    const target_os = target.result.os.tag;
+    const resolved_target = target.result;
+    const target_os = resolved_target.os.tag;
     const emacs_module_dir = resolveEmacsModuleDir(b);
     const ghostty_dep = b.dependency("ghostty", .{
         .target = target,
@@ -52,6 +64,9 @@ pub fn build(b: *std.Build) void {
         if (target_os == .linux) {
             lib.setVersionScript(b.path("symbols.map"));
         }
+    }
+    if (target_os == .windows) {
+        addWindowsRuntimeLibraries(b, lib, resolved_target);
     }
 
     b.installArtifact(lib);
@@ -158,6 +173,55 @@ fn dirHasEmacsModuleHeader(allocator: std.mem.Allocator, dir: []const u8) bool {
 fn moduleOutputName(target_os: std.Target.Os.Tag) []const u8 {
     return switch (target_os) {
         .macos => "../ghostel-module.dylib",
+        .windows => "../ghostel-module.dll",
         else => "../ghostel-module.so",
     };
+}
+
+fn explicitWindowsAbiTarget(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+) std.Build.ResolvedTarget {
+    if (target.query.abi != null or target.result.os.tag != .windows) {
+        return target;
+    }
+
+    var query = target.query;
+    query.abi = target.result.abi;
+    return b.resolveTargetQuery(query);
+}
+
+fn addWindowsRuntimeLibraries(
+    b: *std.Build,
+    lib: *std.Build.Step.Compile,
+    resolved_target: std.Target,
+) void {
+    lib.linkSystemLibrary("kernel32");
+    if (resolved_target.abi != .msvc) return;
+
+    lib.linkSystemLibrary("libvcruntime");
+
+    const arch = resolved_target.cpu.arch;
+    const sdk = std.zig.WindowsSdk.find(b.allocator, arch) catch null;
+    if (sdk) |s| {
+        if (s.windows10sdk) |w10| {
+            const arch_str: []const u8 = switch (arch) {
+                .x86_64 => "x64",
+                .x86 => "x86",
+                .aarch64 => "arm64",
+                else => "x64",
+            };
+            const ucrt_lib_path = std.fmt.allocPrint(
+                b.allocator,
+                "{s}\\Lib\\{s}\\ucrt\\{s}",
+                .{ w10.path, w10.version, arch_str },
+            ) catch null;
+
+            if (ucrt_lib_path) |path| {
+                lib.addLibraryPath(.{ .cwd_relative = path });
+            }
+        }
+    }
+
+    lib.linkSystemLibrary("libucrt");
 }

@@ -15,6 +15,8 @@ const utils = @import("utils.zig");
 const parseHexColor = utils.parseHexColor;
 const PtyProcess = @import("PtyProcess.zig");
 const NativeProcess = @import("NativeProcess.zig");
+const ChannelFd = NativeProcess.ChannelFd;
+const ChannelPid = i64;
 const pty_utils = @import("pty_utils.zig");
 
 const Self = @This();
@@ -86,7 +88,7 @@ pub fn redraw(self: *Self, force_full: bool) !void {
 
     if (self.isProcessLive() and !std.meta.eql(pre_size, post_size)) {
         if (self.process) |proc| {
-            try proc.process.pty.resize(post_size[0], post_size[1]);
+            try proc.process.resize(post_size[0], post_size[1]);
         } else {
             _ = env.f(
                 "set-process-window-size",
@@ -156,7 +158,7 @@ pub fn ptyWrite(self: *Self, data: []const u8) !void {
     if (!self.isProcessLive()) return;
 
     if (self.process) |proc| {
-        try proc.process.pty.write(data);
+        try proc.process.write(data);
     } else if (emacs.current_env) |env| {
         _ = env.f(
             "process-send-string",
@@ -262,8 +264,8 @@ pub fn spawnNativeProcess(
     command: [][:0]const u8,
     env: *const std.process.EnvMap,
     cwd: [:0]const u8,
-    event_pipe: std.posix.fd_t,
-) !std.posix.pid_t {
+    event_fd: ChannelFd,
+) !ChannelPid {
     if (command.len == 0) return error.InvalidCommand;
 
     var pty_process = try PtyProcess.init(
@@ -275,9 +277,9 @@ pub fn spawnNativeProcess(
     errdefer _ = pty_process.deinitAndWait();
     const process = try self.alloc.create(NativeProcess);
     errdefer self.alloc.destroy(process);
-    try process.init(self.alloc, pty_process, &self.terminal, event_pipe);
+    try process.init(self.alloc, pty_process, &self.terminal, event_fd);
     self.process = process;
-    return process.process.pid;
+    return process.process.pidValue();
 }
 
 pub fn killNativeProcess(self: *Self) void {
