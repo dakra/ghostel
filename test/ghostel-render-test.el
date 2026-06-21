@@ -1245,6 +1245,31 @@ and `forward-line' for clean ones.  Only the dirty row loses the sentinel."
 
 ;;; Resize rendering
 
+(ert-deftest ghostel-test-expand-with-restored-cursor-keeps-scrollback ()
+  "Vertical expand with restored cursor keeps existing scrollback.
+When growing the viewport, libghostty only pulls scrollback into the active area
+when the cursor is at the bottom.  If the cursor is restored away from the
+bottom while the resize is pending, the existing scrollback row must remain
+materialized above the expanded active area."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-resize-restore-cursor*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 2 10 10))
+                 (inhibit-read-only t))
+            (ghostel--write-vt term "row0\r\nrow1\r\n")
+            (ghostel--set-size term 3 10)
+            ;; DECRC restores the default saved cursor position, away from the
+            ;; bottom, before the pending resize commits on redraw.
+            (ghostel--write-vt term "\e8")
+            (ghostel--redraw term)
+            ;; row0 is still scrollback; row1 plus two blank rows are the
+            ;; expanded active area.
+            (should (equal "row0\nrow1\n\n\n"
+                           (buffer-substring-no-properties
+                            (point-min) (point-max))))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-content-preserved-across-vertical-resizes ()
   "Buffer content survives expand then shrink without loss or duplication.
 Expands from the initial size (staying within the available scrollback so

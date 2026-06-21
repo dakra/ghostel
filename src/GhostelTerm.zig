@@ -27,7 +27,7 @@ renderer: Renderer,
 process: ?*NativeProcess = null,
 
 /// Create a new terminal with the given dimensions and scrollback.
-pub fn init(alloc: Allocator, cols: u16, rows: u16, max_scrollback: usize) !*Self {
+pub fn init(alloc: Allocator, env: emacs.Env, cols: u16, rows: u16, max_scrollback: usize) !*Self {
     if (cols == 0 or rows == 0) return error.InvalidSize;
 
     const opts = gt.Terminal.Options{
@@ -54,7 +54,7 @@ pub fn init(alloc: Allocator, cols: u16, rows: u16, max_scrollback: usize) !*Sel
     term.stream = .initAlloc(alloc, .init(term, &term.terminal));
     errdefer term.stream.deinit();
 
-    term.renderer = try .init(alloc, &term.terminal);
+    term.renderer = try .init(alloc, env, &term.terminal);
 
     return term;
 }
@@ -405,7 +405,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     (std.math.cast(u32, env.cast(i64, args[4])) orelse 0)
                 else
                     0;
-                const term = try init(module_alloc, cols, rows, max_scrollback);
+                const term = try init(module_alloc, env, cols, rows, max_scrollback);
                 errdefer term.deinit();
                 // Set default colors (light gray on black)
                 term.setColorForeground(.{ .r = 204, .g = 204, .b = 204 });

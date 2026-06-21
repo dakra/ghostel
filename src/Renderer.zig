@@ -81,7 +81,7 @@ const FontInfo = struct {
     }
 };
 
-pub fn init(alloc: Allocator, term: *gt.Terminal) !Self {
+pub fn init(alloc: Allocator, env: emacs.Env, term: *gt.Terminal) !Self {
     var renderer = Self{
         .term = term,
         .render_state = gt.RenderState.empty,
@@ -91,7 +91,7 @@ pub fn init(alloc: Allocator, term: *gt.Terminal) !Self {
         .rendered_screen = term.screens.active,
         .pending_resize = .{ .cols = term.cols, .rows = term.rows, .cell_w = 1, .cell_h = 1 },
     };
-    try renderer.commitResize(alloc);
+    _ = try renderer.commitResize(alloc, env);
     return renderer;
 }
 
@@ -131,12 +131,13 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
     try self.saved_markers.save(alloc, env);
     defer self.saved_markers.restoreAndClear(self.term.screens.active, env);
 
-    if (self.invalidate(alloc, env) or force_full_arg) {
+    self.evictScrollback(alloc, env);
+    self.gotoActiveStart(env);
+
+    if (try self.invalidate(alloc, env) or force_full_arg) {
         try self.clear(alloc, env);
     }
 
-    self.evictScrollback(alloc, env);
-    self.gotoActiveStart(env);
     try self.renderToEnd(
         alloc,
         env,
@@ -146,37 +147,25 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
             self.rendered_screen.pages.getTopLeft(.active),
     );
 
-    // If we have a pending resize, commit it now and just rerender the active
-    // since the scrollback is already up to date.
-    if (self.pending_resize != null) {
-        try self.commitResize(alloc);
-        self.gotoActiveStart(env);
-        try self.render(alloc, env, self.term.screens.active.pages.getTopLeft(.active));
-        self.evictScrollback(alloc, env);
-    }
-
     try self.renderCursor(env);
 
     if (self.render_pin) |p| p.* = self.rendered_screen.pages.getTopLeft(.active);
 
+    // Verify integrity in debug mode
     std.debug.assert(self.rows_in_buffer == if (self.rendered_screen.no_scrollback)
         self.term.rows
     else
         self.rendered_screen.pages.total_rows);
 }
 
-fn invalidate(self: *Self, alloc: Allocator, env: emacs.Env) bool {
+fn invalidate(self: *Self, alloc: Allocator, env: emacs.Env) !bool {
     // If the font metrics or related parameters changed, the cached metrics
     // are no longer valid, so we rebuild.
     if (self.updateFontInfo(alloc, env)) return true;
 
-    // We always do a full rebuild if the width changed
-    if (self.pending_resize) |rz| {
-        if (rz.cols != self.term.cols) {
-            // Pin our saved positions during resize
-            self.saved_markers.pin(self.term.screens.active, env);
-            return true;
-        }
+    // Resizing can cause invalidation
+    if (try self.commitResize(alloc, env)) {
+        return true;
     }
 
     // If we are in no-scrollback mode, just redraw whenever we have a resize.
@@ -184,7 +173,7 @@ fn invalidate(self: *Self, alloc: Allocator, env: emacs.Env) bool {
         return true;
     }
 
-    // If the active screen changes, we reset scrollback
+    // Changing the active screen causes invalidation.
     if (self.rendered_screen != self.term.screens.active) {
         return true;
     }
@@ -958,15 +947,24 @@ fn renderToEnd(self: *Self, alloc: Allocator, env: emacs.Env, start_pin: gt.Pin)
     }
 }
 
-fn commitResize(self: *Self, alloc: Allocator) !void {
+fn commitResize(self: *Self, alloc: Allocator, env: emacs.Env) !bool {
     if (self.pending_resize) |rz| {
+        const cols_changed = rz.cols != self.term.cols;
+        // Pin our saved positions during resize
+        self.saved_markers.pin(self.term.screens.active, env);
+
         try self.term.resize(alloc, rz.cols, rz.rows);
         self.term.width_px = std.math.mul(u32, rz.cols, rz.cell_w) catch
             std.math.maxInt(u32);
         self.term.height_px = std.math.mul(u32, rz.rows, rz.cell_h) catch
             std.math.maxInt(u32);
         self.pending_resize = null;
+
+        const total_rows_changed = self.rows_in_buffer != self.term.screens.active.pages.total_rows;
+        return cols_changed or total_rows_changed;
     }
+
+    return false;
 }
 
 /// Position the Emacs point at the start of the active area: `self.term.rows`
@@ -995,9 +993,6 @@ fn clear(self: *Self, alloc: Allocator, env: emacs.Env) !void {
     self.clearPages(alloc);
     if (self.render_pin) |p| self.rendered_screen.pages.untrackPin(p);
     self.render_pin = null;
-
-    // Commit any pending resize since we're doing a rebuild anyway.
-    try self.commitResize(alloc);
 
     self.rendered_screen = self.term.screens.active;
     if (!self.rendered_screen.no_scrollback) {
