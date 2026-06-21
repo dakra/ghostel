@@ -86,8 +86,10 @@ After all ops, a final incremental redraw is compared with a full redraw."
                     `((ok . t))
                   `((ok . :json-false)
                     (kind . "mismatch")
-                    (incremental . ,(base64-encode-string incremental t))
-                    (full . ,(base64-encode-string full t))))))))
+                    (incremental . ,(base64-encode-string
+                                     (encode-coding-string incremental 'utf-8 t) t))
+                    (full . ,(base64-encode-string
+                              (encode-coding-string full 'utf-8 t) t))))))))
       (kill-buffer buf))))
 
 (defun ghostel-hypothesis--read-case-file (file)
