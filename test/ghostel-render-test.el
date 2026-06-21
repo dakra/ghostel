@@ -41,6 +41,23 @@ The `ghostel-test-clean' property is placed by
 
 ;;; Redraw harness and buffer invariants
 
+(ert-deftest ghostel-test-size-vars-follow-committed-resize ()
+  "`ghostel--term-rows' and `ghostel--term-cols' update when resize commits."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-size-vars*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((term (ghostel--new 5 40 1000)))
+            (should (= ghostel--term-rows 5))
+            (should (= ghostel--term-cols 40))
+            (ghostel--set-size term 7 30)
+            (should (= ghostel--term-rows 5))
+            (should (= ghostel--term-cols 40))
+            (ghostel--redraw term)
+            (should (= ghostel--term-rows 7))
+            (should (= ghostel--term-cols 30))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-redraw-preserves-mark ()
   "`ghostel--redraw' must keep `mark' stable across the destructive ops.
 Full redraws call `eraseBuffer' and partial redraws `deleteRegion',

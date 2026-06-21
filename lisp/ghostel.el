@@ -1519,12 +1519,14 @@ entry points so tests run without the module present."
   "Handle to the native terminal instance.")
 
 (defvar-local ghostel--term-rows nil
-  "Row count of the native terminal, for viewport/scrollback arithmetic.
-Updated whenever the terminal is created or resized.")
+  "Committed row count of the native terminal.
+Used for viewport/scrollback arithmetic.  Updated by the native
+renderer when the terminal is created or a resize is committed.")
 
 (defvar-local ghostel--term-cols nil
-  "Column count of the native terminal.
-Updated whenever the terminal is created or resized.")
+  "Committed column count of the native terminal.
+Updated by the native renderer when the terminal is created or a
+resize is committed.")
 
 (defcustom ghostel-bold-color nil
   "Configure how bold text is colored.
@@ -6440,12 +6442,10 @@ actually changes."
              (eql width ghostel--term-cols)
              (not (ghostel--alt-screen-p ghostel--term)))
         (setq size nil))
-       ;; Real resize — update the terminal model and redraw.
+       ;; Real resize — queue the terminal model resize and redraw.
        (t
         (ghostel--set-size-with-cell-dims
          ghostel--term (max 1 height) (max 1 width))
-        (setq ghostel--term-rows height)
-        (setq ghostel--term-cols width)
         (setq ghostel--force-next-redraw t)
         ;; Redraw synchronously so the buffer is updated before
         ;; Emacs displays the stale content at the new window size.
@@ -6663,8 +6663,6 @@ spawn after initialization."
                           ghostel-max-scrollback
                           ghostel-kitty-graphics-storage-limit
                           (ghostel--kitty-mediums-bits)))
-      (setq ghostel--term-rows height)
-      (setq ghostel--term-cols width)
       ;; Seed libghostty's cell dimensions before the process starts —
       ;; otherwise kitty graphics placements arriving in the very first
       ;; output (e.g. timg's transmit-and-place) compute grid_rows=0

@@ -943,6 +943,8 @@ fn commitResize(self: *Self, alloc: Allocator, env: emacs.Env) !bool {
             std.math.maxInt(u32);
         self.pending_resize = null;
 
+        env.set("ghostel--term-rows", self.term.rows);
+        env.set("ghostel--term-cols", self.term.cols);
         const total_rows_changed = self.rows_in_buffer != self.term.screens.active.pages.total_rows;
         return cols_changed or total_rows_changed or self.term.screens.active.no_scrollback;
     }
