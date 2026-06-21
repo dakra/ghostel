@@ -728,8 +728,7 @@ any other code that walks `compilation-arguments') re-runs via
         (let ((oh (max 1 (with-selected-window outwin
                            (floor (window-screen-lines)))))
               (ow (max 1 (window-max-chars-per-line outwin))))
-          (ghostel--set-size ghostel--term oh ow)
-          (setq ghostel--term-rows oh)))
+          (ghostel--set-size ghostel--term oh ow)))
       ;; Render the compilation header into the terminal before spawning
       ;; the command, so the user sees the "Compilation started at ..."
       ;; banner *during* the run rather than only when it finishes (the

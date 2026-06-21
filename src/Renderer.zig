@@ -81,7 +81,7 @@ const FontInfo = struct {
     }
 };
 
-pub fn init(alloc: Allocator, term: *gt.Terminal) !Self {
+pub fn init(alloc: Allocator, term: *gt.Terminal, env: emacs.Env) !Self {
     var renderer = Self{
         .term = term,
         .render_state = gt.RenderState.empty,
@@ -91,7 +91,7 @@ pub fn init(alloc: Allocator, term: *gt.Terminal) !Self {
         .rendered_screen = term.screens.active,
         .pending_resize = .{ .cols = term.cols, .rows = term.rows, .cell_w = 1, .cell_h = 1 },
     };
-    try renderer.commitResize(alloc);
+    try renderer.commitResize(alloc, env);
     return renderer;
 }
 
@@ -149,7 +149,7 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
     // If we have a pending resize, commit it now and just rerender the active
     // since the scrollback is already up to date.
     if (self.pending_resize != null) {
-        try self.commitResize(alloc);
+        try self.commitResize(alloc, env);
         self.gotoActiveStart(env);
         try self.render(alloc, env, self.term.screens.active.pages.getTopLeft(.active));
         self.evictScrollback(alloc, env);
@@ -958,7 +958,7 @@ fn renderToEnd(self: *Self, alloc: Allocator, env: emacs.Env, start_pin: gt.Pin)
     }
 }
 
-fn commitResize(self: *Self, alloc: Allocator) !void {
+fn commitResize(self: *Self, alloc: Allocator, env: emacs.Env) !void {
     if (self.pending_resize) |rz| {
         try self.term.resize(alloc, rz.cols, rz.rows);
         self.term.width_px = std.math.mul(u32, rz.cols, rz.cell_w) catch
@@ -966,6 +966,8 @@ fn commitResize(self: *Self, alloc: Allocator) !void {
         self.term.height_px = std.math.mul(u32, rz.rows, rz.cell_h) catch
             std.math.maxInt(u32);
         self.pending_resize = null;
+        env.set("ghostel--term-rows", self.term.rows);
+        env.set("ghostel--term-cols", self.term.cols);
     }
 }
 
@@ -997,7 +999,7 @@ fn clear(self: *Self, alloc: Allocator, env: emacs.Env) !void {
     self.render_pin = null;
 
     // Commit any pending resize since we're doing a rebuild anyway.
-    try self.commitResize(alloc);
+    try self.commitResize(alloc, env);
 
     self.rendered_screen = self.term.screens.active;
     if (!self.rendered_screen.no_scrollback) {

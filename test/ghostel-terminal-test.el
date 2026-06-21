@@ -288,9 +288,7 @@ dimensions otherwise."
 		  (ghostel--adjust-size 'fake-window))
         (should (equal '(32 120) set-size-args))
         (should ghostel--force-next-redraw)
-        (should redraw-called)
-        (should (= 32 ghostel--term-rows))
-        (should (= 120 ghostel--term-cols))))))
+        (should redraw-called)))))
 
 (ert-deftest ghostel-test-resize-rows-only-outside-minibuffer-still-resizes ()
   "Rows-only resize with no minibuffer active goes through the normal path.
@@ -314,9 +312,7 @@ shell so $LINES stays accurate."
 		  (ghostel--adjust-size 'fake-window))
         (should (equal '(32 120) set-size-args))
         (should ghostel--force-next-redraw)
-        (should redraw-called)
-        (should (= 32 ghostel--term-rows))
-        (should (= 120 ghostel--term-cols))))))
+        (should redraw-called)))))
 
 (ert-deftest ghostel-test-resize-cols-change-during-minibuffer-still-resizes ()
   "Cols change during a minibuffer still goes through the normal path.
@@ -341,9 +337,7 @@ minibuffer state."
 		  (ghostel--adjust-size 'fake-window))
         (should (equal '(40 100) set-size-args))
         (should ghostel--force-next-redraw)
-        (should redraw-called)
-        (should (= 40 ghostel--term-rows))
-        (should (= 100 ghostel--term-cols))))))
+        (should redraw-called)))))
 
 (ert-deftest ghostel-test-cleanup-temp-paths-handles-files-and-dirs ()
   "`ghostel--cleanup-temp-paths' deletes files and recursively deletes dirs.

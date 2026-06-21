@@ -1381,8 +1381,6 @@ the same dimensions so PTY and VT always agree."
               (let ((vt-size (car set-size-calls))
                     (pty-size (car spawn-calls)))
                 (should (equal vt-size pty-size)))
-              ;; `ghostel--term-rows' tracks the final reconciled height.
-              (should (= (car (car set-size-calls)) ghostel--term-rows))
               ;; Clean up the fake process.
               (let ((p ghostel--process))
                 (when (process-live-p p)
