@@ -240,6 +240,21 @@ pub fn encodeFocus(self: *Self, gained: bool) !bool {
     return true;
 }
 
+pub fn encodePaste(self: *Self, data: []u8) !bool {
+    const slices = gt.input.encodePaste(
+        data,
+        gt.input.PasteOptions.fromTerminal(&self.terminal),
+    );
+
+    var wrote = false;
+    for (slices) |slice| {
+        if (slice.len == 0) continue;
+        try self.ptyWrite(slice);
+        wrote = true;
+    }
+    return wrote;
+}
+
 /// Resize the terminal. The col/row size gets committed on next redraw in order
 /// to ensure that the we fully render the very latest state in case any rows
 /// get promoted to scrollback due to vertical shrinking of the viewport.
@@ -617,6 +632,23 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 }
                 const gained = env.isNotNil(args[1]);
                 return if (try term.encodeFocus(gained)) env.t() else env.nil();
+            }
+        },
+    },
+    .{
+        .name = "ghostel--encode-paste",
+        .arity = .{ 2, 2 },
+        .doc =
+        \\Encode paste text using the terminal's paste encoder and write it to the PTY.
+        \\
+        \\(ghostel--encode-paste TERM DATA)
+        ,
+        .impl = struct {
+            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
+                if (env.isNil(args[0])) return env.nil();
+                const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
+                const data = try env.extractStringAlloc(module_alloc, args[1], &term.string_buffer);
+                return if (try term.encodePaste(data)) env.t() else env.nil();
             }
         },
     },

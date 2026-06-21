@@ -975,6 +975,7 @@ Used when `cursor-in-non-selected-windows' resolves to box.")
 ;; Declare native module functions for the byte compiler
 
 (declare-function ghostel--encode-key "ghostel-module")
+(declare-function ghostel--encode-paste "ghostel-module" (term data))
 (declare-function ghostel--focus-event "ghostel-module")
 (declare-function ghostel--mode-enabled "ghostel-module")
 (declare-function ghostel--alt-screen-p "ghostel-module")
@@ -2287,18 +2288,10 @@ overlay clears the way \\`keyboard-quit' would in other buffers."
 (defvar-local ghostel--yank-index 0
   "Current kill ring index for `ghostel-yank-pop'.")
 
-(defun ghostel--bracketed-paste-p ()
-  "Return non-nil if the terminal has bracketed paste mode (2004) enabled."
-  (and ghostel--term
-       (ghostel--mode-enabled ghostel--term 2004)))
-
 (defun ghostel--paste-text (text)
-  "Send TEXT to the terminal, using bracketed paste if the terminal wants it."
+  "Send TEXT to the terminal using the terminal paste encoder."
   (when text
-    (ghostel--write-pty ghostel--term
-                        (if (ghostel--bracketed-paste-p)
-                            (concat "\e[200~" text "\e[201~")
-                          text))))
+    (ghostel--encode-paste ghostel--term text)))
 
 (defun ghostel-paste ()
   "Paste text from the Emacs kill ring into the terminal.
