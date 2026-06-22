@@ -984,6 +984,7 @@ Used when `cursor-in-non-selected-windows' resolves to box.")
 (declare-function ghostel--pty-password-input-p "ghostel-module" (term))
 (declare-function ghostel--spawn-native-process "ghostel-module" (term command pipe))
 (declare-function ghostel--kill-native-process "ghostel-module" (term))
+(declare-function ghostel--window-adjust-process-window-size "ghostel" (process windows))
 
 (declare-function spinner-create "spinner")
 (declare-function spinner-start "spinner")
@@ -5120,13 +5121,16 @@ Local PROGRAM is resolved to an absolute path before backend dispatch.
 Local buffers use the native PTY path when `ghostel-use-native-pty'
 is non-nil; remote (REMOTE-P) buffers always go through Emacs so
 TRAMP can manage the remote shell."
-  (let ((program (if remote-p
-                     program
-                   (ghostel--resolve-local-executable program))))
-    (setq ghostel--process
-          (if (and ghostel-use-native-pty (not remote-p))
-              (ghostel--spawn-via-native (cons program program-args))
-            (ghostel--spawn-via-emacs program program-args remote-p)))))
+  (let* ((program (if remote-p
+                      program
+                    (ghostel--resolve-local-executable program)))
+         (process (if (and ghostel-use-native-pty (not remote-p))
+                      (ghostel--spawn-via-native (cons program program-args))
+                    (ghostel--spawn-via-emacs program program-args remote-p))))
+    (when (processp process)
+      (process-put process 'adjust-window-size-function
+                   #'ghostel--window-adjust-process-window-size))
+    (setq ghostel--process process)))
 
 (defun ghostel--spawn-via-emacs (program program-args &optional remote-p)
   "Spawn PROGRAM with PROGRAM-ARGS through Emacs process machinery.
@@ -5166,7 +5170,6 @@ returned process owns the PTY and receives `ghostel--filter' and
     ;; Set the PTY's actual window size (ioctl TIOCSWINSZ) so that
     ;; the program's line editor (readline/ZLE) can render properly.
     (set-process-window-size proc ghostel--term-rows ghostel--term-cols)
-    (process-put proc 'adjust-window-size-function nil)
     proc))
 
 (defun ghostel--spawn-via-native (command)
