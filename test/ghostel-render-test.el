@@ -1734,6 +1734,13 @@ When the buffer reappears, it is immediately redrawn."
 ;; the feature-oriented sections above and have an obvious home for
 ;; future additions.
 
+(defun ghostel-test--numbered-lines (count width)
+  "Return COUNT numbered lines with WIDTH x characters per line."
+  (with-temp-buffer
+    (dotimes (i count)
+      (insert (format "%05d: " i) (make-string width ?x) "\n"))
+    (buffer-string)))
+
 (ert-deftest ghostel-test-page-eviction-before-redraw ()
   "Regression: page-serial underflow when initial active area scrolls off entirely.
 Scenario (from Hypothesis failure): 1×136 terminal, render once while
@@ -1773,6 +1780,26 @@ subtracts old_line_len from the newly-created page whose char_len is
             (should (string-match-p "x"
                                     (buffer-substring-no-properties
                                      (point-min) (point-max))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-resize-eviction-char-count-stays-in-buffer-bounds ()
+  "Regression: resizing must not stale scrollback char counts.
+A row-count resize between materialized scrollback and later eviction
+left page character accounting larger than the actual buffer, so the
+next eviction called `delete-region' beyond `point-max'."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-resize-evict*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((term (ghostel--new 1 90 16384))
+                (inhibit-read-only t))
+            (ghostel--write-vt term (ghostel-test--numbered-lines 400 20))
+            (ghostel--set-size term 10 90)
+            (ghostel--redraw term)
+            (ghostel--set-size term 11 90)
+            (ghostel--redraw term)
+            (ghostel--write-vt term (ghostel-test--numbered-lines 800 20))
+            (ghostel--redraw term)))
       (kill-buffer buf))))
 
 
