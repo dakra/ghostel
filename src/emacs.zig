@@ -449,6 +449,7 @@ const interned_symbols = [_][:0]const u8{
     "ghostel--cursor-pos",
     "ghostel--cursor-style",
     "ghostel--debug-log-vt",
+    "ghostel--defer",
     "ghostel--handle-notification",
     "ghostel--kitty-clear",
     "ghostel--kitty-display-image",

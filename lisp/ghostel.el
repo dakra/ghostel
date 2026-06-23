@@ -3390,6 +3390,16 @@ from MELPA or set `ghostel-progress-function' to #'ghostel-default-progress"))
     (ghostel--spinner-stop)
     (ghostel-default-progress state progress)))
 
+(defun ghostel--defer (function &rest args)
+  "Run FUNCTION with ARGS soon, using the current buffer when it fires."
+  (let ((buffer (current-buffer)))
+    (run-at-time
+     0 nil
+     (lambda ()
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (apply function args)))))))
+
 (defun ghostel--handle-notification (title body)
   "Dispatch TITLE and BODY to `ghostel-notification-function'.
 Called synchronously from the native VT parser; the user handler

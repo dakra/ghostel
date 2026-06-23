@@ -317,6 +317,22 @@ that emitted the escape as `current-buffer'."
           (ghostel--handle-notification "" "hi")
           (should (equal captured-name "*ghostel: origin*")))))))
 
+(ert-deftest ghostel-test-defer-runs-in-originating-buffer ()
+  "`ghostel--defer' runs callbacks in the buffer that scheduled them."
+  (cl-letf (((symbol-function 'run-at-time)
+             (lambda (_secs _rep fn &rest args)
+               (with-temp-buffer
+                 (rename-buffer " *unrelated*" t)
+                 (apply fn args)))))
+    (let (captured)
+      (with-temp-buffer
+        (rename-buffer " *ghostel: origin*" t)
+        (ghostel--defer
+         (lambda (value)
+           (setq captured (list value (buffer-name))))
+         'ok))
+      (should (equal captured '(ok " *ghostel: origin*"))))))
+
 (ert-deftest ghostel-test-notification-dispatch-real-timer ()
   "Async path runs end-to-end through a real `run-at-time'.
 Every other dispatcher test stubs `run-at-time' synchronously, so
@@ -833,6 +849,24 @@ call.  The OSC 51 scanner this replaces could not handle this case."
           (ghostel-test--wait-until
            (lambda () (equal "aid=42" (cdr (assoc "A" markers))))
            proc 5))))))
+
+(ert-deftest ghostel-test-deferred-vt-effect-restores-current-buffer ()
+  "Deferred VT effects run in the buffer that produced the terminal output."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-cat-buffer (buf proc)
+      (let ((other (generate-new-buffer " *ghostel-test-vt-effect-other*"))
+            captured)
+        (unwind-protect
+            (cl-letf (((symbol-function 'ghostel--osc133-marker)
+                       (lambda (type param)
+                         (setq captured (list (current-buffer) type param)))))
+              (ghostel--write-pty ghostel--term "\e]133;C\e\\")
+              (with-current-buffer other
+                (ghostel-test--wait-until (lambda () captured) proc 5))
+              (should (eq (car captured) buf))
+              (should (equal (cdr captured) '("C" nil))))
+          (kill-buffer other))))))
 
 (ert-deftest ghostel-test-command-finish-hook ()
   "OSC 133 D fires `ghostel-command-finish-functions'."
