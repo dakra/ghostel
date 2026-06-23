@@ -326,7 +326,7 @@ pub const Env = struct {
         return func(self.raw, str.ptr, @intCast(str.len));
     }
 
-    pub fn openChannel(self: Env, pipe: Value) std.posix.fd_t {
+    pub fn openChannel(self: Env, pipe: Value) c_int {
         return self.raw.open_channel.?(self.raw, pipe);
     }
 

@@ -6,6 +6,7 @@
 /// signal.  The check is purely a read of the slave's termios; it does
 /// not change the device's state and is safe to run frequently.
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// Returns true if the tty at PATH is in canonical mode with echo
 /// disabled — the heuristic libghostty uses to decide that the
@@ -22,6 +23,8 @@ const std = @import("std");
 /// sufficient — we never write to the slave; reducing the mode means
 /// a stray write through this fd can't garble the child's input.
 pub fn isPasswordMode(path: []const u8) bool {
+    if (builtin.os.tag == .windows) return false;
+
     const fd = std.posix.open(path, .{
         .ACCMODE = .RDONLY,
         .NOCTTY = true,
