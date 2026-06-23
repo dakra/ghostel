@@ -4781,45 +4781,43 @@ Convenience wrapper to keep the five resize sites consistent."
                      (ghostel--reported-cell-width)
                      (ghostel--reported-cell-height)))
 
-(defun ghostel--adjust-size (window)
+(defun ghostel--adjust-size (window &optional force)
   "Resize the terminal to match WINDOW's buffer dimensions.
 If WINDOW was anchored to the live viewport before the size change,
 keep it anchored.  Redraw synchronously when the terminal size
-actually changes."
+actually changes.  When FORCE is non-nil, run the resize/redraw
+path even when the row/column count is unchanged."
   (when (ghostel--window-anchored-p
          window (window-old-body-pixel-height window))
     (ghostel--anchor-window window))
-  (let* ((adjust-fn (default-value 'window-adjust-process-window-size-function))
-         (adjust-fn (if (functionp adjust-fn)
-                        adjust-fn
-                      #'window-adjust-process-window-size-smallest))
-         (windows (get-buffer-window-list nil nil t))
-         (size (funcall adjust-fn ghostel--process windows))
-         (width (car size))
-         (height (cdr size)))
-    (when (and ghostel--term size)
-      (cond
-       ;; No change — skip entirely.
-       ((and (eql height ghostel--term-rows)
-             (eql width ghostel--term-cols))
-        (setq size nil))
-       ;; Don't resize on minibuffer-induced rows-only change.
-       ;; E.g. fish clears and re-emits its prompt on every SIGWINCH;
-       ;; a `consult-buffer'/`M-x' cycle that grows then shrinks the body
-       ;; would otherwise produce two prompt repaints in quick succession.
-       ;; Skip the deferral on the alt screen TUIs.
-       ((and (active-minibuffer-window)
-             (eql width ghostel--term-cols)
-             (not (ghostel--alt-screen-p ghostel--term)))
-        (setq size nil))
-       ;; Real resize — queue the terminal model resize and redraw.
-       (t
-        (ghostel--set-size-with-cell-dims
-         ghostel--term (max 1 height) (max 1 width))
+  (when-let* ((adjust-fn (or (default-value 'window-adjust-process-window-size-function)
+                             #'window-adjust-process-window-size-smallest))
+              (windows (get-buffer-window-list nil nil t))
+              (size (funcall adjust-fn ghostel--process windows))
+              (width (car size))
+              (height (cdr size)))
+    (let* ((same-size-p (and (eql height ghostel--term-rows)
+                             (eql width ghostel--term-cols)))
+           ;; Don't resize on minibuffer-induced rows-only change.
+           ;; E.g. fish clears and re-emits its prompt on every SIGWINCH; a
+           ;; `consult-buffer'/`M-x' cycle that grows then shrinks the body
+           ;; would otherwise produce two prompt repaints in quick succession.
+           ;; Skip the deferral on the alt screen TUIs.
+           (minibuffer-excepted-p (and (active-minibuffer-window)
+                                       (eql width ghostel--term-cols)
+                                       (not (ghostel--alt-screen-p ghostel--term)))))
+      (when (or force (and (not same-size-p) (not minibuffer-excepted-p)))
+        (ghostel--set-size-with-cell-dims ghostel--term (max 1 height) (max 1 width))
         (setq ghostel--force-next-redraw t)
         ;; Redraw synchronously so the buffer is updated before
         ;; Emacs displays the stale content at the new window size.
-        (ghostel--redraw-now (current-buffer)))))))
+        (ghostel--redraw-now (current-buffer))))))
+
+(defun ghostel--text-scale-changed ()
+  "Update terminal size and redraw after `text-scale-mode' changes the cell font."
+  (when (and ghostel--term (ghostel--terminal-live-p))
+    (when-let* ((window (get-buffer-window (current-buffer) t)))
+      (ghostel--adjust-size window t))))
 
 (defun ghostel--sync-tty-composition (window)
   "Sync `auto-composition-mode' with WINDOW's frame for ghostel buffers.
@@ -4926,6 +4924,7 @@ for both native and Emacs PTY paths."
   (add-hook 'window-buffer-change-functions #'ghostel--window-buffer-change nil t)
   (add-hook 'window-buffer-change-functions #'ghostel--sync-tty-composition nil t)
   (add-hook 'window-size-change-functions #'ghostel--adjust-size nil t)
+  (add-hook 'text-scale-mode-hook #'ghostel--text-scale-changed nil t)
   (add-hook 'minibuffer-exit-hook #'ghostel--minibuffer-exit)
   (add-hook 'minibuffer-exit-hook #'ghostel--minibuffer-exit-maybe-leave)
   (add-hook 'activate-mark-hook #'ghostel--mark-activated nil t)

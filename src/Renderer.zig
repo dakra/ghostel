@@ -234,6 +234,13 @@ fn updateFontInfo(self: *Self, alloc: Allocator, env: emacs.Env) bool {
 
 fn getDefaultFont(env: emacs.Env) emacs.Value {
     const s = emacs.sym;
+
+    const probe = env.f("propertize", .{ " ", s.face, s.default });
+    const remapped_font = env.f("font-at", .{ 0, env.f("selected-window", .{}), probe });
+    if (env.isNotNil(env.f("fontp", .{ remapped_font, s.@"font-object" }))) {
+        return remapped_font;
+    }
+
     const font = env.f("face-attribute", .{ s.default, s.@":font" });
     if (env.isNil(env.f("fontp", .{ font, s.@"font-object" }))) return env.nil();
     return font;

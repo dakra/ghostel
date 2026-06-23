@@ -39,6 +39,8 @@ All notable changes to this project will be documented in this file.
   deleted directory, so neither the integration nor the user's own config
   loaded. Cleanup is now deferred to buffer-kill, past the shell's startup read
   and the session-long lifetime of the terminfo dir.
+- Emoji and other glyphs scaled into the terminal cell now follow buffer-local
+  text scaling.
 
 ## [0.37.0] — 2026-06-21
 

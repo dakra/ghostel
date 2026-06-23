@@ -35,6 +35,8 @@ SPECS is a plist with these keys:
   :default-font        -- mock font (from `ghostel-test--make-font') returned by
                           `face-attribute' for the default face; its :metrics is
                           used by the `query-font' mock.
+  :remapped-default-font -- mock font returned by a synthetic-string `font-at'
+                          default-face probe, falling back to :default-font.
   :glyph-font          -- mock font returned by `font-at'; its :metrics and
                           shaped gstring are used by `query-font',
                           `composition-get-gstring', and `font-shape-gstring'.
@@ -48,6 +50,9 @@ SPECS is a plist with these keys:
           (--orig-find-composition (symbol-function 'find-composition))
           (--orig-composition-get-gstring (symbol-function 'composition-get-gstring))
           (--orig-font-shape-gstring (symbol-function 'font-shape-gstring)))
+     (ignore --orig-face-attribute --orig-fontp --orig-font-at --orig-query-font
+             --orig-font-has-char-p --orig-find-composition
+             --orig-composition-get-gstring --orig-font-shape-gstring)
      (cl-letf (,@(when-let* ((df (plist-get specs :default-font)))
                    `(((symbol-function 'face-attribute)
                       (lambda (face attr &rest args)
@@ -68,13 +73,20 @@ SPECS is a plist with these keys:
                         (or (and (ghostel-test--mock-font-p font)
                                  (plist-get (cdr font) :metrics))
                             (funcall --orig-query-font font))))))
+               ,@(let ((gf (plist-get specs :glyph-font))
+                       (default-probe-font (or (plist-get specs :remapped-default-font)
+                                               (plist-get specs :default-font))))
+                   (when (or gf default-probe-font)
+                     `(((symbol-function 'font-at)
+                        (lambda (pos &optional window string)
+                          (cond
+                           (string
+                            ,(or default-probe-font
+                                 '(funcall --orig-font-at pos window string)))
+                           ,@(when gf `(((>= pos (point-min)) ,gf)))
+                           (t (funcall --orig-font-at pos window string))))))))
                ,@(when-let* ((gf (plist-get specs :glyph-font)))
-                   `(((symbol-function 'font-at)
-                      (lambda (pos &optional window string)
-                        (if (>= pos (if string 0 (point-min)))
-                            ,gf
-                          (funcall --orig-font-at pos window string))))
-                     ((symbol-function 'composition-get-gstring)
+                   `(((symbol-function 'composition-get-gstring)
                       (lambda (from to font &optional string)
                         (or (and (ghostel-test--mock-font-p font)
                                  (ghostel-test--mock-font-gstring font))
@@ -115,6 +127,34 @@ SPECS is a plist with these keys:
       (should (eq (ghostel--query-font-cached font) metrics))
       (should (eq (ghostel--query-font-cached font) metrics))
       (should (= calls 1)))))
+
+(ert-deftest ghostel-test-glyph-adjust-uses-remapped-default-font ()
+  "Cell metrics come from the remapped default font, not `face-attribute'."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-glyph-remapped-default*")))
+    (unwind-protect
+        (save-window-excursion
+          (with-selected-window (display-buffer buf)
+            (ghostel-mode)
+            (let* ((term (ghostel--new 5 80 1000))
+                   (ghostel--term term)
+                   (ghostel--term-rows 5)
+                   (inhibit-read-only t)
+                   (base (ghostel-test--make-font ghostel-test--default-font-info))
+                   (remapped (ghostel-test--make-font
+                              ["MockRemappedDefault" "mock.ttf" 24 240 20 20 20 20 0]))
+                   (glyph-font (ghostel-test--make-font
+                                ["MockGlyph" "mock.ttf" 24 240 20 20 20 20 0]
+                                [[0 1 ?\u0100 0 20 0 0 20 20 0]])))
+              (ghostel--write-vt term "\u0100")
+              (ghostel-test--with-glyph-mocks
+               (:default-font base
+                              :remapped-default-font remapped
+                              :glyph-font glyph-font)
+               (ghostel--redraw term t)
+               (goto-char (point-min))
+               (should-not (get-text-property (point) 'display))))))
+      (kill-buffer buf))))
 
 (ert-deftest ghostel-test-glyph-adjust-uses-composition-gstring ()
   "A composed glyph uses `find-composition' metrics for adjustment."
@@ -464,7 +504,8 @@ Sets floor to 1.0 and feeds a glyph larger than the cell.  With floor
                      (mock-query-font (symbol-function 'query-font)))
                  (cl-letf (((symbol-function 'font-at)
                             (lambda (&rest args)
-                              (cl-incf font-at-calls)
+                              (unless (nth 2 args)
+                                (cl-incf font-at-calls))
                               (apply mock-font-at args)))
                            ((symbol-function 'query-font)
                             (lambda (font)
@@ -504,11 +545,13 @@ Sets floor to 1.0 and feeds a glyph larger than the cell.  With floor
               (ghostel-test--with-glyph-mocks
                (:default-font df)
                (cl-letf (((symbol-function 'font-at)
-                          (lambda (pos &optional _window _string)
-                            (if (eq (plist-get (get-text-property pos 'face) :weight)
-                                    'bold)
-                                bold-font
-                              normal-font)))
+                          (lambda (pos &optional _window string)
+                            (cond
+                             (string df)
+                             ((eq (plist-get (get-text-property pos 'face) :weight)
+                                  'bold)
+                              bold-font)
+                             (t normal-font))))
                          ((symbol-function 'composition-get-gstring)
                           (lambda (_from _to font &optional _string)
                             (ghostel-test--mock-font-gstring font)))
@@ -543,8 +586,10 @@ Sets floor to 1.0 and feeds a glyph larger than the cell.  With floor
               ;; would call `font-at', and the deliberately-broken stub below
               ;; would fail the test.
               (cl-letf (((symbol-function 'font-at)
-                         (lambda (&rest _)
-                           (error "font-at must not be called for covered glyphs"))))
+                         (lambda (&rest args)
+                           (when (null (nth 2 args))
+                             (error "font-at must not be called for covered glyphs"))
+                           nil)))
                 (ghostel-test--with-glyph-mocks
                  (:default-font df)
                  (ghostel--redraw term t)

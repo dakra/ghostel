@@ -499,6 +499,7 @@ const interned_symbols = [_][:0]const u8{
     "process-live-p",
     "process-send-string",
     "process-tty-name",
+    "propertize",
     "provide",
     "put-text-property",
     "run-at-time",

@@ -236,6 +236,41 @@ modes (47 / 1047 / 1049) are handled uniformly."
 		  (ghostel--adjust-size 'fake-window))
         (should-not set-size-called)))))
 
+(ert-deftest ghostel-test-resize-force-same-dims-still-runs ()
+  "Forced resize runs even when rows and cols are unchanged."
+  (with-temp-buffer
+    (let ((ghostel--term 'fake)
+          (ghostel--process 'fake-proc)
+          (ghostel--term-rows 40)
+          (ghostel--term-cols 120)
+          (ghostel--force-next-redraw nil)
+          (set-size-args nil)
+          (redraw-called nil))
+      (cl-letf (((symbol-function 'ghostel--set-size-with-cell-dims)
+                 (lambda (term h w) (setq set-size-args (list term h w))))
+                ((symbol-function 'ghostel--redraw-now)
+                 (lambda (buffer)
+                   (should (eq buffer (current-buffer)))
+                   (setq redraw-called ghostel--force-next-redraw))))
+        (ghostel-test--with-resize-stubs '(120 . 40)
+		  (ghostel--adjust-size 'fake-window t))
+        (should (equal '(fake 40 120) set-size-args))
+        (should ghostel--force-next-redraw)
+        (should redraw-called)))))
+
+(ert-deftest ghostel-test-text-scale-change-forces-size-adjustment ()
+  "Text-scale changes use a forced size adjustment."
+  (with-temp-buffer
+    (let ((ghostel--term 'fake)
+          (ghostel--input-mode 'semi-char)
+          (adjust-args nil))
+      (cl-letf (((symbol-function 'get-buffer-window)
+                 (lambda (&rest _) 'fake-window))
+                ((symbol-function 'ghostel--adjust-size)
+                 (lambda (&rest args) (setq adjust-args args))))
+        (ghostel--text-scale-changed)
+        (should (equal '(fake-window t) adjust-args))))))
+
 (ert-deftest ghostel-test-resize-rows-only-during-minibuffer-suppressed ()
   "Rows-only resize while a minibuffer is active is deferred (#268).
 fish (and other shells with `fish_handle_reflow' on) clears and
