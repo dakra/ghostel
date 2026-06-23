@@ -24,6 +24,9 @@ const formatColor = style_face.formatColor;
 
 const Self = @This();
 
+/// Set to true while rendering is in progress
+is_rendering: bool = false,
+
 /// Terminal being rendered.
 term: *gt.Terminal,
 
@@ -128,6 +131,10 @@ pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) !void
 /// `force_full_arg` is true, the buffer is cleared and fully rebuilt
 /// instead of using the incremental dirty-row path.
 pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: bool) !void {
+    if (self.is_rendering) return error.ReentrantRedraw;
+    self.is_rendering = true;
+    defer self.is_rendering = false;
+
     try self.saved_markers.save(alloc, env);
     defer self.saved_markers.restoreAndClear(self.term.screens.active, env);
 
@@ -795,7 +802,7 @@ fn insertRow(
     return @intCast(row_end - row_start);
 }
 
-pub fn render(
+fn render(
     self: *Self,
     alloc: Allocator,
     env: emacs.Env,

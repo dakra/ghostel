@@ -81,6 +81,34 @@ either of which would snap every marker in the buffer to `point-min'."
               (should (= target (marker-position (mark-marker)))))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-redraw-rejects-reentrant-call ()
+  "A nested `ghostel--redraw' of the same terminal signals an error."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-reentrant-redraw*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((term (ghostel--new 5 40 1000))
+                caught
+                entered)
+            (ghostel--write-vt term "hello")
+            (cl-letf* ((orig-mark-marker (symbol-function 'mark-marker))
+                       ((symbol-function 'mark-marker)
+                        (lambda (&optional buffer)
+                          (unless entered
+                            (setq entered t)
+                            (setq caught
+                                  (condition-case err
+                                      (progn (ghostel--redraw term) nil)
+                                    (error err))))
+                          (if buffer
+                              (funcall orig-mark-marker buffer)
+                            (funcall orig-mark-marker)))))
+              (ghostel--redraw term t))
+            (should caught)
+            (should (string-match-p "ReentrantRedraw"
+                                    (error-message-string caught)))))
+      (kill-buffer buf))))
+
 (defun ghostel-test--token-position (token)
   "Return the start position of TOKEN in the current buffer."
   (save-excursion
