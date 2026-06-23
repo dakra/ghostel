@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.38.0] — 2026-06-23
+
 ### Added
 - Emacs bookmark support for ghostel buffers: `bookmark-set` (`C-x r m`) records
   a terminal's working directory and name, and `bookmark-jump` (`C-x r b`)
@@ -32,6 +34,9 @@ All notable changes to this project will be documented in this file.
   Fixes [#444](https://github.com/dakra/ghostel/issues/444).
 
 ### Fixed
+- Line mode now keeps point in the user's in-progress input when viewport
+  anchoring scrolls the window back to the live terminal output.
+  Fixes [#436](https://github.com/dakra/ghostel/issues/436).
 - Remote shell integration: the per-session temp files (zsh `ZDOTDIR`, bash
   `--rcfile`, fish init script, and the pushed terminfo dir) were deleted
   immediately after the asynchronous spawn, racing the remote shell that had
@@ -39,8 +44,20 @@ All notable changes to this project will be documented in this file.
   deleted directory, so neither the integration nor the user's own config
   loaded. Cleanup is now deferred to buffer-kill, past the shell's startup read
   and the session-long lifetime of the terminfo dir.
+- Scrollback row accounting now stays correct when a rendered viewport spans
+  multiple libghostty pages.
 - Emoji and other glyphs scaled into the terminal cell now follow buffer-local
   text scaling.
+
+### Internal
+- Split native-module provisioning, face/color definitions, and OSC 133 prompt
+  navigation/imenu support into dedicated Elisp files.
+- Native VT writes now defer callbacks through a shared Elisp helper that
+  preserves the originating terminal buffer.
+- Reentrant renderer redraws now fail loudly instead of continuing through an
+  unsupported nested render.
+- Removed native terminal accessor functions that duplicated Elisp state.
+- Expanded OSC 2 test coverage across parser/terminator variants.
 
 ## [0.37.0] — 2026-06-21
 

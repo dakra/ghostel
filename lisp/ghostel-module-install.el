@@ -59,7 +59,7 @@ Customize this when downloading pre-built modules from a fork or mirror."
 
 ;;; Native module download, compilation, and loading
 
-(defconst ghostel--minimum-module-version "0.37.0"
+(defconst ghostel--minimum-module-version "0.38.0"
   "Minimum native module version required by this Elisp version.
 Bump this only when the Elisp code requires a newer native module
 \(e.g. new Zig-exported function or changed calling convention).")
