@@ -219,10 +219,7 @@ fn updateFontInfo(self: *Self, alloc: Allocator, env: emacs.Env) bool {
 }
 
 fn getDefaultFont(env: emacs.Env) emacs.Value {
-    const s = emacs.sym;
-    const font = env.f("face-attribute", .{ s.default, s.@":font" });
-    if (env.isNil(env.f("fontp", .{ font, s.@"font-object" }))) return env.nil();
-    return font;
+    return env.f("ghostel--default-font", .{});
 }
 
 fn probeCoverage(env: emacs.Env, font: emacs.Value) u32 {

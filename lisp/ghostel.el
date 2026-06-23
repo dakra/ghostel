@@ -4493,6 +4493,36 @@ When `ghostel--query-font-cache' is nil, call `query-font' directly."
           (puthash font (query-font font) ghostel--query-font-cache))
     (query-font font)))
 
+(defun ghostel--default-font ()
+  "Return the default-face font object the renderer should size grid cells to.
+Called from the native renderer for the current buffer and selected
+window.
+
+Unlike `face-attribute', this is `face-remapping-alist'-aware, so the
+monospace cell that oversized glyphs (emoji, CJK, fallback fonts) are
+scaled into follows `text-scale-mode' and default-face height remaps.
+Sizing the cell from the unremapped base font instead leaves those
+glyphs pinned to the base size — tiny — when the buffer is scaled up.
+
+The realized font is probed with `font-at' at the first newline of the
+rendered output: a row-terminating newline always carries the default
+face, so the probe returns the realized default font even when the
+first on-screen cell is a wide glyph in a different font.  Falls back
+to the unremapped base default font when nothing is on screen yet (the
+first redraw of an empty buffer) or on a non-graphical display, where
+remapping does not apply."
+  (let ((base (let ((f (face-attribute 'default :font)))
+                (and (fontp f 'font-object) f))))
+    (or (and base
+             (display-graphic-p)
+             (> (point-max) (point-min))
+             (let ((probe (font-at (save-excursion
+                                     (goto-char (point-min))
+                                     (line-end-position))
+                                   (selected-window))))
+               (and (fontp probe 'font-object) probe)))
+        base)))
+
 (defun ghostel--viewport-start ()
   "Position of the first line of the terminal viewport, or nil if rows<=0."
   (let ((tr (or ghostel--term-rows 0)))
@@ -4779,6 +4809,22 @@ actually changes."
         ;; Emacs displays the stale content at the new window size.
         (ghostel--redraw-now (current-buffer)))))))
 
+(defun ghostel--text-scale-changed ()
+  "Re-render after a `text-scale-mode' change so glyphs track the new cell.
+`text-scale-mode' rescales the grid cell: the terminal may now fit a
+different number of rows and columns, and oversized glyphs (emoji, CJK,
+fallback fonts) are scaled to the cell at render time, so the scales
+must be recomputed against the new `ghostel--default-font' size.
+Resize to the new dimensions, then force a redraw — the resize alone
+redraws only when the row/column count changes, but a pure
+height-without-reflow scale still needs the glyph scales refreshed.
+Runs as a buffer-local `text-scale-mode-hook'."
+  (when (and ghostel--term (ghostel--terminal-live-p))
+    (when-let* ((window (get-buffer-window (current-buffer) t)))
+      (ghostel--adjust-size window))
+    (setq ghostel--force-next-redraw t)
+    (ghostel--redraw-now (current-buffer))))
+
 (defun ghostel--sync-tty-composition (window)
   "Sync `auto-composition-mode' with WINDOW's frame for ghostel buffers.
 On a TTY frame, set the buffer-local value to the frame's `tty-type'
@@ -4884,6 +4930,7 @@ for both native and Emacs PTY paths."
   (add-hook 'window-buffer-change-functions #'ghostel--window-buffer-change nil t)
   (add-hook 'window-buffer-change-functions #'ghostel--sync-tty-composition nil t)
   (add-hook 'window-size-change-functions #'ghostel--adjust-size nil t)
+  (add-hook 'text-scale-mode-hook #'ghostel--text-scale-changed nil t)
   (add-hook 'minibuffer-exit-hook #'ghostel--minibuffer-exit)
   (add-hook 'minibuffer-exit-hook #'ghostel--minibuffer-exit-maybe-leave)
   (add-hook 'activate-mark-hook #'ghostel--mark-activated nil t)

@@ -13,6 +13,10 @@ All notable changes to this project will be documented in this file.
   buffer that has since moved elsewhere).
   Fixes [#447](https://github.com/dakra/ghostel/issues/447).
 
+### Fixed
+- Emoji and other glyphs scaled into the monospace grid now grow and shrink with
+  `text-scale-adjust` instead of staying pinned to the base font size.
+
 ## [0.37.0] — 2026-06-21
 
 ### Added

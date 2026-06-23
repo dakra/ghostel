@@ -116,6 +116,55 @@ SPECS is a plist with these keys:
       (should (eq (ghostel--query-font-cached font) metrics))
       (should (= calls 1)))))
 
+(ert-deftest ghostel-test-default-font-uses-realized-probe ()
+  "`ghostel--default-font' returns the realized (remapped) font when on screen.
+This is what makes oversized glyphs track `text-scale-mode': the cell is
+sized from the realized font, not the unremapped `face-attribute' base."
+  (with-temp-buffer
+    (insert "hello\nworld\n")
+    (let ((base (ghostel-test--make-font ghostel-test--default-font-info))
+          (realized (ghostel-test--make-font
+                     ["Realized" "r.ttf" 24 240 20 20 20 20 0])))
+      (ghostel-test--with-glyph-mocks
+       (:default-font base)
+       (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                 ((symbol-function 'font-at) (lambda (&rest _) realized)))
+         (should (eq (ghostel--default-font) realized)))))))
+
+(ert-deftest ghostel-test-default-font-falls-back-when-empty ()
+  "`ghostel--default-font' returns the base font with nothing on screen to probe."
+  (with-temp-buffer
+    (let ((base (ghostel-test--make-font ghostel-test--default-font-info)))
+      (ghostel-test--with-glyph-mocks
+       (:default-font base)
+       (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                 ((symbol-function 'font-at)
+                  (lambda (&rest _) (error "must not probe an empty buffer"))))
+         (should (eq (ghostel--default-font) base)))))))
+
+(ert-deftest ghostel-test-default-font-falls-back-on-non-graphic ()
+  "`ghostel--default-font' skips the probe and returns base on a TTY display."
+  (with-temp-buffer
+    (insert "hello\n")
+    (let ((base (ghostel-test--make-font ghostel-test--default-font-info)))
+      (ghostel-test--with-glyph-mocks
+       (:default-font base)
+       (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) nil))
+                 ((symbol-function 'font-at)
+                  (lambda (&rest _) (error "must not probe on a non-graphic display"))))
+         (should (eq (ghostel--default-font) base)))))))
+
+(ert-deftest ghostel-test-default-font-falls-back-when-probe-not-font ()
+  "`ghostel--default-font' rejects a non-font probe result and returns base."
+  (with-temp-buffer
+    (insert "hello\n")
+    (let ((base (ghostel-test--make-font ghostel-test--default-font-info)))
+      (ghostel-test--with-glyph-mocks
+       (:default-font base)
+       (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                 ((symbol-function 'font-at) (lambda (&rest _) nil)))
+         (should (eq (ghostel--default-font) base)))))))
+
 (ert-deftest ghostel-test-glyph-adjust-uses-composition-gstring ()
   "A composed glyph uses `find-composition' metrics for adjustment."
   :tags '(native)
