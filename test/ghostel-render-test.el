@@ -776,9 +776,12 @@ and typed text was invisible."
 (ert-deftest ghostel-test-title ()
   "Test OSC 2 title change."
   :tags '(native)
-  (let ((term (ghostel--new 25 80 1000)))
-    (ghostel--write-vt term "\e]2;My Title\e\\")
-    (should (equal "My Title" (ghostel--get-title term)))))
+  (with-temp-buffer
+    (let ((term (ghostel--new 25 80 1000)))
+      (ghostel--write-vt term "\e]2;My Title\e\\")
+      (should (equal "My Title"
+                     (ghostel-test--wait-until
+                      (lambda () ghostel--title) nil 1))))))
 
 
 ;;; Scrollback materialization and eviction

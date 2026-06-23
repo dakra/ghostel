@@ -983,7 +983,6 @@ Used when `cursor-in-non-selected-windows' resolves to box.")
 (declare-function ghostel--module-version "ghostel-module")
 (declare-function ghostel--mouse-event "ghostel-module")
 (declare-function ghostel--new "ghostel-module")
-(declare-function ghostel--get-title "ghostel-module" (term))
 (declare-function ghostel--redraw "ghostel-module" (term &optional full))
 (declare-function ghostel--set-bold-config "ghostel-module")
 (declare-function ghostel--set-default-colors "ghostel-module")
@@ -1591,6 +1590,9 @@ local code should not assume it is signalable unless the process is local.")
 
 (defvar-local ghostel--last-directory nil
   "Last known working directory from OSC 7, used for dedup.")
+
+(defvar-local ghostel--title nil
+  "Last terminal title reported by OSC 0/2.")
 
 (defvar-local ghostel--managed-buffer-name nil
   "Last buffer name managed by Ghostel title tracking.
@@ -4294,9 +4296,10 @@ Declines after a manual rename; a nil or unchanged NEW-NAME is a no-op."
     (setq ghostel--managed-buffer-name (buffer-name))))
 
 (defun ghostel--set-title (title)
-  "Rename the buffer from a terminal TITLE report (OSC 2).
+  "Record a terminal TITLE report (OSC 0/2) and rename the buffer.
 Maps TITLE through `ghostel-buffer-name-function' and renames via
 `ghostel--rename-managed', which declines after a manual rename."
+  (setq ghostel--title title)
   (when ghostel-buffer-name-function
     (ghostel--rename-managed (funcall ghostel-buffer-name-function title))))
 
@@ -4411,9 +4414,8 @@ file:// URL does not match the local machine, construct a TRAMP path."
             (setq default-directory (file-name-as-directory path)
                   list-buffers-directory default-directory))))
       (when ghostel-buffer-name-function
-        (let ((title (and ghostel--term (ghostel--get-title ghostel--term))))
-          (ghostel--rename-managed
-           (funcall ghostel-buffer-name-function title)))))))
+        (ghostel--rename-managed
+         (funcall ghostel-buffer-name-function ghostel--title))))))
 
 
 ;;; Palette
@@ -5760,7 +5762,7 @@ This is the invariant boundary between an Emacs buffer and its native
 terminal handle: BUFFER is made empty, renderer-coupled buffer-local
 state is reset, and the newly created terminal is attached immediately
 as BUFFER's buffer-local `ghostel--term'.  It intentionally does not
-reset unrelated buffer-local state such as title/identity bookkeeping.
+reset unrelated buffer-local state such as manual rename/identity bookkeeping.
 
 Optional ROWS and COLS override size detection.  Otherwise terminal
 dimensions come from BUFFER's displayed window when one exists,
@@ -5799,6 +5801,8 @@ spawn after initialization."
           ghostel--term-cols nil
           ghostel--process nil
           ghostel--pid nil
+          ghostel--last-directory nil
+          ghostel--title nil
           ghostel--command-running nil
           ghostel--event-buf nil
           ghostel--redraw-timer nil

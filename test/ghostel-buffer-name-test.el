@@ -5,9 +5,8 @@
 ;; Event-driven buffer naming.  A single `ghostel-buffer-name-function'
 ;; maps the terminal title (OSC 2) and `default-directory' (OSC 7) to a
 ;; buffer name, applied through the `ghostel--rename-managed' guard which
-;; defers to a manual rename.  The title-change path is pure elisp; the
-;; `cd' path reads the live title from the native term, so those tests are
-;; tagged `native'.
+;; defers to a manual rename.  The latest OSC title is kept buffer-local so
+;; title changes and `cd' events can both apply the same naming function.
 
 ;;; Code:
 
@@ -63,6 +62,7 @@
             (should (equal "*ghostel*" (buffer-name)))
             (should (equal "*ghostel*" ghostel--managed-buffer-name))
             (ghostel--set-title "Title A")
+            (should (equal "Title A" ghostel--title))
             (should (equal "*ghostel: Title A*" (buffer-name)))
             (should (equal "*ghostel: Title A*" ghostel--managed-buffer-name))
             (ghostel--set-title "Title A2")
@@ -90,6 +90,7 @@
             (with-current-buffer buf
               (should (equal "*ghostel*" (buffer-name)))
               (ghostel--set-title "Ignored")
+              (should (equal "Ignored" ghostel--title))
               (should (equal "*ghostel*" (buffer-name)))
               (should (equal "*ghostel*" ghostel--managed-buffer-name)))))
       (when (buffer-live-p buf) (kill-buffer buf)))))
@@ -177,7 +178,7 @@
       (delete-directory dir2))))
 
 (ert-deftest ghostel-test-buffer-name-combined ()
-  "A combined function uses the live title (read from the term) plus cwd.
+  "A combined function uses the buffer-local title plus cwd.
 This is the cross-input case from issue #357."
   :tags '(native)
   (let ((dir (file-name-as-directory (make-temp-file "ghostel-cd" t)))
@@ -189,11 +190,9 @@ This is the cross-input case from issue #357."
                  (format "ghostel::%s::%s" cwd title)
                (format "ghostel::%s" cwd))))))
     (unwind-protect
-        (ghostel-test--with-terminal-buffer (_buf term 25 80 1000)
-          ;; Set the terminal title via OSC 2.
-          (ghostel--write-vt term "\e]2;build\e\\")
-          (should (equal "build" (ghostel--get-title term)))
-          ;; A cd now combines the new cwd with the live title.
+        (ghostel-test--with-terminal-buffer (_buf _term 25 80 1000)
+          (ghostel--set-title "build")
+          ;; A cd now combines the new cwd with the buffer-local title.
           (ghostel--update-directory dir)
           (should (equal dir default-directory))
           (should (equal (format "ghostel::%s::build"
@@ -204,14 +203,13 @@ This is the cross-input case from issue #357."
 
 (ert-deftest ghostel-test-by-title-cd-keeps-name-when-no-title ()
   "By-title default: a `cd' before any title leaves the name unchanged.
-Guards against renaming to \"*ghostel: nil*\" since `ghostel--get-title'
-returns nil before a title is set."
+Guards against renaming to \"*ghostel: nil*\" before a title is set."
   :tags '(native)
   (let ((dir (file-name-as-directory (make-temp-file "ghostel-cd" t)))
         (ghostel-buffer-name-function #'ghostel-buffer-name-by-title))
     (unwind-protect
-        (ghostel-test--with-terminal-buffer (_buf term 25 80 1000)
-          (should (null (ghostel--get-title term)))
+        (ghostel-test--with-terminal-buffer (_buf _term 25 80 1000)
+          (should (null ghostel--title))
           (let ((before (buffer-name)))
             (ghostel--update-directory dir)
             (should (equal before (buffer-name)))

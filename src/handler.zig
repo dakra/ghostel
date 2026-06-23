@@ -8,8 +8,6 @@ const emacs = @import("emacs.zig");
 const gt = @import("ghostty-vt");
 const GhostelTerm = @import("GhostelTerm.zig");
 
-const log = std.log.scoped(.handler);
-
 pub fn GhostelHandler(Context: type) type {
     return struct {
         const Self = @This();
@@ -159,13 +157,9 @@ pub fn GhostelHandler(Context: type) type {
         // OSC 7 / OSC 9;9 — report PWD
         // ---------------------------------------------------------------------------
 
-        /// Save the reported PWD on the terminal and update it in Emacs.
+        /// Update Emacs from the reported PWD.
         fn handleReportPwd(self: *Self, v: gt.StreamAction.ReportPwd) void {
             if (v.url.len == 0) return;
-            self.inner.terminal.setPwd(v.url) catch |err| {
-                log.warn("setPwd failed: {any}", .{err});
-            };
-
             self.context.effect("ghostel--update-directory", .{v.url});
         }
 

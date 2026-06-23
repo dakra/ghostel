@@ -352,7 +352,7 @@ output must be ours, not the competing one."
 
 A user/system rcfile may register a precmd_function that emits OSC 7
 \(e.g. distro VTE-integration hooks).  Whichever runs last per cycle
-sets libghostty's recorded cwd.  Mirrors the bash race test."
+is the cwd report Ghostel records.  Mirrors the bash race test."
   :tags '(native)
   (skip-unless (executable-find "zsh"))
   (let* ((root (or (ghostel--resource-root)

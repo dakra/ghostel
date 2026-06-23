@@ -516,42 +516,6 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         },
     },
     .{
-        .name = "ghostel--get-title",
-        .arity = .{ 1, 1 },
-        .doc =
-        \\Get the terminal title.
-        \\
-        \\(ghostel--get-title TERM)
-        ,
-        .impl = struct {
-            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
-                const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
-                term.lockTerm();
-                defer term.unlockTerm();
-                const title = term.terminal.getTitle();
-                return if (title) |t| env.makeString(t) else env.nil();
-            }
-        },
-    },
-    .{
-        .name = "ghostel--get-pwd",
-        .arity = .{ 1, 1 },
-        .doc =
-        \\Get the terminal's working directory from OSC 7.
-        \\
-        \\(ghostel--get-pwd TERM)
-        ,
-        .impl = struct {
-            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
-                const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
-                term.lockTerm();
-                defer term.unlockTerm();
-                const pwd = term.terminal.getPwd();
-                return if (pwd) |p| env.makeString(p) else env.nil();
-            }
-        },
-    },
-    .{
         .name = "ghostel--redraw",
         .arity = .{ 1, 2 },
         .doc =
