@@ -66,8 +66,8 @@ pub fn ptyWrite(self: *Self, data: []const u8) !void {
     return self.process.pty.write(data);
 }
 
-pub fn funcall(self: *Self, comptime func: []const u8, args: anytype) void {
-    self.funcallFallible(func, args) catch |err| {
+pub fn effect(self: *Self, comptime func: []const u8, args: anytype) void {
+    self.effectFallible(func, args) catch |err| {
         log.err("Failed to write to event pipe: {s}", .{@errorName(err)});
     };
 }
@@ -76,7 +76,7 @@ pub fn replicaName(self: *Self) []const u8 {
     return self.process.pty.replicaName();
 }
 
-fn funcallFallible(self: *Self, comptime func: []const u8, args: anytype) !void {
+fn effectFallible(self: *Self, comptime func: []const u8, args: anytype) !void {
     try self.writeEvent("(");
     try self.writeEvent(func);
     inline for (std.meta.fields(@TypeOf(args))) |field| {
