@@ -75,7 +75,11 @@ pub const Env = struct {
                 }
             }
         }
-        return self.funcall(@field(sym, func), &self.makeValues(args));
+
+        return self.funcall(@field(sym, func), switch (@typeInfo(@TypeOf(args))) {
+            .@"struct" => &self.makeValues(args),
+            else => args,
+        });
     }
 
     pub fn set(self: Env, comptime symbol: []const u8, value: anytype) void {
@@ -456,10 +460,10 @@ const interned_symbols = [_][:0]const u8{
     "ghostel--process",
     "ghostel--query-font-cached",
     "ghostel--rendered-font",
-    "ghostel--term-cols",
-    "ghostel--term-rows",
     "ghostel--set-buffer-face",
     "ghostel--set-title",
+    "ghostel--term-cols",
+    "ghostel--term-rows",
     "ghostel--update-directory",
     "ghostel-comint--update-dir",
     "ghostel-glyph-scale-floor",
@@ -496,6 +500,7 @@ const interned_symbols = [_][:0]const u8{
     "process-tty-name",
     "provide",
     "put-text-property",
+    "run-at-time",
     "selected-window",
     "set",
     "set-marker",

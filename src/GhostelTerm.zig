@@ -165,9 +165,12 @@ pub fn ptyWrite(self: *Self, data: []const u8) !void {
     }
 }
 
-pub fn funcall(_: *Self, comptime func: []const u8, args: anytype) void {
+pub fn effect(_: *Self, comptime func: []const u8, args: anytype) void {
     if (emacs.current_env) |env| {
-        _ = env.f(func, args);
+        _ = env.f(
+            "run-at-time",
+            &(env.makeValues(.{ 0, env.nil(), @field(emacs.sym, func) }) ++ env.makeValues(args)),
+        );
     }
 }
 
