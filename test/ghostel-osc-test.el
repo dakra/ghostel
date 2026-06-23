@@ -2,7 +2,7 @@
 
 ;;; Commentary:
 
-;; OSC 4/9/10/11/51/52/777 handling, color queries, progress / notification
+;; OSC 2/4/9/10/11/51/52/777 handling, color queries, progress / notification
 ;; dispatch, spinners.  OSC 8 hyperlink behavior lives in `ghostel-links-test'.
 
 ;;; Code:
@@ -43,6 +43,23 @@
                             "\e]52;c;?\e\\GHOSTEL_OSC52_QUERY_DRAIN")
         (ghostel-test--wait-for-text "GHOSTEL_OSC52_QUERY_DRAIN" proc 5)
         (should (equal nil kill-ring))))))
+
+(ert-deftest ghostel-test-osc2-title-tracking ()
+  "OSC 2 child output updates title state and title-tracks the buffer name."
+  :tags '(native)
+  (let ((ghostel-buffer-name-function #'ghostel-buffer-name-by-title))
+    (ghostel-test--with-pty-matrix backend
+      (ghostel-test--with-raw-cat-buffer (buf proc)
+        (let* ((title (format "Matrix Title %S" backend))
+               (expected (format "*ghostel: %s*" title)))
+          (ghostel--write-pty ghostel--term (format "\e]2;%s\e\\" title))
+          (ghostel-test--wait-until
+           (lambda ()
+             (and (equal title ghostel--title)
+                  (equal expected (buffer-name))))
+           proc 5)
+          (should (equal title ghostel--title))
+          (should (equal expected (buffer-name))))))))
 
 (ert-deftest ghostel-test-osc9-notification ()
   "OSC 9 iTerm2-style notifications reach `ghostel-notification-function'."
