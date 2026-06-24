@@ -307,13 +307,13 @@ Ghostel offers five eat.el-style input modes.  You enter a ghostel buffer in
 *semi-char mode*; switch modes with the key bindings below and watch
 =mode-line-process= for the current mode indicator.
 
-| Mode      | Indicator | Terminal | Buffer    | Purpose                                      |
-|-----------+-----------+----------+-----------+----------------------------------------------|
-| semi-char | /(none)/    | live     | editable  | default - type to terminal, =C-c= reserved    |
-| char      | =:Char=     | live     | editable  | TUI apps - /all/ keys go to the terminal       |
-| Emacs     | =:Emacs=    | live     | read-only | search/read while the terminal keeps running |
-| copy      | =:Copy=     | frozen   | read-only | precise text selection without scroll churn  |
-| line      | =:Line=     | live     | editable  | compose input with Emacs keys, send on =RET=   |
+| Mode      | Indicator | Terminal | Input handling                               |
+|-----------+-----------+----------+----------------------------------------------|
+| semi-char | /(none)/    | live     | type to terminal, =C-c= reserved              |
+| char      | =:Char=     | live     | /all/ keys go to the terminal                 |
+| Emacs     | =:Emacs=    | live     | Emacs navigation/search/copy                 |
+| copy      | =:Copy=     | frozen   | Emacs navigation/search/copy, stable output  |
+| line      | =:Line=     | live     | compose input with Emacs keys, send on =RET=   |
 
 ** Mode-switch keybindings
 
@@ -1370,7 +1370,7 @@ Commands:
 | Command                         | Description                                                                |
 |---------------------------------+----------------------------------------------------------------------------|
 | =M-x ghostel-compile=             | Run a command in a read-only ghostel buffer (uses =compile-command=).        |
-| =C-u M-x ghostel-compile=         | Prompt for the command and run it in an /interactive/ (writable) buffer.     |
+| =C-u M-x ghostel-compile=         | Prompt for the command and run it with /interactive/ terminal input.        |
 | =M-x ghostel-recompile=           | Re-run the last command in its original directory (preserves launch mode). |
 | =M-x ghostel-compile-global-mode= | Route /all/ =compile=-style calls through ghostel (opt-in).                    |
 
@@ -1394,10 +1394,10 @@ process, so the "compile-mode" UX (read coloured output, kill with =C-c C-c=) is
 available even mid-run.
 
 Pass a prefix arg (=C-u M-x ghostel-compile=, mirroring =C-u M-x compile=) to launch
-in *interactive* mode instead - the buffer stays writable for the duration of the
-run, so programs like =htop= and =less=, test runners that prompt for input, or
-anything that wants live keystrokes work.  =ghostel-recompile= (=g=) preserves
-whichever mode the buffer was launched in.
+in *interactive* mode instead - keystrokes are forwarded to the running process,
+so programs like =htop= and =less=, test runners that prompt for input, or
+anything that wants live keystrokes work.  The rendered buffer remains read-only.
+=ghostel-recompile= (=g=) preserves whichever mode the buffer was launched in.
 
 When the command finishes, the live process and ghostel renderer are torn down
 and the buffer's major mode is switched to =ghostel-compile-view-mode= (derived
@@ -1412,8 +1412,8 @@ Two keys switch the buffer's state without restarting the process:
 
 | Key                   | Action                                        |
 |-----------------------+-----------------------------------------------|
-| =C-c C-j=               | Switch to interactive (writable terminal)     |
-| =C-c C-e= / =C-c C-t=     | Switch back to read-only / compile-mode-style |
+| =C-c C-j=               | Switch to interactive terminal input |
+| =C-c C-e= / =C-c C-t=     | Switch back to compilation-style navigation |
 
 (=C-c C-t= mirrors =ghostel-mode='s key for entering copy-mode, so the same muscle
 memory works in compile buffers.)  Both keys are bound by
@@ -1430,7 +1430,7 @@ buffers.  Subsequent recompiles preserve whichever state you last switched to.
 | =M-g n= / =M-g p=               | Standard =next-error= / =previous-error=               |
 | =C-c C-c=                     | =compile-goto-error= (same as RET)                   |
 | =C-c C-k=                     | =kill-compilation= - interrupt the running process   |
-| =C-c C-j= / =C-c C-e= / =C-c C-t= | Switch to interactive / read-only (see above)      |
+| =C-c C-j= / =C-c C-e= / =C-c C-t= | Switch interactive input / compilation-style navigation |
 
 These standard =compile= options are honoured: =compile-command= /
 =compile-history= (shared with =M-x compile=), =compilation-read-command=,

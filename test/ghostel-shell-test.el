@@ -50,8 +50,7 @@ newest-first list aligns with the buffer-order regions."
 
 (defun ghostel-test--rendered-terminal-text ()
   "Redraw the current ghostel terminal and return its text."
-  (let ((inhibit-read-only t))
-    (ghostel--redraw ghostel--term t))
+  (ghostel-test--redraw ghostel--term t)
   (ghostel-test--terminal-text))
 
 (ert-deftest ghostel-test-shell-integration ()
@@ -837,7 +836,7 @@ a successful submission."
           (setq ghostel--term-rows 5)
           (setq ghostel--process 'fake-proc)
           (setq ghostel--password-mode-p t)
-          (ghostel--redraw ghostel--term)
+          (ghostel-test--redraw ghostel--term)
           (let ((ghostel-password-prompt-functions
                  (list (lambda (_row) nil) (lambda (_row) nil))))
             (cl-letf (((symbol-function 'ghostel--write-pty)
@@ -862,7 +861,7 @@ not the debounce window itself (covered separately)."
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 5 80 1000))
           (setq ghostel--term-rows 5)
-          (ghostel--redraw ghostel--term)
+          (ghostel-test--redraw ghostel--term)
           (let ((ghostel-password-prompt-functions
                  (list (lambda (_row) (cl-incf calls) nil)))
                 (ghostel-password-prompt-debounce 0))
@@ -943,7 +942,7 @@ is re-confirmed (mirrors ghostty's ~200 ms termios polling cadence)."
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 5 80 1000))
           (setq ghostel--term-rows 5)
-          (ghostel--redraw ghostel--term)
+          (ghostel-test--redraw ghostel--term)
           (let ((ghostel-password-prompt-functions
                  (list (lambda (_row) (cl-incf calls) "x")))
                 (ghostel-password-prompt-debounce 0.1))
@@ -974,7 +973,7 @@ window never reaches the user."
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 5 80 1000))
           (setq ghostel--term-rows 5)
-          (ghostel--redraw ghostel--term)
+          (ghostel-test--redraw ghostel--term)
           (let ((ghostel-password-prompt-functions
                  (list (lambda (_row) (cl-incf calls) "x")))
                 (ghostel-password-prompt-debounce 0.5))

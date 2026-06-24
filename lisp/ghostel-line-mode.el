@@ -392,6 +392,9 @@ in line mode (the interactive entry validates these)."
       (pcase ghostel--input-mode
         ('copy  (ghostel--leave-readonly-state))
         ('emacs (ghostel--leave-readonly-state)))
+      ;; Line mode is the one user-editable ghostel state.  The rendered
+      ;; scrollback is still protected below with read-only text properties.
+      (setq buffer-read-only nil)
       ;; Copy mode froze the redraw timer; line mode is live, so the
       ;; timer must be running again before we exit this function or
       ;; the prompt sits there with no scheduled redraw until the next
@@ -582,11 +585,12 @@ which discards any type-ahead and runs inside `ghostel--redraw-now'."
         (ghostel--write-pty ghostel--term input))))
   (ghostel--line-mode-delete-input)
   ;; Drop the `read-only' and `rear-nonsticky' properties that
-  ;; protected the scrollback region during line mode so the buffer
-  ;; is editable again.
+  ;; protected the scrollback region during line mode; after this teardown
+  ;; the whole ghostel buffer returns to the default renderer-owned lock.
   (let ((inhibit-read-only t))
     (remove-text-properties (point-min) (point-max)
                             '(read-only nil rear-nonsticky nil)))
+  (setq buffer-read-only t)
   (when (markerp ghostel--line-input-start)
     (set-marker ghostel--line-input-start nil))
   (when (markerp ghostel--line-input-end)

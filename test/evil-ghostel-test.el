@@ -8,6 +8,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
 (require 'evil)
 (require 'ghostel)
@@ -16,6 +17,11 @@
 ;; -----------------------------------------------------------------------
 ;; Helper: set up a ghostel buffer with evil
 ;; -----------------------------------------------------------------------
+
+(defun evil-ghostel-test--insert (&rest args)
+  "Insert ARGS as renderer-owned test setup text."
+  (let ((inhibit-read-only t))
+    (apply #'insert args)))
 
 (defmacro evil-ghostel-test--with-buffer (rows cols text &rest body)
   "Create a ghostel buffer with ROWS x COLS, feed TEXT, render, then run BODY.
@@ -36,7 +42,9 @@ Requires the native module; without it the test is skipped
              (evil-ghostel-mode 1)
              (let ((inhibit-read-only t))
                (ghostel--redraw term t))
-             ,@body)
+             (cl-macrolet ((insert (&rest args)
+                             `(evil-ghostel-test--insert ,@args)))
+               ,@body))
          (when (buffer-live-p buf)
            (kill-buffer buf))))))
 
@@ -54,7 +62,9 @@ Uses mocks for native functions."
      (setq-local ghostel--term-rows 100)
      (evil-local-mode 1)
      (evil-ghostel-mode 1)
-     ,@body))
+     (cl-macrolet ((insert (&rest args)
+                     `(evil-ghostel-test--insert ,@args)))
+       ,@body)))
 
 ;; -----------------------------------------------------------------------
 ;; Test: mode activation
@@ -114,13 +124,13 @@ overwrite the position evil assigns at operator/visual completion."
                      evil-insert-state-entry-hook))))
 
 (ert-deftest evil-ghostel-test-visual-inhibits-mark-copy-mode ()
-  "Entering evil visual must not flip ghostel into read-only copy mode.
+  "Entering evil visual must not flip ghostel into copy mode.
 `ghostel-mode' wires `ghostel--mark-activated' onto `activate-mark-hook',
-which (for vanilla users) switches semi-char -> read-only `copy' mode when
-the mark activates.  Evil's `v' activates the mark, so without suppression
-the buffer goes read-only and the visual operators hit \"Buffer is
-read-only\".  `evil-ghostel-mode' sets `ghostel-mark-activation-input-mode'
-to nil buffer-locally so that chain yields to evil's own selection model."
+which (for vanilla users) switches semi-char -> copy mode when the mark
+activates.  Evil's `v' activates the mark, so without suppression copy mode
+would take over before Evil's terminal-aware visual operators run.
+`evil-ghostel-mode' sets `ghostel-mark-activation-input-mode' to nil
+buffer-locally so that chain yields to evil's own selection model."
   (evil-ghostel-test--with-evil-buffer
    ;; Preconditions the major mode established (mirrors a live buffer):
    (should (eq ghostel--input-mode 'semi-char))
@@ -131,7 +141,7 @@ to nil buffer-locally so that chain yields to evil's own selection model."
    (let (copied)
      (cl-letf (((symbol-function 'ghostel-copy-mode)
                 (lambda (&rest _) (setq copied t))))
-       ;; Opted out -> activating the mark is a no-op, mode stays editable.
+       ;; Opted out -> activating the mark is a no-op, mode stays semi-char.
        (ghostel--mark-activated)
        (should-not copied)
        ;; With the default knob restored, the hook switches modes.
@@ -232,7 +242,8 @@ The mock erases and reinserts the same text so these tests exercise
 `evil-ghostel--around-redraw' independent of renderer marker handling."
   `(cl-letf (((symbol-function 'ghostel--redraw)
               (lambda (_term &optional _full)
-                (let ((text (buffer-string)))
+                (let ((text (buffer-string))
+                      (inhibit-read-only t))
                   (erase-buffer)
                   (insert text))))
              ((symbol-function 'ghostel--mode-enabled)
@@ -302,7 +313,8 @@ advice must not restore point or visual markers there."
    (search-forward "three")
    (cl-letf (((symbol-function 'ghostel--redraw)
               (lambda (_term &optional _full)
-                (let ((text (buffer-string)))
+                (let ((text (buffer-string))
+                      (inhibit-read-only t))
                   (erase-buffer)
                   (insert text)
                   (goto-char (point-min)))))
@@ -1194,6 +1206,7 @@ become `ghostel--line-input-start' / `--line-input-end'."
   `(evil-ghostel-test--with-evil-buffer
     (setq-local ghostel--term t)
     (setq-local ghostel--input-mode 'line)
+    (setq buffer-read-only nil)
     (insert ,input-text)
     (setq-local ghostel--line-input-start (copy-marker ,input-start nil))
     (setq-local ghostel--line-input-end (copy-marker ,input-end t))
@@ -2047,7 +2060,8 @@ does not push BEG up to the cursor and collapse the range."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (insert "$ command")
-   (put-text-property 1 3 'ghostel-prompt t)
+   (let ((inhibit-read-only t))
+     (put-text-property 1 3 'ghostel-prompt t))
    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
      (evil-normal-state)
      (goto-char (point-max))

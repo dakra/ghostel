@@ -153,12 +153,12 @@ normal Emacs buffer and *no* key gets sent to the terminal.
 Only after you finish typing a line and press enter, the whole line
 is sent at once.
 
-**emacs** (`C-c C-e`) and **copy mode** (`C-c C-t`) make the buffer temporarily
-a normal Emacs buffer that you can use to navigate, look around and copy text.
-The difference between the two is that **copy mode** freezes the
-terminal, so if you have continuous output nothing "scrolls away"
-while you try to select something. **emacs mode** is *live* so
-new output keeps coming in while you scroll/select.
+**emacs** (`C-c C-e`) and **copy mode** (`C-c C-t`) give you normal Emacs
+navigation over the read-only terminal buffer so you can look around and copy
+text. The difference between the two is that **copy mode** freezes the terminal,
+so if you have continuous output nothing "scrolls away" while you try to select
+something. **emacs mode** is *live* so new output keeps coming in while you
+scroll/select.
 
 Those read-only modes have by default `ghostel-readonly-fast-exit`
 set to true, which automatically exits those modes on most keys

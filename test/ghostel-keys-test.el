@@ -397,7 +397,8 @@ side effects have to happen explicitly inside the command."
     (unwind-protect
         (with-current-buffer buf
           (ghostel-mode)
-          (insert "hello world")
+          (let ((inhibit-read-only t))
+            (insert "hello world"))
           (goto-char (point-min))
           (set-mark (point))
           (goto-char (point-max))

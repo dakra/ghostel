@@ -854,10 +854,10 @@ Enabling installs global advice while any buffer has the mode enabled."
         (evil-ghostel--escape-stay)
         ;; Evil owns selection here (visual state + the visual operators), so
         ;; opt this buffer out of ghostel's keyboard-mark->copy-mode switch:
-        ;; otherwise `v' activates the mark, `ghostel--mark-activated' flips the
-        ;; buffer to read-only copy mode, and the visual operators hit "Buffer
-        ;; is read-only".  Mouse selection stays governed by
-        ;; `ghostel-mouse-drag-input-mode', so it still picks its own mode.
+        ;; otherwise `v' activates the mark and `ghostel--mark-activated' flips
+        ;; the buffer to copy mode before Evil's terminal-aware operators run.
+        ;; Mouse selection stays governed by `ghostel-mouse-drag-input-mode',
+        ;; so it still picks its own mode.
         (setq-local ghostel-mark-activation-input-mode nil)
         (add-hook 'evil-insert-state-entry-hook
                   #'evil-ghostel--insert-state-entry nil t)

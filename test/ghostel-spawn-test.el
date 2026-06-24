@@ -597,7 +597,7 @@ not the old ones — verified on both PTY backends."
                         (lambda () (ghostel-test--latest-winsize "INIT")) proc 6)))
         ;; Stage a new size and commit it with a redraw, which fires SIGWINCH.
         (ghostel--set-size-with-cell-dims ghostel--term 30 100)
-        (ghostel--redraw ghostel--term t)
+        (ghostel-test--redraw ghostel--term t)
         ;; The child's SIGWINCH handler must report the new size, not the old.
         (should (ghostel-test--wait-until
                  (lambda () (equal '(30 . 100)

@@ -24,8 +24,7 @@ previous undo."
 Stubs the process predicates so `ghostel-line-mode' runs without a
 live PTY.  Leaves the buffer in line mode with point at the input."
   (ghostel--write-vt term "\e]133;A\e\\$ \e]133;B\e\\")
-  (let ((inhibit-read-only t))
-    (ghostel--redraw term t))
+  (ghostel-test--redraw term t)
   (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
             ((symbol-function 'ghostel--write-pty) #'ignore)
             ((symbol-function 'ghostel--invalidate) #'ignore))
@@ -61,7 +60,7 @@ live PTY.  Leaves the buffer in line mode with point at the input."
     (unwind-protect
         (with-current-buffer buf
           (ghostel-mode)
-          (insert (propertize "$ " 'ghostel-prompt t))
+          (ghostel-test--insert-rendered (propertize "$ " 'ghostel-prompt t))
           ;; Fresh ghostel-mode buffer: recording off.
           (should (eq buffer-undo-list t))
           (let ((ghostel--term 'fake)
@@ -92,8 +91,7 @@ start, so an undo can never delete the prompt or earlier output."
     (setq ghostel--process 'fake-proc)
     ;; Some prior output to form scrollback, then a fresh prompt.
     (ghostel--write-vt term "hello\r\nworld\r\n\e]133;A\e\\$ \e]133;B\e\\")
-    (let ((inhibit-read-only t))
-      (ghostel--redraw term t))
+    (ghostel-test--redraw term t)
     (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
               ((symbol-function 'ghostel--write-pty) #'ignore)
               ((symbol-function 'ghostel--invalidate) #'ignore))

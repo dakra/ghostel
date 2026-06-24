@@ -1119,10 +1119,11 @@ is non-nil."
 
 ;;; Input mode predicates
 
-(defsubst ghostel--buffer-editable-p ()
-  "Non-nil when typed keys are forwarded to the terminal.
-True in semi-char and char modes.  In Emacs, copy, and line modes
-the buffer is either read-only or consumes keys locally."
+(defsubst ghostel--terminal-input-mode-p ()
+  "Non-nil when user input should be forwarded to the terminal.
+True in semi-char and char modes.  This is independent of
+`buffer-read-only': ghostel buffers are protected by default because
+the rendered buffer is owned by the terminal, not by editing commands."
   (memq ghostel--input-mode '(semi-char char)))
 
 (defsubst ghostel--terminal-live-p ()
@@ -1831,7 +1832,7 @@ pasted using bracketed paste."
 (defun ghostel--forward-scroll-event (event button)
   "Try to forward a scroll EVENT as mouse BUTTON to the terminal.
 Return non-nil if the event was forwarded (mouse tracking is active)."
-  (when (and event (ghostel--buffer-editable-p))
+  (when (and event (ghostel--terminal-input-mode-p))
     (let* ((posn (event-start event))
            (col-row (posn-col-row posn))
            (col (car col-row))
@@ -2222,29 +2223,27 @@ OSC 9;4 packet, and same-value packets must not fire FMLU."
       (force-mode-line-update))))
 
 (defun ghostel--enter-readonly-state ()
-  "Common setup when entering a read-only mode (copy or Emacs).
-Saves the cursor style, re-enables `hl-line-mode' if it was
-suppressed, and sets the buffer read-only.  Does NOT cancel the
-redraw timer — that is the caller's job when freezing."
+  "Common setup when entering copy or Emacs mode.
+Saves the cursor style and re-enables `hl-line-mode' if it was
+suppressed.  Does NOT cancel the redraw timer — that is the
+caller's job when freezing."
   (ghostel--cursor-blink-stop)
   (setq ghostel--saved-cursor-type cursor-type)
   (setq cursor-type (default-value 'cursor-type))
   (when ghostel--saved-hl-line-mode
     (hl-line-mode 1))
-  (setq buffer-read-only t)
   (add-hook 'pre-redisplay-functions #'ghostel--fake-cursor-update nil t))
 
 (defun ghostel--leave-readonly-state ()
-  "Common teardown when leaving a read-only mode.
-Restores the cursor style, deactivates the mark, disables
-`hl-line-mode' again, and clears `buffer-read-only'."
+  "Common teardown when leaving copy or Emacs mode.
+Restores the cursor style, deactivates the mark, and disables
+`hl-line-mode' again."
   (remove-hook 'pre-redisplay-functions #'ghostel--fake-cursor-update t)
   (ghostel--fake-cursor-clear)
   (setq cursor-type ghostel--saved-cursor-type)
   (deactivate-mark)
   (when ghostel--saved-hl-line-mode
-    (hl-line-mode -1))
-  (setq buffer-read-only nil))
+    (hl-line-mode -1)))
 
 (defun ghostel--freeze-terminal ()
   "Cancel the redraw timer so new output stops updating the buffer."
@@ -3541,7 +3540,7 @@ left terminal input mode, so the navigation cursor stays solid."
       (let ((win (get-buffer-window buffer)))
         (if (and win
                  (eq win (selected-window))
-                 (ghostel--buffer-editable-p))
+                 (ghostel--terminal-input-mode-p))
             (progn
               (setq ghostel--cursor-blink-window win)
               (internal-show-cursor win (not (internal-show-cursor-p win))))
@@ -3569,7 +3568,7 @@ No-op on text terminals, when already blinking, or when the global
 Kept in Elisp so input modes and integrations can decide whether
 `cursor-type' should change.  Reads the buffer-local
 `ghostel--cursor-style' and `ghostel--cursor-blinking'."
-  (when (and (ghostel--buffer-editable-p)
+  (when (and (ghostel--terminal-input-mode-p)
              (not ghostel-ignore-cursor-change))
     (setq cursor-type
 		  (pcase ghostel--cursor-style
@@ -4909,7 +4908,9 @@ for both native and Emacs PTY paths."
   ;; whether font-lock ends up on.  `ghostel-mode' has no keywords, so
   ;; skipping unfontify has no other effect.
   (setq-local font-lock-unfontify-region-function #'ignore)
-  (setq buffer-read-only nil)
+  ;; The terminal renderer owns the buffer contents.  User-editable
+  ;; modes are exceptional and must opt in explicitly.
+  (setq buffer-read-only t)
   (setq-local scroll-margin 0)
   (setq-local auto-hscroll-mode nil)
   (setq-local hscroll-margin 0)
@@ -5012,6 +5013,9 @@ spawn after initialization."
       (cancel-timer ghostel--redraw-timer))
     (when ghostel--plain-link-detection-timer
       (cancel-timer ghostel--plain-link-detection-timer))
+    ;; Reinitialization may reuse an existing ghostel buffer that was in
+    ;; line mode; reset it to the renderer-owned default before erasing.
+    (setq buffer-read-only t)
     (let ((inhibit-read-only t))
       (erase-buffer))
     (setq ghostel--term nil

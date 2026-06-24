@@ -44,7 +44,7 @@
 
 (require 'ghostel)
 
-(declare-function ghostel--buffer-editable-p "ghostel")
+(declare-function ghostel--terminal-input-mode-p "ghostel")
 (declare-function ghostel--send-string "ghostel" (string))
 
 (defvar ghostel-ime-mode)
@@ -83,9 +83,9 @@ ignores GUI preedit overlays, which core ghostel handles separately."
 
 (defun ghostel-ime--wrap-input-method (key)
   "Translate KEY through the original input method.
-If the input method commits text by inserting into the current ghostel
-buffer, delete that transient insertion and forward the committed text
-to the PTY as UTF-8."
+If the input method commits text by inserting into a protected ghostel
+buffer, delete that transient insertion.  Forward the committed text
+to the PTY as UTF-8 only in terminal-input modes."
   (let ((ghostel-ime--composition-buffer (current-buffer))
         (original ghostel-ime--original-input-method-function)
         (before-point (point)))
@@ -94,16 +94,18 @@ to the PTY as UTF-8."
             ;; translator; calling it would silently skip composition.
             (eq original #'list))
         (list key)
-      (let ((events (funcall original key)))
+      (let ((events (let ((inhibit-read-only t))
+                      (funcall original key))))
         (let ((after-point (point)))
-          (when (and (> after-point before-point)
-                     (ghostel--buffer-editable-p))
+          (when (> after-point before-point)
             (let ((inserted (buffer-substring-no-properties
                              before-point after-point)))
-              (let ((inhibit-read-only t))
-                (delete-region before-point after-point))
-              (ghostel--send-string
-               (encode-coding-string inserted 'utf-8)))))
+              (when buffer-read-only
+                (let ((inhibit-read-only t))
+                  (delete-region before-point after-point)))
+              (when (ghostel--terminal-input-mode-p)
+                (ghostel--send-string
+                 (encode-coding-string inserted 'utf-8))))))
         events))))
 
 (defun ghostel-ime--install ()

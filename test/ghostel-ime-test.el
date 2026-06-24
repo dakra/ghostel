@@ -15,7 +15,7 @@
 
 (declare-function ghostel--redraw-now "ghostel" (buffer))
 (declare-function ghostel--redraw "ghostel" (term &optional full))
-(declare-function ghostel--buffer-editable-p "ghostel")
+(declare-function ghostel--terminal-input-mode-p "ghostel")
 (declare-function ghostel--send-string "ghostel" (string))
 
 ;; `quail-overlay' is defined by quail.el, which is not loaded in batch.
@@ -119,16 +119,16 @@ It waits for the activation hook to deliver a genuine translator."
 (ert-deftest ghostel-test-ime-wrap-forwards-cjk-buffer-commits ()
   "Buffer-inserted CJK commits are forwarded to the PTY and removed locally."
   (ghostel-test--with-compile-buffer buf
-    (setq buffer-read-only nil)
     (dolist (text '("한" "あ" "中"))
-      (erase-buffer)
+      (let ((inhibit-read-only t))
+        (erase-buffer))
       (let (sent observed-composing)
         (setq-local ghostel-ime--original-input-method-function
                     (lambda (_key)
                       (setq observed-composing (ghostel-ime-lisp-composing-p))
                       (insert text)
                       nil))
-        (cl-letf (((symbol-function 'ghostel--buffer-editable-p)
+        (cl-letf (((symbol-function 'ghostel--terminal-input-mode-p)
                    (lambda () t))
                   ((symbol-function 'ghostel--send-string)
                    (lambda (string) (push string sent))))
@@ -138,6 +138,48 @@ It waits for the activation hook to deliver a genuine translator."
         (should (equal (buffer-string) ""))
         (should (equal sent
                        (list (encode-coding-string text 'utf-8))))))))
+
+(ert-deftest ghostel-test-ime-wrap-discards-cjk-commits-in-protected-non-input-modes ()
+  "Buffer-inserted IME commits in protected non-input modes are removed."
+  (ghostel-test--with-compile-buffer buf
+    (let (sent)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "base"))
+      (goto-char (point-max))
+      (setq-local ghostel-ime--original-input-method-function
+                  (lambda (_key)
+                    (insert "한")
+                    nil))
+      (cl-letf (((symbol-function 'ghostel--terminal-input-mode-p)
+                 (lambda () nil))
+                ((symbol-function 'ghostel--send-string)
+                 (lambda (string) (push string sent))))
+        (should (null (ghostel-ime--wrap-input-method ?x))))
+      (should (equal (buffer-string) "base"))
+      (should-not sent))))
+
+(ert-deftest ghostel-test-ime-wrap-keeps-line-mode-commits ()
+  "Buffer-inserted IME commits in line mode stay in the writable input."
+  (ghostel-test--with-compile-buffer buf
+    (let (sent)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "base"))
+      (setq-local ghostel--input-mode 'line)
+      (setq-local buffer-read-only nil)
+      (goto-char (point-max))
+      (setq-local ghostel-ime--original-input-method-function
+                  (lambda (_key)
+                    (insert "한")
+                    nil))
+      (cl-letf (((symbol-function 'ghostel--terminal-input-mode-p)
+                 (lambda () nil))
+                ((symbol-function 'ghostel--send-string)
+                 (lambda (string) (push string sent))))
+        (should (null (ghostel-ime--wrap-input-method ?x))))
+      (should (equal (buffer-string) "base한"))
+      (should-not sent))))
 
 (ert-deftest ghostel-test-ime-composing-p-detects-quail-overlay ()
   "A live non-empty `quail-overlay' marks Lisp IME composition active."

@@ -67,9 +67,28 @@ through the production `ghostel--create' path."
   (string-match-p (concat "\\(?:\\`\\|\n\\)[[:blank:]]*" (regexp-quote prefix))
                   (or text (ghostel-test--terminal-text))))
 
+(defmacro ghostel-test--with-rendered-output (&rest body)
+  "Run BODY while mutating fake renderer-owned buffer text."
+  (declare (indent 0) (debug t))
+  `(let ((inhibit-read-only t))
+     ,@body))
+
+(defun ghostel-test--insert-rendered (&rest args)
+  "Insert ARGS as fake renderer-owned output in the current buffer."
+  (ghostel-test--with-rendered-output
+    (apply #'insert args)))
+
+(defun ghostel-test--redraw (term &optional full)
+  "Redraw TERM as renderer-owned test output.
+When FULL is non-nil, request a full redraw.  This mirrors
+`ghostel--redraw-now', which allows terminal renderer mutations
+even when the ghostel buffer is read-only."
+  (ghostel-test--with-rendered-output
+    (ghostel--redraw term full)))
+
 (defun ghostel-test--cursor (term)
   "Return (COL . ROW) cursor position for TERM via redraw."
-  (ghostel--redraw term)
+  (ghostel-test--redraw term)
   ghostel--cursor-pos)
 
 (defun ghostel-test--wait-for (proc pred &optional timeout)
@@ -296,7 +315,7 @@ PROCESS and TIMEOUT are passed to `ghostel-test--wait-until'."
 ROWS, COLS, and TIMEOUT control the fresh terminal and wait.
 Return the terminal text after TEXT appears.  Dynamic process-spawn
 bindings from the caller are honored."
-  (ghostel-test--with-terminal-buffer (buf term (or rows 24) (or cols 80) 1000)
+  (ghostel-test--with-terminal-buffer (buf _term (or rows 24) (or cols 80) 1000)
     (let ((proc (ghostel--start-process)))
       (ghostel-test--wait-for-text text proc timeout)
       (ghostel-test--terminal-text))))
