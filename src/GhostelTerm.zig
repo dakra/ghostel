@@ -358,16 +358,27 @@ fn getProcessEnvironment(alloc: Allocator, env: emacs.Env) !std.process.EnvMap {
     var env_map = std.process.EnvMap.init(alloc);
     errdefer env_map.deinit();
 
-    var penv = env.symbolValue("process-environment");
+    var display_explicit = false;
+    var penv = env.f("reverse", .{env.symbolValue("process-environment")});
     while (!env.isNil(penv)) : (penv = env.f("cdr", .{penv})) {
         const item = env.f("car", .{penv});
         const str = try env.extractStringAlloc(alloc, item, &buf);
-        if (std.mem.indexOfScalar(u8, str, '=')) |pos| {
-            const key = str[0..pos];
-            const value = str[(pos + 1)..str.len];
-            if (env_map.get(key) == null) {
-                try env_map.put(key, value);
-            }
+        const key, const value = if (std.mem.indexOfScalar(u8, str, '=')) |pos|
+            .{ str[0..pos], str[(pos + 1)..str.len] }
+        else
+            .{ str, null };
+        if (std.mem.eql(u8, key, "DISPLAY")) display_explicit = true;
+        if (value) |v| {
+            try env_map.put(key, v);
+        } else {
+            env_map.remove(key);
+        }
+    }
+
+    if (!display_explicit and env.isNotNil(env.f("display-graphic-p", .{}))) {
+        const display = env.f("getenv", .{env.makeString("DISPLAY")});
+        if (env.isNotNil(display)) {
+            try env_map.put("DISPLAY", try env.extractStringAlloc(alloc, display, &buf));
         }
     }
 
