@@ -1487,6 +1487,52 @@ input already typed at the prompt)."
       (kill-buffer buf))))
 
 
+(ert-deftest ghostel-test-regex-prompt-end-rejects-late-stray-char ()
+  "A stray `%' deep in command output is not treated as a prompt.
+The 60-column bound in `ghostel-prompt-regexp' stops the prefix from
+reaching the `%' in a `100%' progress line (here past column 60)."
+  (with-temp-buffer
+    (insert "[44/48] Removing docker-ce-cli-1:29.5.3-1.fc43.x86_64     100% | done")
+    (goto-char (point-min))
+    (should-not (ghostel--regex-prompt-end (point)))))
+
+(ert-deftest ghostel-test-regex-prompt-end-keeps-short-prompt ()
+  "A normal `$ ' prompt within the column bound is still detected."
+  (with-temp-buffer
+    (insert "$ ls -la")
+    (goto-char (point-min))
+    ;; Prompt prefix `$ ' ends at position 3.
+    (should (= (ghostel--regex-prompt-end (point)) 3))))
+
+(ert-deftest ghostel-test-beginning-of-input-lookahead-skips-output-line ()
+  "On an output line above a real prompt, `C-a' goes to BOL.
+The line has no `ghostel-prompt' property and starts with a stray `>',
+but a real OSC 133 prompt sits below, so the regex fallback is
+suppressed in favour of `beginning-of-line'."
+  (with-temp-buffer
+    (let ((out-bol (point)))
+      (insert "> some diff line\n")
+      (insert (propertize "$ " 'ghostel-prompt t))
+      (insert "ls")
+      (setq ghostel--prompt-positions '((1 . nil)))
+      ;; Point on the output line, after the `>'.
+      (goto-char (+ out-bol 5))
+      (ghostel-beginning-of-input-or-line)
+      (should (= (point) out-bol)))))
+
+(ert-deftest ghostel-test-beginning-of-input-repl-prompt-still-works ()
+  "A `>>> ' REPL prompt with no OSC 133 prompt below still gets `C-a'.
+The directional look-ahead must not suppress the regex on the live
+prompt line (no `ghostel-prompt' property exists after point)."
+  (with-temp-buffer
+    (insert ">>> print(1)")
+    (setq ghostel--prompt-positions nil)
+    (goto-char (point-max))
+    (ghostel-beginning-of-input-or-line)
+    ;; `>>> ' ends at position 5.
+    (should (= (point) 5))))
+
+
 (ert-deftest ghostel-test-local-host-p ()
   "Test local hostname detection."
   (should (ghostel--local-host-p nil))

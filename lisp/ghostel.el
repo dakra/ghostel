@@ -828,7 +828,7 @@ before sending the input."
   :type 'boolean)
 
 (defcustom ghostel-prompt-regexp
-  "^[^#$%>λ❯→➜\n]*[#$%>λ❯→➜]+ *"
+  "^[^#$%>λ❯→➜\n]\\{0,60\\}[#$%>λ❯→➜]+ *"
   "Regexp matching a prompt prefix at the beginning of a line.
 Consulted as a fallback by `ghostel-input-start-point' and
 `ghostel-beginning-of-input-or-line' when the row has no
@@ -840,10 +840,13 @@ The default recognizes:
 - Themed prompts: `λ ', `❯ ' (Starship/Pure/Powerlevel10k),
   `➜ ' (oh-my-zsh robbyrussell), `→ '
 
-The negated character class `[^#$%>λ❯→➜\\n]*' forces the match to
-stop at the *first* prompt character on the line, so command lines
-echoed into scrollback (e.g. `$ echo $foo') are detected by their
-leading prompt prefix rather than a `$' deeper in the line.
+The negated character class `[^#$%>λ❯→➜\\n]\\{0,60\\}' forces the match to
+stop at the *first* prompt character on the line, so command lines echoed into
+scrollback (e.g. `$ echo $foo') are detected by their leading prompt prefix
+rather than a `$' deeper in the line.  The `\\{0,60\\}' bound caps that prefix
+at 60 columns: a prompt character only counts near the start of a line, so
+a stray `%'/`#' deep in command output (e.g. the `%' in a `100%' progress line)
+is treated as output, not a prompt.
 
 Trade-off: any line that *starts* with one of these characters is
 treated as a prompt line.  Diff output (`> excluded'), markdown
@@ -2679,9 +2682,16 @@ prompt prefix.  On other rows, point moves to the line beginning."
                             (get-text-property pos 'ghostel-prompt))
                   (setq pos (1+ pos)))
                 (and (> pos bol) (< pos eol) pos)))))
-         ;; Regex fallback for shells/REPLs without OSC 133.
+         ;; Regex fallback for shells/REPLs without OSC 133.  Suppressed
+         ;; when OSC 133 is active and a real prompt sits below point:
+         ;; this property-less line is then command output, not a prompt, so
+         ;; prefer BOL over a stray mid-line %/>/#.  During a live REPL/tmux
+         ;; session, the bottom line has no prompt and the regex still fires.
          (regex-target
-          (unless (or line-mode-target prop-target)
+          (unless (or line-mode-target prop-target
+                      (and ghostel--prompt-positions
+                           (text-property-not-all (point) (point-max)
+                                                  'ghostel-prompt nil)))
             (ghostel--regex-prompt-end bol))))
     (cond
      (line-mode-target (goto-char line-mode-target))
