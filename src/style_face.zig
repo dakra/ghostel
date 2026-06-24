@@ -45,10 +45,16 @@ pub const CellProps = struct {
     hyperlink: ?Hyperlink = null,
     semantic_content: gt.page.Cell.SemanticContent = .output,
 
-    /// True if these props match the default style for the given palette
-    /// (no face plist needs to be emitted).
-    pub fn isDefault(self: CellProps, default_fg: gt.color.RGB, default_bg: gt.color.RGB) bool {
-        return std.meta.eql(self, .{ .fg = default_fg, .bg = default_bg });
+    /// True when this run needs no text properties at all: no face
+    /// attributes, no hyperlink, and default (output) semantic content.
+    /// The renderer returns null for such runs so trailing blank cells
+    /// stay trimmable padding.
+    pub fn isPlain(self: CellProps) bool {
+        return !self.fg_set and !self.bg_set and !self.faint and
+            !self.bold and !self.italic and !self.inverse and
+            !self.strikethrough and !self.overline and
+            self.underline == .none and self.hyperlink == null and
+            self.semantic_content == .output;
     }
 };
 

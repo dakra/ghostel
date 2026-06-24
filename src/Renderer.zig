@@ -295,6 +295,15 @@ fn createCellProps(
     });
     props.bg = style.bg(&cell.raw, &self.render_state.colors.palette) orelse
         self.render_state.colors.background;
+    // Emit fg/bg only when the resolved color differs from the terminal
+    // default, so default cells inherit the buffer's default face and a
+    // transparent frame (`alpha-background') shows through.  Comparing the
+    // resolved color also covers bold remapping: `style.fg` already applies
+    // the bright/fixed bold color, so a bold default-fg cell still differs
+    // from the default and is emitted.  `props.bg` stays resolved even when
+    // unset because the faint dim color needs a concrete background.
+    props.fg_set = !std.meta.eql(props.fg, self.render_state.colors.foreground);
+    props.bg_set = !std.meta.eql(props.bg, self.render_state.colors.background);
     props.bold = style.flags.bold;
     props.italic = style.flags.italic;
     props.faint = style.flags.faint;
@@ -306,10 +315,7 @@ fn createCellProps(
     props.hyperlink = resolveHyperlink(page, key.hyperlink_id);
     props.semantic_content = cell.raw.semantic_content;
 
-    return if (props.isDefault(
-        self.render_state.colors.foreground,
-        self.render_state.colors.background,
-    )) null else props;
+    return if (props.isPlain()) null else props;
 }
 
 /// Apply text properties to a region of the buffer.

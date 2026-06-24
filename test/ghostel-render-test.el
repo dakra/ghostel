@@ -646,6 +646,35 @@ new terminal. Regression guard against color flickering."
             (should (equal expected-bg (cadr call)))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-set-buffer-face-omits-matching-background ()
+  "Omit the buffer-face :background when it matches the graphical default.
+On a graphical frame a matching bg is dropped so a semi-transparent frame
+shows through; an explicit background is kept when `ghostel-default'
+differs, and always kept on a non-graphical (TTY) frame so text never ends
+up foreground-only on the terminal's own background."
+  (let ((default-bg (ghostel--face-hex-color 'default :background))
+        (fg (ghostel--face-hex-color 'default :foreground)))
+    ;; Graphical, un-customized: bg matches default → no :background.
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'display-graphic-p) (lambda (&optional _) t)))
+        (ghostel--set-buffer-face fg default-bg))
+      (let ((spec (cadr (assq 'default face-remapping-alist))))
+        (should (equal fg (plist-get spec :foreground)))
+        (should-not (plist-member spec :background))))
+    ;; Graphical, customized to a different bg → explicit :background kept.
+    (with-temp-buffer
+      (let ((custom-bg (if (equal default-bg "#123456") "#654321" "#123456")))
+        (cl-letf (((symbol-function 'display-graphic-p) (lambda (&optional _) t)))
+          (ghostel--set-buffer-face fg custom-bg))
+        (let ((spec (cadr (assq 'default face-remapping-alist))))
+          (should (equal custom-bg (plist-get spec :background))))))
+    ;; Non-graphical (TTY): keep :background even when it matches default.
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'display-graphic-p) (lambda (&optional _) nil)))
+        (ghostel--set-buffer-face fg default-bg))
+      (let ((spec (cadr (assq 'default face-remapping-alist))))
+        (should (equal default-bg (plist-get spec :background)))))))
+
 (ert-deftest ghostel-test-color-palette ()
   "Test setting a custom ANSI color palette via faces."
   :tags '(native)
@@ -2009,6 +2038,60 @@ the bright variant just like in `bright' mode."
             (let ((face (get-text-property (point) 'face)))
               (should (equal "#00ff00" (plist-get face :foreground)))
               (should (eq 'bold (plist-get face :weight))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-render-default-bg-omits-background ()
+  "Default-bg cells carry :foreground but no :background.
+A non-default fg with the default bg lets a transparent frame show
+through; fully default text carries no face at all."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-default-bg*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--write-vt term "\e[31mRED\e[0mX")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should (plist-get face :foreground))       ; colored fg present
+              (should-not (plist-get face :background)))   ; default bg omitted
+            ;; The trailing default 'X' needs no properties.
+            (should-not (get-text-property (+ (point-min) 3) 'face))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-render-explicit-bg-kept ()
+  "An explicit SGR background (48) is still emitted as :background."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-explicit-bg*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--write-vt term "\e[48;2;18;52;86mX\e[0m")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should (equal "#123456" (plist-get face :background))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-render-inverse-omits-fg-bg ()
+  "Inverse video (7) on a default cell emits :inverse-video with no fg/bg.
+Emacs swaps the default face at display time, so theme colors and frame
+transparency are preserved instead of being baked into the cell."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-inverse*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--write-vt term "\e[7mINV\e[0m")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should (eq t (plist-get face :inverse-video)))
+              (should-not (plist-get face :foreground))
+              (should-not (plist-get face :background)))))
       (kill-buffer buf))))
 
 

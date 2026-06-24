@@ -3463,16 +3463,22 @@ the no-op case.")
 
 (defun ghostel--set-buffer-face (fg bg)
   "Set the buffer's default face to FG foreground and BG background.
-This ensures terminal text is visible regardless of the Emacs theme.
-No-op when FG/BG match the cached values from the previous call."
-  (let ((pair (cons fg bg)))
+This keeps terminal text legible regardless of the Emacs theme.  On a graphical
+frame BG is omitted when it already equals the frame `default' face background,
+so a semi-transparent frame shows through; an explicit BG is applied when
+`ghostel-default' has been customized to a different background.
+No-op when the effective spec is unchanged."
+  (let* ((default-bg (ghostel--face-hex-color 'default :background))
+         (effective-bg (unless (and (display-graphic-p) (equal bg default-bg))
+                         bg))
+         (pair (cons fg effective-bg)))
     (unless (equal pair ghostel--face-cookie-fg-bg)
       (when ghostel--face-cookie
         (face-remap-remove-relative ghostel--face-cookie))
       (setq ghostel--face-cookie
-            (face-remap-add-relative 'default
-                                     :foreground fg
-                                     :background bg))
+            (apply #'face-remap-add-relative 'default
+                   (append (list :foreground fg)
+                           (when effective-bg (list :background effective-bg)))))
       (setq ghostel--face-cookie-fg-bg pair))))
 
 (defun ghostel-buffer-name-by-title (title)
