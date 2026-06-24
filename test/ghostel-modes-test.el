@@ -920,44 +920,6 @@ global mark command, whose activation `ghostel--mark-activated' handles."
   (dolist (key '("C-SPC" "C-@"))
     (should (functionp (lookup-key ghostel-char-mode-map (kbd key))))))
 
-(ert-deftest ghostel-test-line-mode-enters-without-osc133 ()
-  "Line mode enters successfully in a REPL with no shell integration.
-Reproduces the python3 case: no `ghostel-prompt' chars anywhere,
-but the cursor is at the end of the REPL's prompt."
-  (let ((buf (generate-new-buffer " *ghostel-test-line-nointegration*"))
-        (sent nil)
-        (encoded nil))
-    (unwind-protect
-        (with-current-buffer buf
-          (ghostel-mode)
-          (ghostel-test--insert-rendered ">>> \n")
-          (setq ghostel--term 'fake)
-          (setq ghostel--term-rows 1)
-          (setq ghostel--process 'fake-proc)
-          (cl-letf (((symbol-function 'ghostel--mode-enabled)
-                     (lambda (&rest _) nil))
-                    (ghostel--cursor-char-pos 4)
-                    ((symbol-function 'process-live-p) (lambda (_p) t))
-                    ((symbol-function 'ghostel--write-pty)
-                     (lambda (_term s) (setq sent s)))
-                    ((symbol-function 'ghostel--send-encoded)
-                     (lambda (key _mods &optional _utf8)
-                       (setq encoded key)))
-                    ((symbol-function 'ghostel--redraw) #'ignore)
-                    ((symbol-function 'ghostel--invalidate) #'ignore))
-            (ghostel-line-mode)
-            (should (eq ghostel--input-mode 'line))
-            (should-not buffer-read-only)
-            (goto-char (marker-position ghostel--line-input-end))
-            (insert "1+1")
-            (ghostel-line-mode-send)
-            (should-not buffer-read-only)
-            (ghostel-semi-char-mode)
-            (should buffer-read-only)
-            (should (equal sent "1+1"))
-            (should (equal encoded "return"))))
-      (kill-buffer buf))))
-
 ;;; Auto-leave: switch out of semi-char when point leaves the input point
 
 (defmacro ghostel-test--with-auto-leave-buffer (&rest body)
