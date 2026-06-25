@@ -3458,33 +3458,6 @@ PROGRESS is an integer 0-100 or nil."
            (message "ghostel: progress handler error: %s"
                     (error-message-string err))))))))
 
-(defvar-local ghostel--face-cookie nil
-  "Cookie from `face-remap-add-relative' for the terminal default face.")
-
-(defvar-local ghostel--face-cookie-fg-bg nil
-  "Cached (FG . BG) pair backing `ghostel--face-cookie'.
-The native render path calls `ghostel--set-buffer-face' on every
-dirty redraw, even when the default colors have not changed.
-`face-remap-remove-relative' / `-add-relative' both call
-`force-mode-line-update' internally, so the unconditional remap
-generated a hundreds-of-Hz FMLU storm that starved the minibuffer
-of redisplay slots.  Comparing against this cache short-circuits
-the no-op case.")
-
-(defun ghostel--set-buffer-face (fg bg)
-  "Set the buffer's default face to FG foreground and BG background.
-This ensures terminal text is visible regardless of the Emacs theme.
-No-op when FG/BG match the cached values from the previous call."
-  (let ((pair (cons fg bg)))
-    (unless (equal pair ghostel--face-cookie-fg-bg)
-      (when ghostel--face-cookie
-        (face-remap-remove-relative ghostel--face-cookie))
-      (setq ghostel--face-cookie
-            (face-remap-add-relative 'default
-                                     :foreground fg
-                                     :background bg))
-      (setq ghostel--face-cookie-fg-bg pair))))
-
 (defun ghostel-buffer-name-by-title (title)
   "Return \"*ghostel: TITLE*\", or nil when TITLE is nil or empty.
 A `ghostel-buffer-name-function' that names the buffer after the title."
@@ -3633,7 +3606,7 @@ file:// URL does not match the local machine, construct a TRAMP path."
 ;;; Palette
 
 (defun ghostel--apply-palette (term)
-  "Apply colors from `ghostel-color-palette' faces and default fg/bg to TERM."
+  "Apply face-derived protocol defaults and palette colors to TERM."
   (when term
     (ghostel--set-default-colors
      term
@@ -4910,6 +4883,7 @@ for both native and Emacs PTY paths."
     (setq-local ghostel-environment value))
   (buffer-disable-undo)
   (font-lock-mode -1)
+  (face-remap-add-relative 'default 'ghostel-default)
   ;; `font-lock-mode' can still be re-enabled by user configuration that
   ;; forces `font-lock-defaults' globally (e.g. Doom Emacs).  When active,
   ;; JIT-lock calls `font-lock-unfontify-region' on every redraw, which

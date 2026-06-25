@@ -13,16 +13,13 @@
 (declare-function ghostel--comint-make-state "ghostel-module")
 (declare-function ghostel--comint-filter "ghostel-module")
 (declare-function ghostel--comint-set-palette "ghostel-module")
-(declare-function ghostel--comint-set-default-colors "ghostel-module")
 
 (defmacro ghostel-comint-test--with-state (var &rest body)
   "Bind VAR to a fresh comint filter state and evaluate BODY.
-The state is given a predictable palette (libghostty default) and
-default fg/bg (#cccccc / #000000) so test assertions are stable
-across themes."
+The state is given a predictable palette so test assertions do not
+depend on the user's `ghostel-color-palette' faces."
   (declare (indent 1))
   `(let ((,var (ghostel--comint-make-state)))
-     (ghostel--comint-set-default-colors ,var "#cccccc" "#000000")
      ;; Standard 16-color palette (xterm-ish) so tests don't depend on
      ;; the user's ghostel-color-palette faces.
      (ghostel--comint-set-palette

@@ -622,30 +622,6 @@ are retained — only unwritten padding cells are trimmed."
 
 ;;; Palette, faces, and theme sync
 
-(ert-deftest ghostel-test-set-buffer-face-uses-default-face-colors ()
-  "Regression: New terminal colors should not flicker.
-ghostel--set-buffer-face must only ever receive ghostel-default face colors in
-new terminal. Regression guard against color flickering."
-  :tags '(native)
-  (let ((buf (generate-new-buffer " *ghostel-test-face-colors*"))
-        (calls nil))
-    (unwind-protect
-        (let ((expected-fg (ghostel--face-hex-color 'ghostel-default :foreground))
-              (expected-bg (ghostel--face-hex-color 'ghostel-default :background)))
-          (cl-letf (((symbol-function 'ghostel--start-process) (lambda () nil))
-                    ((symbol-function 'ghostel--set-buffer-face)
-                     (lambda (fg bg) (push (list fg bg) calls))))
-            (ghostel--init-buffer buf)
-            (with-current-buffer buf
-              (let ((inhibit-read-only t))
-                (ghostel--write-vt ghostel--term "hello")
-                (ghostel--redraw ghostel--term t))))
-          (should calls)
-          (dolist (call calls)
-            (should (equal expected-fg (car call)))
-            (should (equal expected-bg (cadr call)))))
-      (kill-buffer buf))))
-
 (ert-deftest ghostel-test-color-palette ()
   "Test setting a custom ANSI color palette via faces."
   :tags '(native)
@@ -745,59 +721,6 @@ and typed text was invisible."
               (should (memq buf redraw-calls)))
           (kill-buffer buf)
           (kill-buffer other))))))
-
-(ert-deftest ghostel-test-apply-palette-default-colors ()
-  "Test that ghostel--apply-palette sets default fg/bg from the Emacs default face."
-  (let ((default-colors-calls nil)
-        (palette-calls nil))
-    (cl-letf (((symbol-function 'ghostel--set-default-colors)
-               (lambda (term fg bg)
-                 (push (list term fg bg) default-colors-calls)))
-              ((symbol-function 'ghostel--set-palette)
-               (lambda (term colors) (push (list term colors) palette-calls))))
-      ;; With a fake terminal, apply-palette should call set-default-colors
-      (ghostel--apply-palette 'fake-term)
-      (should (= 1 (length default-colors-calls)))
-      (should (eq 'fake-term (car (car default-colors-calls))))
-      ;; fg and bg should be hex color strings from the default face
-      (let ((fg (nth 1 (car default-colors-calls)))
-            (bg (nth 2 (car default-colors-calls))))
-        (should (string-prefix-p "#" fg))
-        (should (string-prefix-p "#" bg)))
-      ;; Palette should also be set
-      (should (= 1 (length palette-calls)))
-      ;; With nil term, nothing should be called
-      (setq default-colors-calls nil palette-calls nil)
-      (ghostel--apply-palette nil)
-      (should-not default-colors-calls)
-      (should-not palette-calls))))
-
-(ert-deftest ghostel-test-apply-palette-ghostel-default-face ()
-  "`ghostel--apply-palette' reads default fg/bg from `ghostel-default', not `default'."
-  (let ((looked-up nil)
-        (default-colors-calls nil))
-    (cl-letf (((symbol-function 'ghostel--set-default-colors)
-               (lambda (term fg bg)
-                 (push (list term fg bg) default-colors-calls)))
-              ((symbol-function 'ghostel--set-palette) #'ignore)
-              ((symbol-function 'ghostel--face-hex-color)
-               (lambda (face _attr)
-                 (push face looked-up)
-                 "#abcdef")))
-      (ghostel--apply-palette 'fake-term)
-      ;; The two default-color lookups must target `ghostel-default',
-      ;; never `default' directly — otherwise buffer-local customization
-      ;; of the terminal's fg/bg is impossible (issue #178).
-      (should (memq 'ghostel-default looked-up))
-      (should-not (memq 'default looked-up))
-      ;; The mocked color must reach `ghostel--set-default-colors',
-      ;; proving the function used the lookup result rather than a
-      ;; hardcoded value.
-      (should (= 1 (length default-colors-calls)))
-      (should (equal (list 'fake-term "#abcdef" "#abcdef")
-                     (car default-colors-calls))))))
-
-
 
 ;;; Terminal metadata and titles
 
@@ -2009,6 +1932,60 @@ the bright variant just like in `bright' mode."
             (let ((face (get-text-property (point) 'face)))
               (should (equal "#00ff00" (plist-get face :foreground)))
               (should (eq 'bold (plist-get face :weight))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-render-default-bg-omits-background ()
+  "Default-bg cells carry :foreground but no :background.
+A non-default fg with the default bg lets a transparent frame show
+through; fully default text carries no face at all."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-default-bg*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--write-vt term "\e[31mRED\e[0mX")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should (plist-get face :foreground))       ; colored fg present
+              (should-not (plist-get face :background)))   ; default bg omitted
+            ;; The trailing default 'X' needs no properties.
+            (should-not (get-text-property (+ (point-min) 3) 'face))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-render-explicit-bg-kept ()
+  "An explicit SGR background (48) is still emitted as :background."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-explicit-bg*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--write-vt term "\e[48;2;18;52;86mX\e[0m")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should (equal "#123456" (plist-get face :background))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-render-inverse-omits-fg-bg ()
+  "Inverse video (7) on a default cell emits :inverse-video with no fg/bg.
+Emacs swaps the default face at display time, so theme colors and frame
+transparency are preserved instead of being baked into the cell."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-inverse*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 100))
+                 (inhibit-read-only t))
+            (ghostel--write-vt term "\e[7mINV\e[0m")
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (let ((face (get-text-property (point) 'face)))
+              (should (eq t (plist-get face :inverse-video)))
+              (should-not (plist-get face :foreground))
+              (should-not (plist-get face :background)))))
       (kill-buffer buf))))
 
 

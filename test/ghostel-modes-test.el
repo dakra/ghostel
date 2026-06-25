@@ -9,6 +9,13 @@
 
 (require 'ghostel-test-helpers)
 
+(ert-deftest ghostel-test-mode-remaps-default-face ()
+  "Ghostel buffers inherit their default appearance from `ghostel-default'."
+  (with-temp-buffer
+    (ghostel-mode)
+    (should (member 'ghostel-default
+                    (cdr (assq 'default face-remapping-alist))))))
+
 (ert-deftest ghostel-test-emacs-mode-preserves-point ()
   "In Emacs mode, point stays put while the terminal keeps running.
 The delayed redraw path always preserves point in Emacs mode,

@@ -7,15 +7,10 @@
 
 ;; Appearance definitions for ghostel's terminal rendering: the 16 ANSI
 ;; color faces (inheriting Emacs's `ansi-color-*' faces), the hint-cursor
-;; faces drawn in copy/Emacs modes, the `ghostel-default' base face from
-;; which the terminal's default fg/bg are derived, and the
+;; faces drawn in copy/Emacs modes, the `ghostel-default' base face that
+;; controls the buffer's inherited terminal appearance, and the
 ;; `ghostel-color-palette' vector that maps the 16 palette slots to those
 ;; faces.
-;;
-;; `ghostel.el' requires this file eagerly so the faces exist before any
-;; rendering.  The palette-application logic that pushes these colors into
-;; the native module (`ghostel--apply-palette' and friends) stays in
-;; `ghostel.el'; this file is data only and has no dependency on ghostel.
 
 ;;; Code:
 
@@ -120,9 +115,10 @@ Used when `cursor-in-non-selected-windows' resolves to box."
 
 (defface ghostel-default
   '((t :inherit default))
-  "Base face used to derive ghostel terminal default fg/bg colors.
-Customize this to give ghostel buffers different default colors than
-the rest of Emacs (e.g. a dark terminal inside a light Emacs)."
+  "Base face for default text in ghostel terminal buffers.
+Customize this to give ghostel buffers a different default foreground,
+background, font, or size than the rest of Emacs.  Foreground and
+background also seed OSC 10/11 protocol color replies."
   :group 'ghostel)
 
 

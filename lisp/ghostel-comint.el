@@ -47,7 +47,6 @@
 (declare-function ghostel--comint-make-state "ghostel-module")
 (declare-function ghostel--comint-filter "ghostel-module")
 (declare-function ghostel--comint-set-palette "ghostel-module")
-(declare-function ghostel--comint-set-default-colors "ghostel-module")
 
 
 ;;; Internal state
@@ -66,18 +65,13 @@ sequences split across multiple PTY chunks are reassembled correctly.")
 Mirrors `ghostel--apply-palette' (which targets a Terminal) but writes
 to a comint stream-filter state instead, so SGR colours rendered through
 the filter match the colours a regular ghostel terminal would show."
-  (when state
-    (ghostel--comint-set-default-colors
-     state
-     (ghostel--face-hex-color 'ghostel-default :foreground)
-     (ghostel--face-hex-color 'ghostel-default :background))
-    (when ghostel-color-palette
-      (let ((colors
-             (mapconcat (lambda (face)
-                          (ghostel--face-hex-color face :foreground))
-                        ghostel-color-palette
-                        "")))
-        (ghostel--comint-set-palette state colors)))))
+  (when (and state ghostel-color-palette)
+    (let ((colors
+           (mapconcat (lambda (face)
+                        (ghostel--face-hex-color face :foreground))
+                      ghostel-color-palette
+                      "")))
+      (ghostel--comint-set-palette state colors))))
 
 
 ;;; OSC 7 dirtrack callback

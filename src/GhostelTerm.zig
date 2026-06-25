@@ -96,18 +96,6 @@ pub fn redraw(self: *Self, force_full: bool) !void {
     }
 }
 
-/// Set default foreground color.
-pub fn setColorForeground(self: *Self, color: gt.color.RGB) void {
-    self.terminal.colors.foreground.default = color;
-    self.terminal.flags.dirty.palette = true;
-}
-
-/// Set default background color.
-pub fn setColorBackground(self: *Self, color: gt.color.RGB) void {
-    self.terminal.colors.background.default = color;
-    self.terminal.flags.dirty.palette = true;
-}
-
 /// Set the color palette (256 entries).
 pub fn setColorPalette(self: *Self, palette: gt.color.Palette) void {
     self.terminal.colors.palette.changeDefault(palette);
@@ -436,9 +424,11 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     0;
                 const term = try init(module_alloc, env, cols, rows, max_scrollback);
                 errdefer term.deinit();
-                // Set default colors (light gray on black)
-                term.setColorForeground(.{ .r = 204, .g = 204, .b = 204 });
-                term.setColorBackground(.{ .r = 0, .g = 0, .b = 0 });
+                // Seed protocol defaults for OSC 10/11.  The renderer does
+                // not paint these as cell faces; default text inherits the
+                // buffer's `ghostel-default' remap instead.
+                term.terminal.colors.foreground.default = .{ .r = 204, .g = 204, .b = 204 };
+                term.terminal.colors.background.default = .{ .r = 0, .g = 0, .b = 0 };
                 // Enable kitty graphics protocol if storage limit > 0.
                 if (kitty_storage_limit > 0) {
                     try term.enableKittyGraphics(
@@ -661,7 +651,11 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .name = "ghostel--set-default-colors",
         .arity = .{ 3, 3 },
         .doc =
-        \\Set default foreground and background colors.
+        \\Set protocol default foreground and background colors.
+        \\
+        \\These defaults are used for OSC 10/11 replies and terminal dynamic
+        \\color state.  The renderer intentionally does not emit them as
+        \\default-cell face properties.
         \\
         \\(ghostel--set-default-colors TERM FG-HEX BG-HEX)
         ,
@@ -674,8 +668,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 const bg_str = try env.extractString(args[2], &bg_buf);
                 term.lockTerm();
                 defer term.unlockTerm();
-                term.setColorForeground(try parseHexColor(fg_str));
-                term.setColorBackground(try parseHexColor(bg_str));
+                term.terminal.colors.foreground.default = try parseHexColor(fg_str);
+                term.terminal.colors.background.default = try parseHexColor(bg_str);
                 return env.t();
             }
         },

@@ -9,6 +9,7 @@ const std = @import("std");
 const emacs = @import("emacs.zig");
 const gt = @import("ghostty-vt");
 const FixedArrayList = @import("fixed_array_list.zig").FixedArrayList;
+const utils = @import("utils.zig");
 
 /// Globally-stable identity for an OSC 8 hyperlink span.  `.explicit`
 /// holds the user-supplied `id=...`; `.implicit` is ghostty's auto-counter
@@ -26,14 +27,8 @@ pub const Hyperlink = struct {
 
 /// Resolved style attributes for a run of cells.
 pub const CellProps = struct {
-    fg: gt.color.RGB = .{},
-    bg: gt.color.RGB = .{},
-    /// Whether the foreground was explicitly set by SGR. When false the
-    /// face plist omits `:foreground` so the buffer's default fg shows
-    /// through.  Renderer leaves this true so every cell paints opaquely.
-    fg_set: bool = true,
-    /// As `fg_set`, for background.
-    bg_set: bool = true,
+    fg: ?gt.color.RGB = null,
+    bg: ?gt.color.RGB = null,
     bold: bool = false,
     italic: bool = false,
     faint: bool = false,
@@ -45,10 +40,9 @@ pub const CellProps = struct {
     hyperlink: ?Hyperlink = null,
     semantic_content: gt.page.Cell.SemanticContent = .output,
 
-    /// True if these props match the default style for the given palette
-    /// (no face plist needs to be emitted).
-    pub fn isDefault(self: CellProps, default_fg: gt.color.RGB, default_bg: gt.color.RGB) bool {
-        return std.meta.eql(self, .{ .fg = default_fg, .bg = default_bg });
+    /// True when this run needs no text properties at all
+    pub fn isPlain(self: CellProps) bool {
+        return std.meta.eql(self, .{});
     }
 };
 
@@ -65,14 +59,69 @@ pub fn formatColor(color: gt.color.RGB, buf: *[7]u8) []const u8 {
     return buf[0..7];
 }
 
+pub fn getGhostelDefaultColor(env: emacs.Env, comptime prop: anytype) !gt.color.RGB {
+    const s = emacs.sym;
+    const color_val = env.f(
+        "ghostel--face-hex-color",
+        .{ s.@"ghostel-default", @field(s, prop) },
+    );
+    var buf: [8]u8 = undefined;
+    return try utils.parseHexColor(try env.extractString(color_val, &buf));
+}
+
 /// Blend a foreground color toward a background color to produce a "dim"
 /// effect.  Uses ~65% foreground / ~35% background weighting.
-pub fn dimColor(fg: gt.color.RGB, bg: gt.color.RGB) gt.color.RGB {
+pub fn dimColor(env: emacs.Env, fg: ?gt.color.RGB, bg: ?gt.color.RGB) !gt.color.RGB {
+    const fg_e = fg orelse try getGhostelDefaultColor(env, ":foreground");
+    const bg_e = bg orelse try getGhostelDefaultColor(env, ":background");
     return .{
-        .r = @intCast((@as(u16, fg.r) * 166 + @as(u16, bg.r) * 90) / 256),
-        .g = @intCast((@as(u16, fg.g) * 166 + @as(u16, bg.g) * 90) / 256),
-        .b = @intCast((@as(u16, fg.b) * 166 + @as(u16, bg.b) * 90) / 256),
+        .r = @intCast((@as(u16, fg_e.r) * 166 + @as(u16, bg_e.r) * 90) / 256),
+        .g = @intCast((@as(u16, fg_e.g) * 166 + @as(u16, bg_e.g) * 90) / 256),
+        .b = @intCast((@as(u16, fg_e.b) * 166 + @as(u16, bg_e.b) * 90) / 256),
     };
+}
+
+pub fn resolveForeground(
+    style: *const gt.Style,
+    palette: *const gt.color.Palette,
+    bold_opt: ?gt.Style.BoldColor,
+) ?gt.color.RGB {
+    switch (style.fg_color) {
+        .none => {
+            if (style.flags.bold) {
+                if (bold_opt) |bold| switch (bold) {
+                    .bright => {},
+                    .color => |v| return v,
+                };
+            }
+        },
+
+        .palette => |idx| {
+            if (style.flags.bold) {
+                if (bold_opt) |_| {
+                    const bright_offset = @intFromEnum(gt.color.Name.bright_black);
+                    if (idx < bright_offset) {
+                        return palette[idx + bright_offset];
+                    }
+                }
+            }
+
+            return palette[idx];
+        },
+
+        .rgb => |rgb| {
+            if (style.flags.bold) {
+                if (bold_opt) |bold| switch (bold) {
+                    .color => |v| return v,
+                    .bright => {},
+                };
+            }
+
+            return rgb;
+        },
+    }
+
+    return null;
 }
 
 /// Build a face plist (`(:foreground "#xxx" :background "#yyy" ...)`)
@@ -80,38 +129,34 @@ pub fn dimColor(fg: gt.color.RGB, bg: gt.color.RGB) gt.color.RGB {
 ///
 /// The caller is responsible for actually applying the plist via
 /// `put-text-property` against either the current buffer or a string.
-pub fn buildFacePlist(env: emacs.Env, props: CellProps) error{Overflow}!?emacs.Value {
+pub fn buildFacePlist(
+    env: emacs.Env,
+    props: CellProps,
+) !?emacs.Value {
     var face_props: FixedArrayList(emacs.Value, 32) = .{};
-
-    var fg_buf: [7]u8 = undefined;
-    var bg_buf: [7]u8 = undefined;
-    var dim_buf: [7]u8 = undefined;
 
     const s = &emacs.sym;
 
-    // Faint dims fg toward bg; needs resolved colors regardless of
-    // `fg_set` / `bg_set`.  Otherwise emit fg only when SGR set it,
-    // so an unstyled run inherits the buffer's default face.
     if (props.faint) {
-        const dimmed = dimColor(props.fg, props.bg);
-        const dim_str = formatColor(dimmed, &dim_buf);
+        var buf: [7]u8 = undefined;
+        const dimmed = try dimColor(env, props.fg, props.bg);
+        const dim_str = formatColor(dimmed, &buf);
         try face_props.append(s.@":foreground");
         try face_props.append(env.makeString(dim_str));
-    } else if (props.fg_set) {
-        const fg_str = formatColor(props.fg, &fg_buf);
+    } else if (props.fg) |fg| {
+        var buf: [7]u8 = undefined;
+        const fg_str = formatColor(fg, &buf);
         try face_props.append(s.@":foreground");
         try face_props.append(env.makeString(fg_str));
     }
 
-    if (props.bg_set) {
-        const bg_str = formatColor(props.bg, &bg_buf);
+    if (props.bg) |bg| {
+        var buf: [7]u8 = undefined;
+        const bg_str = formatColor(bg, &buf);
         try face_props.append(s.@":background");
         try face_props.append(env.makeString(bg_str));
     }
 
-    // Inverse is a face attribute, not a manual swap: Emacs handles the
-    // swap at display time, so a run with no explicit fg/bg correctly
-    // inverts against whatever the buffer's default face actually is.
     if (props.inverse) {
         try face_props.append(s.@":inverse-video");
         try face_props.append(env.t());

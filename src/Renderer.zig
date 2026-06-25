@@ -288,13 +288,12 @@ fn createCellProps(
 
     const style: gt.Style = if (cell.raw.hasStyling()) cell.style else .{};
 
-    props.fg = style.fg(.{
-        .default = self.render_state.colors.foreground,
-        .palette = &self.render_state.colors.palette,
-        .bold = self.bold_config,
-    });
-    props.bg = style.bg(&cell.raw, &self.render_state.colors.palette) orelse
-        self.render_state.colors.background;
+    props.fg = style_face.resolveForeground(
+        &style,
+        &self.term.colors.palette.current,
+        self.bold_config,
+    );
+    props.bg = style.bg(&cell.raw, &self.render_state.colors.palette);
     props.bold = style.flags.bold;
     props.italic = style.flags.italic;
     props.faint = style.flags.faint;
@@ -306,14 +305,16 @@ fn createCellProps(
     props.hyperlink = resolveHyperlink(page, key.hyperlink_id);
     props.semantic_content = cell.raw.semantic_content;
 
-    return if (props.isDefault(
-        self.render_state.colors.foreground,
-        self.render_state.colors.background,
-    )) null else props;
+    return if (props.isPlain()) null else props;
 }
 
 /// Apply text properties to a region of the buffer.
-fn applyProps(env: emacs.Env, start: i64, end: i64, props: CellProps) !void {
+fn applyProps(
+    env: emacs.Env,
+    start: i64,
+    end: i64,
+    props: CellProps,
+) !void {
     if (start >= end) return;
     const s = emacs.sym;
 
@@ -826,14 +827,6 @@ fn render(
     try self.updateRenderState(alloc);
 
     if (self.render_state.dirty != .false) {
-        // Set buffer default face
-        var fg_hex: [7]u8 = undefined;
-        var bg_hex: [7]u8 = undefined;
-        _ = env.f("ghostel--set-buffer-face", .{
-            formatColor(self.render_state.colors.foreground, &fg_hex),
-            formatColor(self.render_state.colors.background, &bg_hex),
-        });
-
         const skip = switch (pin.downOverflow(self.term.rows)) {
             .overflow => |of| of.remaining - 1,
             else => 0,
