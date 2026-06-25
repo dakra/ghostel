@@ -4464,6 +4464,16 @@ run the shell on the remote host."
                                (ghostel--default-remote-shell-args
                                 shell remote-integration)))
                       integration-args))
+         ;; Bash does not recognize multi-character options that come after
+         ;; single-character ones, so move single-character options to the end.
+         (shell-args (if (eq shell-type 'bash)
+                        (cl-loop for arg in shell-args
+                                 if (and (string-prefix-p "-" arg)
+                                         (not (string-prefix-p "--" arg)))
+                                 collect arg into singles
+                                 else collect arg into others
+                                 finally return (append others singles))
+                      shell-args))
          (extra-env (append
                      (unless remote-p
                        (list (format "EMACS_GHOSTEL_PATH=%s" ghostel-dir)))

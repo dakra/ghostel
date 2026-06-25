@@ -245,7 +245,7 @@ A login bash ignores the `--rcfile' the bash integration relies on, so
                (default-directory "/ssh:host:/home/u/"))
           (ghostel--start-process)
           (should (equal "/bin/bash" (car spawn)))
-          (should (equal '("-i" "--rcfile" "/tmp/ghostel.bash") (cdr spawn)))
+          (should (equal '("--rcfile" "/tmp/ghostel.bash" "-i") (cdr spawn)))
           (should-not (member "-l" (cdr spawn))))))))
 
 (ert-deftest ghostel-test-start-process-remote-zsh-integration-login-interactive ()
