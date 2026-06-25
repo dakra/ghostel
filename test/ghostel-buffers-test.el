@@ -35,20 +35,20 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
                  bindings))))
 
 (ert-deftest ghostel-test-all-buffers-sorted ()
-  "`ghostel--all-buffers' returns ghostel buffers sorted by name."
+  "`ghostel-buffer-list' returns ghostel buffers sorted by name."
   (ghostel-buffers-test--with-bufs ((c "*ghostel-c*")
                                     (a "*ghostel-a*")
                                     (b "*ghostel-b*"))
-    (let ((bufs (ghostel--all-buffers)))
+    (let ((bufs (ghostel-buffer-list)))
       (should (equal (mapcar #'buffer-name bufs)
                      '("*ghostel-a*" "*ghostel-b*" "*ghostel-c*"))))))
 
 (ert-deftest ghostel-test-all-buffers-excludes-non-ghostel ()
-  "`ghostel--all-buffers' skips buffers without `ghostel-mode'."
+  "`ghostel-buffer-list' skips buffers without `ghostel-mode'."
   (ghostel-buffers-test--with-bufs ((g "*ghostel-x*"))
     (let ((other (generate-new-buffer "*not-ghostel*")))
       (unwind-protect
-          (let ((bufs (ghostel--all-buffers)))
+          (let ((bufs (ghostel-buffer-list)))
             (should (memq g bufs))
             (should-not (memq other bufs)))
         (kill-buffer other)))))
@@ -178,7 +178,7 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
                  (lambda (name) (format "*myproj-%s*" name))))
         (let ((default-directory root)
               (ghostel-project-buffer-scope 'default-directory))
-          (let ((bufs (ghostel--project-buffers)))
+          (let ((bufs (ghostel-project-buffer-list)))
             (should (memq inside bufs))
             (should (memq also-in bufs))
             (should-not (memq outside bufs))))))))
@@ -197,7 +197,7 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
                  (lambda (name) (format "*myproj-%s*" name))))
         (let ((default-directory root)
               (ghostel-project-buffer-scope 'identity))
-          (let ((bufs (ghostel--project-buffers)))
+          (let ((bufs (ghostel-project-buffer-list)))
             (should (memq tagged bufs))
             (should-not (memq untagged bufs))))))))
 
@@ -217,7 +217,7 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
                  (lambda (name) (format "*myproj-%s*" name))))
         (let ((default-directory root)
               (ghostel-project-buffer-scope 'both))
-          (let ((bufs (ghostel--project-buffers)))
+          (let ((bufs (ghostel-project-buffer-list)))
             (should (memq by-dir bufs))
             (should (memq by-id bufs))
             (should (memq both bufs))

@@ -1303,7 +1303,7 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 * Extensions
 :properties:
 :custom_id: extensions
-:description: Evil, compile, eshell, comint, and input methods
+:description: Evil, compile, eshell, comint, consult, and input methods
 :end:
 
 These features live in separate files (or, for evil, a separate package) so the
@@ -1602,6 +1602,46 @@ filter continues to handle progress bars, =read -s= prompts, etc.
 For best performance, xterm-color's advice to disable font-locking in shell
 buffers applies here too - see the docstring of =ghostel-comint-mode=.
 
+** Consult integration
+:properties:
+:custom_id: consult-integration
+:end:
+#+cindex: consult
+
+=ghostel-consult= picks a Ghostel terminal through [[https://github.com/minad/consult][consult]] with *live preview*:
+moving through the candidate list previews each terminal in the target window,
+the way =consult-buffer= does.  The built-in =ghostel-list-buffers= uses
+=read-buffer=, which has no preview.
+
+#+begin_src emacs-lisp
+(use-package ghostel-consult
+  :after (ghostel consult)
+  :bind (:map ghostel-semi-char-mode-map
+         ("M" . ghostel-consult-project-buffer)))
+#+end_src
+
+- =M-x ghostel-consult-buffer= - pick any Ghostel terminal.
+- =M-x ghostel-consult-project-buffer= - pick a terminal in the current project.
+
+Candidates are ordered for switching (recently-used first, the current buffer last).
+Submitting a name that matches no buffer *creates a new terminal* with that
+name (reach-or-create); the project command roots the new terminal at the project.
+
+The sources are also exposed for the global lists.  Since Ghostel buffers
+already appear in =consult-buffer='s default /Buffer/ source, add the =-hidden=
+variants so they do not duplicate the default view and are summoned via the =g=
+narrow key:
+
+#+begin_src emacs-lisp
+(with-eval-after-load 'consult
+  (add-to-list 'consult-buffer-sources 'ghostel-consult-source-hidden t)
+  (add-to-list 'consult-project-buffer-sources
+               'ghostel-consult-project-source-hidden t))
+#+end_src
+
+=consult= is a /soft/ dependency: it is required lazily only when these commands
+run, so loading =ghostel-consult= does not pull in consult until you use it.
+
 ** Emacs Lisp input methods
 :properties:
 :custom_id: emacs-lisp-input-methods
@@ -1692,6 +1732,36 @@ are provided:
 Both operate on the current buffer; wrap in =with-current-buffer= when driving
 another ghostel buffer.  Calling either outside a ghostel buffer signals a
 =user-error=.
+
+** Creating and listing terminals from Lisp
+:properties:
+:custom_id: creating-terminals-from-lisp
+:end:
+#+findex: ghostel-create
+#+findex: ghostel-exec
+#+findex: ghostel-buffer-list
+#+findex: ghostel-project-buffer-list
+
+For packages that build on ghostel, a small public API creates and enumerates
+terminals without reaching into internals:
+
+#+begin_src emacs-lisp
+(ghostel-create)                      ; new interactive shell terminal, returns its buffer
+(ghostel-create "*build*")            ; ... with a specific buffer name
+(let ((default-directory "/tmp/"))    ; ... in a specific directory (let-bind, as usual)
+  (ghostel-create "*scratch-sh*"))
+
+(ghostel-exec (get-buffer-create "*tig*") "tig")  ; run one program in a TTY instead of a shell
+
+(ghostel-buffer-list)                 ; all live ghostel buffers
+(ghostel-project-buffer-list)         ; ghostel buffers in the current project
+#+end_src
+
+=ghostel-create= runs =ghostel-shell= with shell integration, like =M-x ghostel=
+but without that command's buffer reuse; =ghostel-exec= runs a single program in
+a real TTY with no shell integration.  Both read =default-directory=, so
+=let=-bind it to spawn elsewhere.  =ghostel-project-buffer-list= signals a
+=user-error= when there is no current project.
 
 ** Project integration
 :properties:

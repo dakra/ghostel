@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Consult integration (`ghostel-consult`): `M-x ghostel-consult-buffer` and
+  `M-x ghostel-consult-project-buffer` pick a ghostel terminal through
+  `consult-buffer` with live preview as you move through the candidate list —
+  unlike the built-in `ghostel-list-buffers`, which uses `read-buffer` and does
+  not preview. Candidates are switch-ordered (recently-used first, current
+  buffer last), and submitting a name that matches no buffer creates a new
+  terminal. The sources `ghostel-consult-source` / `ghostel-consult-project-source`
+  (and their `-hidden` variants) can also be added to `consult-buffer-sources`
+  to summon ghostel buffers via the `g` narrow key. `consult` is a soft
+  dependency, loaded only when these commands run.
+- Public Lisp API for external integrations: `ghostel-create` creates and spawns
+  an interactive shell terminal (reading `default-directory`), and
+  `ghostel-buffer-list` / `ghostel-project-buffer-list` return the live ghostel
+  buffers (all / project-scoped). These join the existing public `ghostel-exec`
+  (run a specific program in a TTY) and `ghostel-send-string` / `ghostel-send-key`.
+
 ## [0.41.0] — 2026-07-03
 
 ### Fixed

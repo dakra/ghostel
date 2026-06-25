@@ -103,6 +103,14 @@ Replace comint's built-in `ansi-color-process-output` with Ghostel's VT parser.
   :hook (after-init . ghostel-comint-global-mode))
 ```
 
+Pick a Ghostel terminal via `consult-buffer` with live preview (and create-on-miss).
+```emacs-lisp
+(use-package ghostel-consult
+  :after (ghostel consult)
+  :bind (:map ghostel-semi-char-mode-map
+         ("M" . ghostel-consult-project-buffer)))
+```
+
 If you use an Emacs Lisp input method (e.g. Korean Hangul), add Ghostel support:
 ```emacs-lisp
 (use-package ghostel-ime

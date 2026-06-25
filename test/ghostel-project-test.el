@@ -160,11 +160,11 @@ same name must get separate buffers."
                      (lambda (proj) (cdr proj))))
             (cl-letf (((symbol-function 'project-current)
                        (lambda (&rest _) '(transient . "/tmp/myproj/"))))
-              (should (equal (ghostel--project-buffers) (list local))))
+              (should (equal (ghostel-project-buffer-list) (list local))))
             (cl-letf (((symbol-function 'project-current)
                        (lambda (&rest _)
                          '(transient . "/ssh:user@host:/tmp/myproj/"))))
-              (should (equal (ghostel--project-buffers) (list remote))))))
+              (should (equal (ghostel-project-buffer-list) (list remote))))))
       (dolist (b (list local remote))
         (when (buffer-live-p b) (kill-buffer b))))))
 
@@ -294,6 +294,42 @@ same name must get separate buffers."
             (should-not ghostel--buffer-identity)))
       (when (buffer-live-p buf)
         (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-create-spawns-and-names ()
+  "`ghostel-create' names the buffer, pins identity, and starts the shell."
+  (let (buf started)
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--load-module) #'ignore)
+                  ((symbol-function 'ghostel--new) (lambda (&rest _) 'fake-term))
+                  ((symbol-function 'ghostel--set-size) #'ignore)
+                  ((symbol-function 'ghostel--apply-palette) #'ignore)
+                  ((symbol-function 'ghostel--start-process)
+                   (lambda (&rest _) (setq started t)))
+                  ((symbol-function 'ghostel--apply-initial-input-mode) #'ignore))
+          (setq buf (ghostel-create "*ghostel-create-test*"))
+          (should (buffer-live-p buf))
+          (should (equal (buffer-name buf) "*ghostel-create-test*"))
+          (with-current-buffer buf
+            (should (derived-mode-p 'ghostel-mode))
+            (should (equal ghostel--buffer-identity "*ghostel-create-test*"))
+            (should (equal ghostel--managed-buffer-name "*ghostel-create-test*")))
+          (should started))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-create-empty-name-uses-default ()
+  "`ghostel-create' falls back to `ghostel-buffer-name' for an empty NAME."
+  (let ((ghostel-buffer-name "*ghostel-default-test*") buf)
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--load-module) #'ignore)
+                  ((symbol-function 'ghostel--new) (lambda (&rest _) 'fake-term))
+                  ((symbol-function 'ghostel--set-size) #'ignore)
+                  ((symbol-function 'ghostel--apply-palette) #'ignore)
+                  ((symbol-function 'ghostel--start-process) #'ignore)
+                  ((symbol-function 'ghostel--apply-initial-input-mode) #'ignore))
+          (setq buf (ghostel-create ""))
+          (should (buffer-live-p buf))
+          (should (equal (buffer-name buf) "*ghostel-default-test*")))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
 
 (ert-deftest ghostel-test-returns-buffer ()
   "`ghostel' returns the (live) Ghostel buffer."
