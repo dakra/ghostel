@@ -2905,11 +2905,13 @@ Skips regions that already have a `help-echo' property (e.g. from OSC 8)
 and the user's active input on the current prompt line.
 Bounding the scan keeps streaming output from re-scanning the entire
 materialized scrollback on every redraw.
-Binds `inhibit-read-only' so the scan can attach text properties even
-when called from the deferred-detection timer outside the redraw scope."
+Binds `inhibit-read-only' and suppresses modification hooks so the scan
+can attach text properties when called from the deferred-detection timer
+outside the redraw scope."
   (let* ((begin (or begin (point-min)))
          (end (or end (point-max)))
          (inhibit-read-only t)
+         (inhibit-modification-hooks t)
          ;; `ghostel--cursor-char-pos' is the live terminal cursor after a redraw;
          ;; its line is the prompt the user is currently editing.  Capture as
          ;; buffer-position bounds so the per-match skip check is O(1).

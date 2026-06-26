@@ -623,7 +623,26 @@ E.g. `compilation-mode' error loci in `ghostel-compile-view-mode'."
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-detect-urls-allows-read-only-buffers ()
-  "Plain-text link detection should still work in read-only buffers."
+  "Plain-text link detection should still work silently in read-only buffers."
+  (with-temp-buffer
+    (let* ((url "https://example.com")
+           (hook-ran nil))
+      (insert "see " url " here\n")
+      (put-text-property 5 (+ 5 (length url))
+                         'modification-hooks
+                         (list (lambda (&rest _)
+                                 (setq hook-ran t)
+                                 (barf-if-buffer-read-only))))
+      (setq buffer-read-only t)
+      (let ((ghostel-enable-url-detection t)
+            (ghostel-enable-file-detection nil)
+            (ghostel-plain-link-detection-delay 0))
+        (should (eq 'ok
+                    (ignore-errors
+                      (ghostel--queue-plain-link-detection (point-min) (point-max))
+                      'ok)))
+        (should-not hook-ran)
+        (should (equal url (get-text-property 5 'help-echo))))))
   (let* ((root (ghostel--resource-root))
          (test-file (file-relative-name
                      (expand-file-name "lisp/ghostel.el" root)
