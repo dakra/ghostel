@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.39.0] — 2026-06-26
+
+### Added
+- `ghostel-debug-describe-glyph-scaling` reports how the renderer scales glyphs
+  into terminal cells, making emoji and font-size issues easier to diagnose.
+
+### Changed
+- Ghostel buffers are now read-only, preventing editing commands such as
+  `transpose-lines` from modifying terminal contents.
+- Default terminal foreground/background colors now come from buffer-local face
+  remapping of `ghostel-default` instead of per-cell face properties, while OSC
+  color queries continue to report the terminal protocol defaults.
+
+### Fixed
+- Hidden buffers now force a redraw when they reappear, so terminal contents no
+  longer remain blank or stale if synchronized output is active at that moment.
+  Fixes [#456](https://github.com/dakra/ghostel/issues/456).
+- `C-a`/`ghostel-beginning-of-input-or-line` no longer jumps to a stray prompt
+  character inside command output such as progress percentages.
+  Fixes [#430](https://github.com/dakra/ghostel/issues/430).
+- Native child processes now get the same `DISPLAY` fallback used by Elisp
+  process spawns.
+- Glyph scaling now quantizes to the font pixel size, keeping scaled glyphs
+  aligned with terminal cells.
+- Remote bash shell integration now passes `--rcfile`/`--posix` before
+  login/interactive flags, avoiding bash option parsing failures.
+
+### Internal
+- Native process-lifecycle tests use readiness handshakes and CI-scaled polling
+  timeouts to avoid slow-runner races.
+
 ## [0.38.0] — 2026-06-23
 
 ### Added
