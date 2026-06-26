@@ -932,11 +932,12 @@ handled-row suppression, not the debounce window."
 
 (ert-deftest ghostel-test-password-debounce-defers-source-call ()
   "Rising edge schedules a confirm timer; source is NOT called synchronously.
-The source runs only after the debounce elapses and the heuristic
+The source runs only when the timer callback fires and the heuristic
 is re-confirmed (mirrors ghostty's ~200 ms termios polling cadence)."
   :tags '(native)
   (let* ((buf (generate-new-buffer " *ghostel-test-pwd-debounce-defer*"))
-         (calls 0))
+         (calls 0)
+         scheduled)
     (unwind-protect
         (with-current-buffer buf
           (ghostel-mode)
@@ -946,15 +947,25 @@ is re-confirmed (mirrors ghostty's ~200 ms termios polling cadence)."
           (let ((ghostel-password-prompt-functions
                  (list (lambda (_row) (cl-incf calls) "x")))
                 (ghostel-password-prompt-debounce 0.1))
+            ;; Capture the timer instead of sleeping for it; the contract here is
+            ;; that detection arms the debounce but does not run sources inline.
             (cl-letf (((symbol-function 'ghostel--password-prompt-detected-p)
                        (lambda () t))
                       ((symbol-function 'ghostel--write-pty)
-                       (lambda (_term _data) nil)))
+                       (lambda (_term _data) nil))
+                      ((symbol-function 'run-at-time)
+                       (lambda (time repeat function &rest args)
+                         (should (equal time ghostel-password-prompt-debounce))
+                         (should-not repeat)
+                         (setq scheduled (list function args)))))
               (ghostel--detect-password-prompt)
               (should ghostel--password-mode-p)
-              (should ghostel--password-confirm-timer)
+              (should scheduled)
+              (should (eq ghostel--password-confirm-timer scheduled))
               (should (= 0 calls))
-              (sleep-for 0.25)
+              ;; Now run the captured callback to prove the deferred path still
+              ;; re-checks the heuristic and calls the source exactly once.
+              (apply (car scheduled) (cadr scheduled))
               (should (= 1 calls))
               (should-not ghostel--password-confirm-timer))))
       (when (buffer-live-p buf) (kill-buffer buf)))))
