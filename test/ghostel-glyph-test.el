@@ -258,6 +258,39 @@ descent below the line."
                    (should (< scale (/ 20.0 25)))))))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-glyph-adjust-quantizes-height-scale ()
+  "Glyph height scaling is floored to an integral font pixel size.
+The raw ascent clamp here is 10/13.  With a 12px glyph font, Emacs
+could round 12 * 10/13 up and overflow the cell, so the renderer must
+request floor(12 * 10/13) / 12 = 0.75 instead."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-glyph-quantized-scale*")))
+    (unwind-protect
+        (save-window-excursion
+          (with-selected-window (display-buffer buf)
+            (ghostel-mode)
+            (let* ((term (ghostel--new 5 80 1000))
+                   (ghostel--term term)
+                   (ghostel--term-rows 5)
+                   (inhibit-read-only t)
+                   (df (ghostel-test--make-font ghostel-test--default-font-info))
+                   (glyph-font (ghostel-test--make-font
+                                ["MockGlyph" "mock.ttf" 12 120 13 10 10 10 0]
+                                [[0 1 ?\u0100 0 10 0 0 13 10 0]])))
+              (ghostel--write-vt term "\u0100")
+              (ghostel-test--with-glyph-mocks
+               (:default-font df
+                              :glyph-font glyph-font)
+               (ghostel--redraw term t)
+               (goto-char (point-min))
+               (let ((disp (get-text-property (point) 'display)))
+                 (should disp)
+                 (let ((scale (cadr (assq 'height disp))))
+                   (should scale)
+                   (should (= scale 0.75))
+                   (should (< scale (/ 10.0 13)))))))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-glyph-adjust-double-width-small ()
   "A double-width glyph is adjusted to its native width."
   :tags '(native)

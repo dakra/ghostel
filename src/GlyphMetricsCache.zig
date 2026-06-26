@@ -41,7 +41,12 @@ pub const Key = struct {
     }
 };
 
-pub const Metrics = struct { width: i64, ascent: i64, descent: i64 };
+pub const Metrics = packed struct {
+    width: u16,
+    ascent: u16,
+    descent: u16,
+    pixel_size: u16,
+};
 
 pub fn put(self: *Self, alloc: Allocator, key: Key, metrics: Metrics) !void {
     std.debug.assert(key.utf8 == .borrowed);

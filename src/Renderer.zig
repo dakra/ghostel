@@ -627,8 +627,14 @@ fn adjustGlyph(
     const computed_scale = @min(scale_width, @min(scale_ascent, scale_descent));
     const scale = @max(computed_scale, default_font_info.glyph_scale_floor);
 
+    // Display height is applied as a scale to the pixel size of the font. In
+    // order to not have it be rounded up by Emacs and have the cell overflow,
+    // explicitly floor it.
+    const pixel_size: f64 = @floatFromInt(metrics.pixel_size);
+    const quantized_scale = @floor(pixel_size * scale) / pixel_size;
+
     const min_width_spec = env.list(.{ s.@"min-width", env.list(.{char_width}) });
-    const scale_spec = env.list(.{ s.height, scale });
+    const scale_spec = env.list(.{ s.height, quantized_scale });
     const display_spec = env.list(.{ min_width_spec, scale_spec });
     _ = env.f("put-text-property", .{
         start_val,
@@ -711,27 +717,35 @@ fn getGlyphMetrics(
     const gstring = findGlyphString(env, window, start_val, end_val) orelse {
         return null;
     };
+    // gstring is:
     // [HEADER ID GLYPH ...]
     const header = env.vecGet(gstring, 0);
     const glyph = env.vecGet(gstring, 2);
 
+    // header is:
     // [FONT-OBJECT CHAR ...]
     const font = env.vecGet(header, 0);
     const font_info = env.f("ghostel--query-font-cached", .{font});
+
+    // font_info is:
+    // [ NAME FILENAME PIXEL-SIZE SIZE ASCENT DESCENT SPACE-WIDTH AVERAGE-WIDTH
+    //   CAPABILITY ]
     // Keep ascent and descent separate: the line height is max(ascent) +
     // max(descent) over the row, so a glyph fits only when its ascent and
     // descent each fit the default font's — the sum is not enough.
-    const ascent = env.cast(i64, env.vecGet(font_info, 4));
-    const descent = env.cast(i64, env.vecGet(font_info, 5));
+    const pixel_size = env.cast(u16, env.vecGet(font_info, 2));
+    const ascent = env.cast(u16, env.vecGet(font_info, 4));
+    const descent = env.cast(u16, env.vecGet(font_info, 5));
 
     // Each element is a vector containing information of a glyph in this format:
     // [FROM-IDX TO-IDX C CODE WIDTH LBEARING RBEARING ASCENT DESCENT ADJUSTMENT]
-    const width = env.cast(u32, env.vecGet(glyph, 4));
+    const width = env.cast(u16, env.vecGet(glyph, 4));
 
     const metrics = GlyphMetricsCache.Metrics{
         .width = width,
         .ascent = ascent,
         .descent = descent,
+        .pixel_size = pixel_size,
     };
     if (self.font_info) |*fi| {
         try fi.metrics_cache.put(alloc, borrowed_key, metrics);
