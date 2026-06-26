@@ -623,7 +623,7 @@ composition glyph string first, otherwise `font-at' +
     (ghostel-debug--insert-field "Raw query-font" font-info))))
 
 (defun ghostel-debug--insert-renderer-metrics (font-info gstring)
-  "Insert the metric subset consumed by the native renderer."
+  "Insert the native renderer metric subset from FONT-INFO and GSTRING."
   (let* ((first-glyph (and (vectorp gstring)
                            (> (length gstring) 2)
                            (aref gstring 2)))

@@ -114,7 +114,7 @@ test "GlyphMetricsCache: put and then get" {
     defer cache.deinit(testing.allocator);
 
     const key = testKey(1, 2, "A");
-    const metrics: Metrics = .{ .width = 10, .ascent = 12, .descent = 8 };
+    const metrics: Metrics = .{ .width = 10, .ascent = 12, .descent = 8, .pixel_size = 14 };
 
     try cache.put(testing.allocator, key, metrics);
 
@@ -126,8 +126,8 @@ test "GlyphMetricsCache: put, replace, and then get" {
     defer cache.deinit(testing.allocator);
 
     const key = testKey(1, 2, "A");
-    const initial: Metrics = .{ .width = 10, .ascent = 12, .descent = 8 };
-    const replacement: Metrics = .{ .width = 30, .ascent = 22, .descent = 18 };
+    const initial: Metrics = .{ .width = 10, .ascent = 12, .descent = 8, .pixel_size = 14 };
+    const replacement: Metrics = .{ .width = 30, .ascent = 22, .descent = 18, .pixel_size = 24 };
 
     try cache.put(testing.allocator, key, initial);
     const utf8_buf_len = cache.utf8_buf.items.len;
