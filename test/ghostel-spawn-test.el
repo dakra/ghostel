@@ -245,7 +245,9 @@ A login bash ignores the `--rcfile' the bash integration relies on, so
                (default-directory "/ssh:host:/home/u/"))
           (ghostel--start-process)
           (should (equal "/bin/bash" (car spawn)))
-          (should (equal '("-i" "--rcfile" "/tmp/ghostel.bash") (cdr spawn)))
+          ;; Bash rejects long options that follow short ones, so the
+          ;; integration's `--rcfile' must precede the `-i' default.
+          (should (equal '("--rcfile" "/tmp/ghostel.bash" "-i") (cdr spawn)))
           (should-not (member "-l" (cdr spawn))))))))
 
 (ert-deftest ghostel-test-start-process-remote-zsh-integration-login-interactive ()
@@ -429,8 +431,8 @@ pushed terminfo dir is needed for the whole session besides."
              (default-directory "/tmp/"))
         (ghostel--start-process)
         (should (equal "/bin/bash" (car spawn)))
-        ;; Extra args precede integration args.
-        (should (equal '("--login" "--posix") (cdr spawn)))))))
+        ;; Integration args precede extra args.
+        (should (equal '("--posix" "--login") (cdr spawn)))))))
 
 (ert-deftest ghostel-test-start-process-darwin-login-wrap-with-integration ()
   "Wrap + list shell + bash integration: all three layers compose correctly."
@@ -450,7 +452,7 @@ pushed terminfo dir is needed for the whole session besides."
           (should (equal "/usr/bin/login" (car spawn)))
           (should (equal '("-flp" "alice"
                            "/bin/bash" "--noprofile" "--norc"
-                           "-c" "exec -l /bin/bash --login --posix")
+                           "-c" "exec -l /bin/bash --posix --login")
                          (cdr spawn))))))))
 
 (ert-deftest ghostel-test-start-process-local-bash-integration-adds-env ()

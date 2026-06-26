@@ -118,6 +118,9 @@ arguments passed to that executable.  For example:
 
   (setq ghostel-shell \\='(\"/bin/zsh\" \"--login\"))
 
+For bash, list long options (e.g. `--rcfile') before single-character
+ones (e.g. `-i'); bash rejects long options that follow short ones.
+
 On macOS, ghostel additionally wraps the shell via `login(1)' by
 default so the shell starts as a login shell (matching Apple's
 Terminal.app and Ghostty), which sources `~/.zprofile' /
@@ -241,7 +244,10 @@ When none are given, ghostel supplies a type-aware default: recognized shells
 source the user's rc/profile files, mirroring an interactive `ssh host' login.
 Unrecognized shells (e.g. /bin/sh) get no args.
 To override, list the arguments explicitly after FALLBACK,
-e.g. (\"ssh\" login-shell nil \"-i\")."
+e.g. (\"ssh\" login-shell nil \"-i\").
+
+For bash, list long options (e.g. `--rcfile') before single-character
+ones (e.g. `-i'); bash rejects long options that follow short ones."
   :type '(alist :key-type (choice string (const t))
                 :value-type
                 (list (choice :tag "Shell" string (const login-shell))
@@ -4434,11 +4440,11 @@ run the shell on the remote host."
          ;; adapts per shell (bash drops `-l' to keep `--rcfile').  Explicit
          ;; per-method args from `ghostel-tramp-shells' override the default.
          (shell-args (append
+                      integration-args
                       (or extra-shell-args
                           (and remote-p
                                (ghostel--default-remote-shell-args
-                                shell remote-integration)))
-                      integration-args))
+                                shell remote-integration)))))
          (extra-env (append
                      (unless remote-p
                        (list (format "EMACS_GHOSTEL_PATH=%s" ghostel-dir)))
