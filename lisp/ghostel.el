@@ -4311,13 +4311,15 @@ Local PROGRAM is resolved to an absolute path before backend dispatch.
 Local buffers use the native PTY path when `ghostel-use-native-pty'
 is non-nil; remote (REMOTE-P) buffers always go through Emacs so
 TRAMP can manage the remote shell."
-  (let ((program (if remote-p
-                     program
-                   (ghostel--resolve-local-executable program))))
-    (setq ghostel--process
-          (if (and ghostel-use-native-pty (not remote-p))
-              (ghostel--spawn-via-native (cons program program-args))
-            (ghostel--spawn-via-emacs program program-args remote-p)))))
+  (let* ((program (if remote-p
+                      program
+                    (ghostel--resolve-local-executable program)))
+         (process (if (and ghostel-use-native-pty (not remote-p))
+                      (ghostel--spawn-via-native (cons program program-args))
+                    (ghostel--spawn-via-emacs program program-args remote-p))))
+    (when (processp process)
+      (process-put process 'adjust-window-size-function #'ignore))
+    (setq ghostel--process process)))
 
 (defun ghostel--spawn-via-emacs (program program-args &optional remote-p)
   "Spawn PROGRAM with PROGRAM-ARGS through Emacs process machinery.
