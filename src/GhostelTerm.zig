@@ -11,8 +11,12 @@ const GhostelHandler = @import("handler.zig").GhostelHandler;
 const Renderer = @import("Renderer.zig");
 const input = @import("input.zig");
 const kitty_graphics = @import("kitty_graphics.zig");
-const PtyProcess = @import("PtyProcess.zig");
+const utils = @import("utils.zig");
+const parseHexColor = utils.parseHexColor;
 const NativeProcess = @import("NativeProcess.zig");
+const ChannelFd = NativeProcess.ChannelFd;
+const ProcessParams = NativeProcess.ProcessParams;
+const ProcessPid = i64;
 const pty_utils = @import("pty_utils.zig");
 
 const Self = @This();
@@ -84,7 +88,7 @@ pub fn redraw(self: *Self, force_full: bool) !void {
 
     if (self.isProcessLive() and !std.meta.eql(pre_size, post_size)) {
         if (self.process) |proc| {
-            try proc.process.pty.resize(post_size[0], post_size[1]);
+            try proc.process.resize(post_size[0], post_size[1]);
         } else {
             _ = env.f(
                 "set-process-window-size",
@@ -142,7 +146,7 @@ pub fn ptyWrite(self: *Self, data: []const u8) !void {
     if (!self.isProcessLive()) return;
 
     if (self.process) |proc| {
-        try proc.process.pty.write(data);
+        try proc.ptyWrite(data);
     } else if (emacs.current_env) |env| {
         _ = env.f(
             "process-send-string",
@@ -251,6 +255,9 @@ pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u16, cell_h: u16) !void
     self.lockTerm();
     try self.renderer.resize(cols, rows, cell_w, cell_h);
     self.unlockTerm();
+    if (self.process) |process| {
+        try process.resizePty(cols, rows);
+    }
 }
 
 pub fn lockTerm(self: *Self) void {
@@ -266,22 +273,22 @@ pub fn spawnNativeProcess(
     command: [][:0]const u8,
     env: *const std.process.EnvMap,
     cwd: [:0]const u8,
-    event_pipe: std.posix.fd_t,
-) !std.posix.pid_t {
+    event_fd: ChannelFd,
+) !ProcessPid {
     if (command.len == 0) return error.InvalidCommand;
 
-    var pty_process = try PtyProcess.init(
+    const process = try self.alloc.create(NativeProcess);
+    errdefer self.alloc.destroy(process);
+    try process.init(
         self.alloc,
         self.terminal.cols,
         self.terminal.rows,
-        .{ .file = command[0], .args = command, .env = env, .cwd = cwd },
+        ProcessParams{ .file = command[0], .args = command, .env = env, .cwd = cwd },
+        &self.terminal,
+        event_fd,
     );
-    errdefer _ = pty_process.deinitAndWait();
-    const process = try self.alloc.create(NativeProcess);
-    errdefer self.alloc.destroy(process);
-    try process.init(self.alloc, pty_process, &self.terminal, event_pipe);
     self.process = process;
-    return process.process.pid;
+    return process.process.pidValue();
 }
 
 pub fn killNativeProcess(self: *Self) void {
@@ -293,8 +300,8 @@ pub fn killNativeProcess(self: *Self) void {
 }
 
 pub fn isProcessLive(self: *Self) bool {
-    if (self.process != null) {
-        return true;
+    if (self.process) |process| {
+        return process.isBackendAlive();
     } else if (emacs.current_env) |env| {
         return env.isNotNil(env.f("process-live-p", .{env.symbolValue("ghostel--process")}));
     }

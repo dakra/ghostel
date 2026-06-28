@@ -29,6 +29,14 @@ jobs:
             platform: x86_64-freebsd
             suffix: .so
             target: x86_64-freebsd
+          - os: windows-latest
+            platform: x86_64-windows
+            suffix: .dll
+            target: x86_64-windows-gnu
+          - os: windows-latest
+            platform: aarch64-windows
+            suffix: .dll
+            target: aarch64-windows-gnu
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +55,7 @@ jobs:
           cache-key: ${{ matrix.platform }}-zig-0.15.2
 
       - name: Build native module
+        shell: bash
         run: |
           if [ -n "${{ matrix.target }}" ]; then
             zig build --prefix . -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast -Dcpu=baseline
@@ -59,6 +68,7 @@ jobs:
         run: strip -x ghostel-module${{ matrix.suffix }}
 
       - name: Rename artifact for release
+        shell: bash
         run: |
           mv ghostel-module${{ matrix.suffix }} \
              ghostel-module-${{ matrix.platform }}${{ matrix.suffix }}

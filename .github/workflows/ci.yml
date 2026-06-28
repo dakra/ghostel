@@ -160,6 +160,10 @@ jobs:
             platform: x86_64-freebsd
             suffix: .so
             target: x86_64-freebsd
+          - os: windows-latest
+            platform: x86_64-windows
+            suffix: .dll
+            target: x86_64-windows-gnu
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -178,6 +182,7 @@ jobs:
           cache-key: ${{ matrix.platform }}-zig-0.15.2
 
       - name: Build native module
+        shell: bash
         run: |
           if [ -n "${{ matrix.target }}" ]; then
             zig build --prefix . -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast -Dcpu=baseline

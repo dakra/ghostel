@@ -53,6 +53,9 @@ pub fn build(b: *std.Build) void {
             lib.setVersionScript(b.path("symbols.map"));
         }
     }
+    if (target_os == .windows) {
+        lib.linkSystemLibrary("kernel32");
+    }
 
     const copy_step = b.addInstallFile(
         lib.getEmittedBin(),
@@ -155,6 +158,7 @@ fn dirHasEmacsModuleHeader(allocator: std.mem.Allocator, dir: []const u8) bool {
 fn moduleOutputName(target_os: std.Target.Os.Tag) []const u8 {
     return switch (target_os) {
         .macos => "ghostel-module.dylib",
+        .windows => "ghostel-module.dll",
         else => "ghostel-module.so",
     };
 }
