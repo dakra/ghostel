@@ -48,7 +48,33 @@ TEXT_ALPHABET = (
 )
 TEXT_BYTES = [ord(ch) for ch in TEXT_ALPHABET]
 UNICODE_CHARS = list("λéöø界中┌─┐│✓★🟢🙂")
-CONTROL_CHUNKS = [b"\n", b"\r", b"\r\n", b"\t", b"\b"]
+UNICODE_EDGE_CHARS = [
+    "e\u0301",
+    "a\u0308",
+    "☃\ufe0f",
+    "♥\ufe0e",
+    "👩\u200d💻",
+    "🏳️\u200d🌈",
+    "·",
+    "─",
+    "表",
+]
+CONTROL_CHUNKS = [
+    b"\x00",
+    b"\x05",
+    b"\x07",
+    b"\x08",
+    b"\t",
+    b"\n",
+    b"\v",
+    b"\f",
+    b"\r",
+    b"\r\n",
+    b"\x0e",
+    b"\x0f",
+    b"\x18",
+    b"\x1a",
+]
 BULK_PATTERNS = [
     b"abcdefghijklmnopqrstuvwxyz0123456789",
     b"0123456789abcdef",
@@ -61,18 +87,55 @@ SGR_CODES = [
     2,
     3,
     4,
+    5,
     7,
+    8,
     9,
+    21,
     22,
     23,
     24,
+    25,
     27,
+    28,
     29,
+    39,
+    49,
+    53,
+    55,
     *range(30, 38),
     *range(40, 48),
     *range(90, 98),
     *range(100, 108),
 ]
+DEC_PRIVATE_MODES = [
+    1,     # application cursor keys
+    3,     # 80/132 columns
+    5,     # reverse video
+    6,     # origin mode
+    7,     # autowrap
+    12,    # cursor blink
+    25,    # cursor visibility
+    40,    # allow 80/132 columns
+    47,    # alternate screen
+    66,    # application keypad
+    69,    # left/right margin mode
+    80,    # sixel scrolling mode
+    95,    # do not clear screen on DECCOLM
+    1000,  # mouse tracking variants
+    1002,
+    1003,
+    1004,  # focus events
+    1005,
+    1006,
+    1015,
+    1047,
+    1048,
+    1049,
+    2004,  # bracketed paste
+    2026,  # synchronized output
+]
+ANSI_MODES = [2, 4, 12, 20]
 
 
 def b64(data: bytes) -> str:
@@ -102,8 +165,9 @@ def size_strategy(
     medium: tuple[int, int],
     large: tuple[int, int],
 ) -> st.SearchStrategy[int]:
-    """Generate sizes with deliberate mass in the medium/large ranges."""
+    """Generate sizes with room for edge cases and occasional stress cases."""
     return st.one_of(
+        st.integers(*small),
         st.integers(*small),
         st.integers(*medium),
         st.integers(*medium),
@@ -111,16 +175,28 @@ def size_strategy(
     )
 
 
-def ascii_text() -> st.SearchStrategy[bytes]:
-    """Generate small printable ASCII text bytes."""
-    return st.lists(st.sampled_from(TEXT_BYTES), min_size=1, max_size=120).map(bytes)
+def csi(params: str, final: str, private: str = "") -> bytes:
+    """Return a CSI sequence."""
+    return f"\x1b[{private}{params}{final}".encode("ascii")
+
+
+def osc(command: str, payload: str, terminator: bytes) -> bytes:
+    """Return an OSC sequence."""
+    return b"\x1b]" + command.encode("ascii") + b";" + payload.encode("utf-8") + terminator
+
+
+def ascii_text(max_size: int = 120) -> st.SearchStrategy[bytes]:
+    """Generate printable ASCII text bytes."""
+    return st.lists(st.sampled_from(TEXT_BYTES), min_size=1, max_size=max_size).map(bytes)
 
 
 def unicode_text() -> st.SearchStrategy[bytes]:
     """Generate a small valid UTF-8 text chunk."""
-    return st.lists(st.sampled_from(UNICODE_CHARS), min_size=1, max_size=60).map(
-        lambda chars: "".join(chars).encode("utf-8")
-    )
+    return st.lists(
+        st.one_of(st.sampled_from(UNICODE_CHARS), st.sampled_from(UNICODE_EDGE_CHARS)),
+        min_size=1,
+        max_size=60,
+    ).map(lambda chars: "".join(chars).encode("utf-8"))
 
 
 def control_text() -> st.SearchStrategy[bytes]:
@@ -133,8 +209,9 @@ def control_text() -> st.SearchStrategy[bytes]:
 @st.composite
 def bulk_lines(draw: st.DrawFn, rows: int, cols: int) -> bytes:
     """Generate many newline-terminated rows to cross page/scrollback limits."""
-    line_count = draw(size_strategy((1, 20), (40, 260), (216, 900)))
-    width = draw(size_strategy((0, max(cols, 1)), (cols, max(cols * 4, 80)), (80, 800)))
+    del rows
+    line_count = draw(size_strategy((1, 16), (24, 180), (216, 900)))
+    width = draw(size_strategy((0, max(cols, 1)), (cols, max(cols * 3, 80)), (80, 800)))
     pattern = draw(st.sampled_from(BULK_PATTERNS))
     newline = draw(st.sampled_from([b"\n", b"\r\n"]))
     parts = []
@@ -145,10 +222,24 @@ def bulk_lines(draw: st.DrawFn, rows: int, cols: int) -> bytes:
 
 
 @st.composite
+def medium_lines(draw: st.DrawFn, rows: int, cols: int) -> bytes:
+    """Generate modest line-oriented output for edge/state interleaving."""
+    del rows
+    line_count = draw(st.integers(min_value=1, max_value=40))
+    width = draw(st.integers(min_value=0, max_value=max(cols * 2, 20)))
+    pattern = draw(st.sampled_from(BULK_PATTERNS))
+    newline = draw(st.sampled_from([b"\n", b"\r\n", b"\r"]))
+    return b"".join(
+        f"{i:03d}: ".encode("ascii") + repeated(pattern, width) + newline
+        for i in range(line_count)
+    )
+
+
+@st.composite
 def long_wrapped_line(draw: st.DrawFn, rows: int, cols: int) -> bytes:
     """Generate a long line that wraps over many terminal rows."""
     del rows
-    length = draw(size_strategy((1, max(cols * 2, 16)), (512, 8192), (8192, 65536)))
+    length = draw(size_strategy((1, max(cols * 2, 16)), (256, 4096), (8192, 65536)))
     pattern = draw(st.sampled_from(BULK_PATTERNS))
     suffix = draw(st.sampled_from([b"", b"\n", b"\r\n"]))
     return repeated(pattern, length) + suffix
@@ -156,9 +247,10 @@ def long_wrapped_line(draw: st.DrawFn, rows: int, cols: int) -> bytes:
 
 @st.composite
 def styled_bulk_lines(draw: st.DrawFn, rows: int, cols: int) -> bytes:
-    """Generate bulk rows with frequent style changes."""
-    line_count = draw(size_strategy((1, 20), (30, 220), (216, 600)))
-    width = draw(size_strategy((1, max(cols, 1)), (cols, max(cols * 3, 80)), (80, 400)))
+    """Generate rows with frequent style changes."""
+    del rows
+    line_count = draw(size_strategy((1, 12), (20, 120), (216, 600)))
+    width = draw(size_strategy((1, max(cols, 1)), (cols, max(cols * 2, 80)), (80, 400)))
     newline = draw(st.sampled_from([b"\n", b"\r\n"]))
     parts = []
     for i in range(line_count):
@@ -171,14 +263,193 @@ def styled_bulk_lines(draw: st.DrawFn, rows: int, cols: int) -> bytes:
 
 @st.composite
 def unicode_bulk_lines(draw: st.DrawFn, rows: int, cols: int) -> bytes:
-    """Generate bulk rows containing wide and multibyte characters."""
+    """Generate bulk rows containing wide, combining, and multibyte characters."""
     del rows
-    line_count = draw(size_strategy((1, 12), (20, 120), (120, 360)))
+    line_count = draw(size_strategy((1, 8), (12, 80), (120, 360)))
     width = draw(size_strategy((1, max(cols, 1)), (cols, max(cols * 2, 80)), (80, 240)))
-    text = "λ界🙂┌─┐✓"
+    text = draw(st.sampled_from(["λ界🙂┌─┐✓", "e\u0301a\u0308☃️♥︎", "👩\u200d💻🏳️\u200d🌈表·─"]))
     repeated_text = (text * ((width // len(text)) + 1))[:width]
     return "".join(f"{i:05d}: {repeated_text}\r\n" for i in range(line_count)).encode(
         "utf-8"
+    )
+
+
+@st.composite
+def sgr_sequence(draw: st.DrawFn) -> bytes:
+    """Generate basic, indexed-color, and true-color SGR sequences."""
+    kind = draw(st.sampled_from(["basic", "empty", "defaulted", "indexed", "truecolor"]))
+    if kind == "empty":
+        return b"\x1b[m"
+    if kind == "defaulted":
+        return draw(st.sampled_from([b"\x1b[;m", b"\x1b[1;;31m", b"\x1b[0;39;49m"]))
+    if kind == "indexed":
+        selector = draw(st.sampled_from([38, 48, 58]))
+        color = draw(st.integers(min_value=0, max_value=255))
+        return f"\x1b[{selector};5;{color}m".encode("ascii")
+    if kind == "truecolor":
+        selector = draw(st.sampled_from([38, 48, 58]))
+        r = draw(st.integers(min_value=0, max_value=255))
+        g = draw(st.integers(min_value=0, max_value=255))
+        b = draw(st.integers(min_value=0, max_value=255))
+        return f"\x1b[{selector};2;{r};{g};{b}m".encode("ascii")
+    codes = draw(st.lists(st.sampled_from(SGR_CODES), min_size=1, max_size=8))
+    return b"\x1b[" + ";".join(str(code) for code in codes).encode("ascii") + b"m"
+
+
+@st.composite
+def cursor_sequence(draw: st.DrawFn, rows: int, cols: int) -> bytes:
+    """Generate cursor positioning and relative movement sequences."""
+    kind = draw(st.sampled_from(["cup", "hvp", "line_col", "rel", "index", "tab"]))
+    if kind in {"cup", "hvp"}:
+        row = draw(st.integers(min_value=1, max_value=max(rows + 5, 1)))
+        col = draw(st.integers(min_value=1, max_value=max(cols + 10, 1)))
+        return f"\x1b[{row};{col}{'H' if kind == 'cup' else 'f'}".encode("ascii")
+    if kind == "line_col":
+        amount = draw(st.integers(min_value=0, max_value=max(rows, cols, 1) + 20))
+        final = draw(st.sampled_from(["d", "G", "`", "a", "e"]))
+        return csi(str(amount), final)
+    if kind == "rel":
+        amount = draw(st.integers(min_value=0, max_value=max(rows, cols, 1) + 20))
+        final = draw(st.sampled_from(["A", "B", "C", "D", "E", "F"]))
+        return csi(str(amount), final)
+    if kind == "index":
+        return draw(st.sampled_from([b"\x1bD", b"\x1bE", b"\x1bM", b"\x84", b"\x85", b"\x8d"]))
+    amount = draw(st.integers(min_value=0, max_value=12))
+    return csi(str(amount), draw(st.sampled_from(["I", "Z"])))
+
+
+@st.composite
+def erase_sequence(draw: st.DrawFn) -> bytes:
+    """Generate erase-in-display/line variants."""
+    final = draw(st.sampled_from(["J", "K"]))
+    mode = draw(st.sampled_from(["", "0", "1", "2", "3"]))
+    return csi(mode, final)
+
+
+@st.composite
+def edit_sequence(draw: st.DrawFn) -> bytes:
+    """Generate insert/delete/erase character or line editing sequences."""
+    amount = draw(st.integers(min_value=0, max_value=40))
+    final = draw(st.sampled_from(["@", "P", "X", "L", "M", "S", "T", "b"]))
+    return csi(str(amount), final)
+
+
+@st.composite
+def mode_sequence(draw: st.DrawFn) -> bytes:
+    """Generate ANSI and DEC private mode set/reset sequences."""
+    private = draw(st.booleans())
+    final = draw(st.sampled_from(["h", "l"]))
+    if private:
+        mode = draw(st.sampled_from(DEC_PRIVATE_MODES))
+        return csi(str(mode), final, private="?")
+    mode = draw(st.sampled_from(ANSI_MODES))
+    return csi(str(mode), final)
+
+
+@st.composite
+def scroll_region_sequence(draw: st.DrawFn, rows: int, cols: int) -> bytes:
+    """Generate vertical and horizontal margin sequences."""
+    kind = draw(st.sampled_from(["vertical", "reset", "horizontal", "horizontal_reset"]))
+    if kind == "reset":
+        return b"\x1b[r"
+    if kind == "horizontal_reset":
+        return b"\x1b[s"
+    if kind == "horizontal":
+        left = draw(st.integers(min_value=1, max_value=max(cols, 1)))
+        right = draw(st.integers(min_value=left, max_value=max(cols, left)))
+        return f"\x1b[{left};{right}s".encode("ascii")
+    top = draw(st.integers(min_value=1, max_value=max(rows, 1)))
+    bottom = draw(st.integers(min_value=top, max_value=max(rows, top)))
+    return f"\x1b[{top};{bottom}r".encode("ascii")
+
+
+@st.composite
+def osc_sequence(draw: st.DrawFn) -> bytes:
+    """Generate common OSC sequences with BEL and ST terminators."""
+    kind = draw(
+        st.sampled_from(
+            ["title", "cwd", "hyperlink", "color", "clipboard", "prompt", "iterm"]
+        )
+    )
+    terminator = draw(st.sampled_from([b"\x07", b"\x1b\\"]))
+    if kind == "title":
+        command = draw(st.sampled_from(["0", "1", "2"]))
+        title = draw(
+            st.text(
+                alphabet="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_",
+                min_size=0,
+                max_size=60,
+            )
+        )
+        return osc(command, title, terminator)
+    if kind == "cwd":
+        path = draw(
+            st.sampled_from(
+                ["file://localhost/tmp", "file:///Users/example/project", "file://host/a%20b"]
+            )
+        )
+        return osc("7", path, terminator)
+    if kind == "hyperlink":
+        params = draw(st.sampled_from(["", "id=h1", "id=h1:foo=bar"]))
+        uri = draw(st.sampled_from(["https://example.test/a", "file:///tmp/x", ""]))
+        text = draw(ascii_text(max_size=40))
+        return osc("8", params + ";" + uri, terminator) + text + osc("8", ";", terminator)
+    if kind == "color":
+        command = draw(st.sampled_from(["10", "11", "12", "4"]))
+        payload = draw(
+            st.sampled_from(
+                ["#102030", "rgb:aa/bb/cc", "0;#000000", "255;rgb:ff/00/ff", "?"]
+            )
+        )
+        return osc(command, payload, terminator)
+    if kind == "clipboard":
+        payload = draw(st.sampled_from(["c;SGVsbG8=", "p;", ";VGVzdA==", "c;?"]))
+        return osc("52", payload, terminator)
+    if kind == "prompt":
+        payload = draw(st.sampled_from(["A", "B", "C", "D", "A;cl=m", "P;k=i", "P;Cwd=/tmp"]))
+        return osc("133", payload, terminator)
+    payload = draw(
+        st.sampled_from(
+            ["A", "B", "C", "D", "SetMark", "CurrentDir=/tmp", "ShellIntegrationVersion=1"]
+        )
+    )
+    return osc("633", payload, terminator)
+
+
+@st.composite
+def charset_sequence(draw: st.DrawFn) -> bytes:
+    """Generate character-set designation and locking-shift sequences."""
+    return draw(
+        st.sampled_from(
+            [
+                b"\x1b(B",
+                b"\x1b(0",
+                b"\x1b)B",
+                b"\x1b)0",
+                b"\x1b*B",
+                b"\x1b+B",
+                b"\x0e",
+                b"\x0f",
+            ]
+        )
+    )
+
+
+@st.composite
+def incomplete_escape_sequence(draw: st.DrawFn) -> bytes:
+    """Generate partial sequences that leave parser state pending."""
+    return draw(
+        st.sampled_from(
+            [
+                b"\x1b",
+                b"\x1b[",
+                b"\x1b[?",
+                b"\x1b[38;2;",
+                b"\x1b]2;unterminated",
+                b"\x1b]8;id=x;https://example.test",
+                b"\x1bP1;2;3",
+            ]
+        )
     )
 
 
@@ -192,13 +463,20 @@ def small_terminal_chunk(draw: st.DrawFn, rows: int, cols: int) -> bytes:
                 "unicode",
                 "control",
                 "sgr",
-                "cup",
-                "cursor_rel",
+                "cursor",
                 "erase",
+                "edit",
+                "mode",
                 "mode",
                 "scroll_region",
-                "osc_title",
+                "scroll_region",
+                "osc",
+                "osc",
+                "osc",
+                "charset",
                 "save_restore",
+                "tab_stop",
+                "incomplete",
             ]
         )
     )
@@ -210,74 +488,43 @@ def small_terminal_chunk(draw: st.DrawFn, rows: int, cols: int) -> bytes:
     if kind == "control":
         return draw(control_text())
     if kind == "sgr":
-        codes = draw(st.lists(st.sampled_from(SGR_CODES), min_size=1, max_size=8))
-        return b"\x1b[" + ";".join(str(code) for code in codes).encode("ascii") + b"m"
-    if kind == "cup":
-        row = draw(st.integers(min_value=1, max_value=max(rows, 1)))
-        col = draw(st.integers(min_value=1, max_value=max(cols, 1)))
-        return f"\x1b[{row};{col}H".encode("ascii")
-    if kind == "cursor_rel":
-        amount = draw(st.integers(min_value=0, max_value=max(rows, cols, 1) + 20))
-        final = draw(st.sampled_from([b"A", b"B", b"C", b"D", b"E", b"F", b"G"]))
-        return b"\x1b[" + str(amount).encode("ascii") + final
+        return draw(sgr_sequence())
+    if kind == "cursor":
+        return draw(cursor_sequence(rows, cols))
     if kind == "erase":
-        return draw(
-            st.sampled_from(
-                [
-                    b"\x1b[J",
-                    b"\x1b[0J",
-                    b"\x1b[1J",
-                    b"\x1b[2J",
-                    b"\x1b[3J",
-                    b"\x1b[K",
-                    b"\x1b[0K",
-                    b"\x1b[1K",
-                    b"\x1b[2K",
-                ]
-            )
-        )
+        return draw(erase_sequence())
+    if kind == "edit":
+        return draw(edit_sequence())
     if kind == "mode":
-        return draw(
-            st.sampled_from(
-                [
-                    b"\x1b[?25h",
-                    b"\x1b[?25l",
-                    b"\x1b[?1049h",
-                    b"\x1b[?1049l",
-                    b"\x1b[?2004h",
-                    b"\x1b[?2004l",
-                ]
-            )
-        )
+        return draw(mode_sequence())
     if kind == "scroll_region":
-        top = draw(st.integers(min_value=1, max_value=max(rows, 1)))
-        bottom = draw(st.integers(min_value=top, max_value=max(rows, top)))
-        return f"\x1b[{top};{bottom}r".encode("ascii")
-    if kind == "osc_title":
-        title = draw(
-            st.text(
-                alphabet="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_",
-                min_size=0,
-                max_size=60,
-            )
-        )
-        terminator = draw(st.sampled_from([b"\x07", b"\x1b\\"]))
-        return b"\x1b]2;" + title.encode("utf-8") + terminator
+        return draw(scroll_region_sequence(rows, cols))
+    if kind == "osc":
+        return draw(osc_sequence())
+    if kind == "charset":
+        return draw(charset_sequence())
     if kind == "save_restore":
-        return draw(st.sampled_from([b"\x1b7", b"\x1b8"]))
+        return draw(st.sampled_from([b"\x1b7", b"\x1b8", b"\x1b[s", b"\x1b[u"]))
+    if kind == "tab_stop":
+        return draw(st.sampled_from([b"\x1bH", b"\x1b[0g", b"\x1b[3g"]))
+    if kind == "incomplete":
+        return draw(incomplete_escape_sequence())
 
     raise AssertionError(f"unhandled generated kind: {kind}")
 
 
 @st.composite
 def write_chunk(draw: st.DrawFn, rows: int, cols: int) -> bytes:
-    """Generate one write chunk, biased toward substantial output."""
+    """Generate one write chunk with a broad spread of sizes and state changes."""
     return draw(
         st.one_of(
             small_terminal_chunk(rows, cols),
+            small_terminal_chunk(rows, cols),
+            small_terminal_chunk(rows, cols),
+            small_terminal_chunk(rows, cols),
+            medium_lines(rows, cols),
+            medium_lines(rows, cols),
             bulk_lines(rows, cols),
-            bulk_lines(rows, cols),
-            long_wrapped_line(rows, cols),
             long_wrapped_line(rows, cols),
             styled_bulk_lines(rows, cols),
             unicode_bulk_lines(rows, cols),
@@ -286,22 +533,166 @@ def write_chunk(draw: st.DrawFn, rows: int, cols: int) -> bytes:
 
 
 @st.composite
+def resize_delta(draw: st.DrawFn, rows: int, cols: int) -> tuple[int, int, int, int]:
+    """Generate a resize delta and resulting dimensions."""
+    delta_rows = draw(st.integers(min_value=max(-rows + 1, -10), max_value=15))
+    delta_cols = draw(st.integers(min_value=max(-cols + 1, -20), max_value=30))
+    new_rows = max(1, rows + delta_rows)
+    new_cols = max(1, cols + delta_cols)
+    return delta_rows, delta_cols, new_rows, new_cols
+
+
+@st.composite
 def terminal_operation(draw: st.DrawFn, rows: int, cols: int) -> tuple[dict[str, object], int, int]:
     """Generate one terminal operation (write or resize) and return (op, new_rows, new_cols)."""
     is_resize = draw(st.booleans())
     if is_resize:
-        delta_rows = draw(st.integers(min_value=max(-rows + 1, -10), max_value=15))
-        delta_cols = draw(st.integers(min_value=max(-cols + 1, -20), max_value=30))
-        new_rows = max(1, rows + delta_rows)
-        new_cols = max(1, cols + delta_cols)
+        delta_rows, delta_cols, new_rows, new_cols = draw(resize_delta(rows, cols))
         return resize_op(delta_rows, delta_cols), new_rows, new_cols
-    else:
-        return write_op(draw(write_chunk(rows, cols))), rows, cols
+    return write_op(draw(write_chunk(rows, cols))), rows, cols
+
+
+@st.composite
+def fragmented_write_ops(draw: st.DrawFn, rows: int, cols: int) -> list[dict[str, object]]:
+    """Generate a complete escape/text chunk split across multiple writes."""
+    data = draw(
+        st.one_of(
+            small_terminal_chunk(rows, cols),
+            osc_sequence(),
+            sgr_sequence(),
+            cursor_sequence(rows, cols),
+            erase_sequence(),
+            edit_sequence(),
+            mode_sequence(),
+        )
+    )
+    if len(data) < 2:
+        return [write_op(data)]
+    split_count = draw(st.integers(min_value=1, max_value=min(4, len(data) - 1)))
+    split_points = draw(
+        st.lists(
+            st.integers(min_value=1, max_value=len(data) - 1),
+            min_size=split_count,
+            max_size=split_count,
+            unique=True,
+        )
+    )
+    parts = []
+    start = 0
+    for stop in sorted(split_points):
+        parts.append(write_op(data[start:stop]))
+        start = stop
+    parts.append(write_op(data[start:]))
+    return parts
+
+
+@st.composite
+def terminal_motif(
+    draw: st.DrawFn, rows: int, cols: int
+) -> tuple[list[dict[str, object]], int, int]:
+    """Generate one composable terminal-state motif."""
+    kind = draw(
+        st.sampled_from(
+            [
+                "single",
+                "single",
+                "single",
+                "fragmented",
+                "osc_span",
+                "mode_flip",
+                "mode_flip",
+                "alt_screen_cycle",
+                "alt_screen_cycle",
+                "scroll_region_cycle",
+                "save_resize_restore",
+                "style_span",
+            ]
+        )
+    )
+
+    if kind == "single":
+        op, new_rows, new_cols = draw(terminal_operation(rows, cols))
+        return [op], new_rows, new_cols
+
+    if kind == "fragmented":
+        return draw(fragmented_write_ops(rows, cols)), rows, cols
+
+    if kind == "osc_span":
+        body = draw(st.one_of(ascii_text(max_size=80), unicode_text()))
+        return [write_op(draw(osc_sequence())), write_op(body)], rows, cols
+
+    if kind == "mode_flip":
+        private = draw(st.booleans())
+        mode = draw(st.sampled_from(DEC_PRIVATE_MODES if private else ANSI_MODES))
+        private_prefix = "?" if private else ""
+        body = draw(write_chunk(rows, cols))
+        return [
+            write_op(csi(str(mode), "h", private_prefix)),
+            write_op(body),
+            write_op(csi(str(mode), "l", private_prefix)),
+        ], rows, cols
+
+    if kind == "alt_screen_cycle":
+        body = draw(
+            st.one_of(medium_lines(rows, cols), small_terminal_chunk(rows, cols), unicode_text())
+        )
+        maybe_resize = draw(st.booleans())
+        ops: list[dict[str, object]] = [write_op(b"\x1b[?1049h\x1b[H\x1b[2J"), write_op(body)]
+        new_rows, new_cols = rows, cols
+        if maybe_resize:
+            delta_rows, delta_cols, new_rows, new_cols = draw(resize_delta(rows, cols))
+            ops.append(resize_op(delta_rows, delta_cols))
+            ops.append(write_op(b"\x1b[H" + draw(medium_lines(new_rows, new_cols))))
+        ops.append(write_op(b"\x1b[?1049l"))
+        return ops, new_rows, new_cols
+
+    if kind == "scroll_region_cycle":
+        top = draw(st.integers(min_value=1, max_value=max(rows, 1)))
+        bottom = draw(st.integers(min_value=top, max_value=max(rows, top)))
+        scrolls = draw(
+            st.lists(
+                st.sampled_from([b"\n", b"\x1bD", b"\x1bM", b"\x1b[1S", b"\x1b[1T"]),
+                min_size=1,
+                max_size=12,
+            )
+        )
+        return [
+            write_op(f"\x1b[{top};{bottom}r\x1b[{bottom};1H".encode("ascii")),
+            write_op(b"".join(scrolls)),
+            write_op(b"\x1b[r"),
+        ], rows, cols
+
+    if kind == "save_resize_restore":
+        delta_rows, delta_cols, new_rows, new_cols = draw(resize_delta(rows, cols))
+        body = draw(write_chunk(new_rows, new_cols))
+        save, restore = draw(
+            st.sampled_from(
+                [
+                    (b"\x1b7", b"\x1b8"),
+                    (b"\x1b[s", b"\x1b[u"),
+                    (b"\x1b[?1048h", b"\x1b[?1048l"),
+                ]
+            )
+        )
+        return [
+            write_op(save),
+            resize_op(delta_rows, delta_cols),
+            write_op(body),
+            write_op(restore),
+        ], new_rows, new_cols
+
+    if kind == "style_span":
+        prefix = draw(sgr_sequence())
+        body = draw(st.one_of(ascii_text(max_size=200), unicode_text(), medium_lines(rows, cols)))
+        suffix = draw(st.sampled_from([b"\x1b[0m", b"\x1b[39;49m", b"\x1b[m"]))
+        return [write_op(prefix + body + suffix)], rows, cols
+
+    raise AssertionError(f"unhandled generated motif: {kind}")
 
 
 @st.composite
 def redraw_batch(draw: st.DrawFn, rows: int, cols: int) -> list[dict[str, object]]:
-    """Generate [0-N writes/resizes, redraw]."""
+    """Generate [0-N writes/resizes/motifs, redraw]."""
     ops: list[dict[str, object]] = []
     current_rows, current_cols = rows, cols
 
@@ -309,15 +700,15 @@ def redraw_batch(draw: st.DrawFn, rows: int, cols: int) -> list[dict[str, object
         st.one_of(
             st.just(0),
             st.integers(min_value=1, max_value=3),
-            st.integers(min_value=1, max_value=3),
-            st.integers(min_value=4, max_value=12),
+            st.integers(min_value=1, max_value=4),
+            st.integers(min_value=3, max_value=5),
         )
     )
     for _ in range(op_count):
-        op, current_rows, current_cols = draw(
-            terminal_operation(current_rows, current_cols)
+        new_ops, current_rows, current_cols = draw(
+            terminal_motif(current_rows, current_cols)
         )
-        ops.append(op)
+        ops.extend(new_ops)
 
     ops.append({"op": "redraw"})
     return ops
@@ -326,11 +717,25 @@ def redraw_batch(draw: st.DrawFn, rows: int, cols: int) -> list[dict[str, object
 @st.composite
 def render_case(draw: st.DrawFn) -> RenderCase:
     """Generate one complete render consistency test case."""
-    rows = draw(st.integers(min_value=1, max_value=40))
-    cols = draw(st.integers(min_value=1, max_value=160))
+    rows = draw(
+        st.one_of(
+            st.integers(min_value=1, max_value=5),
+            st.integers(min_value=6, max_value=40),
+        )
+    )
+    cols = draw(
+        st.one_of(
+            st.integers(min_value=1, max_value=20),
+            st.integers(min_value=21, max_value=160),
+        )
+    )
     scrollback = draw(
         st.sampled_from(
             [
+                0,
+                1,
+                512,
+                4 * 1024,
                 16 * 1024,
                 64 * 1024,
                 256 * 1024,
@@ -342,23 +747,107 @@ def render_case(draw: st.DrawFn) -> RenderCase:
     batch_count = draw(
         st.one_of(
             st.integers(min_value=1, max_value=5),
-            st.integers(min_value=6, max_value=25),
-            st.integers(min_value=6, max_value=25),
-            st.integers(min_value=26, max_value=80),
+            st.integers(min_value=1, max_value=8),
+            st.integers(min_value=6, max_value=12),
+            st.integers(min_value=10, max_value=18),
+            st.integers(min_value=19, max_value=30),
         )
     )
-    ops: list[dict[str, str]] = []
+    ops: list[dict[str, object]] = []
     for _ in range(batch_count):
         ops.extend(draw(redraw_batch(rows, cols)))
     payload = {"rows": rows, "cols": cols, "scrollback": scrollback, "ops": ops}
     return RenderCase.from_payload(payload)
-
 
 def write_bytes(op: dict[str, str]) -> int:
     """Return decoded byte length for a write op, or 0 for redraw."""
     if op.get("op") != "write":
         return 0
     return len(base64.b64decode(op["data"]))
+
+
+def write_data(op: dict[str, object]) -> bytes:
+    """Return decoded write payload bytes, or empty bytes for non-writes."""
+    if op.get("op") != "write":
+        return b""
+    data = op.get("data")
+    if not isinstance(data, str):
+        return b""
+    return base64.b64decode(data)
+
+
+def unterminated_osc(data: bytes) -> bool:
+    """Return whether DATA appears to end inside an OSC sequence."""
+    start = data.rfind(b"\x1b]")
+    if start < 0:
+        return False
+    tail = data[start + 2 :]
+    return b"\x07" not in tail and b"\x1b\\" not in tail
+
+
+def bytes_feature_counts(data: bytes) -> collections.Counter[str]:
+    """Return semantic feature counts for one terminal write payload."""
+    counts: collections.Counter[str] = collections.Counter()
+    if not data:
+        return counts
+    if any(byte < 32 and byte != 27 for byte in data):
+        counts["control"] += 1
+    if data.startswith(b"\x1b") or b"\x1b[" in data or b"\x1b]" in data:
+        counts["escape"] += 1
+    if b"\x1b]" in data:
+        counts["osc"] += data.count(b"\x1b]")
+    for marker, name in [
+        (b"\x1b]7;", "osc7"),
+        (b"\x1b]8;", "osc8"),
+        (b"\x1b]52;", "osc52"),
+        (b"\x1b]133;", "osc133"),
+        (b"\x1b]633;", "osc633"),
+    ]:
+        if marker in data:
+            counts[name] += data.count(marker)
+    if b"\x1b[" in data and b"m" in data:
+        counts["sgr"] += data.count(b"m")
+    if b";5;" in data and b"m" in data:
+        counts["indexed_color"] += 1
+    if b";2;" in data and b"m" in data:
+        counts["truecolor"] += 1
+    if b"\x1b[?" in data and (b"h" in data or b"l" in data):
+        counts["dec_mode"] += data.count(b"\x1b[?")
+    if any(marker in data for marker in [b"?47", b"?1047", b"?1048", b"?1049"]):
+        counts["alt_or_cursor_save_mode"] += 1
+    if b"?1049h" in data and b"?1049l" in data:
+        counts["alt_screen_cycle"] += 1
+    if b"?25" in data:
+        counts["cursor_visibility"] += 1
+    if b"?2004" in data:
+        counts["bracketed_paste"] += 1
+    if b"?2026" in data:
+        counts["sync_output"] += 1
+    if b"\x1b[" in data and any(final in data for final in b"rs"):
+        counts["scroll_or_margin"] += 1
+    if b"\x1b[" in data and any(final in data for final in b"HfABCDEFG`adeIZ"):
+        counts["cursor_motion"] += 1
+    if b"\x1b[" in data and any(final in data for final in b"JK"):
+        counts["erase"] += 1
+    if b"\x1b[" in data and any(final in data for final in b"@PXLMS Tb".replace(b" ", b"")):
+        counts["edit_or_scroll"] += 1
+    if any(marker in data for marker in [b"\x1b7", b"\x1b8", b"\x1b[s", b"\x1b[u"]):
+        counts["save_restore"] += 1
+    if any(marker in data for marker in [b"\x1b(B", b"\x1b(0", b"\x0e", b"\x0f"]):
+        counts["charset"] += 1
+    if unterminated_osc(data) or data in {b"\x1b", b"\x1b[", b"\x1b[?", b"\x1b[38;2;"}:
+        counts["incomplete_escape"] += 1
+    try:
+        decoded = data.decode("utf-8")
+    except UnicodeDecodeError:
+        decoded = ""
+    if any(ord(ch) > 127 for ch in decoded):
+        counts["unicode"] += 1
+    if any(ch in decoded for ch in ["\u0301", "\u0308", "\ufe0f", "\ufe0e", "\u200d"]):
+        counts["unicode_edge"] += 1
+    if len(data) >= 4096:
+        counts["large_write"] += 1
+    return counts
 
 
 class RenderCase:
@@ -371,12 +860,14 @@ class RenderCase:
         write_count: int,
         redraw_count: int,
         resize_count: int,
+        feature_counts: collections.Counter[str],
     ) -> None:
         self.payload = payload
         self.total_bytes = total_bytes
         self.write_count = write_count
         self.redraw_count = redraw_count
         self.resize_count = resize_count
+        self.feature_counts = feature_counts
 
     @classmethod
     def from_payload(cls, payload: dict[str, object]) -> RenderCase:
@@ -394,7 +885,22 @@ class RenderCase:
             1 for op in ops if isinstance(op, dict) and op.get("op") == "resize"
         )
         total_bytes = sum(write_bytes(op) for op in ops if isinstance(op, dict))
-        return cls(payload, total_bytes, write_count, redraw_count, resize_count)
+        feature_counts: collections.Counter[str] = collections.Counter()
+        for op in ops:
+            if isinstance(op, dict):
+                feature_counts.update(bytes_feature_counts(write_data(op)))
+        if payload.get("scrollback") in {0, 1, 512, 4 * 1024}:
+            feature_counts["tiny_scrollback"] += 1
+        if payload.get("rows") in {1, 2} or payload.get("cols") in {1, 2}:
+            feature_counts["tiny_dimensions"] += 1
+        return cls(
+            payload,
+            total_bytes,
+            write_count,
+            redraw_count,
+            resize_count,
+            feature_counts,
+        )
 
     def __repr__(self) -> str:
         return (
@@ -406,7 +912,8 @@ class RenderCase:
             f"writes={self.write_count}, "
             f"resizes={self.resize_count}, "
             f"redraws={self.redraw_count}, "
-            f"bytes={self.total_bytes}"
+            f"bytes={self.total_bytes}, "
+            f"features={dict(self.feature_counts.most_common(8))}"
             ")"
         )
 
@@ -781,14 +1288,27 @@ class RenderConsistencyPropertyTest(unittest.TestCase):
         ops = case.payload["ops"]
         assert isinstance(ops, list)
 
-        target(case.total_bytes, label="input bytes")
-        target(case.write_count, label="write ops")
-        target(case.resize_count, label="resize ops")
-        target(case.redraw_count, label="redraw checkpoints")
+        target(min(case.total_bytes, 1024 * 1024), label="input bytes capped")
+        target(min(case.write_count, 50), label="write ops capped")
+        target(min(case.resize_count, 20), label="resize ops capped")
+        target(min(case.redraw_count, 15), label="redraw checkpoints capped")
+        target(min(sum(case.feature_counts.values()), 150), label="escape/state features capped")
+        target(min(case.feature_counts["dec_mode"], 12), label="DEC mode changes capped")
+        target(min(case.feature_counts["osc"], 8), label="OSC sequences capped")
+        target(
+            min(case.feature_counts["scroll_or_margin"], 10),
+            label="scroll/margin sequences capped",
+        )
+        target(
+            min(case.feature_counts["incomplete_escape"], 5),
+            label="fragmented/incomplete escapes capped",
+        )
         event(f"bytes={case.total_bytes.bit_length()} bits")
         event(f"writes={case.write_count}")
         event(f"resizes={case.resize_count}")
         event(f"redraws={case.redraw_count}")
+        for feature in sorted(case.feature_counts):
+            event(f"feature:{feature}")
         note(repr(case))
 
         assert_render_case_ok(
