@@ -5,8 +5,8 @@
     .fingerprint = 0x5a44bdd1198a0f4b,
     .dependencies = .{
         .ghostty = .{
-            .url = "https://github.com/ghostty-org/ghostty/archive/6246c288ae1087c8d67f75432a59da004b30bf25.tar.gz",
-            .hash = "ghostty-1.3.2-dev-5UdBC7zDFAUYSL6EmAqDQxvWQCma-1lZ9QTXws90lLV6",
+            .url = "https://github.com/ghostty-org/ghostty/archive/07d31666e73bce337b9cece60a884c67fe8906f4.tar.gz",
+            .hash = "ghostty-1.3.2-dev-5UdBC0njFgWhKuT1D5Cas4TqQnpeBuptGZ6Lz_rigcyS",
         },
     },
 }
