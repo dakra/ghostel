@@ -423,8 +423,28 @@ pub const RowContent = struct {
         col: i64,
         char_start: i64,
         char_end: i64,
+        text_start: usize,
+        text_end: usize,
         wide: bool,
-        metrics_key: GlyphMetricsCache.Key,
+        page_serial: u64,
+        style_id: StyleId,
+
+        fn precedingByte(self: *const @This(), buf: []const u8) ?u8 {
+            return if (self.text_start == 0) null else buf[self.text_start - 1];
+        }
+
+        fn followingByte(self: *const @This(), buf: []const u8) ?u8 {
+            // -1, excluding newline
+            return if (self.text_end < buf.len - 1) buf[self.text_end] else null;
+        }
+
+        fn metricsKey(self: *const @This(), buf: []const u8) GlyphMetricsCache.Key {
+            return .{
+                .page_serial = self.page_serial,
+                .style_id = self.style_id,
+                .utf8 = .{ .borrowed = buf[self.text_start..self.text_end] },
+            };
+        }
     };
 
     /// The UTF-8 text content of the row
@@ -501,12 +521,11 @@ pub const RowContent = struct {
                     .col = @intCast(col),
                     .char_start = @intCast(char_start),
                     .char_end = @intCast(self.char_len),
+                    .text_start = byte_start,
+                    .text_end = self.text.items.len,
                     .wide = raw_cell.wide == .wide,
-                    .metrics_key = .{
-                        .page_serial = row.pin.node.serial,
-                        .style_id = if (current_prop_key) |key| key.style_id else 0,
-                        .utf8 = .{ .borrowed = self.text.items[byte_start..self.text.items.len] },
-                    },
+                    .page_serial = row.pin.node.serial,
+                    .style_id = if (current_prop_key) |key| key.style_id else 0,
                 });
             }
 
@@ -567,7 +586,6 @@ fn adjustGlyphs(
     alloc: Allocator,
     env: emacs.Env,
     row_start: i64,
-    row_end: i64,
 ) !void {
     if (self.row.adjust_cells.items.len == 0) return;
     if (self.font_info == null) return;
@@ -575,7 +593,7 @@ fn adjustGlyphs(
     if (env.isNil(window)) return;
 
     for (self.row.adjust_cells.items) |*cell| {
-        try self.adjustGlyph(alloc, env, window, row_start, row_end, cell);
+        try self.adjustGlyph(alloc, env, window, row_start, cell);
     }
 }
 
@@ -585,7 +603,6 @@ fn adjustGlyph(
     env: emacs.Env,
     window: emacs.Value,
     row_start: i64,
-    row_end: i64,
     cell: *const RowContent.CellInfo,
 ) !void {
     const s = emacs.sym;
@@ -593,14 +610,7 @@ fn adjustGlyph(
 
     const start_val = env.makeInteger(row_start + @as(i64, @intCast(cell.char_start)));
     const end_val = env.makeInteger(row_start + @as(i64, @intCast(cell.char_end)));
-    const metrics = try self.getGlyphMetrics(
-        alloc,
-        env,
-        cell.metrics_key,
-        window,
-        start_val,
-        end_val,
-    ) orelse return;
+    const metrics = try self.getGlyphMetrics(alloc, env, window, row_start, cell) orelse return;
 
     // Skip adjustments if size already matches perfectly
     const native_char_width: i64 = if (cell.wide) 2 else 1;
@@ -609,7 +619,7 @@ fn adjustGlyph(
         metrics.ascent == default_font_info.ascent and
         metrics.descent == default_font_info.descent) return;
 
-    const char_width = self.adjustWidth(env, row_start, row_end, cell, metrics);
+    const char_width = self.adjustWidth(env, row_start, cell, metrics);
     const slot_width = default_font_info.width * char_width;
 
     // Height is clamped per side, not on the sum: the row realizes
@@ -649,7 +659,6 @@ fn adjustWidth(
     self: *Self,
     env: emacs.Env,
     row_start: i64,
-    row_end: i64,
     cell: *const RowContent.CellInfo,
     metrics: GlyphMetricsCache.Metrics,
 ) i64 {
@@ -678,44 +687,44 @@ fn adjustWidth(
         return 1;
     }
 
-    const claim_pos = row_start + cell.char_end;
-    if (claim_pos >= row_end - 1) {
-        // Next position is after end of line but within bounds,
-        // can claim freely
-        return 2;
+    // We don't let glyphs claim space unless it truly stands alone with space
+    // on both sides since otherwise it leads to visually inconsistent sizing.
+    const preceding = cell.precedingByte(self.row.text.items);
+    const following = cell.followingByte(self.row.text.items);
+    const empty_before = preceding == null or preceding.? == ' ';
+    const empty_after = following == null or following.? == ' ';
+    if (!empty_before or !empty_after) return 1;
+
+    // We can claim the space after, but if it's a space, we must first hide it.
+    if (following) |c| {
+        if (c == ' ') {
+            const claim_pos = row_start + cell.char_end;
+            _ = env.f("put-text-property", .{
+                claim_pos,
+                claim_pos + 1,
+                s.display,
+                env.cons(s.space, env.list(.{ s.@":width", 0 })),
+            });
+        }
     }
 
-    // Finally, check if we have a space after the character. If so hide it and
-    // then claim it.
-    const c = env.cast(i64, env.f("char-after", .{claim_pos}));
-    if (c == ' ') {
-        _ = env.f("put-text-property", .{
-            claim_pos,
-            claim_pos + 1,
-            s.display,
-            env.cons(s.space, env.list(.{ s.@":width", 0 })),
-        });
-        return 2;
-    }
-
-    return 1;
+    return 2;
 }
 
 fn getGlyphMetrics(
     self: *Self,
     alloc: Allocator,
     env: emacs.Env,
-    key: GlyphMetricsCache.Key,
     window: emacs.Value,
-    start_val: emacs.Value,
-    end_val: emacs.Value,
+    row_start: i64,
+    cell: *const RowContent.CellInfo,
 ) !?GlyphMetricsCache.Metrics {
-    const borrowed_key = key.borrowed(self.row.text.items);
+    const key = cell.metricsKey(self.row.text.items);
     if (self.font_info) |*fi| {
-        if (fi.metrics_cache.get(borrowed_key)) |metrics| return metrics;
+        if (fi.metrics_cache.get(key)) |metrics| return metrics;
     }
 
-    const gstring = findGlyphString(env, window, start_val, end_val) orelse {
+    const gstring = findGlyphString(env, window, row_start, cell) orelse {
         return null;
     };
     // gstring is:
@@ -749,7 +758,7 @@ fn getGlyphMetrics(
         .pixel_size = pixel_size,
     };
     if (self.font_info) |*fi| {
-        try fi.metrics_cache.put(alloc, borrowed_key, metrics);
+        try fi.metrics_cache.put(alloc, key, metrics);
     }
 
     return metrics;
@@ -758,9 +767,11 @@ fn getGlyphMetrics(
 fn findGlyphString(
     env: emacs.Env,
     window: emacs.Value,
-    start_val: emacs.Value,
-    end_val: emacs.Value,
+    row_start: i64,
+    cell: *const RowContent.CellInfo,
 ) ?emacs.Value {
+    const start_val = env.makeInteger(row_start + cell.char_start);
+    const end_val = env.makeInteger(row_start + cell.char_end);
     const composition = env.f("find-composition", .{ start_val, end_val, env.nil(), env.t() });
     if (env.isNotNil(composition)) {
         const gstring = env.f("nth", .{ 2, composition });
@@ -808,7 +819,7 @@ fn insertRow(
         }
     }
 
-    try self.adjustGlyphs(alloc, env, row_start, row_end);
+    try self.adjustGlyphs(alloc, env, row_start);
 
     if (row.raw.wrap) {
         // Mark newlines from soft-wrapped rows so copy mode can filter them

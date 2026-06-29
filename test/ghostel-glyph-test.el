@@ -114,6 +114,36 @@ SPECS is a plist with these keys:
 (defconst ghostel-test--default-font-info
   ["MockDefault" "mock.ttf" 12 120 10 10 10 10 0])
 
+(defun ghostel-test--display-min-width-at-point ()
+  "Return the display `min-width' at point."
+  (cadr (assq 'min-width (get-text-property (point) 'display))))
+
+(defmacro ghostel-test--with-oversized-icon-rendered (input &rest body)
+  "Render INPUT with ⏵ mocked as an oversized single-width icon, then run BODY."
+  (declare (indent 1))
+  `(let ((buf (generate-new-buffer " *ghostel-test-glyph-icon*")))
+     (unwind-protect
+         (save-window-excursion
+           (with-selected-window (display-buffer buf)
+             (ghostel-mode)
+             (let* ((term (ghostel--new 5 80 1000))
+                    (ghostel--term term)
+                    (ghostel--term-rows 5)
+                    (inhibit-read-only t)
+                    (df (ghostel-test--make-font ghostel-test--default-font-info))
+                    ;; Wide enough to want a second cell when the icon is standalone.
+                    (glyph-font (ghostel-test--make-font
+                                 ["MockIcon" "mock.ttf" 12 120 5 5 25 25 0]
+                                 [[0 1 ?⏵ 0 25 0 0 5 5 0]])))
+               (ghostel--write-vt term ,input)
+               (ghostel-test--with-glyph-mocks
+                (:default-font df
+                               :glyph-font glyph-font)
+                (ghostel--redraw term t)
+                (goto-char (point-min))
+                ,@body))))
+       (kill-buffer buf))))
+
 (ert-deftest ghostel-test-query-font-cached-reuses-font-info ()
   "`ghostel--query-font-cached' reuses metrics inside one redraw cache."
   (let ((font (list 'mock-font))
@@ -385,66 +415,58 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
                (should-not (get-text-property (point) 'display))))))
       (kill-buffer buf))))
 
-(ert-deftest ghostel-test-glyph-adjust-claims-following-space ()
-  "An oversized single-width glyph claims an adjacent space as :width 0."
+(ert-deftest ghostel-test-glyph-adjust-standalone-icon-at-bol-claims-following-space ()
+  "A standalone icon at BOL claims a following blank cell."
   :tags '(native)
-  (let ((buf (generate-new-buffer " *ghostel-test-glyph-4*")))
-    (unwind-protect
-        (save-window-excursion
-          (with-selected-window (display-buffer buf)
-            (ghostel-mode)
-            (let* ((term (ghostel--new 5 80 1000))
-                   (ghostel--term term)
-                   (ghostel--term-rows 5)
-                   (inhibit-read-only t)
-                   (df (ghostel-test--make-font ghostel-test--default-font-info))
-                   ;; Glyph: 12px wide x 20px tall \u2014 wider than 10px cell but aspect
-                   ;; ratio 0.6 < 1.0, so one claimed space (2 cells) is sufficient.
-                   (glyph-font (ghostel-test--make-font
-                                ["MockGlyph" "mock.ttf" 12 120 10 10 12 12 0]
-                                [[0 1 ?\u0100 0 12 0 0 10 10 0]])))
-              ;; Write: [oversized glyph][space]
-              (ghostel--write-vt term "\u0100 ")
-              (ghostel-test--with-glyph-mocks
-               (:default-font df
-                              :glyph-font glyph-font)
-               (ghostel--redraw term t)
-               (goto-char (point-min))
-               (let ((glyph-disp (get-text-property (point) 'display)))
-                 (should (assq 'min-width glyph-disp))
-                 (should (equal (cadr (assq 'min-width glyph-disp)) '(2))))
-               (forward-char 1)
-               (should (equal (get-text-property (point) 'display) '(space :width 0)))))))
-      (kill-buffer buf))))
+  (ghostel-test--with-oversized-icon-rendered "⏵ x"
+    (should (equal (char-after) ?⏵))
+    (should (equal (ghostel-test--display-min-width-at-point) '(2)))
+    (forward-char 1)
+    (should (equal (char-after) ?\s))
+    (should (equal (get-text-property (point) 'display) '(space :width 0)))))
 
-(ert-deftest ghostel-test-glyph-adjust-claims-past-eol ()
-  "An oversized single-width glyph claims at most one trailing cell."
+(ert-deftest ghostel-test-glyph-adjust-standalone-icon-after-space-claims-following-space ()
+  "A standalone icon after a space claims a following blank cell."
   :tags '(native)
-  (let ((buf (generate-new-buffer " *ghostel-test-glyph-5*")))
-    (unwind-protect
-        (save-window-excursion
-          (with-selected-window (display-buffer buf)
-            (ghostel-mode)
-            (let* ((term (ghostel--new 5 80 1000))
-                   (ghostel--term term)
-                   (ghostel--term-rows 5)
-                   (inhibit-read-only t)
-                   (df (ghostel-test--make-font ghostel-test--default-font-info))
-                   ;; Glyph: 25px wide x 10px tall (would need >2 cells).
-                   (glyph-font (ghostel-test--make-font
-                                ["MockGlyph" "mock.ttf" 12 120 5 5 25 25 0]
-                                [[0 1 ?\u0100 0 25 0 0 5 5 0]])))
-              (ghostel--write-vt term "\u0100")
-              (ghostel-test--with-glyph-mocks
-               (:default-font df
-                              :glyph-font glyph-font)
-               (ghostel--redraw term t)
-               (goto-char (point-min))
-               (let ((disp (get-text-property (point) 'display)))
-                 (should disp)
-                 (let ((min-w (cadr (assq 'min-width disp))))
-                   (should (equal min-w '(2)))))))))
-      (kill-buffer buf))))
+  (ghostel-test--with-oversized-icon-rendered " ⏵ x"
+    (should (equal (char-after) ?\s))
+    (should-not (get-text-property (point) 'display))
+    (forward-char 1)
+    (should (equal (char-after) ?⏵))
+    (should (equal (ghostel-test--display-min-width-at-point) '(2)))
+    (forward-char 1)
+    (should (equal (char-after) ?\s))
+    (should (equal (get-text-property (point) 'display) '(space :width 0)))))
+
+(ert-deftest ghostel-test-glyph-adjust-standalone-icon-claims-trailing-cell ()
+  "A standalone icon can claim the implicit trailing blank cell."
+  :tags '(native)
+  (ghostel-test--with-oversized-icon-rendered "⏵"
+    (should (equal (char-after) ?⏵))
+    (should (equal (ghostel-test--display-min-width-at-point) '(2)))))
+
+(ert-deftest ghostel-test-glyph-adjust-adjacent-icons-do-not-claim-trailing-cell ()
+  "Adjacent icons stay one cell wide, including the icon at EOL."
+  :tags '(native)
+  (ghostel-test--with-oversized-icon-rendered "⏵⏵"
+    (should (equal (char-after) ?⏵))
+    (should (equal (ghostel-test--display-min-width-at-point) '(1)))
+    (forward-char 1)
+    (should (equal (char-after) ?⏵))
+    (should (equal (ghostel-test--display-min-width-at-point) '(1)))))
+
+(ert-deftest ghostel-test-glyph-adjust-adjacent-icons-do-not-claim-following-space ()
+  "An icon in an adjacent run does not claim a following blank cell."
+  :tags '(native)
+  (ghostel-test--with-oversized-icon-rendered "⏵⏵ x"
+    (should (equal (char-after) ?⏵))
+    (should (equal (ghostel-test--display-min-width-at-point) '(1)))
+    (forward-char 1)
+    (should (equal (char-after) ?⏵))
+    (should (equal (ghostel-test--display-min-width-at-point) '(1)))
+    (forward-char 1)
+    (should (equal (char-after) ?\s))
+    (should-not (get-text-property (point) 'display))))
 
 (ert-deftest ghostel-test-glyph-adjust-last-column-no-claim ()
   "A glyph at the last column does not claim out-of-bounds space."
