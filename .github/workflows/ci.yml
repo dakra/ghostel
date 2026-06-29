@@ -164,6 +164,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Select Xcode 26.3 for Zig 0.15.2
+        if: runner.os == 'macOS'
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-path
+
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
