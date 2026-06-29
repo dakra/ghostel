@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+env:
+  NIX_EMACS_CI_REF: 868482a78575138aebb1b5c16a9266b95c800f2e
+
 jobs:
   byte-compile:
     runs-on: ubuntu-latest
@@ -17,9 +23,14 @@ jobs:
           - 'snapshot'
     steps:
       - uses: actions/checkout@v4
-      - uses: purcell/setup-emacs@master
+      - uses: cachix/install-nix-action@v31
         with:
-          version: ${{ matrix.emacs_version }}
+          github_access_token: ${{ github.token }}
+
+      - name: Install pinned Emacs
+        env:
+          EMACS_VERSION: ${{ matrix.emacs_version }}
+        run: bash .github/scripts/install-emacs.sh
 
       - name: Install compat
         run: git clone --depth 1 https://github.com/emacs-compat/compat.git /tmp/compat
@@ -34,9 +45,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: purcell/setup-emacs@master
+      - uses: cachix/install-nix-action@v31
         with:
-          version: '29.4'
+          github_access_token: ${{ github.token }}
+
+      - name: Install pinned Emacs
+        env:
+          EMACS_VERSION: '29.4'
+        run: bash .github/scripts/install-emacs.sh
 
       - name: Run package-lint, checkdoc, docquotes
         # `make package-lint' self-provisions its deps (package-lint +
@@ -67,9 +83,14 @@ jobs:
           - 'snapshot'
     steps:
       - uses: actions/checkout@v4
-      - uses: purcell/setup-emacs@master
+      - uses: cachix/install-nix-action@v31
         with:
-          version: ${{ matrix.emacs_version }}
+          github_access_token: ${{ github.token }}
+
+      - name: Install pinned Emacs
+        env:
+          EMACS_VERSION: ${{ matrix.emacs_version }}
+        run: bash .github/scripts/install-emacs.sh
 
       - name: Install fish
         run: sudo apt-get install -y fish
@@ -93,9 +114,14 @@ jobs:
           - 'snapshot'
     steps:
       - uses: actions/checkout@v4
-      - uses: purcell/setup-emacs@master
+      - uses: cachix/install-nix-action@v31
         with:
-          version: ${{ matrix.emacs_version }}
+          github_access_token: ${{ github.token }}
+
+      - name: Install pinned Emacs
+        env:
+          EMACS_VERSION: ${{ matrix.emacs_version }}
+        run: bash .github/scripts/install-emacs.sh
 
       - name: Install evil
         run: |
@@ -119,10 +145,10 @@ jobs:
           - os: ubuntu-latest
             platform: x86_64-linux
             suffix: .so
-          - os: macos-latest
+          - os: macos-26
             platform: aarch64-macos
             suffix: .dylib
-          - os: macos-latest
+          - os: macos-26
             platform: x86_64-macos
             suffix: .dylib
             target: x86_64-macos
@@ -142,6 +168,7 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          cache-key: ${{ matrix.platform }}-zig-0.15.2
 
       - name: Build native module
         run: |
@@ -173,20 +200,25 @@ jobs:
             platform: x86_64-linux
             suffix: .so
             emacs_version: 'snapshot'
-          - os: macos-latest
+          - os: macos-26
             platform: aarch64-macos
             suffix: .dylib
             emacs_version: '29.4'
-          - os: macos-latest
+          - os: macos-26
             platform: aarch64-macos
             suffix: .dylib
             emacs_version: 'snapshot'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: purcell/setup-emacs@master
+      - uses: cachix/install-nix-action@v31
         with:
-          version: ${{ matrix.emacs_version }}
+          github_access_token: ${{ github.token }}
+
+      - name: Install pinned Emacs
+        env:
+          EMACS_VERSION: ${{ matrix.emacs_version }}
+        run: bash .github/scripts/install-emacs.sh
 
       - name: Install zsh and fish
         if: runner.os == 'Linux'
@@ -218,9 +250,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: purcell/setup-emacs@master
+      - uses: cachix/install-nix-action@v31
         with:
-          version: '29.4'
+          github_access_token: ${{ github.token }}
+
+      - name: Install pinned Emacs
+        env:
+          EMACS_VERSION: '29.4'
+        run: bash .github/scripts/install-emacs.sh
 
       - name: Download native module
         uses: actions/download-artifact@v4
