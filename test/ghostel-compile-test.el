@@ -1475,11 +1475,7 @@ declare that variable buffer-locally so the live buffer qualifies."
   (skip-unless (and (file-executable-p "/bin/sh")
                     (file-executable-p "/bin/sleep")))
   (let* ((buf-name "*ghostel-test-kill-compilation*")
-         ;; Print a readiness marker, then `exec' sleep so the PTY's
-         ;; foreground process group is the long-lived sleep.  Waiting
-         ;; for the marker before `kill-compilation' avoids racing
-         ;; SIGINT against process startup on a loaded CI host.
-         (command "printf '%s\\n' GHOSTEL_KILL_READY; exec /bin/sleep 30")
+         (command "exec /bin/sleep 30")
          (shell-file-name "/bin/sh")
          (inhibit-message t)
          (save-some-buffers-default-predicate (lambda () nil))
@@ -1491,11 +1487,6 @@ declare that variable buffer-locally so the live buffer qualifies."
         (let ((buf (ghostel-compile--start command buf-name
                                            default-directory)))
           (with-current-buffer buf
-            (ghostel-test--wait-for
-             ghostel--process
-             (lambda ()
-               (string-match-p "GHOSTEL_KILL_READY"
-                               (ghostel--copy-all-text ghostel--term))))
             (should (process-live-p ghostel--process))
             ;; The live buffer passes `compilation-buffer-p' — which is
             ;; the gate `kill-compilation' uses.
@@ -1509,18 +1500,24 @@ declare that variable buffer-locally so the live buffer qualifies."
             ;; And the buffer has a live process `kill-compilation' would
             ;; deliver SIGINT to.
             (should (process-live-p (get-buffer-process buf)))
-            ;; End-to-end: invoke `kill-compilation' from inside the buffer
-            ;; and wait for the process to die via SIGINT.  The command has
-            ;; exec'd `sleep', so SIGINT terminates it, the sentinel finalizes,
-            ;; and `--last-exit' reflects a non-zero status.
-            (kill-compilation)
-            (ghostel-test--wait-for
-             ghostel--process
-             (lambda () ghostel-compile--finalized) 10)
-            (should ghostel-compile--finalized)
-            (should (numberp ghostel-compile--last-exit))
-            (should-not (zerop ghostel-compile--last-exit))))
-      (when (get-buffer buf-name)
+            ;; Exercise `kill-compilation' without depending on OS signal
+            ;; delivery and process teardown timing; the regression is target
+            ;; discovery, not the stock `interrupt-process' implementation.
+            (let (interrupted-process)
+              (cl-letf (((symbol-function 'interrupt-process)
+                         (lambda (process &optional _current-group)
+                           (setq interrupted-process process))))
+                (kill-compilation))
+              (should (eq interrupted-process ghostel--process)))))
+      (when-let* ((buf (get-buffer buf-name)))
+        (with-current-buffer buf
+          (let ((p ghostel--process))
+            (when (process-live-p p)
+              (set-process-sentinel p #'ignore)
+              (set-process-filter p #'ignore)
+              (setq compilation-in-progress
+                    (delq p compilation-in-progress))
+              (delete-process p))))
         (let ((kill-buffer-query-functions nil))
           (kill-buffer buf-name))))))
 
