@@ -491,7 +491,8 @@ former defaulted to t and throttled bursty TUI redraws."
   "The Emacs PTY path enables input echo before PROGRAM reads."
   :tags '(native)
   (skip-unless (file-executable-p "/bin/sh"))
-  (let ((ghostel-use-native-pty nil))
+  (let ((ghostel-use-native-pty nil)
+        (ghostel-kill-buffer-on-exit nil))
     (ghostel-test--with-terminal-buffer (buf term 8 80 200)
       (let ((proc (ghostel--spawn-pty
                    "/bin/sh"
