@@ -53,7 +53,6 @@ After all ops, a final incremental redraw is compared with a full redraw."
                  (ghostel--term-cols cols)
                  (ghostel-enable-url-detection nil)
                  (ghostel-enable-file-detection nil)
-                 (ghostel-full-redraw nil)
                  (inhibit-read-only t))
             (dotimes (i (length ops))
               (let* ((op (aref ops i))

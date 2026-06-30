@@ -338,12 +338,6 @@ Output arriving within this interval of a `ghostel--send-string'
 call is considered interactive echo and redrawn immediately."
   :type 'number)
 
-(defcustom ghostel-full-redraw nil
-  "When non-nil, always perform full redraws instead of incremental updates.
-Full redraws are more robust with TUI apps like Claude Code that do
-aggressive partial screen updates, but may use more CPU."
-  :type 'boolean)
-
 (defcustom ghostel-buffer-name "*ghostel*"
   "Default buffer name for ghostel terminals."
   :type 'string)
@@ -4699,7 +4693,10 @@ opportunistic output redraws that may safely wait for the frame to end."
                                            (* gc-cons-threshold 3)))
                    (ghostel--query-font-cache (make-hash-table :test 'eq)))
               (with-selected-window render-win
-                (ghostel--redraw ghostel--term ghostel-full-redraw))
+                ;; Line mode snapshots editable input out of the buffer;
+                ;; redraw fully so the prompt row is always rebuilt
+                ;; before restoring input at its fresh marker position.
+                (ghostel--redraw ghostel--term (eq ghostel--input-mode 'line)))
               (ghostel--apply-cursor-style)
 
               (dolist (win anchored) (ghostel--anchor-window win))

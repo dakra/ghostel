@@ -1211,7 +1211,6 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 | =ghostel-timer-delay=               | =0.033=   | Base redraw delay in seconds (~30 fps).                                                                                              |
 | =ghostel-adaptive-fps=              | =t=       | Adaptive frame rate (shorter delay after idle, stop timer when idle).                                                                |
 | =ghostel-immediate-redraw-interval= | =0.05=    | Max seconds since last keystroke for immediate redraw.                                                                               |
-| =ghostel-full-redraw=               | =nil=     | Always do full redraws instead of incremental updates.                                                                               |
 | =ghostel-inhibit-redraw-functions=  | =nil=     | Abnormal hook (each fn called with the buffer); if any returns non-nil the redraw is deferred.  Used by add-ons such as =ghostel-ime=. |
 | =ghostel-cell-pixel-scale=          | =auto=    | Physical:logical pixel ratio for cell-size reporting (=auto= derives from DPI).                                                        |
 | =ghostel-glyph-scale-floor=         | =0.0=     | Minimum scale for glyphs that don't fit the cell (=0.0= preserves grid alignment; =1.0= renders CJK at natural size).                    |

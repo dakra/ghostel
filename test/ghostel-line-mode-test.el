@@ -1663,36 +1663,6 @@ running through a redraw cycle."
                                       (buffer-string))))))
       (kill-buffer buf))))
 
-(ert-deftest ghostel-test-line-mode-saves-restores-full-redraw ()
-  "Entering line mode forces full redraws; teardown restores the prior setting."
-  (let ((buf (generate-new-buffer " *ghostel-test-line-fullredraw*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (ghostel-mode)
-          (ghostel-test--insert-rendered (propertize "$ " 'ghostel-prompt t))
-          (let ((ghostel--term 'fake)
-                (ghostel--process 'fake-proc)
-                (ghostel-full-redraw nil))
-            (cl-letf (((symbol-function 'ghostel--mode-enabled)
-                       (lambda (&rest _) nil))
-                      ((symbol-function 'ghostel--redraw) #'ignore)
-                      ((symbol-function 'ghostel--invalidate) #'ignore)
-                      ((symbol-function 'ghostel--anchor-window) #'ignore))
-              ;; Was nil, no buffer-local override.
-              (should-not (local-variable-p 'ghostel-full-redraw))
-              (ghostel-line-mode)
-              ;; Entry sets buffer-local override to t.
-              (should (local-variable-p 'ghostel-full-redraw))
-              (should (eq ghostel-full-redraw t))
-              ;; Saved-state cons records "was not buffer-local".
-              (should (equal ghostel--line-mode-saved-full-redraw
-                             '(nil . nil)))
-              (ghostel-semi-char-mode)
-              ;; Teardown killed the buffer-local override.
-              (should-not (local-variable-p 'ghostel-full-redraw))
-              (should-not ghostel--line-mode-saved-full-redraw))))
-      (kill-buffer buf))))
-
 (ert-deftest ghostel-test-line-mode-restores-cursor-when-terminal-hid-it ()
   "Line mode shows the editor's cursor regardless of CSI ?25l from the TUI.
 Entering line mode forces the editor default; teardown restores the saved value."
@@ -1926,8 +1896,7 @@ must clear that sentinel, otherwise the alt-screen-off `post-redraw'
 would call
 `ghostel--line-mode-try-resume' on top of the already-active line
 mode — re-running `ghostel--line-mode-enter', wiping the user's
-typed input (it restores the empty armed snapshot) and clobbering
-the saved `ghostel-full-redraw' state captured on first entry."
+typed input (it restores the empty armed snapshot)."
   (let ((buf (generate-new-buffer " *ghostel-test-line-force-after-arm*"))
         (alt-on t))
     (unwind-protect
@@ -1952,9 +1921,6 @@ the saved `ghostel-full-redraw' state captured on first entry."
               (should (eq ghostel--input-mode 'line))
               ;; The fix: the real entry cleared the stale sentinel.
               (should-not ghostel--line-mode-paused)
-              ;; Capture the saved redraw state so we can detect a
-              ;; second entry re-capturing it from modified values.
-              (should-not (car ghostel--line-mode-saved-full-redraw))
               ;; User types a command in line mode.
               (goto-char (point-max))
               (insert "ls -la")
@@ -1966,8 +1932,7 @@ the saved `ghostel-full-redraw' state captured on first entry."
               ;; Still in line mode, input intact, no double-enter.
               (should (eq ghostel--input-mode 'line))
               (should (equal (ghostel--line-mode-input-text) "ls -la"))
-              (should-not ghostel--line-mode-paused)
-              (should-not (car ghostel--line-mode-saved-full-redraw)))))
+              (should-not ghostel--line-mode-paused))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-line-mode-alt-exit-clears-flag-so-primary-tui-pauses ()

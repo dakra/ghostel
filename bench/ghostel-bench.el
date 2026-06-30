@@ -721,7 +721,7 @@ terminal engine with periodic redraws, all in a tight loop."
                  (setq offset end)
                  (cl-incf chunk-count)
                  (when (zerop (% chunk-count redraw-every))
-                   (ghostel--redraw term ghostel-full-redraw)))))))))
+                   (ghostel--redraw term nil)))))))))
     ;; vterm
     (when ghostel-bench-include-vterm
       (ghostel-bench--with-bench-buffer
