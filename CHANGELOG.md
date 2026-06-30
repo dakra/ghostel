@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- `ghostel-keymap-exceptions` now honors `C-g`: adding `"C-g"` to the list leaves
+  it unbound in ghostel so it falls through to your global binding (e.g.
+  `keyboard-quit`) instead of forwarding `BEL` to the terminal.
+  Fixes [#489](https://github.com/dakra/ghostel/issues/489).
+
 ## [0.39.0] — 2026-06-26
 
 ### Added

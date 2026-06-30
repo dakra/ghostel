@@ -1188,8 +1188,7 @@ When NO-EXCEPTIONS is non-nil, also bind the keys in
   ;; Control keys - bind all C-<letter> to send ASCII control codes.
   ;; C-i = TAB and C-m = RET are equivalent to <tab>/<return> (bound above).
   ;; C-y is reserved for ghostel-yank in semi-char mode.
-  ;; C-g is always handled by `ghostel-send-C-g' so the mark and
-  ;; `quit-flag' are cleared in addition to forwarding BEL.
+  ;; C-g is bound separately via `ghostel--rebuild-semi-char-keymap'.
   (let ((skip (if no-exceptions '(?i ?m ?g) '(?i ?m ?y ?g))))
     (dolist (c (number-sequence ?a ?z))
       (let ((key-str (format "C-%c" c)))
@@ -1261,7 +1260,6 @@ Input modes (`ghostel-semi-char-mode-map', `ghostel-char-mode-map',
   "C-c C-z"          #'ghostel-send-C-z
   "C-c C-\\"         #'ghostel-send-C-backslash
   "C-c C-d"          #'ghostel-send-C-d
-  "C-g"              #'ghostel-send-C-g
   "C-c C-t"          #'ghostel-copy-mode
   "C-c M-w"          #'ghostel-copy-all
   "C-c C-y"          #'ghostel-paste
@@ -1343,7 +1341,11 @@ reference to it picks up the new bindings."
       "S-<insert>"     #'ghostel-yank
       "<remap> <yank>" #'ghostel-yank
       "M-y"            #'ghostel-yank-pop)
-    (setcdr ghostel-semi-char-mode-map (cdr fresh))))
+    (setcdr ghostel-semi-char-mode-map (cdr fresh)))
+  ;; C-g honors the exception list: bound to nil (unbound) when excepted.
+  (define-key ghostel-mode-map (kbd "C-g")
+              (unless (member "C-g" ghostel-keymap-exceptions)
+                #'ghostel-send-C-g)))
 
 (ghostel--rebuild-semi-char-keymap)
 

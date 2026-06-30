@@ -669,6 +669,34 @@ regardless of exceptions."
                       #'ghostel--send-event)))
       (customize-set-variable 'ghostel-keymap-exceptions orig))))
 
+(ert-deftest ghostel-test-c-g-exception-unbinds ()
+  "Adding \\`C-g' to the exceptions leaves it unbound so it falls through.
+The base-map binding is dropped (resolves to nil), so Emacs's
+global \\`C-g' takes over.  Char mode and read-only fast-exit bind
+\\`C-g' themselves and stay put (regression for issue #489)."
+  (let ((orig (default-value 'ghostel-keymap-exceptions)))
+    (unwind-protect
+        (progn
+          ;; Baseline: C-g routes through the send handler.
+          (should (eq (lookup-key ghostel-mode-map (kbd "C-g"))
+                      #'ghostel-send-C-g))
+          (customize-set-variable 'ghostel-keymap-exceptions
+                                  (cons "C-g" orig))
+          ;; Excepted: unbound in the base map and through semi-char,
+          ;; so C-g falls through to the global binding.
+          (should-not (lookup-key ghostel-mode-map (kbd "C-g")))
+          (should-not (lookup-key ghostel-semi-char-mode-map (kbd "C-g")))
+          ;; Modes with their own C-g are unaffected.
+          (should (eq (lookup-key ghostel-char-mode-map (kbd "C-g"))
+                      #'ghostel-send-C-g))
+          (should (eq (lookup-key ghostel-readonly-fast-exit-mode-map
+                                  (kbd "C-g"))
+                      #'ghostel-readonly-exit)))
+      (customize-set-variable 'ghostel-keymap-exceptions orig))
+    ;; Restored: C-g is bound again.
+    (should (eq (lookup-key ghostel-mode-map (kbd "C-g"))
+                #'ghostel-send-C-g))))
+
 (ert-deftest ghostel-test-keymap-rebuild-preserves-object-identity ()
   "Rebuilding mutates `ghostel-semi-char-mode-map' in place.
 Buffer-local references to the keymap need `eq'-identity to
