@@ -10,6 +10,8 @@ EMACS="${EMACS:-emacs}"
 MODE="all"
 SIZE=""
 ITERS=""
+MIN_DURATION=""
+CASE=""
 INCLUDE_VTERM="t"
 INCLUDE_EAT="t"
 INCLUDE_TERM="t"
@@ -52,6 +54,8 @@ Options:
                    with --quick, --size, --iterations)
   --typing         Run only the typing-latency comparison (native vs Emacs
                    PTY); --quick uses fewer keystrokes
+  --case CASE      Run exactly one benchmark case, e.g.
+                   backend/plain/native or e2e/urls/ghostel
   --no-vterm       Skip vterm benchmarks
   --no-eat         Skip eat benchmarks
   --no-term        Skip Emacs built-in term benchmarks
@@ -59,6 +63,7 @@ Options:
   --output FILE    Tee output to FILE
   --size N         Data size in bytes (default: 1048576)
   --iterations N   Override iteration count (default: 5)
+  --min-duration S Target at least S seconds for auto-scaled fast cases
   --vterm-dir DIR  Path to vterm package directory
   --eat-dir DIR    Path to eat package directory
   -h, --help       Show this help
@@ -70,6 +75,8 @@ Examples:
   $(basename "$0") --quick --e2e  # Quick end-to-end-only run
   $(basename "$0") --backends     # Only native-vs-Emacs PTY comparison
   $(basename "$0") --typing       # Only typing-latency comparison
+  $(basename "$0") --case backend/plain/native
+  $(basename "$0") --case tui-partial/ghostel-incr/40x120
   $(basename "$0") --ghostty      # Include ghostty comparison data
 EOF
     exit 0
@@ -82,6 +89,7 @@ while [[ $# -gt 0 ]]; do
         --e2e)        SECTION="e2e"; shift ;;
         --backends)   SECTION="backends"; shift ;;
         --typing)     SECTION="typing"; shift ;;
+        --case)       if [ $# -lt 2 ]; then echo "ERROR: --case requires an argument" >&2; exit 1; fi; CASE="$2"; shift 2 ;;
         --no-vterm)   INCLUDE_VTERM="nil"; shift ;;
         --no-eat)     INCLUDE_EAT="nil"; shift ;;
         --no-term)    INCLUDE_TERM="nil"; shift ;;
@@ -89,12 +97,18 @@ while [[ $# -gt 0 ]]; do
         --output)     OUTPUT="$2"; shift 2 ;;
         --size)       SIZE="$2"; shift 2 ;;
         --iterations) ITERS="$2"; shift 2 ;;
+        --min-duration) MIN_DURATION="$2"; shift 2 ;;
         --vterm-dir)  VTERM_DIR="$2"; shift 2 ;;
         --eat-dir)    EAT_DIR="$2"; shift 2 ;;
         -h|--help)    usage ;;
         *)            echo "Unknown option: $1"; usage ;;
     esac
 done
+
+if [ -n "$CASE" ] && [[ ! "$CASE" =~ ^[A-Za-z0-9_./-]+$ ]]; then
+    echo "ERROR: invalid benchmark case syntax: $CASE" >&2
+    exit 1
+fi
 
 # Verify ghostel module exists
 MODULE=""
@@ -139,10 +153,16 @@ LOAD_PATH="-L $GHOSTEL_DIR/lisp"
 EVAL="(progn"
 [ -n "$SIZE" ] && EVAL="$EVAL (setq ghostel-bench-data-size $SIZE)"
 [ -n "$ITERS" ] && EVAL="$EVAL (setq ghostel-bench-iterations $ITERS)"
+[ -n "$MIN_DURATION" ] && EVAL="$EVAL (setq ghostel-bench-min-duration $MIN_DURATION)"
 EVAL="$EVAL (setq ghostel-bench-include-vterm $INCLUDE_VTERM)"
 EVAL="$EVAL (setq ghostel-bench-include-eat $INCLUDE_EAT)"
 EVAL="$EVAL (setq ghostel-bench-include-term $INCLUDE_TERM)"
-if [ "$SECTION" = "e2e" ]; then
+if [ -n "$CASE" ]; then
+    if [ "$MODE" = "quick" ]; then
+        EVAL="$EVAL (setq ghostel-bench-data-size (* 100 1024) ghostel-bench-iterations 2 ghostel-bench-typing-count 50)"
+    fi
+    EVAL="$EVAL (ghostel-bench-run-one \"$CASE\"))"
+elif [ "$SECTION" = "e2e" ]; then
     if [ "$MODE" = "quick" ]; then
         EVAL="$EVAL (setq ghostel-bench-data-size (* 100 1024) ghostel-bench-iterations 2)"
     fi

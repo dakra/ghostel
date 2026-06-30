@@ -61,12 +61,29 @@ Always available since term is built into Emacs.")
 (defvar ghostel-bench-chunk-size 4096
   "Chunk size for streaming benchmarks.")
 
+(defvar ghostel-bench-force-gui-redisplay nil
+  "When non-nil, force Emacs redisplay after each measured iteration.
+This is intended for GUI profiling runs where the trace should include
+window redisplay/font/rendering work, not only terminal parsing and buffer
+mutation.")
+
+(defvar ghostel-bench-min-duration 0.5
+  "Minimum target duration in seconds for very fast benchmark cases.
+When the warmup trial shows a case is too fast to time reliably,
+`ghostel-bench--measure' raises the iteration count to target at least
+this many seconds.  Explicit `ghostel-bench-iterations' remains a floor.")
+
 ;; ---------------------------------------------------------------------------
 ;; Results accumulator
 ;; ---------------------------------------------------------------------------
 
 (defvar ghostel-bench--results nil
   "List of result plists from benchmark runs.")
+
+(defun ghostel-bench--maybe-redisplay ()
+  "Force redisplay when `ghostel-bench-force-gui-redisplay' is non-nil."
+  (when ghostel-bench-force-gui-redisplay
+    (redisplay t)))
 
 ;; ---------------------------------------------------------------------------
 ;; Data generators
@@ -216,22 +233,34 @@ Automatically increases iterations if the operation is too fast
 for reliable measurement."
   (garbage-collect)
   (funcall body-fn)  ; warm up
+  (ghostel-bench--maybe-redisplay)
   (garbage-collect)
   (let ((actual-iters iterations))
-    ;; Auto-scale fast operations
-    (let ((trial-start (float-time)))
-      (dotimes (_ (min 3 iterations))
-        (funcall body-fn))
+    ;; Auto-scale fast operations.
+    (let* ((trial-iters (min 3 iterations))
+           (trial-start (float-time)))
+      (dotimes (_ trial-iters)
+        (funcall body-fn)
+        (ghostel-bench--maybe-redisplay))
       (let ((trial-time (- (float-time) trial-start)))
-        (when (< trial-time 0.01)
-          (setq actual-iters (max iterations
-                                  (* 10 (ceiling (/ 0.5 (max trial-time 1e-6)))))))))
+        (when (< trial-time ghostel-bench-min-duration)
+          (setq actual-iters
+                (max iterations
+                     (ceiling (/ (* ghostel-bench-min-duration trial-iters)
+                                 (max trial-time 1e-6))))))))
     (garbage-collect)
-    (let ((start (float-time)))
-      (dotimes (_ actual-iters)
-        (funcall body-fn))
-      (let* ((elapsed (- (float-time) start))
-             (per-iter (/ elapsed actual-iters))
+    (let ((start (float-time))
+          (done-iters 0)
+          (elapsed 0.0))
+      (while (or (< done-iters actual-iters)
+                 (and (> ghostel-bench-min-duration 0)
+                      (< elapsed ghostel-bench-min-duration)))
+        (funcall body-fn)
+        (ghostel-bench--maybe-redisplay)
+        (cl-incf done-iters)
+        (setq elapsed (- (float-time) start)))
+      (setq actual-iters done-iters)
+      (let* ((per-iter (/ elapsed actual-iters))
              (throughput (if (> elapsed 0)
                              (/ (* data-size actual-iters) elapsed (expt 1024.0 2))
                            0.0))
@@ -1228,6 +1257,210 @@ backend-include flags do not apply."
   (ghostel-bench--print-header)
   (ghostel-bench--run-backend-scenarios)
   (ghostel-bench--print-summary))
+
+(defconst ghostel-bench-cases
+  '("backend/plain/native"
+    "backend/plain/emacs"
+    "backend/mixed/native"
+    "backend/mixed/emacs"
+    "tui-frame/ghostel-incr/24x80"
+    "tui-frame/ghostel-full/24x80"
+    "tui-frame/ghostel-incr/40x120"
+    "tui-frame/ghostel-full/40x120"
+    "tui-partial/ghostel-incr/24x80"
+    "tui-partial/ghostel-full/24x80"
+    "tui-partial/ghostel-incr/40x120"
+    "tui-partial/ghostel-full/40x120"
+    "e2e/plain/ghostel"
+    "e2e/plain/ghostel-nodetect"
+    "e2e/plain/vterm"
+    "e2e/plain/eat"
+    "e2e/plain/term"
+    "e2e/urls/ghostel"
+    "e2e/urls/ghostel-nodetect"
+    "e2e/urls/vterm"
+    "e2e/urls/eat"
+    "e2e/urls/term"
+    "e2e/mixed/ghostel"
+    "e2e/mixed/ghostel-nodetect"
+    "e2e/mixed/vterm"
+    "e2e/mixed/eat"
+    "e2e/mixed/term"
+    "typing/native"
+    "typing/emacs")
+  "Named benchmark cases accepted by `ghostel-bench-run-one'.")
+
+(defun ghostel-bench-list-cases ()
+  "Print and return the benchmark cases accepted by `ghostel-bench-run-one'."
+  (interactive)
+  (dolist (case ghostel-bench-cases)
+    (message "%s" case))
+  ghostel-bench-cases)
+
+(defun ghostel-bench--case-generator (shape)
+  "Return the data generator for benchmark SHAPE."
+  (or (cdr (assoc shape `(("plain" . ghostel-bench--gen-plain-ascii)
+                          ("urls" . ghostel-bench--gen-urls-and-paths)
+                          ("mixed" . ghostel-bench--gen-mixed-emoji-cjk-ascii))))
+      (error "Unknown benchmark data shape: %s" shape)))
+
+(defun ghostel-bench--run-one-e2e (shape backend)
+  "Run one end-to-end benchmark for data SHAPE and BACKEND."
+  (ghostel-bench--load-backends)
+  (let ((data-file (ghostel-bench--write-data-file
+                    (ghostel-bench--case-generator shape)))
+        (case-name (format "e2e/%s/%s" shape backend)))
+    (unwind-protect
+        (ghostel-bench--measure
+         case-name ghostel-bench-data-size ghostel-bench-iterations
+         (lambda ()
+           (cond
+            ((string= backend "ghostel")
+             (ghostel-bench--e2e-ghostel data-file t))
+            ((string= backend "ghostel-nodetect")
+             (ghostel-bench--e2e-ghostel data-file nil))
+            ((and (string= backend "vterm") ghostel-bench-include-vterm)
+             (ghostel-bench--e2e-vterm data-file))
+            ((and (string= backend "eat") ghostel-bench-include-eat)
+             (ghostel-bench--e2e-eat data-file))
+            ((and (string= backend "term") ghostel-bench-include-term)
+             (ghostel-bench--e2e-term data-file))
+            (t (error "Unsupported or unavailable e2e backend: %s" backend)))))
+      (delete-file data-file))))
+
+(defun ghostel-bench--run-one-backend (shape backend)
+  "Run one native-vs-Emacs PTY backend benchmark for data SHAPE and BACKEND."
+  (require 'ghostel)
+  (unless (member shape '("plain" "mixed"))
+    (error "Unsupported backend benchmark data shape: %s" shape))
+  (let ((data-file (ghostel-bench--write-data-file
+                    (ghostel-bench--case-generator shape)))
+        (native-p (cond
+                   ((string= backend "native") t)
+                   ((string= backend "emacs") nil)
+                   (t (error "Unknown backend benchmark backend: %s" backend)))))
+    (unwind-protect
+        (ghostel-bench--measure
+         (format "backend/%s/%s" shape backend)
+         ghostel-bench-data-size ghostel-bench-iterations
+         (lambda () (ghostel-bench--spawn-cat data-file native-p)))
+      (delete-file data-file))))
+
+(defun ghostel-bench--parse-size (size)
+  "Parse a ROWSxCOLS benchmark SIZE string."
+  (unless (string-match-p "\\`[0-9]+x[0-9]+\\'" size)
+    (error "Invalid benchmark size: %s" size))
+  (let ((parts (split-string size "x")))
+    (cons (string-to-number (car parts))
+          (string-to-number (cadr parts)))))
+
+(defun ghostel-bench--case-full-redraw-p (backend)
+  "Return whether BACKEND names a full-redraw ghostel benchmark."
+  (cond
+   ((string= backend "ghostel-incr") nil)
+   ((string= backend "ghostel-full") t)
+   (t (error "Unsupported renderer benchmark backend: %s" backend))))
+
+(defun ghostel-bench--run-one-tui-frame (backend size)
+  "Run one TUI full-frame renderer benchmark for BACKEND and SIZE."
+  (require 'ghostel)
+  (let* ((dims (ghostel-bench--parse-size size))
+         (rows (car dims))
+         (cols (cdr dims))
+         (full (ghostel-bench--case-full-redraw-p backend))
+         (raw-frame (ghostel-bench--gen-tui-frame rows cols))
+         (frame (ghostel-bench--encode-for-backend raw-frame 'ghostel)))
+    (message "\n--- TUI Frame Rendering (single case) ---")
+    (message "  %-50s %5s  %8s  %10s  %8s" "SCENARIO" "ITERS" "TOTAL(s)" "ITER(ms)" "fps")
+    (message "  %s" (make-string 90 ?-))
+    (ghostel-bench--with-bench-buffer
+     (let ((term (ghostel-bench--make-ghostel rows cols))
+           (ghostel-enable-url-detection nil)
+           (ghostel-enable-file-detection nil)
+           (inhibit-read-only t))
+       (let ((result
+              (ghostel-bench--measure
+               (format "tui-frame/%s/%s" backend size)
+               (string-bytes frame) ghostel-bench-iterations
+               (lambda ()
+                 (ghostel--write-vt term frame)
+                 (ghostel--redraw term full)))))
+         (message "    ^ %.0f fps" (/ 1000.0 (plist-get result :per-iter-ms))))))))
+
+(defun ghostel-bench--run-one-tui-partial (backend size)
+  "Run one TUI partial-update renderer benchmark for BACKEND and SIZE."
+  (require 'ghostel)
+  (let* ((dims (ghostel-bench--parse-size size))
+         (rows (car dims))
+         (cols (cdr dims))
+         (full (ghostel-bench--case-full-redraw-p backend))
+         (static-frame (ghostel-bench--gen-tui-frame rows cols))
+         (static (ghostel-bench--encode-for-backend static-frame 'ghostel))
+         (status-template (format "\e[%d;1H\e[1;33;41m%%-%ds\e[0m" rows cols)))
+    (message "\n--- TUI Partial Update (single case) ---")
+    (message "  %-50s %5s  %8s  %10s  %8s" "SCENARIO" "ITERS" "TOTAL(s)" "ITER(ms)" "fps")
+    (message "  %s" (make-string 90 ?-))
+    (ghostel-bench--with-bench-buffer
+     (let ((term (ghostel-bench--make-ghostel rows cols))
+           (ghostel-enable-url-detection nil)
+           (ghostel-enable-file-detection nil)
+           (inhibit-read-only t)
+           (counter 0))
+       (ghostel--write-vt term static)
+       (ghostel--redraw term t)
+       (let ((result
+              (ghostel-bench--measure
+               (format "tui-partial/%s/%s" backend size)
+               cols ghostel-bench-iterations
+               (lambda ()
+                 (cl-incf counter)
+                 (ghostel--write-vt
+                  term (format status-template (format "status #%d" counter)))
+                 (ghostel--redraw term full)))))
+         (message "    ^ %.0f fps" (/ 1000.0 (plist-get result :per-iter-ms))))))))
+
+(defun ghostel-bench--run-one-typing (backend)
+  "Run one typing latency benchmark for BACKEND."
+  (require 'ghostel)
+  (message "\n--- Typing Latency (real pipeline, send -> rendered; %d keystrokes) ---"
+           ghostel-bench-typing-count)
+  (message "  %-8s  %5s  %8s  %8s  %8s  %8s" "BACKEND" "n" "min" "median" "p99" "max")
+  (message "  %s" (make-string 56 ?-))
+  (ghostel-bench--typing-report
+   backend
+   (ghostel-bench--typing-latency-spawn
+    ghostel-bench-typing-count
+    (cond
+     ((string= backend "native") t)
+     ((string= backend "emacs") nil)
+     (t (error "Unknown typing backend: %s" backend)))))
+  (message ""))
+
+(defun ghostel-bench-run-one (case)
+  "Run exactly one named benchmark CASE.
+Use `ghostel-bench-list-cases' to list valid case names."
+  (interactive
+   (list (completing-read "Benchmark case: " ghostel-bench-cases nil t)))
+  (unless (member case ghostel-bench-cases)
+    (error "Unknown benchmark case: %s" case))
+  (setq ghostel-bench--results nil)
+  (ghostel-bench--print-header)
+  (pcase (split-string case "/")
+    (`("e2e" ,shape ,backend)
+     (ghostel-bench--run-one-e2e shape backend)
+     (ghostel-bench--print-summary))
+    (`("backend" ,shape ,backend)
+     (ghostel-bench--run-one-backend shape backend)
+     (ghostel-bench--print-summary))
+    (`("tui-frame" ,backend ,size)
+     (ghostel-bench--run-one-tui-frame backend size)
+     (ghostel-bench--print-summary))
+    (`("tui-partial" ,backend ,size)
+     (ghostel-bench--run-one-tui-partial backend size)
+     (ghostel-bench--print-summary))
+    (`("typing" ,backend)
+     (ghostel-bench--run-one-typing backend))
+    (_ (error "Invalid benchmark case: %s" case))))
 
 
 ;; ---------------------------------------------------------------------------
