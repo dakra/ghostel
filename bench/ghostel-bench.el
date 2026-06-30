@@ -1263,14 +1263,10 @@ backend-include flags do not apply."
     "backend/plain/emacs"
     "backend/mixed/native"
     "backend/mixed/emacs"
-    "tui-frame/ghostel-incr/24x80"
-    "tui-frame/ghostel-full/24x80"
-    "tui-frame/ghostel-incr/40x120"
-    "tui-frame/ghostel-full/40x120"
-    "tui-partial/ghostel-incr/24x80"
-    "tui-partial/ghostel-full/24x80"
-    "tui-partial/ghostel-incr/40x120"
-    "tui-partial/ghostel-full/40x120"
+    "tui-frame/24x80"
+    "tui-frame/40x120"
+    "tui-partial/24x80"
+    "tui-partial/40x120"
     "e2e/plain/ghostel"
     "e2e/plain/ghostel-nodetect"
     "e2e/plain/vterm"
@@ -1354,20 +1350,12 @@ backend-include flags do not apply."
     (cons (string-to-number (car parts))
           (string-to-number (cadr parts)))))
 
-(defun ghostel-bench--case-full-redraw-p (backend)
-  "Return whether BACKEND names a full-redraw ghostel benchmark."
-  (cond
-   ((string= backend "ghostel-incr") nil)
-   ((string= backend "ghostel-full") t)
-   (t (error "Unsupported renderer benchmark backend: %s" backend))))
-
-(defun ghostel-bench--run-one-tui-frame (backend size)
-  "Run one TUI full-frame renderer benchmark for BACKEND and SIZE."
+(defun ghostel-bench--run-one-tui-frame (size)
+  "Run one TUI full-frame renderer benchmark for SIZE."
   (require 'ghostel)
   (let* ((dims (ghostel-bench--parse-size size))
          (rows (car dims))
          (cols (cdr dims))
-         (full (ghostel-bench--case-full-redraw-p backend))
          (raw-frame (ghostel-bench--gen-tui-frame rows cols))
          (frame (ghostel-bench--encode-for-backend raw-frame 'ghostel)))
     (message "\n--- TUI Frame Rendering (single case) ---")
@@ -1380,20 +1368,19 @@ backend-include flags do not apply."
            (inhibit-read-only t))
        (let ((result
               (ghostel-bench--measure
-               (format "tui-frame/%s/%s" backend size)
+               (format "tui-frame/%s" size)
                (string-bytes frame) ghostel-bench-iterations
                (lambda ()
                  (ghostel--write-vt term frame)
-                 (ghostel--redraw term full)))))
+                 (ghostel--redraw term nil)))))
          (message "    ^ %.0f fps" (/ 1000.0 (plist-get result :per-iter-ms))))))))
 
-(defun ghostel-bench--run-one-tui-partial (backend size)
-  "Run one TUI partial-update renderer benchmark for BACKEND and SIZE."
+(defun ghostel-bench--run-one-tui-partial (size)
+  "Run one TUI partial-update renderer benchmark for SIZE."
   (require 'ghostel)
   (let* ((dims (ghostel-bench--parse-size size))
          (rows (car dims))
          (cols (cdr dims))
-         (full (ghostel-bench--case-full-redraw-p backend))
          (static-frame (ghostel-bench--gen-tui-frame rows cols))
          (static (ghostel-bench--encode-for-backend static-frame 'ghostel))
          (status-template (format "\e[%d;1H\e[1;33;41m%%-%ds\e[0m" rows cols)))
@@ -1407,16 +1394,16 @@ backend-include flags do not apply."
            (inhibit-read-only t)
            (counter 0))
        (ghostel--write-vt term static)
-       (ghostel--redraw term t)
+       (ghostel--redraw term nil)
        (let ((result
               (ghostel-bench--measure
-               (format "tui-partial/%s/%s" backend size)
+               (format "tui-partial/%s" size)
                cols ghostel-bench-iterations
                (lambda ()
                  (cl-incf counter)
                  (ghostel--write-vt
                   term (format status-template (format "status #%d" counter)))
-                 (ghostel--redraw term full)))))
+                 (ghostel--redraw term nil)))))
          (message "    ^ %.0f fps" (/ 1000.0 (plist-get result :per-iter-ms))))))))
 
 (defun ghostel-bench--run-one-typing (backend)
@@ -1452,11 +1439,11 @@ Use `ghostel-bench-list-cases' to list valid case names."
     (`("backend" ,shape ,backend)
      (ghostel-bench--run-one-backend shape backend)
      (ghostel-bench--print-summary))
-    (`("tui-frame" ,backend ,size)
-     (ghostel-bench--run-one-tui-frame backend size)
+    (`("tui-frame" ,size)
+     (ghostel-bench--run-one-tui-frame size)
      (ghostel-bench--print-summary))
-    (`("tui-partial" ,backend ,size)
-     (ghostel-bench--run-one-tui-partial backend size)
+    (`("tui-partial" ,size)
+     (ghostel-bench--run-one-tui-partial size)
      (ghostel-bench--print-summary))
     (`("typing" ,backend)
      (ghostel-bench--run-one-typing backend))

@@ -76,7 +76,7 @@ Examples:
   $(basename "$0") --backends     # Only native-vs-Emacs PTY comparison
   $(basename "$0") --typing       # Only typing-latency comparison
   $(basename "$0") --case backend/plain/native
-  $(basename "$0") --case tui-partial/ghostel-incr/40x120
+  $(basename "$0") --case tui-partial/40x120
   $(basename "$0") --ghostty      # Include ghostty comparison data
 EOF
     exit 0

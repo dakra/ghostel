@@ -57,7 +57,7 @@ Options:
 Examples:
   $(basename "$0") --case backend/plain/native
   $(basename "$0") --case e2e/urls/ghostel --size 1048576 --iterations 5
-  $(basename "$0") --case tui-partial/ghostel-incr/40x120 --min-duration 10
+  $(basename "$0") --case tui-partial/40x120 --min-duration 10
   $(basename "$0") --case backend/mixed/native --redisplay
 EOF
     exit 0
