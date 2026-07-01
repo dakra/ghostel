@@ -142,8 +142,8 @@ modes (47 / 1047 / 1049) are handled uniformly."
 (ert-deftest ghostel-test-redraw-publishes-cursor-style-buffer-locals ()
   "Native redraw publishes cursor style data without applying it."
   :tags '(native)
-  (let ((term (ghostel--new 25 80 1000)))
-    (with-temp-buffer
+  (with-temp-buffer
+    (let ((term (ghostel--new 25 80 1000)))
       (setq-local cursor-type 'box)
       (ghostel--write-vt term "\e[?25l")
       (ghostel--redraw term)

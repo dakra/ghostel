@@ -92,6 +92,17 @@ const FontInfo = struct {
 };
 
 pub fn init(alloc: Allocator, env: emacs.Env, term: *gt.Terminal) !Self {
+    const s = emacs.sym;
+
+    _ = env.f("make-local-variable", .{s.@"ghostel--query-font-cache"});
+    _ = env.set("ghostel--query-font-cache", env.f("make-hash-table", .{
+        s.@":test",
+        s.eq,
+    }));
+
+    _ = env.f("make-local-variable", .{s.@"ghostel--rendered-font"});
+    _ = env.set("ghostel--rendered-font", env.nil());
+
     var renderer = Self{
         .term = term,
         .render_state = gt.RenderState.empty,
@@ -214,7 +225,7 @@ fn updateFontInfo(self: *Self, alloc: Allocator, env: emacs.Env) bool {
     }
 
     if (env.isNotNil(new_font)) {
-        const default_font_info = env.f("ghostel--query-font-cached", .{new_font});
+        const default_font_info = self.queryFont(env, new_font);
         // The value is a vector:
         // [ NAME FILENAME PIXEL-SIZE SIZE ASCENT DESCENT SPACE-WIDTH AVERAGE-WIDTH
         //   CAPABILITY ]
@@ -244,6 +255,18 @@ fn getDefaultFont(env: emacs.Env) emacs.Value {
     const font = env.f("face-attribute", .{ s.default, s.@":font" });
     if (env.isNil(env.f("fontp", .{ font, s.@"font-object" }))) return env.nil();
     return font;
+}
+
+fn queryFont(_: *Self, env: emacs.Env, font: emacs.Value) emacs.Value {
+    const cache = env.symbolValue("ghostel--query-font-cache");
+    const cached = env.f("gethash", .{ font, cache });
+    if (env.isNotNil(cached)) return cached;
+
+    return env.f("puthash", .{
+        font,
+        env.f("query-font", .{font}),
+        cache,
+    });
 }
 
 fn probeCoverage(env: emacs.Env, font: emacs.Value) u32 {
@@ -735,7 +758,7 @@ fn getGlyphMetrics(
     // header is:
     // [FONT-OBJECT CHAR ...]
     const font = env.vecGet(header, 0);
-    const font_info = env.f("ghostel--query-font-cached", .{font});
+    const font_info = self.queryFont(env, font);
 
     // font_info is:
     // [ NAME FILENAME PIXEL-SIZE SIZE ASCENT DESCENT SPACE-WIDTH AVERAGE-WIDTH

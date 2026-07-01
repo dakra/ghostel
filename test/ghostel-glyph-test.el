@@ -144,20 +144,6 @@ SPECS is a plist with these keys:
                 ,@body))))
        (kill-buffer buf))))
 
-(ert-deftest ghostel-test-query-font-cached-reuses-font-info ()
-  "`ghostel--query-font-cached' reuses metrics inside one redraw cache."
-  (let ((font (list 'mock-font))
-        (metrics ["Mock" "mock.ttf" 12 120 10 10 10 10 0])
-        (calls 0)
-        (ghostel--query-font-cache (make-hash-table :test 'eq)))
-    (cl-letf (((symbol-function 'query-font)
-               (lambda (_font)
-                 (cl-incf calls)
-                 metrics)))
-      (should (eq (ghostel--query-font-cached font) metrics))
-      (should (eq (ghostel--query-font-cached font) metrics))
-      (should (= calls 1)))))
-
 (ert-deftest ghostel-test-glyph-adjust-uses-remapped-default-font ()
   "Cell metrics come from the remapped default font, not `face-attribute'."
   :tags '(native)

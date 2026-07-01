@@ -985,12 +985,6 @@ otherwise hide its cursor for whatever buffer it shows next.")
 Values match libghostty's cursor style enum: 0=bar, 1=block,
 2=underline, 3=hollow-block, or nil for hidden.")
 
-(defvar-local ghostel--rendered-font nil
-  "The font last used for rendering.  Internally used by native code.")
-
-(defvar ghostel--query-font-cache nil
-  "Dynamically bound cache for `query-font' during one native redraw.")
-
 (defvar-local ghostel--input-mode 'semi-char
   "Current input mode.
 One of `semi-char', `char', `copy', `emacs', or `line'.  See
@@ -4544,14 +4538,6 @@ the first frame after idle for snappier response."
                               #'ghostel--redraw-now
                               (current-buffer)))))))
 
-(defun ghostel--query-font-cached (font)
-  "Return `query-font' metrics for FONT, caching during native redraw.
-When `ghostel--query-font-cache' is nil, call `query-font' directly."
-  (if ghostel--query-font-cache
-      (or (gethash font ghostel--query-font-cache)
-          (puthash font (query-font font) ghostel--query-font-cache))
-    (query-font font)))
-
 (defun ghostel--viewport-start ()
   "Position of the first line of the terminal viewport, or nil if rows<=0."
   (let ((tr (or ghostel--term-rows 0)))
@@ -4727,8 +4713,7 @@ opportunistic output redraws that may safely wait for the frame to end."
                    (inhibit-modification-hooks t)
                    ;; Raise GC threshold to defer GC during redraw.
                    (gc-cons-threshold (min most-positive-fixnum
-                                           (* gc-cons-threshold 3)))
-                   (ghostel--query-font-cache (make-hash-table :test 'eq)))
+                                           (* gc-cons-threshold 3))))
               (with-selected-window render-win
                 ;; Line mode snapshots editable input out of the buffer;
                 ;; redraw fully so the prompt row is always rebuilt
@@ -5061,8 +5046,7 @@ spawn after initialization."
           ghostel--plain-link-detection-end nil
           ghostel--force-next-redraw nil
           ghostel--cursor-pos nil
-          ghostel--cursor-char-pos nil
-          ghostel--rendered-font nil)
+          ghostel--cursor-char-pos nil)
     (let* ((w (or (get-buffer-window buffer t) (selected-window)))
            (height (max 1 (or rows
                               (if (window-live-p w)
