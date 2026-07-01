@@ -1642,6 +1642,104 @@ rendered by `ghostel--redraw-now'.  This is the exact real-world path."
 
 ;;; Delayed redraw and hidden buffers
 
+(ert-deftest ghostel-test-around-redraw-functions-run-in-order ()
+  "Around-redraw functions compose in list order around the redraw core."
+  (let ((ghostel--around-redraw-functions nil)
+        calls)
+    (let ((outer (lambda (next)
+                   (push 'outer-before calls)
+                   (funcall next)
+                   (push 'outer-after calls)))
+          (inner (lambda (next)
+                   (push 'inner-before calls)
+                   (funcall next)
+                   (push 'inner-after calls))))
+      (add-hook 'ghostel--around-redraw-functions outer 90)
+      (add-hook 'ghostel--around-redraw-functions inner 90)
+      (ghostel--run-around-redraw-functions
+       (lambda () (push 'redraw calls)))
+      (should (equal (nreverse calls)
+                     '(outer-before inner-before redraw
+                                    inner-after outer-after))))))
+
+(ert-deftest ghostel-test-around-redraw-function-can-short-circuit ()
+  "An around-redraw function can suppress the remaining redraw chain."
+  (let ((ghostel--around-redraw-functions nil)
+        calls)
+    (let ((outer (lambda (next)
+                   (push 'outer-before calls)
+                   (funcall next)
+                   (push 'outer-after calls)))
+          (stop (lambda (_next)
+                  (push 'stop calls)))
+          (inner (lambda (next)
+                   (push 'inner-before calls)
+                   (funcall next)
+                   (push 'inner-after calls))))
+      (add-hook 'ghostel--around-redraw-functions outer 90)
+      (add-hook 'ghostel--around-redraw-functions stop 90)
+      (add-hook 'ghostel--around-redraw-functions inner 90)
+      (ghostel--run-around-redraw-functions
+       (lambda () (push 'redraw calls)))
+      (should (equal (nreverse calls)
+                     '(outer-before stop outer-after))))))
+
+(ert-deftest ghostel-test-around-redraw-inhibit-hook-defers-redraw ()
+  "A non-nil `ghostel-inhibit-redraw-functions' reschedules the redraw."
+  (let (timer-delay timer-repeat timer-fn timer-args)
+    (add-hook 'ghostel-inhibit-redraw-functions
+              (lambda (buffer)
+                (should (eq buffer (current-buffer)))
+                t)
+              nil t)
+    (cl-letf (((symbol-function 'run-with-timer)
+               (lambda (delay repeat fn &rest args)
+                 (setq timer-delay delay
+                       timer-repeat repeat
+                       timer-fn fn
+                       timer-args args)
+                 'ghostel-test-redraw-timer)))
+      (should-not (ghostel--redraw-maybe-defer
+                   (lambda ()
+                     (ert-fail "Inhibited redraw must not continue")))))
+    (should (equal timer-delay ghostel-timer-delay))
+    (should (null timer-repeat))
+    (should (eq timer-fn #'ghostel--redraw-now))
+    (should (equal timer-args (list (current-buffer))))))
+
+(ert-deftest ghostel-test-around-redraw-local-functions-splice-defaults ()
+  "Buffer-local around-redraw functions splice the default hook list."
+  (let ((old-default (default-value 'ghostel--around-redraw-functions))
+        calls)
+    (unwind-protect
+        (let ((global (lambda (next)
+                        (push 'global-before calls)
+                        (funcall next)
+                        (push 'global-after calls)))
+              (local-before (lambda (next)
+                              (push 'local-before-before calls)
+                              (funcall next)
+                              (push 'local-before-after calls)))
+              (local-after (lambda (next)
+                             (push 'local-after-before calls)
+                             (funcall next)
+                             (push 'local-after-after calls))))
+          (set-default 'ghostel--around-redraw-functions (list global))
+          (with-temp-buffer
+            (add-hook 'ghostel--around-redraw-functions local-before nil t)
+            (add-hook 'ghostel--around-redraw-functions local-after 90 t)
+            (ghostel--run-around-redraw-functions
+             (lambda () (push 'redraw calls))))
+          (should (equal (nreverse calls)
+                         '(local-before-before
+                           global-before
+                           local-after-before
+                           redraw
+                           local-after-after
+                           global-after
+                           local-before-after))))
+      (set-default 'ghostel--around-redraw-functions old-default))))
+
 (ert-deftest ghostel-test-delayed-redraw-skips-native-redraw-without-window ()
   "When the buffer has no window, `ghostel--redraw-now' must not call \
 `ghostel--redraw'."
