@@ -127,17 +127,7 @@ pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) !void
     };
 }
 
-/// Redraw the terminal into the current Emacs buffer.
-///
-/// The Emacs buffer is a permanent record: materialized scrollback sits
-/// above the active area. `render_pin` tracks the next libghostty row to
-/// render, and `pages_in_buffer` mirrors libghostty's page list so
-/// scrollback eviction can be applied precisely by character count.
-///
-/// Saved buffer positions are restored after mutations.  When
-/// `force_full_arg` is true, the buffer is cleared and fully rebuilt
-/// instead of using the incremental dirty-row path.
-pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: bool) !void {
+pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full: bool) !void {
     if (self.is_rendering) return error.ReentrantRedraw;
     self.is_rendering = true;
     defer self.is_rendering = false;
@@ -145,12 +135,16 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
     try self.saved_markers.save(alloc, env);
     defer self.saved_markers.restoreAndClear(self.term.screens.active, env);
 
-    self.evictScrollback(alloc, env);
     self.gotoActiveStart(env);
 
-    if (try self.invalidate(alloc, env) or force_full_arg) {
+    if (force_full) try self.clear(alloc, env);
+    try self.updateFontInfo(alloc, env);
+    try self.commitResize(alloc, env);
+    if (self.rendered_screen != self.term.screens.active) {
         try self.clear(alloc, env);
     }
+    try self.validateScrollback(alloc, env);
+    self.evictScrollback(alloc, env);
 
     try self.renderToEnd(
         alloc,
@@ -172,25 +166,17 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full_arg: boo
         self.rendered_screen.pages.total_rows);
 }
 
-fn invalidate(self: *Self, alloc: Allocator, env: emacs.Env) !bool {
-    const font_info_changed = self.updateFontInfo(alloc, env);
-    const resize_invalidation = try self.commitResize(alloc, env);
-    const screen_changed = self.rendered_screen != self.term.screens.active;
-    const scrollback_cleared =
-        self.rows_in_buffer > self.term.rows and
+fn validateScrollback(self: *Self, alloc: Allocator, env: emacs.Env) !void {
+    const scrollback_cleared = self.rows_in_buffer > self.term.rows and
         self.render_pin != null and
         self.render_pin.?.eql(self.rendered_screen.pages.getTopLeft(.screen));
 
-    return font_info_changed or
-        resize_invalidation or
-        screen_changed or
-        scrollback_cleared;
+    if (scrollback_cleared) {
+        try self.clear(alloc, env);
+    }
 }
 
-/// Read the default font and rendering parameters from Emacs, compare
-/// against the cached values, and signal whether a full invalidation is
-/// required.
-fn updateFontInfo(self: *Self, alloc: Allocator, env: emacs.Env) bool {
+fn updateFontInfo(self: *Self, alloc: Allocator, env: emacs.Env) !void {
     const new_font = getDefaultFont(env);
     const current_font = env.symbolValue("ghostel--rendered-font");
 
@@ -198,12 +184,10 @@ fn updateFontInfo(self: *Self, alloc: Allocator, env: emacs.Env) bool {
     const floor = std.math.clamp(env.asFloat(raw_floor, 0.0), 0.0, 1.0);
 
     // Fast path: nothing changed since last redraw.
-    if (env.eq(new_font, current_font)) {
-        if (self.font_info) |cached| {
-            if (cached.glyph_scale_floor == floor) return false;
-        } else {
-            return false; // no font before, no font now
-        }
+    if (env.eq(new_font, current_font) and
+        (self.font_info == null or self.font_info.?.glyph_scale_floor == floor))
+    {
+        return;
     }
 
     _ = env.set("ghostel--rendered-font", new_font);
@@ -229,7 +213,8 @@ fn updateFontInfo(self: *Self, alloc: Allocator, env: emacs.Env) bool {
             .glyph_scale_floor = floor,
         };
     }
-    return true;
+
+    try self.clear(alloc, env);
 }
 
 fn getDefaultFont(env: emacs.Env) emacs.Value {
@@ -975,7 +960,7 @@ fn renderToEnd(self: *Self, alloc: Allocator, env: emacs.Env, start_pin: gt.Pin)
     }
 }
 
-fn commitResize(self: *Self, alloc: Allocator, env: emacs.Env) !bool {
+fn commitResize(self: *Self, alloc: Allocator, env: emacs.Env) !void {
     if (self.pending_resize) |rz| {
         const cols_changed = rz.cols != self.term.cols;
         // Pin our saved positions during resize
@@ -990,11 +975,15 @@ fn commitResize(self: *Self, alloc: Allocator, env: emacs.Env) !bool {
 
         env.set("ghostel--term-rows", self.term.rows);
         env.set("ghostel--term-cols", self.term.cols);
-        const total_rows_changed = self.rows_in_buffer != self.term.screens.active.pages.total_rows;
-        return cols_changed or total_rows_changed or self.term.screens.active.no_scrollback;
-    }
 
-    return false;
+        const total_rows_changed = self.rows_in_buffer != self.term.screens.active.pages.total_rows;
+        if (cols_changed or
+            total_rows_changed or
+            self.term.screens.active.no_scrollback)
+        {
+            try self.clear(alloc, env);
+        }
+    }
 }
 
 /// Position the Emacs point at the start of the active area: `self.term.rows`
@@ -1047,6 +1036,9 @@ fn evictScrollback(self: *Self, alloc: Allocator, env: emacs.Env) void {
     var evicted_chars: usize = 0;
     var evicted_rows: usize = 0;
 
+    // Only evict whole pages. libghostty can erase partial pages when clearing
+    // the scrollback, but we handle that by detecting clearing specifically and
+    // clearing the whole screen instead.
     const term_first_page = self.rendered_screen.pages.pages.first.?;
     while (self.pages_in_buffer.first) |n| {
         const first_page: *MaterializedPage = @fieldParentPtr("node", n);
@@ -1057,24 +1049,6 @@ fn evictScrollback(self: *Self, alloc: Allocator, env: emacs.Env) void {
 
         _ = self.pages_in_buffer.popFirst();
         alloc.destroy(first_page);
-    }
-
-    if (self.pages_in_buffer.first) |n| {
-        const first_page: *MaterializedPage = @fieldParentPtr("node", n);
-        const term_page_rows = term_first_page.data.size.rows;
-        if (term_page_rows < first_page.rows) {
-            const diff = first_page.rows - term_first_page.data.size.rows;
-            _ = env.f("goto-char", .{1});
-            _ = env.f("forward-line", .{diff});
-
-            const point = env.f("point", .{});
-            const rows_char_len = env.cast(usize, point) - 1;
-            first_page.char_len -|= rows_char_len;
-            evicted_chars += rows_char_len;
-
-            first_page.rows -= diff;
-            evicted_rows += diff;
-        }
     }
 
     self.rows_in_buffer -|= evicted_rows;

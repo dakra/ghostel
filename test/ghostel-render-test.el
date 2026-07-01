@@ -929,6 +929,32 @@ scrolling libghostty's viewport."
               (should-not (string-match-p "line [0-9]" content)))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-clear-scrollback-drops-stale-buffer-tail ()
+  "CSI H/2J/3J must not leave pre-clear buffer content above the prompt."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-clear-sb-stale-tail*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 24 80 10000))
+                 (inhibit-read-only t)
+                 (long-line (concat "wrapped " (make-string 160 ?Z))))
+            ;; Mixed line lengths reproduce the stale-tail shape without
+            ;; making libghostty's page layout part of the test contract.
+            (dotimes (i 300)
+              (ghostel--write-vt
+               term
+               (format "%04d %s\r\n" i (if (= (% i 3) 0) "short" long-line))))
+            (ghostel--write-vt term "$ ")
+            (ghostel--redraw term t)
+            (should (string-match-p
+                     "Z" (buffer-substring-no-properties (point-min) (point-max))))
+            (ghostel--write-vt term "\e[H\e[2J\e[3J$ ")
+            (ghostel--redraw term)
+            (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+              (should-not (string-match-p "Z" content))
+              (should (string-prefix-p "$ " content)))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-scrollback-csi3j-then-refill ()
   "CSI 3 J must not leave stale pre-clear rows in the buffer.
 
