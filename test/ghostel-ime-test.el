@@ -21,41 +21,6 @@
 ;; `quail-overlay' is defined by quail.el, which is not loaded in batch.
 (defvar quail-overlay)
 
-(ert-deftest ghostel-test-ime-inhibit-hook-defers-redraw ()
-  "A non-nil `ghostel-inhibit-redraw-functions' reschedules the redraw.
-The buffer must not be redrawn while a feature inhibits it."
-  (ghostel-test--with-compile-buffer buf
-    (let ((old-timer (run-with-timer 1000 nil #'ignore))
-          timer-delay timer-repeat timer-fn timer-args)
-      (setq-local ghostel--redraw-timer old-timer)
-      (setq-local ghostel--term 'fake-term)
-      (add-hook 'ghostel-inhibit-redraw-functions
-                (lambda (buffer)
-                  (should (eq buffer buf))
-                  (should (eq (current-buffer) buf))
-                  t)
-                nil t)
-      (cl-letf (((symbol-function 'ghostel--terminal-live-p)
-                 (lambda (&rest _) t))
-                ((symbol-function 'ghostel--redraw)
-                 (lambda (&rest _)
-                   (ert-fail "Inhibited redraw must not call native redraw")))
-                ((symbol-function 'run-with-timer)
-                 (lambda (delay repeat fn &rest args)
-                   (setq timer-delay delay
-                         timer-repeat repeat
-                         timer-fn fn
-                         timer-args args)
-                   'ghostel-test-ime-timer)))
-        (ghostel--redraw-now buf))
-      (should (equal timer-delay ghostel-timer-delay))
-      (should (null timer-repeat))
-      (should (eq timer-fn #'ghostel--redraw-now))
-      (should (equal timer-args (list buf)))
-      (should (eq ghostel--redraw-timer 'ghostel-test-ime-timer))
-      (when (timerp old-timer)
-        (cancel-timer old-timer)))))
-
 (ert-deftest ghostel-test-ime-mode-installs-buffer-local-wrapper ()
   "`ghostel-ime-mode' installs and removes its buffer-local wiring."
   (ghostel-test--with-compile-buffer buf

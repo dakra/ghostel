@@ -429,6 +429,7 @@ in line mode (the interactive entry validates these)."
       (setq ghostel--line-mode-on-alt-screen (ghostel--line-mode-alt-screen-p))
       (setq ghostel--line-mode-paused nil)
       (setq ghostel--input-mode 'line)
+      (ghostel--line-mode-enable-around-redraw)
       (use-local-map ghostel-line-mode-map)
       (setq ghostel--mode-line-tag (ghostel--mode-line-tag-make 'line ":Line"))
       (ghostel--mode-line-refresh)
@@ -559,6 +560,7 @@ which discards any type-ahead and runs inside `ghostel--redraw-now'."
   ;; below so none of them are recorded.
   (setq buffer-undo-list t)
   (unless pause
+    (ghostel--line-mode-disable-around-redraw)
     (let ((input (ghostel--line-mode-input-text)))
       ;; Erase the adopted prefix from the shell's readline before
       ;; handing back our (possibly edited) version, so the shell ends
@@ -628,6 +630,7 @@ already running.  Stashes an empty snapshot so the alt-screen-off
 transition picks it up and enters line mode for real.  Preserves
 any existing paused snapshot (the user re-arming should not clobber
 input captured by an earlier auto-pause)."
+  (ghostel--line-mode-enable-around-redraw)
   (unless ghostel--line-mode-paused
     (setq ghostel--line-mode-paused
           (list :input "" :point-offset nil :mark-offset nil)))
@@ -663,6 +666,37 @@ screen.  Also drives the deferred startup entry when
     (ghostel--line-mode-try-resume))
   (ghostel--line-mode-maybe-enter-initial))
 
+(defun ghostel--line-mode-enable-around-redraw ()
+  "Add line mode's buffer-local redraw wrapper."
+  (add-hook 'ghostel--around-redraw-functions
+            #'ghostel--line-mode-around-redraw 90 t))
+
+(defun ghostel--line-mode-defer-initial-entry ()
+  "Arm line mode to enter when the first prompt renders."
+  (setq ghostel--pending-initial-line-mode t)
+  (ghostel--line-mode-enable-around-redraw))
+
+(defun ghostel--line-mode-disable-around-redraw ()
+  "Remove line mode's buffer-local redraw wrapper."
+  (remove-hook 'ghostel--around-redraw-functions
+               #'ghostel--line-mode-around-redraw t))
+
+(defun ghostel--line-mode-around-redraw (next)
+  "Run NEXT while preserving line-mode state across the redraw."
+  (ghostel--line-mode-pre-redraw)
+  (let* ((snapshot (ghostel--line-mode-snapshot))
+         (redrew (funcall next))
+         (restored (and snapshot
+                        (ghostel--line-mode-restore snapshot))))
+    (when (and snapshot (not restored))
+      (let ((input (plist-get snapshot :input)))
+        (when (and input (> (length input) 0))
+          (ghostel--write-pty ghostel--term input))
+        (message "ghostel: line-mode prompt lost; input forwarded raw")))
+    (when redrew
+      (ghostel--line-mode-post-redraw)
+      t)))
+
 (defun ghostel--line-mode-startup-prompt-ready-p ()
   "Non-nil when the cursor row shows a real prompt (OSC 133 prop or regex).
 Gates the deferred startup entry so line mode skips a blank pre-prompt screen.
@@ -687,7 +721,8 @@ wins: a non-semi-char buffer drops the flag without entering."
   (when ghostel--pending-initial-line-mode
     (cond
      ((not (eq ghostel--input-mode 'semi-char))
-      (setq ghostel--pending-initial-line-mode nil))
+      (setq ghostel--pending-initial-line-mode nil)
+      (ghostel--line-mode-disable-around-redraw))
      ((ghostel--line-mode-startup-prompt-ready-p)
       (setq ghostel--pending-initial-line-mode nil)
       (ghostel-line-mode)))))
