@@ -164,6 +164,10 @@ jobs:
             platform: x86_64-windows
             suffix: .dll
             target: x86_64-windows-gnu
+          - os: windows-latest
+            platform: aarch64-windows
+            suffix: .dll
+            target: aarch64-windows-gnu
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

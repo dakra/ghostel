@@ -19,7 +19,7 @@ const log = std.log.scoped(.NativeProcessHandler);
 pub const ChannelFd = EventWriter.Fd;
 pub const ProcessParams = Backend.ProcessParams;
 
-process: Backend,
+backend: Backend,
 backend_alive: std.atomic.Value(bool) = .init(false),
 event_writer: EventWriter,
 // Buffer event notifications so large terminal updates can be reported with
@@ -52,8 +52,8 @@ pub fn init(
     term: *gt.Terminal,
     event_fd: ChannelFd,
 ) !void {
-    var process = try Backend.init(alloc, initial_cols, initial_rows, params);
-    errdefer _ = process.deinitAndWait();
+    var backend = try Backend.init(alloc, initial_cols, initial_rows, params);
+    errdefer _ = backend.deinitAndWait();
 
     var event_writer = try EventWriter.init(event_fd);
     errdefer event_writer.close();
@@ -62,7 +62,7 @@ pub fn init(
     errdefer stream.deinit();
 
     self.* = .{
-        .process = process,
+        .backend = backend,
         .backend_alive = .init(true),
         .event_writer = event_writer,
         .term = term,
@@ -82,12 +82,12 @@ pub fn unlockTerm(self: *Self) void {
 
 pub fn ptyWrite(self: *Self, data: []const u8) !void {
     if (!self.isBackendAlive()) return error.ProcessExited;
-    return self.process.write(data);
+    return self.backend.write(data);
 }
 
 pub fn resizePty(self: *Self, cols: u16, rows: u16) !void {
     if (!self.isBackendAlive()) return;
-    try self.process.resize(cols, rows);
+    try self.backend.resize(cols, rows);
 }
 
 pub fn isBackendAlive(self: *Self) bool {
@@ -105,7 +105,7 @@ pub fn effect(self: *Self, comptime func: []const u8, args: anytype) void {
 }
 
 pub fn replicaName(self: *Self) []const u8 {
-    return self.process.replicaName();
+    return self.backend.replicaName();
 }
 
 fn effectFallible(self: *Self, comptime func: []const u8, args: anytype) !void {
@@ -165,7 +165,7 @@ fn run(self: *Self) void {
     const reaper_thread = std.Thread.spawn(
         .{ .stack_size = 1024 * 1024 },
         reapChild,
-        .{ self.process, self.event_writer },
+        .{ self.backend, self.event_writer },
     ) catch |err| {
         log.err("Failed to spawn reaper thread: {any}", .{err});
         return;
@@ -181,7 +181,7 @@ fn loopOnce(self: *Self) !bool {
     if (@atomicLoad(bool, &self.quit, .monotonic)) return false;
 
     var stream = LockedStream{ .process = self };
-    const drained = try self.process.drain(&stream);
+    const drained = try self.backend.drain(&stream);
     try self.notifyVtUpdate();
     return drained;
 }
@@ -231,7 +231,7 @@ fn reapChild(process: Backend, event_writer: EventWriter) void {
 pub fn deinit(self: *Self) void {
     @atomicStore(bool, &self.quit, true, .monotonic);
     if (self.takeBackendAlive()) {
-        self.process.requestStop(self.thread);
+        self.backend.requestStop(self.thread);
     }
     self.thread.join();
 

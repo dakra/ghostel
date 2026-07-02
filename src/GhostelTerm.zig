@@ -88,7 +88,7 @@ pub fn redraw(self: *Self, force_full: bool) !void {
 
     if (self.isProcessLive() and !std.meta.eql(pre_size, post_size)) {
         if (self.process) |proc| {
-            try proc.process.resize(post_size[0], post_size[1]);
+            try proc.resizePty(post_size[0], post_size[1]);
         } else {
             _ = env.f(
                 "set-process-window-size",
@@ -253,11 +253,8 @@ pub fn encodePaste(self: *Self, data: []u8) !bool {
 /// get promoted to scrollback due to vertical shrinking of the viewport.
 pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u16, cell_h: u16) !void {
     self.lockTerm();
+    defer self.unlockTerm();
     try self.renderer.resize(cols, rows, cell_w, cell_h);
-    self.unlockTerm();
-    if (self.process) |process| {
-        try process.resizePty(cols, rows);
-    }
 }
 
 pub fn lockTerm(self: *Self) void {
@@ -288,7 +285,7 @@ pub fn spawnNativeProcess(
         event_fd,
     );
     self.process = process;
-    return process.process.pidValue();
+    return process.backend.pidValue();
 }
 
 pub fn killNativeProcess(self: *Self) void {
