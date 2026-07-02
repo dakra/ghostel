@@ -75,6 +75,23 @@ unlike semi-char mode where it tracks the terminal cursor."
 						      (point-min) (point-max))))
 					(should (string-match-p "frozen-2" content)))))
 
+(ert-deftest ghostel-test-copy-mode-exit-forces-size-adjustment ()
+  "Exiting copy mode forces a size adjustment."
+  (with-temp-buffer
+    (ghostel-mode)
+    (let ((ghostel--term 'fake)
+          (ghostel--process 'fake-proc)
+          (ghostel--input-mode 'copy)
+          (ghostel--pre-readonly-mode 'semi-char)
+          (adjust-args nil))
+      (cl-letf (((symbol-function 'ghostel--adjust-size)
+                 (lambda (&rest args) (setq adjust-args args)))
+                ((symbol-function 'ghostel--anchor-window) #'ignore)
+                ((symbol-function 'ghostel-force-redraw) #'ignore)
+                ((symbol-function 'message) #'ignore))
+        (ghostel-readonly-exit)
+        (should (equal (list (selected-window) t) adjust-args))))))
+
 (ert-deftest ghostel-test-copy-mode-cursor ()
   "Test that copy-mode restores cursor visibility when terminal hid it."
   (let ((buf (generate-new-buffer " *ghostel-test-copy-cursor*")))
