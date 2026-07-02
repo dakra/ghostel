@@ -66,7 +66,7 @@ pub fn deinit(self: *Self) void {
         self.alloc.destroy(process);
     }
 
-    self.renderer.deinit(self.alloc);
+    self.renderer.deinit();
     self.stream.deinit();
     self.terminal.deinit(self.alloc);
     if (self.string_buffer) |buf| self.alloc.free(buf);
@@ -79,7 +79,7 @@ pub fn redraw(self: *Self, force_full: bool) !void {
 
     const env = emacs.current_env orelse return;
     const pre_size = .{ self.terminal.cols, self.terminal.rows };
-    try self.renderer.redraw(self.alloc, env, force_full);
+    try self.renderer.redraw(env, force_full);
     _ = env.f("ghostel--kitty-clear", .{});
     try kitty_graphics.emitPlacements(env, self);
     const post_size = .{ self.terminal.cols, self.terminal.rows };

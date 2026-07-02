@@ -27,6 +27,9 @@ const Self = @This();
 /// Set to true while rendering is in progress
 is_rendering: bool = false,
 
+/// Allocator used by renderer-owned state.
+alloc: Allocator,
+
 /// Terminal being rendered.
 term: *gt.Terminal,
 
@@ -49,7 +52,7 @@ pages_in_buffer: std.DoublyLinkedList = .{},
 pending_resize: ?ViewportSize = null,
 
 /// Reusable instance of RowContent to reduce allocations
-row: RowContent = .{},
+row: RowContent,
 
 /// Cached font metrics and rendering parameters that affect glyph layout.
 /// When any field changes between redraws the viewport is fully invalidated.
@@ -104,6 +107,7 @@ pub fn init(alloc: Allocator, env: emacs.Env, term: *gt.Terminal) !Self {
     _ = env.set("ghostel--rendered-font", env.nil());
 
     var renderer = Self{
+        .alloc = alloc,
         .term = term,
         .render_state = gt.RenderState.empty,
         .render_pin = try term.screens.active.pages.trackPin(
@@ -111,18 +115,19 @@ pub fn init(alloc: Allocator, env: emacs.Env, term: *gt.Terminal) !Self {
         ),
         .rendered_screen = term.screens.active,
         .pending_resize = .{ .cols = term.cols, .rows = term.rows, .cell_w = 1, .cell_h = 1 },
+        .row = .{ .alloc = alloc },
     };
-    _ = try renderer.commitResize(alloc, env);
+    _ = try renderer.commitResize(env);
     return renderer;
 }
 
-pub fn deinit(self: *Self, alloc: Allocator) void {
-    self.saved_markers.deinit(alloc);
-    self.render_state.deinit(alloc);
-    self.row.deinit(alloc);
-    self.clearPages(alloc);
+pub fn deinit(self: *Self) void {
+    self.saved_markers.deinit(self.alloc);
+    self.render_state.deinit(self.alloc);
+    self.row.deinit();
+    self.clearPages();
     if (self.render_pin) |p| self.rendered_screen.pages.untrackPin(p);
-    if (self.font_info) |*fi| fi.deinit(alloc);
+    if (self.font_info) |*fi| fi.deinit(self.alloc);
 }
 
 pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) !void {
@@ -138,27 +143,26 @@ pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) !void
     };
 }
 
-pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full: bool) !void {
+pub fn redraw(self: *Self, env: emacs.Env, force_full: bool) !void {
     if (self.is_rendering) return error.ReentrantRedraw;
     self.is_rendering = true;
     defer self.is_rendering = false;
 
-    try self.saved_markers.save(alloc, env);
+    try self.saved_markers.save(self.alloc, env);
     defer self.saved_markers.restoreAndClear(self.term.screens.active, env);
 
     self.gotoActiveStart(env);
 
-    if (force_full) try self.clear(alloc, env);
-    try self.updateFontInfo(alloc, env);
-    try self.commitResize(alloc, env);
+    if (force_full) try self.clear(env);
+    try self.updateFontInfo(env);
+    try self.commitResize(env);
     if (self.rendered_screen != self.term.screens.active) {
-        try self.clear(alloc, env);
+        try self.clear(env);
     }
-    try self.validateScrollback(alloc, env);
-    self.evictScrollback(alloc, env);
+    try self.validateScrollback(env);
+    self.evictScrollback(env);
 
     try self.renderToEnd(
-        alloc,
         env,
         if (self.render_pin) |p|
             p.*
@@ -177,17 +181,17 @@ pub fn redraw(self: *Self, alloc: Allocator, env: emacs.Env, force_full: bool) !
         self.rendered_screen.pages.total_rows);
 }
 
-fn validateScrollback(self: *Self, alloc: Allocator, env: emacs.Env) !void {
+fn validateScrollback(self: *Self, env: emacs.Env) !void {
     const scrollback_cleared = self.rows_in_buffer > self.term.rows and
         self.render_pin != null and
         self.render_pin.?.eql(self.rendered_screen.pages.getTopLeft(.screen));
 
     if (scrollback_cleared) {
-        try self.clear(alloc, env);
+        try self.clear(env);
     }
 }
 
-fn updateFontInfo(self: *Self, alloc: Allocator, env: emacs.Env) !void {
+fn updateFontInfo(self: *Self, env: emacs.Env) !void {
     const new_font = getDefaultFont(env);
     const current_font = env.symbolValue("ghostel--rendered-font");
 
@@ -204,7 +208,7 @@ fn updateFontInfo(self: *Self, alloc: Allocator, env: emacs.Env) !void {
     _ = env.set("ghostel--rendered-font", new_font);
 
     if (self.font_info) |*fi| {
-        fi.deinit(alloc);
+        fi.deinit(self.alloc);
         self.font_info = null;
     }
 
@@ -225,7 +229,7 @@ fn updateFontInfo(self: *Self, alloc: Allocator, env: emacs.Env) !void {
         };
     }
 
-    try self.clear(alloc, env);
+    try self.clear(env);
 }
 
 fn getDefaultFont(env: emacs.Env) emacs.Value {
@@ -455,6 +459,8 @@ pub const RowContent = struct {
         }
     };
 
+    alloc: Allocator,
+
     /// The UTF-8 text content of the row
     text: std.ArrayList(u8) = .empty,
 
@@ -474,7 +480,6 @@ pub const RowContent = struct {
 
     pub fn build(
         self: *RowContent,
-        alloc: Allocator,
         renderer: *Self,
         row: *const gt.RenderState.Row,
         cursor_col: ?u16,
@@ -504,7 +509,7 @@ pub const RowContent = struct {
             // compare to detect style run breaks.
             const prop_key = CellPropKey.create(&row.pin.node.data, raw_cell);
             if (prop_key != current_prop_key) {
-                try self.runs.append(alloc, .{
+                try self.runs.append(self.alloc, .{
                     .start_char = self.char_len,
                     .end_char = self.char_len,
                     .props = createCellProps(renderer, page, prop_key, &cell),
@@ -516,16 +521,16 @@ pub const RowContent = struct {
             const char_start = self.char_len;
 
             const codepoint: u21 = if (raw_cell.hasText()) raw_cell.codepoint() else ' ';
-            try self.appendCodepoints(alloc, &[1]u21{codepoint});
+            try self.appendCodepoints(&[1]u21{codepoint});
             if (raw_cell.hasGrapheme()) {
-                try self.appendCodepoints(alloc, cell.grapheme);
+                try self.appendCodepoints(cell.grapheme);
             }
 
             // If this is a grapheme cluster, or if the char is not covered by
             // the default font, we register it as needing font glyph adjustment
             // to fit into the monospace grid.
             if (raw_cell.hasGrapheme() or codepoint >= adjustment_threshold) {
-                try self.adjust_cells.append(alloc, .{
+                try self.adjust_cells.append(self.alloc, .{
                     .col = @intCast(col),
                     .char_start = @intCast(char_start),
                     .char_end = @intCast(self.char_len),
@@ -560,13 +565,13 @@ pub const RowContent = struct {
             self.runs.items[self.runs.items.len - 1].end_char = trim_char_len;
         }
 
-        try self.text.append(alloc, '\n');
+        try self.text.append(self.alloc, '\n');
     }
 
-    pub fn deinit(self: *RowContent, alloc: Allocator) void {
-        self.text.deinit(alloc);
-        self.adjust_cells.deinit(alloc);
-        self.runs.deinit(alloc);
+    pub fn deinit(self: *RowContent) void {
+        self.text.deinit(self.alloc);
+        self.adjust_cells.deinit(self.alloc);
+        self.runs.deinit(self.alloc);
     }
 
     fn clear(self: *RowContent) !void {
@@ -577,10 +582,10 @@ pub const RowContent = struct {
         self.cursor_char_pos = null;
     }
 
-    fn appendCodepoints(self: *RowContent, alloc: Allocator, cluster: []const u21) !void {
+    fn appendCodepoints(self: *RowContent, cluster: []const u21) !void {
         for (cluster) |cp| {
             const slice = try self.text.addManyAsSlice(
-                alloc,
+                self.alloc,
                 try std.unicode.utf8CodepointSequenceLength(cp),
             );
             _ = try std.unicode.utf8Encode(cp, slice);
@@ -591,7 +596,6 @@ pub const RowContent = struct {
 
 fn adjustGlyphs(
     self: *Self,
-    alloc: Allocator,
     env: emacs.Env,
     row_start: i64,
 ) !void {
@@ -601,13 +605,12 @@ fn adjustGlyphs(
     if (env.isNil(window)) return;
 
     for (self.row.adjust_cells.items) |*cell| {
-        try self.adjustGlyph(alloc, env, window, row_start, cell);
+        try self.adjustGlyph(env, window, row_start, cell);
     }
 }
 
 fn adjustGlyph(
     self: *Self,
-    alloc: Allocator,
     env: emacs.Env,
     window: emacs.Value,
     row_start: i64,
@@ -618,7 +621,7 @@ fn adjustGlyph(
 
     const start_val = env.makeInteger(row_start + @as(i64, @intCast(cell.char_start)));
     const end_val = env.makeInteger(row_start + @as(i64, @intCast(cell.char_end)));
-    const metrics = try self.getGlyphMetrics(alloc, env, window, row_start, cell) orelse return;
+    const metrics = try self.getGlyphMetrics(env, window, row_start, cell) orelse return;
 
     // Skip adjustments if size already matches perfectly
     const native_char_width: i64 = if (cell.wide) 2 else 1;
@@ -721,7 +724,6 @@ fn adjustWidth(
 
 fn getGlyphMetrics(
     self: *Self,
-    alloc: Allocator,
     env: emacs.Env,
     window: emacs.Value,
     row_start: i64,
@@ -766,7 +768,7 @@ fn getGlyphMetrics(
         .pixel_size = pixel_size,
     };
     if (self.font_info) |*fi| {
-        try fi.metrics_cache.put(alloc, key, metrics);
+        try fi.metrics_cache.put(self.alloc, key, metrics);
     }
 
     return metrics;
@@ -800,13 +802,11 @@ fn findGlyphString(
 /// Insert row text and apply property runs.
 fn insertRow(
     self: *Self,
-    alloc: Allocator,
     env: emacs.Env,
     row: *const gt.RenderState.Row,
     cursor_col: ?u16,
 ) !usize {
     try self.row.build(
-        alloc,
         self,
         row,
         cursor_col,
@@ -827,7 +827,7 @@ fn insertRow(
         }
     }
 
-    try self.adjustGlyphs(alloc, env, row_start);
+    try self.adjustGlyphs(env, row_start);
 
     if (row.raw.wrap) {
         // Mark newlines from soft-wrapped rows so copy mode can filter them
@@ -852,12 +852,11 @@ fn insertRow(
 
 fn render(
     self: *Self,
-    alloc: Allocator,
     env: emacs.Env,
     pin: gt.Pin,
 ) !void {
     self.term.screens.active.pages.scroll(.{ .pin = pin });
-    try self.updateRenderState(alloc);
+    try self.updateRenderState();
 
     if (self.render_state.dirty != .false) {
         const skip = switch (pin.downOverflow(self.term.rows)) {
@@ -868,7 +867,7 @@ fn render(
         var page = if (self.term.screens.active.no_scrollback)
             null
         else
-            try self.getOrAddPage(alloc, pin.node.serial);
+            try self.getOrAddPage(pin.node.serial);
 
         var i: usize = 0;
         const row_dirty = self.render_state.row_data.items(.dirty);
@@ -882,7 +881,7 @@ fn render(
             const row = self.render_state.row_data.get(i);
             if (page) |p| {
                 if (p.serial != row.pin.node.serial) {
-                    page = p.next() orelse try self.addPage(alloc, row.pin.node.serial);
+                    page = p.next() orelse try self.addPage(row.pin.node.serial);
                     std.debug.assert(page != null);
                     std.debug.assert(page.?.serial == row.pin.node.serial);
                 }
@@ -902,7 +901,7 @@ fn render(
 
                 if (eob) {
                     // We're adding one line since we're at the end of the buffer
-                    const line_char_len = try self.insertRow(alloc, env, &row, cursor_col);
+                    const line_char_len = try self.insertRow(env, &row, cursor_col);
                     self.rows_in_buffer += 1;
                     if (page) |p| {
                         p.rows += 1;
@@ -916,7 +915,7 @@ fn render(
                     const old_line_end_val = env.f("pos-bol", .{2});
                     const old_line_len = env.cast(usize, old_line_end_val) - line_start;
                     _ = env.f("delete-region", .{ line_start_val, old_line_end_val });
-                    const new_line_len = try self.insertRow(alloc, env, &row, cursor_col);
+                    const new_line_len = try self.insertRow(env, &row, cursor_col);
 
                     if (page) |p| {
                         p.char_len -|= old_line_len;
@@ -934,11 +933,11 @@ fn render(
     }
 }
 
-fn updateRenderState(self: *Self, alloc: Allocator) !void {
+fn updateRenderState(self: *Self) !void {
     const pre_cursor: ?gt.RenderState.Cursor.Viewport =
         self.render_state.cursor.viewport;
 
-    try self.render_state.update(alloc, self.term);
+    try self.render_state.update(self.alloc, self.term);
     if (self.render_state.dirty == .full) return;
 
     const post_cursor: ?gt.RenderState.Cursor.Viewport =
@@ -976,20 +975,20 @@ fn renderCursor(self: *Self, env: emacs.Env) !void {
 
 // Render all pages from start_pin through the end of the active area,
 // one viewport-sized chunk per page.
-fn renderToEnd(self: *Self, alloc: Allocator, env: emacs.Env, start_pin: gt.Pin) !void {
+fn renderToEnd(self: *Self, env: emacs.Env, start_pin: gt.Pin) !void {
     var p: ?gt.Pin = start_pin;
     while (p) |pin| : (p = pin.down(self.term.rows)) {
-        try self.render(alloc, env, pin);
+        try self.render(env, pin);
     }
 }
 
-fn commitResize(self: *Self, alloc: Allocator, env: emacs.Env) !void {
+fn commitResize(self: *Self, env: emacs.Env) !void {
     if (self.pending_resize) |rz| {
         const cols_changed = rz.cols != self.term.cols;
         // Pin our saved positions during resize
         self.saved_markers.pin(self.term.screens.active, env);
 
-        try self.term.resize(alloc, rz.cols, rz.rows);
+        try self.term.resize(self.alloc, rz.cols, rz.rows);
         self.term.width_px = std.math.mul(u32, rz.cols, rz.cell_w) catch
             std.math.maxInt(u32);
         self.term.height_px = std.math.mul(u32, rz.rows, rz.cell_h) catch
@@ -1004,7 +1003,7 @@ fn commitResize(self: *Self, alloc: Allocator, env: emacs.Env) !void {
             total_rows_changed or
             self.term.screens.active.no_scrollback)
         {
-            try self.clear(alloc, env);
+            try self.clear(env);
         }
     }
 }
@@ -1016,28 +1015,28 @@ fn gotoActiveStart(self: *Self, env: emacs.Env) void {
     _ = env.f("forward-line", .{-@as(i64, @intCast(self.term.rows))});
 }
 
-fn getOrAddPage(self: *Self, alloc: Allocator, serial: PageSerial) !*MaterializedPage {
+fn getOrAddPage(self: *Self, serial: PageSerial) !*MaterializedPage {
     var node = self.pages_in_buffer.last;
     while (node) |n| : (node = n.prev) {
         const page: *MaterializedPage = @fieldParentPtr("node", n);
         if (page.serial == serial) return page;
     }
 
-    return self.addPage(alloc, serial);
+    return self.addPage(serial);
 }
 
-fn addPage(self: *Self, alloc: Allocator, serial: PageSerial) !*MaterializedPage {
-    const page = try alloc.create(MaterializedPage);
+fn addPage(self: *Self, serial: PageSerial) !*MaterializedPage {
+    const page = try self.alloc.create(MaterializedPage);
     page.* = .{ .serial = serial };
     self.pages_in_buffer.append(&page.node);
     return page;
 }
 
-fn clear(self: *Self, alloc: Allocator, env: emacs.Env) !void {
+fn clear(self: *Self, env: emacs.Env) !void {
     _ = env.f("erase-buffer", .{});
     self.rows_in_buffer = 0;
     self.render_state.dirty = .full;
-    self.clearPages(alloc);
+    self.clearPages();
     if (self.render_pin) |p| self.rendered_screen.pages.untrackPin(p);
     self.render_pin = null;
 
@@ -1049,13 +1048,13 @@ fn clear(self: *Self, alloc: Allocator, env: emacs.Env) !void {
     }
 }
 
-fn clearPages(self: *Self, alloc: Allocator) void {
+fn clearPages(self: *Self) void {
     while (self.pages_in_buffer.pop()) |n| {
-        alloc.destroy(@as(*MaterializedPage, @fieldParentPtr("node", n)));
+        self.alloc.destroy(@as(*MaterializedPage, @fieldParentPtr("node", n)));
     }
 }
 
-fn evictScrollback(self: *Self, alloc: Allocator, env: emacs.Env) void {
+fn evictScrollback(self: *Self, env: emacs.Env) void {
     var evicted_chars: usize = 0;
     var evicted_rows: usize = 0;
 
@@ -1071,7 +1070,7 @@ fn evictScrollback(self: *Self, alloc: Allocator, env: emacs.Env) void {
         evicted_rows += first_page.rows;
 
         _ = self.pages_in_buffer.popFirst();
-        alloc.destroy(first_page);
+        self.alloc.destroy(first_page);
     }
 
     self.rows_in_buffer -|= evicted_rows;
