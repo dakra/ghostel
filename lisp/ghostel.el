@@ -4585,7 +4585,7 @@ line the graphical anchor leaves via `window-vscroll'."
   (with-current-buffer (window-buffer window)
     (when-let* (((derived-mode-p 'ghostel-mode))
                 ((not (eq ghostel--input-mode 'emacs)))
-                (dlh (default-line-height))
+                (dlh (with-selected-window window (default-line-height)))
                 (body-pixel-height (or body-pixel-height
                                        (window-body-height window t)))
                 (screen-lines (/ (float body-pixel-height) (float dlh)))
@@ -4863,11 +4863,34 @@ path even when the row/column count is unchanged."
           ;; Emacs displays the stale content at the new window size.
           (ghostel--redraw-now (current-buffer)))))))
 
-(defun ghostel--text-scale-changed ()
-  "Update terminal size and redraw after `text-scale-mode' changes the cell font."
-  (when (and ghostel--term (ghostel--terminal-live-p))
-    (when-let* ((window (get-buffer-window (current-buffer) t)))
-      (ghostel--adjust-size window t))))
+(defun ghostel--around-font-scale (fn args &optional buffer)
+  "Resize and re-anchor Ghostel windows around font scaling by FN with ARGS.
+When BUFFER is non-nil, only refit windows showing BUFFER."
+  (let ((anchored (ghostel--window-buffer-pairs
+                   (ghostel--anchored-windows buffer 'visible))))
+    (prog1 (apply fn args)
+      (dolist (window (ghostel--windows buffer 'visible))
+        (when (window-live-p window)
+          (with-current-buffer (window-buffer window)
+            (ghostel--adjust-size window t))))
+      (dolist (entry anchored)
+        (when (ghostel--window-buffer-pair-live-p entry)
+          (ghostel--anchor-window (car entry)))))))
+
+(defun ghostel--around-local-font-scale (fn &rest args)
+  "Resize and re-anchor around local text scaling by FN with ARGS."
+  (ghostel--around-font-scale fn args (current-buffer)))
+
+(defun ghostel--around-global-font-scale (fn &rest args)
+  "Resize and re-anchor around global text scaling by FN with ARGS."
+  (ghostel--around-font-scale fn args))
+
+(unless (advice-member-p #'ghostel--around-local-font-scale 'text-scale-mode)
+  (advice-add 'text-scale-mode :around #'ghostel--around-local-font-scale))
+(when (and (fboundp 'global-text-scale-adjust)
+           (not (advice-member-p #'ghostel--around-global-font-scale
+                                 'global-text-scale-adjust)))
+  (advice-add 'global-text-scale-adjust :around #'ghostel--around-global-font-scale))
 
 (defun ghostel--sync-tty-composition (window)
   "Sync `auto-composition-mode' with WINDOW's frame for ghostel buffers.
@@ -4977,7 +5000,6 @@ for both native and Emacs PTY paths."
   (add-hook 'window-buffer-change-functions #'ghostel--window-buffer-change nil t)
   (add-hook 'window-buffer-change-functions #'ghostel--sync-tty-composition nil t)
   (add-hook 'window-size-change-functions #'ghostel--adjust-size nil t)
-  (add-hook 'text-scale-mode-hook #'ghostel--text-scale-changed nil t)
   (add-hook 'minibuffer-exit-hook #'ghostel--minibuffer-exit)
   (add-hook 'minibuffer-exit-hook #'ghostel--minibuffer-exit-maybe-leave)
   (add-hook 'activate-mark-hook #'ghostel--mark-activated nil t)

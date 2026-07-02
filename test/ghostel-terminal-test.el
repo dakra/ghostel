@@ -258,18 +258,40 @@ modes (47 / 1047 / 1049) are handled uniformly."
         (should ghostel--force-next-redraw)
         (should redraw-called)))))
 
-(ert-deftest ghostel-test-text-scale-change-forces-size-adjustment ()
-  "Text-scale changes use a forced size adjustment."
-  (with-temp-buffer
-    (let ((ghostel--term 'fake)
-          (ghostel--input-mode 'semi-char)
-          (adjust-args nil))
-      (cl-letf (((symbol-function 'get-buffer-window)
-                 (lambda (&rest _) 'fake-window))
-                ((symbol-function 'ghostel--adjust-size)
-                 (lambda (&rest args) (setq adjust-args args))))
-        (ghostel--text-scale-changed)
-        (should (equal '(fake-window t) adjust-args))))))
+(ert-deftest ghostel-test-local-font-scale-refits-anchored-window ()
+  "Local font scaling resizes and re-anchors previously anchored windows."
+  (let ((buf (generate-new-buffer " *ghostel-test-local-font-scale*"))
+        (orig-buf (window-buffer (selected-window))))
+    (unwind-protect
+        (progn
+          (set-window-buffer (selected-window) buf)
+          (with-current-buffer buf
+            (ghostel-mode)
+            (let ((ghostel--term 'fake)
+                  (ghostel--input-mode 'semi-char)
+                  (phase 'before)
+                  (adjust-args nil)
+                  (anchor-args nil))
+              (cl-letf (((symbol-function 'ghostel--window-anchored-p)
+                         (lambda (window &optional _body-pixel-height)
+                           (and (eq window (selected-window))
+                                (eq phase 'before))))
+                        ((symbol-function 'ghostel--terminal-live-p)
+                         (lambda () t))
+                        ((symbol-function 'ghostel--adjust-size)
+                         (lambda (&rest args) (setq adjust-args args)))
+                        ((symbol-function 'ghostel--anchor-window)
+                         (lambda (&rest args) (setq anchor-args args))))
+                (should (eq 'scaled
+                            (ghostel--around-local-font-scale
+                             (lambda ()
+                               (setq phase 'after)
+                               'scaled))))
+                (should (equal (list (selected-window) t) adjust-args))
+                (should (equal (list (selected-window)) anchor-args))))))
+      (when (buffer-live-p orig-buf)
+        (set-window-buffer (selected-window) orig-buf))
+      (kill-buffer buf))))
 
 (ert-deftest ghostel-test-resize-rows-only-during-minibuffer-suppressed ()
   "Rows-only resize while a minibuffer is active is deferred (#268).
