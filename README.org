@@ -84,6 +84,14 @@ If you are an evil user you can install the [[https://melpa.org/#/evil-ghostel][
   :hook (ghostel-mode . evil-ghostel-mode))
 #+end_src
 
+Meow users get the same integration from the [[https://melpa.org/#/meow-ghostel][meow-ghostel]] extension:
+
+#+begin_src emacs-lisp
+(use-package meow-ghostel
+  :after (ghostel meow)
+  :hook (ghostel-mode . meow-ghostel-mode))
+#+end_src
+
 ** Shell integration at a glance
 
 Directory tracking and prompt navigation are automatically on by default for
@@ -1357,6 +1365,62 @@ The initial state and the ESC behavior are configurable via
 =evil-ghostel-initial-state= (default =insert=) and =evil-ghostel-escape= (default
 =auto=).
 
+** Meow mode
+:properties:
+:custom_id: meow-mode
+:end:
+#+cindex: meow
+
+Meow users get the equivalent integration via =meow-ghostel.el=, also an
+independent MELPA package:
+
+#+begin_src emacs-lisp
+(use-package meow-ghostel
+  :ensure t
+  :after (ghostel meow)
+  :hook (ghostel-mode . meow-ghostel-mode))
+#+end_src
+
+Or from source (Emacs 30+):
+
+#+begin_src emacs-lisp
+(use-package meow-ghostel
+  :vc (:url "https://github.com/dakra/ghostel"
+       :lisp-dir "extensions/meow-ghostel"
+       :rev :newest)
+  :after (ghostel meow)
+  :hook (ghostel-mode . meow-ghostel-mode))
+#+end_src
+
+When =meow-ghostel-mode= is active (key names below refer to meow's suggested
+qwerty layout; the integration remaps the =meow-*= commands, so any layout
+works):
+
+- Ghostel starts in *INSERT state* (terminal input works normally); ESC enters
+  normal state.
+- Selection motions (=h=, =j=, =k=, =l=, =w=, =b=, =e=, =x=, ...) move point and select
+  freely over the rendered rows; =j= stops at the live prompt row.
+- *Kill/change/replace* (=s=, =c=, =r=) clamp the selection to the typed input and
+  apply it via the shell (backspaces + bracketed paste); the killed text still
+  lands on the kill ring.
+- *Insert/append/open* (=i=, =a=, =I=, =A=) drive the shell cursor to the target
+  before entering insert state; =A=/=I= go to the end/start of input (a terminal
+  has no "open line").
+- *Yank* (=p=) pastes at point via bracketed paste; *undo* (=u=) sends readline
+  undo (=Ctrl+_=).
+- =SPC= (keypad/leader) works as usual in normal state; in insert state it types
+  into the terminal.
+- Insert-state Ctrl keys reach the shell through ghostel's own semi-char map
+  (no extra passthrough layer), so =ghostel-keymap-exceptions= applies as-is:
+  =C-u= stays =universal-argument= (remove it from the exceptions if you want
+  readline kill-line).
+- Alt-screen programs (vim, less, htop) are unaffected; BEACON state is
+  unsupported in terminal buffers.
+
+The initial state and the ESC behavior are configurable via
+=meow-ghostel-initial-state= (default =insert=) and =meow-ghostel-escape= (default
+=auto=).
+
 ** Compilation mode
 :properties:
 :custom_id: compilation-mode
@@ -2000,7 +2064,8 @@ src/emacs.zig         Zig wrapper for the Emacs module C API
 The Elisp sources live in =lisp/=, the Zig sources in =src/=, vendored upstream
 headers in =vendor/=, the bundled compiled terminfo in =etc/terminfo/=, and shell
 integration assets in =etc/shell/=.  Optional MELPA extensions that depend on
-=ghostel= live under =extensions/<package>/= (currently =evil-ghostel=).
+=ghostel= live under =extensions/<package>/= (currently =evil-ghostel= and
+=meow-ghostel=).
 
 ** PTY and process ownership
 :properties:

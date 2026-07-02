@@ -1,0 +1,285 @@
+{
+  "name": "meow-boundary-nu-ghostel",
+  "comment": "Input-region boundary matrix (nushell on ghostel, meow qwerty layout): reedline hint / right-prompt / syntax-tail edges. Run with --keep-going.",
+  "session": {
+    "ui": "tty",
+    "size": "120x40",
+    "config": "minimal",
+    "env": {
+      "ELATE_MEOW_DIR": "/Users/daniel/.cache/meow"
+    },
+    "eval": [
+      "(load \"/Users/daniel/.emacs.d/lib/ghostel/test/elate/lib/meow-ghostel-setup.el\")",
+      "(setq ghostel-shell \"/opt/homebrew/bin/nu\")"
+    ]
+  },
+  "steps": [
+    {
+      "eval": "(ghostel)"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.0,
+      "timeout": 15.0
+    },
+    {
+      "group": "prompt",
+      "comment": "short prompt + shell helpers"
+    },
+    {
+      "type": "$env.PROMPT_COMMAND = {|| \"> \" }; $env.PROMPT_COMMAND_RIGHT = {|| \"\" }; $env.PROMPT_INDICATOR = {|| \"\" }"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5,
+      "timeout": 5.0
+    },
+    {
+      "type": "def e [...rest] { $rest | str join \" \" }"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5,
+      "timeout": 5.0
+    },
+    {
+      "group": "sanity",
+      "comment": "baseline typing + exec works"
+    },
+    {
+      "type": "e sane01"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^sane01$",
+      "timeout": 8.0
+    },
+    {
+      "group": "A1-line-append",
+      "comment": "x a: line selection + append must clamp to typed end, not the hint"
+    },
+    {
+      "type": "e hello world"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^hello world$",
+      "timeout": 8.0
+    },
+    {
+      "type": "e hello"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.3,
+      "timeout": 8.0
+    },
+    {
+      "eval": "(let ((l (buffer-substring-no-properties (line-beginning-position) (line-end-position)))) (unless (string-match-p \"e hello world\" l) (error \"NO-LIVE-GHOST: %s\" l)))"
+    },
+    {
+      "keys": "<escape> x a"
+    },
+    {
+      "type": "X"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^helloX$",
+      "timeout": 8.0
+    },
+    {
+      "group": "A2-append",
+      "comment": "A: open-below must land at typed end, not accept the hint"
+    },
+    {
+      "type": "e hello world"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^hello world$",
+      "timeout": 8.0
+    },
+    {
+      "type": "e hello"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.3,
+      "timeout": 8.0
+    },
+    {
+      "eval": "(let ((l (buffer-substring-no-properties (line-beginning-position) (line-end-position)))) (unless (string-match-p \"e hello world\" l) (error \"NO-LIVE-GHOST: %s\" l)))"
+    },
+    {
+      "keys": "<escape> A"
+    },
+    {
+      "type": "X"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^helloX$",
+      "timeout": 8.0
+    },
+    {
+      "group": "B-rp-on",
+      "comment": "enable a right prompt '[RP]'"
+    },
+    {
+      "type": "$env.PROMPT_COMMAND_RIGHT = {|| \"[RP]\" }"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5,
+      "timeout": 5.0
+    },
+    {
+      "group": "B1-append",
+      "comment": "A X with a right prompt: must append after 'hi', not [RP]"
+    },
+    {
+      "type": "e hi"
+    },
+    {
+      "keys": "<escape> A"
+    },
+    {
+      "type": "X"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^hiX$",
+      "timeout": 8.0
+    },
+    {
+      "group": "B2-kill-line",
+      "comment": "x s then retype: the line kill must delete only typed input, not [RP]"
+    },
+    {
+      "type": "e hi"
+    },
+    {
+      "keys": "<escape> x s"
+    },
+    {
+      "keys": "i"
+    },
+    {
+      "type": "e ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "B-rp-off",
+      "comment": "disable the right prompt"
+    },
+    {
+      "type": "$env.PROMPT_COMMAND_RIGHT = {|| \"\" }"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5,
+      "timeout": 5.0
+    },
+    {
+      "group": "D1-kill-tail",
+      "comment": "b s: kill the colored 'bar' tail (syntax highlight must not shift input-end)"
+    },
+    {
+      "type": "e foo bar"
+    },
+    {
+      "keys": "<escape> b s"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^foo$",
+      "timeout": 8.0
+    },
+    {
+      "group": "D2-change-tail",
+      "comment": "b c baz: change the colored 'bar' tail"
+    },
+    {
+      "type": "e foo bar"
+    },
+    {
+      "keys": "<escape> b c"
+    },
+    {
+      "type": "baz"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^foo baz$",
+      "timeout": 8.0
+    },
+    {
+      "group": "M1-build",
+      "comment": "open quote + ENTER builds a 2-line input that executes"
+    },
+    {
+      "type": "e \"mlA"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "type": "mlB\""
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^mlB$",
+      "timeout": 8.0
+    }
+  ]
+}

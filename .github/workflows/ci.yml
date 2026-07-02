@@ -137,6 +137,39 @@ jobs:
             -l test/evil-ghostel-test.el \
             -f evil-ghostel-test-run
 
+  test-meow:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs_version:
+          - '29.4'
+          - 'snapshot'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+
+      - name: Install pinned Emacs
+        env:
+          EMACS_VERSION: ${{ matrix.emacs_version }}
+        run: bash .github/scripts/install-emacs.sh
+
+      - name: Install meow
+        run: |
+          git clone --depth 1 https://github.com/meow-edit/meow.git /tmp/meow
+
+      - name: Install compat
+        run: git clone --depth 1 https://github.com/emacs-compat/compat.git /tmp/compat
+
+      - name: Run meow-ghostel tests
+        run: |
+          emacs --batch -Q -L /tmp/compat -L /tmp/meow -L lisp -L extensions/meow-ghostel \
+            -l ert \
+            -l test/meow-ghostel-test.el \
+            -f meow-ghostel-test-run
+
   build-native:
     strategy:
       fail-fast: false

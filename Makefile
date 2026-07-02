@@ -8,13 +8,15 @@ export EMACSFLAGS
 XDG_CACHE_HOME ?= $(HOME)/.cache
 MELPAZOID_DIR  ?= $(XDG_CACHE_HOME)/melpazoid
 EVIL_DIR       ?= $(XDG_CACHE_HOME)/evil
+MEOW_DIR       ?= $(XDG_CACHE_HOME)/meow
 LINT_ELPA_DIR  ?= $(XDG_CACHE_HOME)/ghostel-lint-elpa
 LINT_DEPS_STAMP := $(LINT_ELPA_DIR)/.deps-installed
 DOC_ELPA_DIR   ?= $(XDG_CACHE_HOME)/ghostel-doc-elpa
 DOC_DEPS_STAMP := $(DOC_ELPA_DIR)/.deps-installed
 
 ELISP_FILES := $(filter-out %-autoloads.el,$(wildcard lisp/ghostel*.el) \
-                                      $(wildcard extensions/evil-ghostel/*.el))
+                                      $(wildcard extensions/evil-ghostel/*.el) \
+                                      $(wildcard extensions/meow-ghostel/*.el))
 PACKAGE_FILES := $(shell grep -l '^;; Package-Requires:' $(ELISP_FILES) 2>/dev/null)
 CORE_PACKAGE_FILE := $(firstword $(filter lisp/%,$(PACKAGE_FILES)))
 ELISP := $(CORE_PACKAGE_FILE) $(filter-out $(CORE_PACKAGE_FILE),$(ELISP_FILES))
@@ -37,12 +39,12 @@ endif
 ZIG_SOURCES := $(wildcard src/*.zig src/*.c build.zig build.zig.zon symbols.map) \
                $(wildcard vendor/*.h)
 
-.PHONY: all build test test-native test-zig test-hypothesis test-hypothesis-cases test-all test-evil lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel byte-compile docquotes bench bench-quick bench-e2e bench-tui-partial html clean regen-terminfo
+.PHONY: all build test test-native test-zig test-hypothesis test-hypothesis-cases test-all test-evil test-meow lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel melpazoid-meow-ghostel byte-compile docquotes bench bench-quick bench-e2e bench-tui-partial html clean regen-terminfo
 
 # Recommended invocation: `make -j$(nproc) all' on Linux,
 # `make -j$(sysctl -n hw.ncpu) all' on macOS.  GNU make 4+ also accepts
 # bare `-j' (unlimited); pair with `-l$(nproc)' to cap by load.
-all: build test-all test-evil lint
+all: build test-all test-evil test-meow lint
 
 build: $(MODULE)
 
@@ -72,6 +74,13 @@ $(EVIL_DIR):
 
 extensions/evil-ghostel/%.elc: extensions/evil-ghostel/%.el | $(EVIL_DIR)
 	$(EMACS) --batch $(EMACSFLAGS) -Q -L "$(EVIL_DIR)" -L lisp -L extensions/evil-ghostel \
+		--eval "(setq byte-compile-error-on-warn t)" -f batch-byte-compile $<
+
+$(MEOW_DIR):
+	git clone --depth 1 https://github.com/meow-edit/meow.git "$@"
+
+extensions/meow-ghostel/%.elc: extensions/meow-ghostel/%.el | $(MEOW_DIR)
+	$(EMACS) --batch $(EMACSFLAGS) -Q -L "$(MEOW_DIR)" -L lisp -L extensions/meow-ghostel \
 		--eval "(setq byte-compile-error-on-warn t)" -f batch-byte-compile $<
 
 # Per-topic test files.  Each file becomes its own Make target with a
@@ -112,6 +121,10 @@ test-all: test test-zig test-native
 test-evil: build $(ELC) | $(EVIL_DIR)
 	$(EMACS) --batch $(EMACSFLAGS) -Q -L "$(EVIL_DIR)" -L lisp -L extensions/evil-ghostel \
 		-l ert -l test/evil-ghostel-test.el -f evil-ghostel-test-run
+
+test-meow: build $(ELC) | $(MEOW_DIR)
+	$(EMACS) --batch $(EMACSFLAGS) -Q -L "$(MEOW_DIR)" -L lisp -L extensions/meow-ghostel \
+		-l ert -l test/meow-ghostel-test.el -f meow-ghostel-test-run
 
 byte-compile: $(ELC)
 
@@ -175,7 +188,7 @@ docquotes: $(DOCQUOTE_FILES)
 		                 (match-string 0))))) \
 		  (unless ok (kill-emacs 1)))"
 
-melpazoid: melpazoid-ghostel melpazoid-evil-ghostel
+melpazoid: melpazoid-ghostel melpazoid-evil-ghostel melpazoid-meow-ghostel
 
 melpazoid-ghostel:
 	@if [ ! -d "$(MELPAZOID_DIR)" ]; then \
@@ -190,6 +203,14 @@ melpazoid-evil-ghostel:
 		git clone https://github.com/riscy/melpazoid.git "$(MELPAZOID_DIR)"; \
 	fi
 	RECIPE='(evil-ghostel :fetcher github :repo "dakra/ghostel" :files ("extensions/evil-ghostel/evil-ghostel.el"))' \
+		LOCAL_REPO=$(CURDIR) \
+		make -C "$(MELPAZOID_DIR)"
+
+melpazoid-meow-ghostel:
+	@if [ ! -d "$(MELPAZOID_DIR)" ]; then \
+		git clone https://github.com/riscy/melpazoid.git "$(MELPAZOID_DIR)"; \
+	fi
+	RECIPE='(meow-ghostel :fetcher github :repo "dakra/ghostel" :files ("extensions/meow-ghostel/meow-ghostel.el"))' \
 		LOCAL_REPO=$(CURDIR) \
 		make -C "$(MELPAZOID_DIR)"
 

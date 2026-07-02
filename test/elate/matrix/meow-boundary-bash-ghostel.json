@@ -1,0 +1,104 @@
+{
+  "name": "meow-boundary-bash-ghostel",
+  "comment": "Input-region boundary matrix (bash on ghostel, meow qwerty layout): soft-wrap / multi-line edges. Bash has no autosuggestions or right prompt, so only the multi-line groups apply. Run with --keep-going.",
+  "session": {
+    "ui": "tty",
+    "size": "120x40",
+    "config": "minimal",
+    "env": {
+      "ELATE_MEOW_DIR": "/Users/daniel/.cache/meow"
+    },
+    "eval": [
+      "(load \"/Users/daniel/.emacs.d/lib/ghostel/test/elate/lib/meow-ghostel-setup.el\")",
+      "(setq ghostel-shell \"/opt/homebrew/bin/bash\")"
+    ]
+  },
+  "steps": [
+    {
+      "eval": "(ghostel)"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.0,
+      "timeout": 15.0
+    },
+    {
+      "group": "prompt",
+      "comment": "short prompt + shell helpers"
+    },
+    {
+      "type": "PS1='> '"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5,
+      "timeout": 5.0
+    },
+    {
+      "group": "sanity",
+      "comment": "baseline typing + exec works"
+    },
+    {
+      "type": "echo sane01"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^sane01$",
+      "timeout": 8.0
+    },
+    {
+      "group": "M1-build",
+      "comment": "open quote + ENTER builds a 2-line input that executes"
+    },
+    {
+      "type": "echo \"mlA"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "type": "mlB\""
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^mlB$",
+      "timeout": 8.0
+    },
+    {
+      "group": "M2-append",
+      "comment": "A X on a multi-line input lands at the true input end"
+    },
+    {
+      "type": "echo \"keepA"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "type": "keepB\""
+    },
+    {
+      "keys": "<escape> A"
+    },
+    {
+      "type": "X"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^keepBX$",
+      "timeout": 8.0
+    }
+  ]
+}

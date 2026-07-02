@@ -120,8 +120,45 @@ fix shows **XPASS**. Everything else passed on bash/zsh/fish/nu (incl. `a X s S 
 dot-repeat, and the `C-w`/`C-u`/`C-a`/`C-e` insert passthrough); python3 covers the
 subset that maps cleanly to REPL expressions (`i a A I x 2dw dd cc r a X s` + `u` xfail).
 
+## meow-ghostel matrix
+
+The same live harness exists for `meow-ghostel` (meow's documented qwerty layout):
+
+- `lib/meow-ghostel-setup.el` — shared startup: `meow` resolves from `ELATE_MEOW_DIR`,
+  `../meow`, or `$XDG_CACHE_HOME/meow`; defines the qwerty `meow-setup`, enables
+  `meow-global-mode` + `meow-ghostel-mode`.
+- `matrix/meow-shells.json` — templated per-shell command matrix. Meow is
+  selection-first, so word ops select backward from the input end with `b`
+  (back-word) before `s`/`c`/`r`; `x s`/`x c` are the line kill/change; `s` with no
+  selection exercises the C-k fallback; plus a keypad smoke (`SPC` in normal state)
+  and insert-state Ctrl passthrough groups. `{{u_expect}}` flips the
+  nu-only undo xfail (meow has no paste-before, so there is no `P` group).
+  Unlike evil-ghostel, meow-ghostel adds no insert-state passthrough layer, so
+  `C-u` follows `ghostel-keymap-exceptions` (Emacs `universal-argument`, not
+  shell kill-line) — the passthrough group uses `C-a` + `C-k` instead.
+- `matrix/meow-python3.json` — the REPL subset.
+- `matrix/meow-boundary-<shell>-ghostel.json` — the boundary suite; `x a` (select
+  line + append) exercises the autosuggestion clamp through the region-end path,
+  `A` (open-below) through the input-end target, `x s` must not eat `[RP]`.
+
+```sh
+S=test/elate/matrix/meow-shells.json
+elate run --keep-going --format json --set shell=/opt/homebrew/bin/bash --set echo=echo --set setup= "$S"
+elate run --keep-going --format json --set shell=/bin/zsh               --set echo=echo --set setup= "$S"
+elate run --keep-going --format json --set shell=/opt/homebrew/bin/fish --set echo=echo \
+  --set 'setup=function fish_prompt; echo -n "> "; end; function fish_right_prompt; end' "$S"
+elate run --keep-going --format json --set shell=/opt/homebrew/bin/nu   --set echo=e \
+  --set 'setup=def e [...rest] { $rest | str join " " }' --set u_expect=fail "$S"
+
+elate run --keep-going --format json test/elate/matrix/meow-python3.json
+for s in bash zsh fish nu; do
+  elate run --keep-going --format json test/elate/matrix/meow-boundary-$s-ghostel.json; done
+```
+
 ## Overrides
 
 - `ELATE_GHOSTEL_SHELL` — overrides `ghostel-shell` (setup reads it).
 - `ELATE_EVIL_DIR` — absolute path to the `evil` checkout (default: `../evil`, then
   `$XDG_CACHE_HOME/evil`).
+- `ELATE_MEOW_DIR` — absolute path to the `meow` checkout (default: `../meow`, then
+  `$XDG_CACHE_HOME/meow`).

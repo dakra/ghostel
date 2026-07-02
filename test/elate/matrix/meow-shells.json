@@ -1,0 +1,451 @@
+{
+  "name": "meow-ghostel-shells",
+  "comment": "meow-ghostel command matrix across shells (qwerty suggested layout). Drive one shell per `elate run` with --set shell=.. --set echo=.. --set setup=.. (co-varying, so not a `matrix --param` Cartesian axis). Use --keep-going so every group reports. Each group types a command, applies a meow edit over the PTY, executes it, and asserts the output -- the shell proves the edit landed. Meow is selection-first: word ops select backward from the input end with `b` (back-word), then `s` (kill) / `c` (change) / `r` (replace) act on the region. Per-shell known failures ride on the failing `wait` step via `expect: {{u_expect}}` (default pass; set to fail for nu).",
+  "params": {
+    "shell": "/opt/homebrew/bin/bash",
+    "echo": "echo",
+    "setup": "",
+    "u_expect": "pass"
+  },
+  "session": {
+    "ui": "tty",
+    "size": "120x40",
+    "config": "minimal",
+    "eval": [
+      "(load \"/Users/daniel/.emacs.d/lib/ghostel/test/elate/lib/meow-ghostel-setup.el\")",
+      "(setq ghostel-shell \"{{shell}}\")"
+    ],
+    "env": {
+      "ELATE_MEOW_DIR": "/Users/daniel/.cache/meow"
+    }
+  },
+  "steps": [
+    {
+      "eval": "(ghostel)"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.0,
+      "timeout": 15.0
+    },
+    {
+      "group": "setup",
+      "comment": "per-shell prep: normalize prompt / define an echo-like helper"
+    },
+    {
+      "type": "{{setup}}"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5,
+      "timeout": 5.0
+    },
+    {
+      "group": "i",
+      "comment": "insert + RET (baseline typing)"
+    },
+    {
+      "type": "{{echo}} m01ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m01ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "A",
+      "comment": "A (open-below) = append at end of input"
+    },
+    {
+      "type": "{{echo}} m02"
+    },
+    {
+      "keys": "<escape> A"
+    },
+    {
+      "type": "-ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m02-ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "I",
+      "comment": "I (open-above) = insert at start of input"
+    },
+    {
+      "type": "m03ok"
+    },
+    {
+      "keys": "<escape> I"
+    },
+    {
+      "type": "{{echo}} "
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m03ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "D",
+      "comment": "D (backward-delete) -- delete char before point"
+    },
+    {
+      "type": "{{echo}} m04okZ"
+    },
+    {
+      "keys": "<escape> D"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m04ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "h-d",
+      "comment": "h then d -- forward-delete char at point"
+    },
+    {
+      "type": "{{echo}} m05okZ"
+    },
+    {
+      "keys": "<escape> h d"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m05ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "b-s",
+      "comment": "b s -- select last word backward, kill it"
+    },
+    {
+      "type": "{{echo}} m06ok DELME"
+    },
+    {
+      "keys": "<escape> b s"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m06ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "b-s-b-s",
+      "comment": "b s b s -- two successive backward word kills (second kill must see fresh cursor state)"
+    },
+    {
+      "type": "{{echo}} m07ok aa bb"
+    },
+    {
+      "keys": "<escape> b s b s"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m07ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "b-c",
+      "comment": "b c -- change the last word, then type replacement"
+    },
+    {
+      "type": "{{echo}} BAD"
+    },
+    {
+      "keys": "<escape> b c"
+    },
+    {
+      "type": "m08ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m08ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "x-s",
+      "comment": "x s -- select the line, kill the whole input (clamped past the prompt), retype"
+    },
+    {
+      "type": "{{echo}} NOPE_dd"
+    },
+    {
+      "keys": "<escape> x s"
+    },
+    {
+      "keys": "i"
+    },
+    {
+      "type": "{{echo}} m09ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m09ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "x-c",
+      "comment": "x c -- change the whole input line"
+    },
+    {
+      "type": "{{echo}} NOPE_cc"
+    },
+    {
+      "keys": "<escape> x c"
+    },
+    {
+      "type": "{{echo}} m10ok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m10ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "s-fallback",
+      "comment": "s without a selection falls back to C-k: kill to end of input"
+    },
+    {
+      "type": "{{echo}} m11ok KILLME"
+    },
+    {
+      "keys": "<escape> b g s"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m11ok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "y-r",
+      "comment": "b y saves a word; b r replaces another word with it"
+    },
+    {
+      "type": "{{echo}} dup"
+    },
+    {
+      "keys": "<escape> b y"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "type": " BAD"
+    },
+    {
+      "keys": "<escape> b r"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^dup dup$",
+      "timeout": 8.0
+    },
+    {
+      "group": "p",
+      "comment": "b y saves a word; p pastes it at point"
+    },
+    {
+      "type": "{{echo}} dup2"
+    },
+    {
+      "keys": "<escape> b y"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "type": " "
+    },
+    {
+      "keys": "<escape> p"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^dup2 dup2$",
+      "timeout": 8.0
+    },
+    {
+      "group": "u",
+      "comment": "D then u -- undo restores the deleted char"
+    },
+    {
+      "type": "{{echo}} m14okX"
+    },
+    {
+      "keys": "<escape> D"
+    },
+    {
+      "keys": "u"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^m14okX$",
+      "timeout": 8.0,
+      "expect": "{{u_expect}}",
+      "reason": "nu/reedline does not bind C-_ (readline/zle undo) that meow-ghostel-undo sends"
+    },
+    {
+      "group": "keypad",
+      "comment": "SPC opens keypad in normal state, ESC quits it, prompt intact. One key chunk: the keypad read-key loop blocks Emacs, so the closing ESC must be queued with it."
+    },
+    {
+      "keys": "<escape> SPC <escape>"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "type": "{{echo}} kpok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^kpok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "C-w",
+      "comment": "insert-state C-w passthrough: delete word backward"
+    },
+    {
+      "type": "{{echo}} BADWORD"
+    },
+    {
+      "keys": "C-w"
+    },
+    {
+      "type": "good"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^good$",
+      "timeout": 8.0
+    },
+    {
+      "group": "C-a/C-k",
+      "comment": "insert-state C-a + C-k passthrough: kill the line from the start. (C-u stays universal-argument per ghostel-keymap-exceptions; meow-ghostel adds no passthrough layer, unlike evil-ghostel.)"
+    },
+    {
+      "type": "GARBAGE"
+    },
+    {
+      "keys": "C-a"
+    },
+    {
+      "keys": "C-k"
+    },
+    {
+      "type": "{{echo}} cuok"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^cuok$",
+      "timeout": 8.0
+    },
+    {
+      "group": "C-a/C-e",
+      "comment": "insert-state C-a/C-e passthrough: line start / end"
+    },
+    {
+      "type": "world"
+    },
+    {
+      "keys": "C-a"
+    },
+    {
+      "type": "{{echo}} "
+    },
+    {
+      "keys": "C-e"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^world$",
+      "timeout": 8.0
+    }
+  ]
+}

@@ -1,0 +1,205 @@
+{
+  "name": "meow-ghostel-python3",
+  "comment": "meow-ghostel command matrix: python3 REPL (regex-detected '>>> ', no OSC 133). Separate from meow-shells.json because the REPL has no `echo` and operator tokens don't word-split cleanly, so word-heavy ops are omitted (PyREPL editing does not word-split cleanly, mirroring the evil matrix). Each group types an expression, applies a meow edit over the PTY, evaluates it, and asserts the result. Run with `elate run --keep-going`; the `u` group is expected to fail (xfail).",
+  "session": {
+    "ui": "tty",
+    "size": "120x40",
+    "config": "minimal",
+    "eval": [
+      "(load \"/Users/daniel/.emacs.d/lib/ghostel/test/elate/lib/meow-ghostel-setup.el\")",
+      "(setq ghostel-shell \"python3\")"
+    ],
+    "env": {
+      "ELATE_MEOW_DIR": "/Users/daniel/.cache/meow"
+    }
+  },
+  "steps": [
+    {
+      "eval": "(ghostel)"
+    },
+    {
+      "wait": "text",
+      "pattern": ">>> ",
+      "buffer": "*ghostel*",
+      "timeout": 15.0
+    },
+    {
+      "group": "i",
+      "comment": "baseline typing + RET"
+    },
+    {
+      "type": "1000+7"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^1007$",
+      "buffer": "*ghostel*",
+      "timeout": 8.0
+    },
+    {
+      "group": "A",
+      "comment": "A (open-below) = append at end of input"
+    },
+    {
+      "type": "1000"
+    },
+    {
+      "keys": "<escape> A"
+    },
+    {
+      "type": "+8"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^1008$",
+      "buffer": "*ghostel*",
+      "timeout": 8.0
+    },
+    {
+      "group": "I",
+      "comment": "I (open-above) = insert at start of input"
+    },
+    {
+      "type": "9"
+    },
+    {
+      "keys": "<escape> I"
+    },
+    {
+      "type": "1000+"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^1009$",
+      "buffer": "*ghostel*",
+      "timeout": 8.0
+    },
+    {
+      "group": "h-d",
+      "comment": "h then d -- forward-delete last char"
+    },
+    {
+      "type": "10100"
+    },
+    {
+      "keys": "<escape> h d"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^1010$",
+      "buffer": "*ghostel*",
+      "timeout": 8.0
+    },
+    {
+      "group": "D",
+      "comment": "D (backward-delete) -- delete char before point"
+    },
+    {
+      "type": "1230"
+    },
+    {
+      "keys": "<escape> D"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^123$",
+      "buffer": "*ghostel*",
+      "timeout": 8.0
+    },
+    {
+      "group": "x-s",
+      "comment": "x s -- kill the whole input line, then retype"
+    },
+    {
+      "type": "123+456"
+    },
+    {
+      "keys": "<escape> x s"
+    },
+    {
+      "keys": "i"
+    },
+    {
+      "type": "500+55"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^555$",
+      "buffer": "*ghostel*",
+      "timeout": 8.0
+    },
+    {
+      "group": "x-c",
+      "comment": "x c -- change the whole input line"
+    },
+    {
+      "type": "1+1"
+    },
+    {
+      "keys": "<escape> x c"
+    },
+    {
+      "type": "600+66"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^666$",
+      "buffer": "*ghostel*",
+      "timeout": 8.0
+    },
+    {
+      "group": "u",
+      "comment": "D then u -- undo restores the deleted char"
+    },
+    {
+      "type": "9990"
+    },
+    {
+      "keys": "<escape> D"
+    },
+    {
+      "keys": "u"
+    },
+    {
+      "keys": "A"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^9990$",
+      "buffer": "*ghostel*",
+      "timeout": 8.0,
+      "expect": "fail",
+      "reason": "python3 PyREPL does not bind C-_ (readline undo) that meow-ghostel-undo sends"
+    }
+  ]
+}
