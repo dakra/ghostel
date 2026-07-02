@@ -34,6 +34,7 @@ ifeq ($(UNAME),Darwin)
 else
   MODULE := ghostel-module.so
 endif
+ZIG_BUILD_FLAGS := --prefix . -Doptimize=ReleaseFast -Dcpu=baseline
 ZIG_SOURCES := $(wildcard src/*.zig src/*.c build.zig build.zig.zon symbols.map) \
                $(wildcard vendor/*.h)
 
@@ -47,7 +48,7 @@ all: build test-all test-evil lint
 build: $(MODULE)
 
 $(MODULE): $(ZIG_SOURCES)
-	zig build -Doptimize=ReleaseFast -Dcpu=baseline
+	zig build $(ZIG_BUILD_FLAGS)
 
 test-zig:
 	zig build test
@@ -243,7 +244,7 @@ public/index.html: README.org $(DOC_DEPS_STAMP)
 		          (org-export-to-file 'html \"public/index.html\"))"
 
 clean:
-	rm -f ghostel-module.dylib ghostel-module.so
+	rm -f ghostel-module.dylib ghostel-module.so ghostel-module.version
 	rm -f $(ELC)
 	rm -rf zig-out .zig-cache .build public
 

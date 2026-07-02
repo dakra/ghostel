@@ -196,6 +196,21 @@ file mmap'd keeps a valid mapping (issue #247)."
                                 (expand-file-name "~/custom/ghostel/")))
                      (downcase (ghostel--module-directory)))))))
 
+(ert-deftest ghostel-test-module-build-dir-is-reset ()
+  "The temporary build directory is reset before use."
+  (let* ((dir (make-temp-file "ghostel-test-build-dir" t))
+         (build-dir (expand-file-name ".ghostel-build/" dir))
+         (stale (expand-file-name "stale" build-dir)))
+    (unwind-protect
+        (progn
+          (make-directory build-dir t)
+          (with-temp-file stale (insert "stale"))
+          (should (equal (file-name-as-directory build-dir)
+                         (ghostel--make-module-build-dir dir)))
+          (should (file-directory-p build-dir))
+          (should-not (file-exists-p stale)))
+      (delete-directory dir t))))
+
 (ert-deftest ghostel-test-download-module-targets-custom-directory ()
   "Interactive download writes into `ghostel-module-directory' when set."
   (let ((ghostel-module-directory "/custom/dir/")
@@ -252,7 +267,7 @@ file mmap'd keeps a valid mapping (issue #247)."
     (should (string-prefix-p (expand-file-name "/custom/dir/")
                              loaded-path))))
 
-(ert-deftest ghostel-test-compile-module-invokes-zig-build ()
+(ert-deftest ghostel-test-compile-module-invokes-zig-build-with-prefix ()
   "Source compilation runs zig build in the resource root."
   (let ((default-directory nil)
         (messages nil)
@@ -261,8 +276,18 @@ file mmap'd keeps a valid mapping (issue #247)."
     (let ((native-comp-enable-subr-trampolines nil))
       (cl-letf (((symbol-function 'ghostel--resource-root)
                  (lambda () "C:/ghostel/"))
+                ((symbol-function 'ghostel--make-module-build-dir)
+                 (lambda (_dest-dir) "C:/ghostel/.ghostel-build/"))
                 ((symbol-function 'file-exists-p)
                  (lambda (_) t))
+                ((symbol-function 'file-directory-p)
+                 (lambda (_) nil))
+                ((symbol-function 'rename-file)
+                 (lambda (&rest _)))
+                ((symbol-function 'delete-file)
+                 (lambda (&rest _)))
+                ((symbol-function 'make-directory)
+                 (lambda (&rest _)))
                 ((symbol-function 'message)
                  (lambda (fmt &rest args)
                    (push (apply #'format fmt args) messages)))
@@ -276,7 +301,10 @@ file mmap'd keeps a valid mapping (issue #247)."
                    0)))
         (ghostel--compile-module "C:/ghostel/")
         (should (equal
-                 '("zig" nil "*ghostel-build*" nil ("build" "-Doptimize=ReleaseFast" "-Dcpu=baseline") "C:/ghostel/")
+                 '("zig" nil "*ghostel-build*" nil
+                   ("build" "--prefix" "C:/ghostel/.ghostel-build/"
+                    "-Doptimize=ReleaseFast" "-Dcpu=baseline")
+                   "C:/ghostel/")
                  process-invocation))
         (should-not warnings)))))
 
@@ -293,8 +321,12 @@ module beside a stale sidecar (issue #256 follow-up B1)."
     (let ((native-comp-enable-subr-trampolines nil))
       (cl-letf (((symbol-function 'ghostel--resource-root)
                  (lambda () "/src/ghostel/"))
+                ((symbol-function 'ghostel--make-module-build-dir)
+                 (lambda (_dest-dir) "/custom/dir/.ghostel-build/"))
                 ((symbol-function 'file-exists-p)
                  (lambda (_) t))
+                ((symbol-function 'file-directory-p)
+                 (lambda (_) nil))
                 ((symbol-function 'make-directory)
                  (lambda (dir &rest _) (push dir made-dirs)))
                 ((symbol-function 'delete-file)
@@ -319,7 +351,7 @@ module beside a stale sidecar (issue #256 follow-up B1)."
               (sidecar-args (car rename-args)))
           (should (equal (downcase (expand-file-name
                                     (concat "ghostel-module" module-file-suffix)
-                                    "/src/ghostel/"))
+                                    "/custom/dir/.ghostel-build/"))
                          (downcase (nth 0 module-args))))
           (should (equal (downcase (expand-file-name
                                     (concat "ghostel-module" module-file-suffix)
@@ -327,7 +359,7 @@ module beside a stale sidecar (issue #256 follow-up B1)."
                          (downcase (nth 1 module-args))))
           (should (equal (downcase (expand-file-name
                                     "ghostel-module.version"
-                                    "/src/ghostel/"))
+                                    "/custom/dir/.ghostel-build/"))
                          (downcase (nth 0 sidecar-args))))
           (should (equal (downcase (expand-file-name
                                     "ghostel-module.version"
@@ -341,7 +373,11 @@ module beside a stale sidecar (issue #256 follow-up B1)."
     (let ((native-comp-enable-subr-trampolines nil))
       (cl-letf (((symbol-function 'ghostel--resource-root)
                  (lambda () "/src/ghostel/"))
+                ((symbol-function 'ghostel--make-module-build-dir)
+                 (lambda (_dest-dir) "/src/ghostel/.ghostel-build/"))
                 ((symbol-function 'file-exists-p)
+                 (lambda (_) nil))
+                ((symbol-function 'file-directory-p)
                  (lambda (_) nil))
                 ((symbol-function 'message) (lambda (&rest _)))
                 ((symbol-function 'display-warning)
@@ -351,99 +387,66 @@ module beside a stale sidecar (issue #256 follow-up B1)."
         (ghostel--compile-module "/src/ghostel/")
         (should warnings)))))
 
-(ert-deftest ghostel-test-module-compile-command-uses-zig-build ()
+(ert-deftest ghostel-test-module-compile-command-uses-zig-build-prefix ()
   "Interactive compilation uses zig build directly."
   (let ((compile-invocation nil)
+        (finish-args nil)
         (default-directory nil)
         (ghostel-module-directory nil))
     (let ((native-comp-enable-subr-trampolines nil))
       (cl-letf (((symbol-function 'ghostel--resource-root)
-                 (lambda () "C:/ghostel/"))
+                 (lambda () "/src/ghostel/"))
+                ((symbol-function 'ghostel--make-module-build-dir)
+                 (lambda (_dest-dir) "/src/ghostel/.ghostel-build/"))
+                ((symbol-function 'ghostel--install-built-module-on-finish)
+                 (lambda (buf build-dir dest-dir)
+                   (setq finish-args (list buf build-dir dest-dir))))
                 ((symbol-function 'compile)
                  (lambda (command &optional comint)
                    (setq compile-invocation (list command comint default-directory))
                    (current-buffer))))
         (ghostel-module-compile)
-        (should (equal "zig build -Doptimize=ReleaseFast -Dcpu=baseline"
+        (should (equal (concat "zig build --prefix /src/ghostel/.ghostel-build/ "
+                               "-Doptimize=ReleaseFast -Dcpu=baseline")
                        (nth 0 compile-invocation)))
         (should (eq t (nth 1 compile-invocation)))
-        (should (equal (downcase "C:/ghostel/")
-                       (downcase (nth 2 compile-invocation))))))))
+        (should (equal "/src/ghostel/" (nth 2 compile-invocation)))
+        (should (equal (list (current-buffer)
+                             "/src/ghostel/.ghostel-build/"
+                             "/src/ghostel/")
+                       finish-args))))))
 
 (ert-deftest ghostel-test-module-compile-installs-when-dest-differs ()
   "Interactive compile installs the built module into `ghostel-module-directory'.
 A `compilation-finish-functions' handler runs
 `ghostel--install-module-pair', which pre-deletes any existing dest
 sidecar and then renames the module and sidecar into place."
-  (let* ((compile-buf (generate-new-buffer " *ghostel-test-compile*"))
-         (compilation-finish-functions nil)
-         (rename-args nil)
-         (deleted nil)
-         (made-dirs nil)
-         (default-directory nil)
-         (ghostel-module-directory "/custom/dir/"))
-    (unwind-protect
-        (let ((native-comp-enable-subr-trampolines nil))
-          (cl-letf (((symbol-function 'ghostel--resource-root)
-                     (lambda () "/src/ghostel/"))
-                    ((symbol-function 'compile)
-                     (lambda (&rest _) compile-buf))
-                    ((symbol-function 'file-exists-p)
-                     (lambda (_) t))
-                    ((symbol-function 'make-directory)
-                     (lambda (dir &rest _) (push dir made-dirs)))
-                    ((symbol-function 'delete-file)
-                     (lambda (path) (push path deleted)))
-                    ((symbol-function 'rename-file)
-                     (lambda (from to &optional _ok)
-                       (push (list from to) rename-args)))
-                    ((symbol-function 'message) (lambda (&rest _))))
-            (ghostel-module-compile)
-            (should (equal 1 (length compilation-finish-functions)))
-            ;; Simulate compilation completion.
-            (funcall (car compilation-finish-functions) compile-buf "finished\n")
-            (should (null compilation-finish-functions))
-            ;; Pre-existing dest sidecar must be removed before any rename.
-            (should (equal 1 (length deleted)))
-            (should (equal (downcase (expand-file-name
-                                      "ghostel-module.version"
-                                      "/custom/dir/"))
-                           (downcase (car deleted))))
-            (should (equal 2 (length rename-args)))
-            ;; rename-args is push-order (newest first): sidecar, then module.
-            (let ((module-args (cadr rename-args))
-                  (sidecar-args (car rename-args)))
-              (should (equal (downcase (expand-file-name
-                                        (concat "ghostel-module" module-file-suffix)
-                                        "/src/ghostel/"))
-                             (downcase (nth 0 module-args))))
-              (should (equal (downcase (expand-file-name
-                                        (concat "ghostel-module" module-file-suffix)
-                                        "/custom/dir/"))
-                             (downcase (nth 1 module-args))))
-              (should (equal (downcase (expand-file-name
-                                        "ghostel-module.version"
-                                        "/src/ghostel/"))
-                             (downcase (nth 0 sidecar-args))))
-              (should (equal (downcase (expand-file-name
-                                        "ghostel-module.version"
-                                        "/custom/dir/"))
-                             (downcase (nth 1 sidecar-args)))))))
-      (when (buffer-live-p compile-buf)
-        (kill-buffer compile-buf)))))
-
-(ert-deftest ghostel-test-module-compile-no-install-when-dest-same ()
-  "When dest matches source, no finish handler is registered."
-  (let ((compilation-finish-functions nil)
+  (let ((compile-invocation nil)
+        (finish-args nil)
         (default-directory nil)
-        (ghostel-module-directory nil))
+        (ghostel-module-directory "/custom/dir/"))
     (let ((native-comp-enable-subr-trampolines nil))
       (cl-letf (((symbol-function 'ghostel--resource-root)
                  (lambda () "/src/ghostel/"))
+                ((symbol-function 'ghostel--make-module-build-dir)
+                 (lambda (_dest-dir) "/custom/dir/.ghostel-build/"))
+                ((symbol-function 'ghostel--install-built-module-on-finish)
+                 (lambda (buf build-dir dest-dir)
+                   (setq finish-args (list buf build-dir dest-dir))))
                 ((symbol-function 'compile)
-                 (lambda (&rest _) (current-buffer))))
+                 (lambda (command &optional comint)
+                   (setq compile-invocation (list command comint default-directory))
+                   (current-buffer))))
         (ghostel-module-compile)
-        (should (null compilation-finish-functions))))))
+        (should (equal (concat "zig build --prefix /custom/dir/.ghostel-build/ "
+                               "-Doptimize=ReleaseFast -Dcpu=baseline")
+                       (nth 0 compile-invocation)))
+        (should (eq t (nth 1 compile-invocation)))
+        (should (equal "/src/ghostel/" (nth 2 compile-invocation)))
+        (should (equal (list (current-buffer)
+                             "/custom/dir/.ghostel-build/"
+                             "/custom/dir/")
+                       finish-args))))))
 
 (ert-deftest ghostel-test-module-version-match ()
   "Test that version check does nothing when module meets minimum."
@@ -737,13 +740,19 @@ module is never paired with a stale sidecar."
         (progn
           (with-temp-file built-mod (insert "new-so"))
           (with-temp-file built-sidecar (insert "0.99.0\n"))
+          (with-temp-file final-mod (insert "old-so"))
           (with-temp-file final-sidecar (insert "0.10.0\n"))
-          (ghostel--install-module-pair built-mod final-mod
-                                        built-sidecar final-sidecar)
-          (should (file-exists-p final-mod))
-          (should (equal "new-so" (with-temp-buffer
-                                    (insert-file-contents final-mod)
-                                    (buffer-string))))
+          (let ((old-inode (file-attribute-inode-number
+                            (file-attributes final-mod))))
+            (ghostel--install-module-pair built-mod final-mod
+                                          built-sidecar final-sidecar)
+            (should (file-exists-p final-mod))
+            (should (equal "new-so" (with-temp-buffer
+                                      (insert-file-contents final-mod)
+                                      (buffer-string))))
+            (should-not (equal old-inode
+                               (file-attribute-inode-number
+                                (file-attributes final-mod)))))
           (should (equal "0.99.0" (ghostel--read-module-sidecar-version dst)))
           (should-not (file-exists-p built-mod))
           (should-not (file-exists-p built-sidecar)))

@@ -41,9 +41,9 @@ jobs:
       - name: Build native module
         run: |
           if [ -n "${{ matrix.target }}" ]; then
-            zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast -Dcpu=baseline
+            zig build --prefix . -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast -Dcpu=baseline
           else
-            zig build -Doptimize=ReleaseFast -Dcpu=baseline
+            zig build --prefix . -Doptimize=ReleaseFast -Dcpu=baseline
           fi
 
       - name: Strip non-exported symbols (macOS)

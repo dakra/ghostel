@@ -2,6 +2,7 @@ zig-out/
 .zig-cache/
 zig-pkg/
 .build/
+.ghostel-build/
 .hypothesis/
 *.dylib
 *.so

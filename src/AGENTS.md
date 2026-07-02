@@ -54,5 +54,5 @@ For Emacs functions registered through `FunctionEntry`, prefer the error-union `
 ## Build and format workflow
 
 After editing any `.zig` file:
-1. `zig build` — must pass before moving on
+1. `zig build --prefix .` — must pass before moving on
 2. `zig fmt <file>` — format before committing

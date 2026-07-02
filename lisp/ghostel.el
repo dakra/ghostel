@@ -74,7 +74,7 @@
 ;; Native module:
 ;;
 ;;   A pre-built binary is downloaded automatically on first use.  To
-;;   build from source instead (requires Zig 0.15.2+), run zig build
+;;   build from source instead (requires Zig 0.15.2+), run zig build --prefix .
 ;;   from the project root, or M-x ghostel-module-compile.  M-x
 ;;   ghostel-download-module re-fetches the pre-built binary.
 ;;

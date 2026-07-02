@@ -32,7 +32,7 @@
   :group 'ghostel)
 
 (defcustom ghostel-dape-build-command
-  "zig build -Doptimize=Debug -Dcpu=baseline"
+  "zig build --prefix . -Doptimize=Debug -Dcpu=baseline"
   "Build command run before launching Dape.
 Set to nil to skip automatic compilation."
   :type '(choice (const :tag "Do not build" nil) string)

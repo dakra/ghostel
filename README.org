@@ -236,8 +236,8 @@ local Emacs headers.
 git clone https://github.com/dakra/ghostel.git
 cd ghostel
 
-# Build everything (fetches ghostty automatically via the Zig package manager)
-zig build -Doptimize=ReleaseFast
+# Build everything into the checkout (fetches ghostty automatically)
+zig build --prefix . -Doptimize=ReleaseFast
 #+end_src
 
 To override the vendored Emacs header, set =EMACS_INCLUDE_DIR= to a directory
@@ -249,12 +249,16 @@ your local path:
 
 #+begin_src sh
 zig fetch --save=ghostty /path/to/ghostty
-zig build -Doptimize=ReleaseFast
+zig build --prefix . -Doptimize=ReleaseFast
 #+end_src
 
+The module and =ghostel-module.version= sidecar are installed under Zig's
+install prefix.  Use =--prefix .= when building into a checkout that Ghostel
+should load directly, or pass another prefix matching =ghostel-module-directory=.
+
 When installed from MELPA, =M-x ghostel-module-compile= builds the native module
-from source using =zig build=; the Zig package manager fetches the ghostty
-dependency automatically.
+from source using =zig build --prefix <ghostel-module-directory>=; the Zig package
+manager fetches the ghostty dependency automatically.
 
 ** Bundled terminfo
 

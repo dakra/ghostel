@@ -7,7 +7,7 @@
 
 ;; Provisioning for Ghostel's native module (`ghostel-module', the compiled
 ;; libghostty .so/.dylib): downloading a pre-built binary from GitHub releases
-;; compiling from source via `zig build', maintainingthe on-disk version sidecar,
+;; compiling from source via `zig build', maintaining the on-disk version sidecar,
 ;; and loading the module — including the version checks that decide whether
 ;; an on-disk module is fresh enough to map.
 ;;
@@ -149,30 +149,33 @@ Returns non-nil on success."
 The build runs in `ghostel--resource-root' (which holds build.zig);
 on success the produced module and its sidecar are moved into DEST-DIR."
   (let* ((source-dir (ghostel--resource-root))
+         (build-dir nil)
          (default-directory source-dir))
     (message "ghostel: compiling native module with zig build (this may take a moment)...")
     (condition-case err
-        (let ((ret (process-file "zig" nil "*ghostel-build*" nil
-                                 "build" "-Doptimize=ReleaseFast" "-Dcpu=baseline")))
-          (if (not (eq ret 0))
-              (display-warning 'ghostel
-                               "Module compilation failed.  See *ghostel-build* buffer for details.")
-            (let* ((file-name (concat "ghostel-module" module-file-suffix))
-                   (built (expand-file-name file-name source-dir))
-                   (final (expand-file-name file-name dest-dir)))
-              (cond
-               ((not (file-exists-p built))
-                (display-warning 'ghostel
-                                 (format "Build succeeded but module not produced at %s"
-                                         built)))
-               ((equal built final)
-                (message "ghostel: native module compiled successfully"))
-               (t
-                (ghostel--install-module-pair
-                 built final
-                 (expand-file-name "ghostel-module.version" source-dir)
-                 (expand-file-name "ghostel-module.version" dest-dir))
-                (message "ghostel: native module compiled successfully"))))))
+        (unwind-protect
+            (progn
+              (setq build-dir (ghostel--make-module-build-dir dest-dir))
+              (let ((ret (process-file "zig" nil "*ghostel-build*" nil
+                                       "build" "--prefix" build-dir
+                                       "-Doptimize=ReleaseFast" "-Dcpu=baseline")))
+                (if (not (eq ret 0))
+                    (display-warning 'ghostel
+                                     "Module compilation failed.  See *ghostel-build* buffer for details.")
+                  (let* ((file-name (concat "ghostel-module" module-file-suffix))
+                         (built (expand-file-name file-name build-dir))
+                         (final (expand-file-name file-name dest-dir)))
+                    (if (not (file-exists-p built))
+                        (display-warning 'ghostel
+                                         (format "Build succeeded but module not produced at %s"
+                                                 built))
+                      (ghostel--install-module-pair
+                       built final
+                       (expand-file-name "ghostel-module.version" build-dir)
+                       (expand-file-name "ghostel-module.version" dest-dir))
+                      (message "ghostel: native module compiled successfully"))))))
+          (when (and build-dir (file-directory-p build-dir))
+            (ignore-errors (delete-directory build-dir t))))
       (file-missing
        (display-warning 'ghostel
                         (format "zig executable not found while compiling in %s" source-dir)))
@@ -211,7 +214,7 @@ Returns \\='download, \\='compile, or nil."
 
   [d] Download pre-built binary from:
       %s
-  [c] Compile from source via build.sh
+  [c] Compile from source via zig build
   [s] Skip — install manually later
 
 Choice: " url)
@@ -328,14 +331,20 @@ A missing or empty file returns nil; the result is otherwise trimmed."
       (when (and tmp (file-exists-p tmp))
         (ignore-errors (delete-file tmp))))))
 
+(defun ghostel--make-module-build-dir (dest-dir)
+  "Return the temporary Zig install prefix inside DEST-DIR."
+  (make-directory dest-dir t)
+  (let ((dir (expand-file-name ".ghostel-build/" dest-dir)))
+    (when (file-directory-p dir)
+      (delete-directory dir t))
+    (make-directory dir t)
+    (file-name-as-directory dir)))
+
 (defun ghostel--install-module-pair (built-mod final-mod
                                                built-sidecar final-sidecar)
   "Move BUILT-MOD and BUILT-SIDECAR into FINAL-MOD and FINAL-SIDECAR.
 The destination sidecar is removed before the module is moved, so every
-failure path ends in `sidecar absent' rather than `sidecar stale'.
-The loader treats the former as backward-compat (load and run a live
-version check); the latter as `refuse to map', which would leave the
-user stuck with a fresh module they cannot load."
+failure path ends in `sidecar absent' rather than `sidecar stale'."
   (make-directory (file-name-directory final-mod) t)
   (when (file-exists-p final-sidecar)
     (delete-file final-sidecar))
@@ -364,8 +373,8 @@ Leaving the prompt empty downloads the latest release."
           (message "ghostel: module loaded successfully"))
       (user-error "Download failed.  Try M-x ghostel-module-compile to build from source"))))
 
-(defun ghostel--install-built-module-on-finish (compile-buf source-dir dest-dir)
-  "Move the built module from SOURCE-DIR into DEST-DIR when COMPILE-BUF finishes.
+(defun ghostel--install-built-module-on-finish (compile-buf build-dir dest-dir)
+  "Move the built module from BUILD-DIR into DEST-DIR when COMPILE-BUF finishes.
 Registers a one-shot `compilation-finish-functions' handler that
 filters on COMPILE-BUF and removes itself on first match.  Used so the
 interactive `ghostel-module-compile' honours `ghostel-module-directory'.
@@ -377,38 +386,41 @@ The sidecar version file written by `build.zig' is moved alongside the module."
           (lambda (buf status)
             (when (eq buf compile-buf)
               (remove-hook 'compilation-finish-functions handler)
-              (when (string-match-p "finished" status)
-                (let ((built (expand-file-name file-name source-dir))
-                      (final (expand-file-name file-name dest-dir))
-                      (built-sidecar (expand-file-name sidecar source-dir))
-                      (final-sidecar (expand-file-name sidecar dest-dir)))
-                  (when (file-exists-p built)
-                    (condition-case err
-                        (progn
-                          (ghostel--install-module-pair
-                           built final built-sidecar final-sidecar)
-                          (message "ghostel: module installed at %s" final))
-                      (error
-                       (display-warning
-                        'ghostel
-                        (format "Build succeeded but installing into %s failed: %s"
-                                dest-dir (error-message-string err)))))))))))
+              (unwind-protect
+                  (when (string-match-p "finished" status)
+                    (let ((built (expand-file-name file-name build-dir))
+                          (final (expand-file-name file-name dest-dir))
+                          (built-sidecar (expand-file-name sidecar build-dir))
+                          (final-sidecar (expand-file-name sidecar dest-dir)))
+                      (when (file-exists-p built)
+                        (condition-case err
+                            (progn
+                              (ghostel--install-module-pair
+                               built final built-sidecar final-sidecar)
+                              (message "ghostel: module installed at %s" final))
+                          (error
+                           (display-warning
+                            'ghostel
+                            (format "Build succeeded but installing into %s failed: %s"
+                                    dest-dir (error-message-string err))))))))
+                (when (file-directory-p build-dir)
+                  (ignore-errors (delete-directory build-dir t)))))))
     (add-hook 'compilation-finish-functions handler)))
 
 (defun ghostel-module-compile ()
   "Compile the ghostel native module by running zig build.
 The output is shown in a `*compilation*' buffer.
-When `ghostel-module-directory' points outside the package tree, the
-produced module is moved into that directory once the build finishes."
+The produced module is moved into `ghostel-module-directory' once
+the build finishes."
   (interactive)
   (let* ((source-dir (ghostel--resource-root))
          (dest-dir (ghostel--module-directory))
+         (build-dir (ghostel--make-module-build-dir dest-dir))
          (default-directory source-dir)
-         (compile-buf (compile "zig build -Doptimize=ReleaseFast -Dcpu=baseline" t)))
-    (unless (equal (file-name-as-directory (expand-file-name source-dir))
-                   (file-name-as-directory (expand-file-name dest-dir)))
-      (ghostel--install-built-module-on-finish compile-buf source-dir dest-dir))))
-
+         (compile-buf (compile (format "zig build --prefix %s -Doptimize=ReleaseFast -Dcpu=baseline"
+                                       (shell-quote-argument (expand-file-name build-dir)))
+                               t)))
+    (ghostel--install-built-module-on-finish compile-buf build-dir dest-dir)))
 
 (defun ghostel--check-module-version (dir &optional prompt-user)
   "Check if the loaded module is older than required.
