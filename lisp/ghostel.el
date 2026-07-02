@@ -4503,7 +4503,7 @@ run the shell on the remote host."
 Used as the reference window for determining graphics properties when
 rendering, such as fonts and glyph sizes.  Prefer graphical windows over
 terminal windows."
-  (let ((wins (get-buffer-window-list buffer nil t)))
+  (let ((wins (ghostel--windows buffer t)))
     (or (cl-find-if (lambda (w) (display-graphic-p (window-frame w)))
                     wins)
         (car wins))))
@@ -4560,6 +4560,20 @@ remain handled inside the renderer."
      (or begin (ghostel--viewport-start) (point-min))
      (or end (point-max)))))
 
+(defun ghostel--windows (&optional buffer all-frames)
+  "Return Ghostel windows, optionally limited to BUFFER.
+ALL-FRAMES has the same meaning as in `walk-windows'."
+  (let (windows)
+    (walk-windows
+     (lambda (window)
+       (let ((window-buffer (window-buffer window)))
+         (when (and (or (null buffer) (eq window-buffer buffer))
+                    (with-current-buffer window-buffer
+                      (derived-mode-p 'ghostel-mode)))
+           (push window windows))))
+     'no-minibuf all-frames)
+    (nreverse windows)))
+
 (defun ghostel--window-anchored-p (window &optional body-pixel-height)
   "Non-nil if WINDOW is scrolled to follow the live terminal output.
 WINDOW follows the output when the lines from its `window-start' to
@@ -4577,6 +4591,23 @@ line the graphical anchor leaves via `window-vscroll'."
                 (ws (window-start window))
                 (ws-lines-to-end (count-lines ws (point-max))))
       (<= ws-lines-to-end (1+ (floor screen-lines))))))
+
+(defun ghostel--anchored-windows (&optional buffer all-frames)
+  "Return anchored Ghostel windows.
+BUFFER and ALL-FRAMES have the same meaning as in `ghostel--windows'."
+  (cl-remove-if-not #'ghostel--window-anchored-p
+                    (ghostel--windows buffer all-frames)))
+
+(defun ghostel--window-buffer-pairs (windows)
+  "Return (WINDOW . BUFFER) pairs for WINDOWS."
+  (mapcar (lambda (window) (cons window (window-buffer window))) windows))
+
+(defun ghostel--window-buffer-pair-live-p (entry)
+  "Return non-nil if ENTRY's window still shows ENTRY's buffer."
+  (let ((window (car entry))
+        (buffer (cdr entry)))
+    (and (window-live-p window)
+         (eq (window-buffer window) buffer))))
 
 (defconst ghostel--set-window-vscroll-preserve-supported-p
   (let ((max-args (cdr (subr-arity (symbol-function 'set-window-vscroll)))))
@@ -4699,9 +4730,7 @@ opportunistic output redraws that may safely wait for the frame to end."
           (ghostel--line-mode-pre-redraw)
           (setq ghostel--force-next-redraw nil)
           (when-let* ((render-win (ghostel--get-render-window buffer)))
-            (let* ((all-windows (get-buffer-window-list buffer nil t))
-                   (anchored (cl-remove-if-not #'ghostel--window-anchored-p
-                                               all-windows))
+            (let* ((anchored (ghostel--anchored-windows buffer t))
                    ;; In line mode the user's in-progress input lives
                    ;; in the buffer past the prompt and is not in
                    ;; libghostty's grid; the renderer would otherwise
@@ -4811,7 +4840,7 @@ path even when the row/column count is unchanged."
     (ghostel--anchor-window window))
   (when-let* ((adjust-fn (or (default-value 'window-adjust-process-window-size-function)
                              #'window-adjust-process-window-size-smallest))
-              (windows (get-buffer-window-list nil nil t))
+              (windows (ghostel--windows (current-buffer) t))
               (size (funcall adjust-fn ghostel--process windows))
               (width (car size))
               (height (cdr size)))
@@ -4867,17 +4896,13 @@ and the TTY display that needs it off keeps working in parallel)."
   "Schedule anchoring of all the currently anchored Ghostel windows.
 The minibuffer when used with packages such as Vertico can cause a resize of
 a Ghostel window making it lose its anchoring."
-  (when-let* ((anchored (cl-loop for win in (window-list)
-                                 when (ghostel--window-anchored-p win)
-                                 collect (cons win (window-buffer win)))))
+  (when-let* ((anchored (ghostel--window-buffer-pairs
+                         (ghostel--anchored-windows))))
     (run-at-time 0 nil
                  (lambda ()
                    (dolist (entry anchored)
-                     (let ((win (car entry))
-                           (buffer (cdr entry)))
-                       (when (and (window-live-p win)
-                                  (eq (window-buffer win) buffer))
-                         (ghostel--anchor-window win))))))))
+                     (when (ghostel--window-buffer-pair-live-p entry)
+                       (ghostel--anchor-window (car entry))))))))
 
 (defun ghostel--minibuffer-exit-maybe-leave ()
   "Run `ghostel-maybe-leave-input' after a minibuffer command, deferred.

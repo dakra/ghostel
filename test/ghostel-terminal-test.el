@@ -183,7 +183,7 @@ modes (47 / 1047 / 1049) are handled uniformly."
                 (lambda (&rest _) nil))
                ((symbol-function 'window-old-body-pixel-height)
                 (lambda (_window) nil))
-               ((symbol-function 'get-buffer-window-list)
+               ((symbol-function 'ghostel--windows)
                 (lambda (&rest _) '(fake-win)))
                ((symbol-function 'process-buffer)
                 (lambda (_proc) cur-buf))
