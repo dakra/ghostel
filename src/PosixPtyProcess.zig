@@ -140,12 +140,7 @@ pty: Pty,
 pid: posix.pid_t = -1,
 wake_pipe: [2]posix.fd_t = .{ -1, -1 },
 
-pub const ProcessParams = struct {
-    file: [:0]const u8,
-    args: [][:0]const u8,
-    env: *const std.process.EnvMap,
-    cwd: ?[]const u8 = null,
-};
+pub const ProcessParams = @import("ProcessParams.zig");
 
 pub const EventWriter = struct {
     pub const Fd = posix.fd_t;
@@ -210,22 +205,23 @@ pub fn init(alloc: Allocator, initial_cols: u16, initial_rows: u16, params: Proc
     const args = try arena.allocSentinel(?[*:0]const u8, params.args.len, null);
     for (params.args, 0..) |arg, i| args[i] = arg;
 
+    self.wake_pipe = try posix.pipe2(.{ .CLOEXEC = true });
+    errdefer {
+        posix.close(self.wake_pipe[0]);
+        posix.close(self.wake_pipe[1]);
+    }
+    const flags = try posix.fcntl(self.pty.primary_fd, posix.F.GETFL, 0);
+    _ = try posix.fcntl(
+        self.pty.primary_fd,
+        posix.F.SETFL,
+        flags | @as(u32, @bitCast(posix.O{ .NONBLOCK = true })),
+    );
+
     const pid = try posix.fork();
     if (pid != 0) {
         // This is the parent, child started successfully.
         self.pty.closeReplica();
         self.pid = pid;
-        self.wake_pipe = try posix.pipe2(.{ .CLOEXEC = true });
-        errdefer {
-            posix.close(self.wake_pipe[0]);
-            posix.close(self.wake_pipe[1]);
-        }
-        const flags = try posix.fcntl(self.pty.primary_fd, posix.F.GETFL, 0);
-        _ = try posix.fcntl(
-            self.pty.primary_fd,
-            posix.F.SETFL,
-            flags | @as(u32, @bitCast(posix.O{ .NONBLOCK = true })),
-        );
         return self;
     }
 
@@ -261,40 +257,33 @@ pub fn write(self: *Self, data: []const u8) !void {
 }
 
 pub fn drain(self: *Self, stream: anytype) !bool {
-    var drained = false;
     var buf: [64 * 1024]u8 = undefined;
 
-    while (true) {
-        var pollfds = [_]posix.pollfd{
-            .{
-                .fd = self.pty.primary_fd,
-                .events = posix.POLL.IN,
-                .revents = undefined,
-            },
-            .{
-                .fd = self.wake_pipe[0],
-                .events = posix.POLL.IN,
-                .revents = undefined,
-            },
-        };
-        _ = try posix.poll(&pollfds, -1);
+    var pollfds = [_]posix.pollfd{
+        .{
+            .fd = self.pty.primary_fd,
+            .events = posix.POLL.IN,
+            .revents = undefined,
+        },
+        .{
+            .fd = self.wake_pipe[0],
+            .events = posix.POLL.IN,
+            .revents = undefined,
+        },
+    };
+    _ = try posix.poll(&pollfds, -1);
+    if (pollfds[1].revents != 0) return false;
 
-        if (pollfds[1].revents != 0) return drained;
-        break;
-    }
-
+    var drained = false;
     while (true) {
         const len = posix.read(self.pty.primary_fd, buf[0..]) catch |err| switch (err) {
             error.WouldBlock => return drained,
             error.NotOpenForReading, error.InputOutput => return drained,
             else => return err,
         };
-        if (len != 0) {
-            stream.nextSlice(buf[0..len]);
-            drained = true;
-            continue;
-        }
         if (len == 0) return drained;
+        stream.nextSlice(buf[0..len]);
+        drained = true;
     }
 }
 

@@ -24,7 +24,6 @@ const State = struct {
     pty_output: c.HANDLE = c.INVALID_HANDLE_VALUE,
     shell_process: c.HANDLE = c.INVALID_HANDLE_VALUE,
     running: std.atomic.Value(bool) = .init(true),
-    forced_stop: std.atomic.Value(bool) = .init(false),
     pid: i64 = -1,
 };
 
@@ -34,12 +33,7 @@ var create_pseudo_console: ?CreatePseudoConsoleFn = null;
 var resize_pseudo_console: ?ResizePseudoConsoleFn = null;
 var close_pseudo_console: ?ClosePseudoConsoleFn = null;
 
-pub const ProcessParams = struct {
-    file: [:0]const u8,
-    args: [][:0]const u8,
-    env: *const std.process.EnvMap,
-    cwd: ?[]const u8 = null,
-};
+pub const ProcessParams = @import("ProcessParams.zig");
 
 pub const EventWriter = struct {
     pub const Fd = c_int;
@@ -57,22 +51,22 @@ pub const EventWriter = struct {
     };
 
     fd: Fd,
-    notify_crt: NotifyCrt,
 
-    var cached_notify_crt: ?NotifyCrt = null;
+    var notify_crt: ?NotifyCrt = null;
 
     pub fn init(fd: Fd) !EventWriter {
+        _ = try resolveNotifyCrt();
         return .{
             .fd = fd,
-            .notify_crt = try resolveNotifyCrt(),
         };
     }
 
     pub fn write(self: *EventWriter, data: []const u8) !void {
+        const crt = notify_crt.?;
         var written: usize = 0;
         while (written < data.len) {
             const chunk_len: c_uint = @intCast(@min(data.len - written, std.math.maxInt(c_uint)));
-            const n = self.notify_crt.write(
+            const n = crt.write(
                 self.fd,
                 @ptrCast(data[written..].ptr),
                 chunk_len,
@@ -84,7 +78,7 @@ pub const EventWriter = struct {
 
     pub fn close(self: *EventWriter) void {
         if (self.fd < 0) return;
-        _ = self.notify_crt.close(self.fd);
+        _ = notify_crt.?.close(self.fd);
         self.fd = -1;
     }
 
@@ -164,7 +158,7 @@ pub const EventWriter = struct {
     }
 
     fn resolveNotifyCrt() !NotifyCrt {
-        if (cached_notify_crt) |crt| return crt;
+        if (notify_crt) |crt| return crt;
 
         const provider = try detectNotifyCrtProvider();
         const dll_name = switch (provider) {
@@ -174,11 +168,11 @@ pub const EventWriter = struct {
         const module = c.GetModuleHandleW(dll_name) orelse return error.NotifyCrtUnavailable;
         const write_proc = c.GetProcAddress(module, "_write") orelse return error.NotifyCrtUnavailable;
         const close_proc = c.GetProcAddress(module, "_close") orelse return error.NotifyCrtUnavailable;
-        cached_notify_crt = .{
+        notify_crt = .{
             .write = @ptrCast(write_proc),
             .close = @ptrCast(close_proc),
         };
-        return cached_notify_crt.?;
+        return notify_crt.?;
     }
 };
 
@@ -288,7 +282,6 @@ pub fn resize(self: *Self, cols: u16, rows: u16) !void {
 }
 
 pub fn requestStop(self: *Self, read_thread: std.Thread) void {
-    self.state.forced_stop.store(true, .release);
     stopRunning(self.state);
 
     if (self.state.pty_input != c.INVALID_HANDLE_VALUE) {
@@ -306,10 +299,7 @@ pub fn replicaName(_: *Self) []const u8 {
 pub fn deinitAndWait(self: *Self) u8 {
     const state = self.state;
     stopRunning(state);
-
-    if (state.forced_stop.load(.acquire)) {
-        closeConPtyHandles(state);
-    }
+    closeConPtyHandles(state);
 
     var exit_code: c.DWORD = 0;
     if (state.shell_process != c.INVALID_HANDLE_VALUE) {
@@ -317,8 +307,6 @@ pub fn deinitAndWait(self: *Self) u8 {
         _ = c.GetExitCodeProcess(state.shell_process, &exit_code);
         _ = c.CloseHandle(state.shell_process);
     }
-
-    closeConPtyHandles(state);
 
     const alloc = state.alloc;
     alloc.destroy(state);
@@ -512,15 +500,32 @@ fn argvToCommandLineWindows(
     return try std.unicode.wtf8ToWtf16LeAllocZ(allocator, buf.items);
 }
 
+const EnvEntry = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+fn envEntryLessThan(_: void, lhs: EnvEntry, rhs: EnvEntry) bool {
+    return std.ascii.lessThanIgnoreCase(lhs.key, rhs.key);
+}
+
 fn buildEnvironmentBlock(arena: Allocator, env_map: *const std.process.EnvMap) ![]u16 {
     var builder = std.ArrayList(u16).empty;
     errdefer builder.deinit(arena);
 
+    const entries = try arena.alloc(EnvEntry, @intCast(env_map.count()));
+    defer arena.free(entries);
     var it = env_map.iterator();
-    while (it.next()) |pair| {
-        try appendWtf8AsWtf16(&builder, arena, pair.key_ptr.*);
+    var i: usize = 0;
+    while (it.next()) |pair| : (i += 1) {
+        entries[i] = .{ .key = pair.key_ptr.*, .value = pair.value_ptr.* };
+    }
+    std.mem.sort(EnvEntry, entries, {}, envEntryLessThan);
+
+    for (entries) |entry| {
+        try appendWtf8AsWtf16(&builder, arena, entry.key);
         try builder.append(arena, '=');
-        try appendWtf8AsWtf16(&builder, arena, pair.value_ptr.*);
+        try appendWtf8AsWtf16(&builder, arena, entry.value);
         try builder.append(arena, 0);
     }
     try builder.append(arena, 0);
@@ -575,6 +580,23 @@ test "buildEnvironmentBlock writes nul-separated UTF-16 entries" {
     try std.testing.expectEqualSlices(u16, &[_]u16{
         'F', 'O', 'O', '=', 'b', 'a', 'r', 0,
         0,
+    }, block);
+}
+
+test "buildEnvironmentBlock sorts entries by environment name" {
+    var env = std.process.EnvMap.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("ZED", "last");
+    try env.put("ALPHA", "first");
+    try env.put("Path", "middle");
+
+    const block = try buildEnvironmentBlock(std.testing.allocator, &env);
+    defer std.testing.allocator.free(block);
+
+    try std.testing.expectEqualSlices(u16, &[_]u16{
+        'A', 'L', 'P', 'H', 'A', '=', 'f', 'i', 'r', 's', 't', 0,
+        'P', 'a', 't', 'h', '=', 'm', 'i', 'd', 'd', 'l', 'e', 0,
+        'Z', 'E', 'D', '=', 'l', 'a', 's', 't', 0,   0,
     }, block);
 }
 
