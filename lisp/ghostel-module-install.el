@@ -84,6 +84,7 @@ Returns nil if the platform is not recognized."
          (os (cond
               ((eq system-type 'darwin) "macos")
               ((eq system-type 'gnu/linux) "linux")
+              ((eq system-type 'windows-nt) "windows")
               (t nil))))
     (when os
       (format "%s-%s" arch os))))
