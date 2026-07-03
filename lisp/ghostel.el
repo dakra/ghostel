@@ -766,9 +766,10 @@ anchor the input region.  Has no effect on `ghostel-exec'."
 - nil: stay in semi-char.  Best-effort - the selection could get
   clobbered by the next redraw, and `M-w' is not bound here.
 
-Has no effect when a DEC mouse-tracking mode (1000/1002/1003) is
-active (the press is forwarded to the program) or when the buffer
-is not in semi-char-mode when the gesture completes.
+Has no effect when terminal mouse input consumes the event, or
+when the buffer is not in semi-char-mode when the gesture
+completes.  Copy, Emacs, and line modes keep normal Emacs mouse
+behavior even if terminal mouse tracking is active.
 A click that focuses the window or its frame never switches mode."
   :type '(choice (const :tag "Copy mode (default)" copy)
                  (const :tag "Emacs mode"          emacs)
@@ -1845,7 +1846,7 @@ pasted using bracketed paste."
 
 (defun ghostel--forward-scroll-event (event button)
   "Try to forward a scroll EVENT as mouse BUTTON to the terminal.
-Return non-nil if the event was forwarded (mouse tracking is active)."
+Return non-nil if the event was encoded and sent."
   (when (and event (ghostel--terminal-input-mode-p))
     (let* ((posn (event-start event))
            (col-row (posn-col-row posn))
@@ -1928,25 +1929,27 @@ running program receives a live motion stream during the drag.")
     result))
 
 (defun ghostel--mouse-press (event)
-  "Handle mouse button press EVENT for terminal mouse tracking."
+  "Handle mouse button press EVENT for terminal mouse tracking.
+Return non-nil when the event was encoded and sent to the terminal."
   (interactive "e")
-  (select-window (posn-window (event-start event)))
-  (let* ((posn (event-start event))
-         (col-row (posn-col-row posn))
-         (col (car col-row))
-         (row (cdr col-row)))
-    (ghostel--mouse-event ghostel--term
-                          0  ; press
-                          (ghostel--mouse-button-number event)
-                          row col
-                          (ghostel--mouse-mods event))
-    ;; Emacs only emits `mouse-movement' events while `track-mouse'is non-nil,
-    ;; and coalesces a drag into a single `drag-mouse-N' event at release.
-    ;; To give the running program a live motion stream during the drag,
-    ;; start tracking now (only when a DEC mouse-tracking mode is on,
-    ;; so char mode does not arm it for a program that ignores mouse input).
-    (when (ghostel--mouse-tracking-active-p)
-      (ghostel--mouse-begin-drag-tracking event))))
+  (when (ghostel--terminal-input-mode-p)
+    (select-window (posn-window (event-start event)))
+    (let* ((posn (event-start event))
+           (col-row (posn-col-row posn))
+           (col (car col-row))
+           (row (cdr col-row))
+           (sent (ghostel--mouse-event ghostel--term
+                                       0  ; press
+                                       (ghostel--mouse-button-number event)
+                                       row col
+                                       (ghostel--mouse-mods event))))
+      (when sent
+        ;; Emacs only emits `mouse-movement' events while `track-mouse'is non-nil,
+        ;; and coalesces a drag into a single `drag-mouse-N' event at release.
+        ;; To give the running program a live motion stream during the drag,
+        ;; start tracking after libghostty accepts the press.
+        (ghostel--mouse-begin-drag-tracking event))
+      sent)))
 
 (defun ghostel--mouse-begin-drag-tracking (event)
   "Arm live motion forwarding for a drag started by EVENT.
@@ -1990,17 +1993,20 @@ within the same cell so the PTY is not flooded with redundant motion."
                               (ghostel--mouse-mods event))))))
 
 (defun ghostel--mouse-release (event)
-  "Handle mouse button release EVENT for terminal mouse tracking."
+  "Handle mouse button release EVENT for terminal mouse tracking.
+Return non-nil when the event was encoded and sent to the terminal."
   (interactive "e")
-  (let* ((posn (event-end event))
-         (col-row (posn-col-row posn))
-         (col (car col-row))
-         (row (cdr col-row)))
-    (ghostel--mouse-event ghostel--term
-                          1  ; release
-                          (ghostel--mouse-button-number event)
-                          row col
-                          (ghostel--mouse-mods event))))
+  (when (or ghostel--mouse-drag-button
+            (ghostel--terminal-input-mode-p))
+    (let* ((posn (event-end event))
+           (col-row (posn-col-row posn))
+           (col (car col-row))
+           (row (cdr col-row)))
+      (ghostel--mouse-event ghostel--term
+                            1  ; release
+                            (ghostel--mouse-button-number event)
+                            row col
+                            (ghostel--mouse-mods event)))))
 
 (defun ghostel--mouse-drag (event)
   "Handle drag-end EVENT as a button release for terminal mouse tracking.
@@ -2008,34 +2014,27 @@ A `drag-mouse-N' event is only delivered at the *end* of a drag, so it marks
 the button release.  Live motion during the drag is streamed separately by
 `ghostel--mouse-drag-motion'; this handler's job is to complete the protocol
 with a release at the final position.  (Sending a release rather than a motion
-also matters for DEC mode 1000, which reports releases but never motion.)"
+also matters for DEC mode 1000, which reports releases but never motion.)
+Return non-nil when the event was encoded and sent to the terminal."
   (interactive "e")
-  (let* ((posn (event-end event))
-         (col-row (posn-col-row posn))
-         (col (car col-row))
-         (row (cdr col-row)))
-    (ghostel--mouse-event ghostel--term
-                          1  ; release
-                          (ghostel--mouse-button-number event)
-                          row col
-                          (ghostel--mouse-mods event))))
-
-(defun ghostel--mouse-tracking-active-p ()
-  "Non-nil if libghostty has any DEC mouse-tracking mode set.
-Checks modes 1000 (normal), 1002 (button-event), and 1003
-\(any-event) - the modes a running program enables when it wants
-to consume mouse input."
-  (and ghostel--term
-       (or (ghostel--mode-enabled ghostel--term 1000)
-           (ghostel--mode-enabled ghostel--term 1002)
-           (ghostel--mode-enabled ghostel--term 1003))))
+  (when (or ghostel--mouse-drag-button
+            (ghostel--terminal-input-mode-p))
+    (let* ((posn (event-end event))
+           (col-row (posn-col-row posn))
+           (col (car col-row))
+           (row (cdr col-row)))
+      (ghostel--mouse-event ghostel--term
+                            1  ; release
+                            (ghostel--mouse-button-number event)
+                            row col
+                            (ghostel--mouse-mods event)))))
 
 (defun ghostel-mouse-press-or-copy-mode (event)
   "Forward EVENT to the terminal, or hand off to `mouse-drag-region'.
-With a DEC mouse-tracking mode (1000/1002/1003) on, forwards the press
-to the program; otherwise hands off to `mouse-drag-region'.  Records in
-`ghostel--mouse-press-was-selected' whether the window was already selected,
-in an already-focused frame, before focusing it, for
+When terminal input consumes the press, forwards it to the program;
+otherwise hands off to `mouse-drag-region'.  Records in
+`ghostel--mouse-press-was-selected' whether the window was already
+selected, in an already-focused frame, before focusing it, for
 `ghostel-mouse-release-or-set-point'."
   (interactive "e")
   (let* ((win (posn-window (event-start event)))
@@ -2049,8 +2048,7 @@ in an already-focused frame, before focusing it, for
     (setq ghostel--mouse-press-was-selected
           (and (eq win (selected-window)) (not refocused)))
     (select-window win)
-    (if (ghostel--mouse-tracking-active-p)
-        (ghostel--mouse-press event)
+    (unless (ghostel--mouse-press event)
       ;; `mouse-drag-region' activates the mark mid-drag; the release
       ;; handler picks the input mode.  `ghostel--mark-activated' ignores
       ;; activations made under the mouse handlers, so the hook stays out of it.
@@ -2058,18 +2056,18 @@ in an already-focused frame, before focusing it, for
 
 (defun ghostel-mouse-release-or-set-point (event &optional promote-to-region)
   "Forward EVENT to the terminal, or set point / switch input mode.
-With tracking off, sets point (PROMOTE-TO-REGION keeps the word/line
-selection of a multi-click) and, in semi-char mode, switches to
-`ghostel-mouse-drag-input-mode' after a multi-click or a single click in an
-already-selected window.  A single click that only focuses a previously
-unselected window or frame instead snaps point to the live cursor and stays
-in semi-char (skipped when `ghostel-mouse-drag-input-mode' is nil)."
+Without terminal mouse input, sets point (PROMOTE-TO-REGION keeps
+the word/line selection of a multi-click) and, in semi-char mode,
+switches to `ghostel-mouse-drag-input-mode' after a multi-click or
+a single click in an already-selected window.  A single click that
+only focuses a previously-unselected window or frame instead snaps
+point to the live cursor and stays in semi-char (skipped when
+`ghostel-mouse-drag-input-mode' is nil)."
   (interactive "e\np")
   (let ((active (and ghostel-mouse-drag-input-mode
                      (eq ghostel--input-mode 'semi-char))))
     (cond
-     ((ghostel--mouse-tracking-active-p)
-      (ghostel--mouse-release event))
+     ((ghostel--mouse-release event))
      ;; Pure focus click of a previously-unselected window: just focus,
      ;; snapping point to the live input cursor instead of the click.
      ((and active
@@ -2089,9 +2087,9 @@ in semi-char (skipped when `ghostel-mouse-drag-input-mode' is nil)."
 (defun ghostel-mouse-drag-or-set-region (event)
   "Forward EVENT to the terminal, or hand off to `mouse-set-region'.
 Companion to `ghostel-mouse-press-or-copy-mode' for the left-button
-drag event.  With tracking off, defers to Emacs's standard drag
-handler so the selection survives release; without this,
-`mouse-drag-track's exit hook deactivates the mark and our
+drag event.  Without terminal mouse input, defers to Emacs's
+standard drag handler so the selection survives release; without
+this, `mouse-drag-track's exit hook deactivates the mark and our
 intercept keeps `mouse-set-region' from re-establishing the region.
 When the buffer is in semi-char mode, switches input mode once the
 region is set to the mode configured in `ghostel-mouse-drag-input-mode'.
@@ -2100,8 +2098,7 @@ anything) is dispatched to `ghostel-mouse-release-or-set-point',
 so a focus click stays in semi-char like a plain click."
   (interactive "e")
   (cond
-   ((ghostel--mouse-tracking-active-p)
-    (ghostel--mouse-drag event))
+   ((ghostel--mouse-drag event))
    ;; An empty drag selected nothing: the wiggle was really a click
    ((eq (posn-point (event-start event))
         (posn-point (event-end event)))
@@ -2114,19 +2111,18 @@ so a focus click stays in semi-char like a plain click."
         ('emacs (ghostel-emacs-mode)))))))
 
 (defun ghostel-mouse-down-2-or-noop (event)
-  "Forward EVENT to the terminal when a mouse-tracking mode is on.
-Otherwise no-op so the matching release handler can paste the
-primary selection without a stray press byte being sent first."
+  "Offer middle-button press EVENT to the terminal.
+If the terminal does not consume it, do nothing; the matching
+release handler is responsible for primary-selection paste."
   (interactive "e")
-  (when (ghostel--mouse-tracking-active-p)
-    (ghostel--mouse-press event)))
+  (ghostel--mouse-press event))
 
 (defun ghostel-mouse-paste-primary-or-release (event)
   "Forward EVENT to the terminal, or paste the primary selection.
 Selects the click's window first so a middle-click into an
 unfocused ghostel window pastes into that terminal, not whichever
-buffer happened to be current.  With a DEC mouse-tracking mode
-active, behaves like `ghostel--mouse-release'.  Otherwise pastes
+buffer happened to be current.  When terminal mouse input consumes
+the event, behaves like `ghostel--mouse-release'.  Otherwise pastes
 the X primary selection at the live cursor via `ghostel--paste-text',
 which uses bracketed paste when the terminal has DEC 2004 enabled.
 When in copy or Emacs mode and `ghostel-readonly-fast-exit' is
@@ -2134,8 +2130,7 @@ non-nil, exits to the prior input mode first so the paste lands at
 the prompt."
   (interactive "e")
   (select-window (posn-window (event-start event)))
-  (if (ghostel--mouse-tracking-active-p)
-      (ghostel--mouse-release event)
+  (unless (ghostel--mouse-release event)
     (let ((text (gui-get-primary-selection)))
       (when (and text (not (string-empty-p text)))
         (ghostel--on-user-input)

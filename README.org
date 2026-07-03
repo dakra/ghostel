@@ -464,9 +464,11 @@ click that focuses a previously-unselected window only gives that window focus:
 point lands at the terminal's input cursor (not the click) and the input mode is
 unchanged.  A click meant just to focus a window therefore never freezes the buffer.  (Set
 =ghostel-mouse-drag-input-mode= to =nil= to turn the click feature off, so a click sets
-point like in any Emacs buffer.)  When a TUI has DEC mouse-tracking enabled
-(1000/1002/1003 - htop, lazygit, etc.) the click is forwarded to the program and none
-of the above applies.
+point like in any Emacs buffer.)  When ghostel is in a terminal-input mode and a
+TUI has DEC mouse-tracking enabled (1000/1002/1003 - htop, lazygit, etc.), the
+click is forwarded to the program and none of the above applies.  Copy, Emacs,
+and line modes keep normal Emacs mouse behavior even if terminal mouse tracking
+is active.
 
 Double- and triple-click select the word and line under the cursor respectively,
 and protect that region the same way a drag does (from any window, focused or not).

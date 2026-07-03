@@ -893,8 +893,8 @@ Exiting returns to whatever mode the user was in beforehand, mirroring
                 (ghostel-mark-activation-input-mode 'copy))
             (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
                       ((symbol-function 'ghostel--anchor-window) #'ignore)
-                      ((symbol-function 'ghostel--mouse-tracking-active-p)
-                       (lambda () nil))
+                      ((symbol-function 'ghostel--mouse-event)
+                       (lambda (&rest _) nil))
                       ;; The real mouse-set-region activates the mark.
                       ((symbol-function 'mouse-set-region)
                        (lambda (_event) (push-mark (point) t t))))
