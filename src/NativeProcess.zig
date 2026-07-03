@@ -188,11 +188,12 @@ fn loopOnce(self: *Self) !bool {
         self.stream.nextSlice(buf[0..len]);
     }
 
+    try self.notifyVtUpdate();
+
     if (pollfds[0].revents & posix.POLL.HUP != 0) {
         return false;
     }
 
-    try self.notifyVtUpdate();
     return true;
 }
 
