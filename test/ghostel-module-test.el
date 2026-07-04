@@ -401,16 +401,19 @@ module beside a stale sidecar (issue #256 follow-up B1)."
                 ((symbol-function 'ghostel--install-built-module-on-finish)
                  (lambda (buf build-dir dest-dir)
                    (setq finish-args (list buf build-dir dest-dir))))
-                ((symbol-function 'compile)
-                 (lambda (command &optional comint)
-                   (setq compile-invocation (list command comint default-directory))
+                ((symbol-function 'compilation-start)
+                 (lambda (command &optional mode name-function &rest _)
+                   (setq compile-invocation
+                         (list command mode name-function default-directory))
                    (current-buffer))))
         (ghostel-module-compile)
         (should (equal (concat "zig build --prefix /src/ghostel/.ghostel-build/ "
                                "-Doptimize=ReleaseFast -Dcpu=baseline")
                        (nth 0 compile-invocation)))
-        (should (eq t (nth 1 compile-invocation)))
-        (should (equal "/src/ghostel/" (nth 2 compile-invocation)))
+        (should (eq #'ghostel-module-compilation-mode (nth 1 compile-invocation)))
+        (should (eq #'ghostel--module-compilation-buffer-name
+                    (nth 2 compile-invocation)))
+        (should (equal "/src/ghostel/" (nth 3 compile-invocation)))
         (should (equal (list (current-buffer)
                              "/src/ghostel/.ghostel-build/"
                              "/src/ghostel/")
@@ -433,20 +436,71 @@ sidecar and then renames the module and sidecar into place."
                 ((symbol-function 'ghostel--install-built-module-on-finish)
                  (lambda (buf build-dir dest-dir)
                    (setq finish-args (list buf build-dir dest-dir))))
-                ((symbol-function 'compile)
-                 (lambda (command &optional comint)
-                   (setq compile-invocation (list command comint default-directory))
+                ((symbol-function 'compilation-start)
+                 (lambda (command &optional mode name-function &rest _)
+                   (setq compile-invocation
+                         (list command mode name-function default-directory))
                    (current-buffer))))
         (ghostel-module-compile)
         (should (equal (concat "zig build --prefix /custom/dir/.ghostel-build/ "
                                "-Doptimize=ReleaseFast -Dcpu=baseline")
                        (nth 0 compile-invocation)))
-        (should (eq t (nth 1 compile-invocation)))
-        (should (equal "/src/ghostel/" (nth 2 compile-invocation)))
+        (should (eq #'ghostel-module-compilation-mode (nth 1 compile-invocation)))
+        (should (eq #'ghostel--module-compilation-buffer-name
+                    (nth 2 compile-invocation)))
+        (should (equal "/src/ghostel/" (nth 3 compile-invocation)))
         (should (equal (list (current-buffer)
                              "/custom/dir/.ghostel-build/"
                              "/custom/dir/")
                        finish-args))))))
+
+(ert-deftest ghostel-test-module-compile-recompile-installs-built-module ()
+  "`ghostel-module-compile' installs artifacts again after `recompile'."
+  (let* ((root (make-temp-file "ghostel-module-recompile" t))
+         (dest-dir (file-name-as-directory (expand-file-name "module" root)))
+         (counter (expand-file-name "counter" root))
+         (module-name (concat "ghostel-module" module-file-suffix))
+         (final (expand-file-name module-name dest-dir))
+         (final-sidecar (expand-file-name "ghostel-module.version" dest-dir))
+         (compile-buffer-name " *ghostel-module-recompile*")
+         (compilation-ask-about-save nil)
+         (ghostel-module-directory dest-dir)
+         (ghostel-module-compile-command
+          (format "sh -c %s sh %%s"
+                  (shell-quote-argument
+                   (format (concat "n=$(($(cat %s 2>/dev/null || echo 0)+1)); "
+                                   "printf \"$n\" > %s; "
+                                   "mkdir -p \"$1\"; "
+                                   "printf \"module-$n\" > \"$1/%s\"; "
+                                   "printf \"$n\" > \"$1/ghostel-module.version\"")
+                           (shell-quote-argument counter)
+                           (shell-quote-argument counter)
+                           module-name)))))
+    (cl-labels ((read-file (file)
+                  (and (file-exists-p file)
+                       (with-temp-buffer
+                         (insert-file-contents file)
+                         (buffer-string))))
+                (wait-for-module (contents)
+                  (ghostel-test--wait-until
+                   (lambda () (equal contents (read-file final)))
+                   nil 5)))
+      (cl-letf (((symbol-function 'ghostel--resource-root)
+                 (lambda () root))
+                ((symbol-function 'ghostel--module-compilation-buffer-name)
+                 (lambda (_mode-name) compile-buffer-name)))
+        (unwind-protect
+            (let ((inhibit-message t))
+              (ghostel-module-compile)
+              (wait-for-module "module-1")
+              (should (equal "1" (read-file final-sidecar)))
+              (with-current-buffer compile-buffer-name
+                (recompile))
+              (wait-for-module "module-2")
+              (should (equal "2" (read-file final-sidecar))))
+          (when-let* ((buf (get-buffer compile-buffer-name)))
+            (kill-buffer buf))
+          (delete-directory root t))))))
 
 (ert-deftest ghostel-test-module-version-match ()
   "Test that version check does nothing when module meets minimum."
