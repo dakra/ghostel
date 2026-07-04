@@ -366,10 +366,6 @@ same as in any compilation buffer."
           (when start
             (ghostel-compile--trim-trailing-blanks start))
           (ghostel-compile--teardown-terminal)
-          ;; Run standard compilation finish hooks before switching major mode:
-          ;; callers may install buffer-local hooks or continuation state, and
-          ;; `funcall' below kills those locals as part of the mode change.
-          (run-hook-with-args 'compilation-finish-functions buffer msg)
           ;; Switch major mode now that the process is dead.  Preserve state
           ;; that `kill-all-local-variables' would otherwise wipe.  A
           ;; per-buffer override (set by the `compilation-start' advice
@@ -386,9 +382,19 @@ same as in any compilation buffer."
                  (saved-compilation-arguments
                   (and saved-compilation-arguments-local
                        compilation-arguments))
+                 ;; Some callers (Dape) install buffer-local finish hooks
+                 ;; after starting compilation, with buffer-local state those
+                 ;; hooks need.  Run those before the mode switch kills locals;
+                 ;; run the normal hook below too so the finished mode can add
+                 ;; its own local hooks, matching `compilation-start'.
+                 (saved-local-finish-functions
+                  (and (local-variable-p 'compilation-finish-functions)
+                       (remq t compilation-finish-functions)))
                  (target-mode (or ghostel-compile--view-mode-override
                                   ghostel-compile-finished-major-mode)))
             (when target-mode
+              (dolist (fn saved-local-finish-functions)
+                (funcall fn buffer msg))
               (funcall target-mode))
             (setq-local ghostel-compile--command saved-command
                         ghostel-compile--directory saved-directory
@@ -434,6 +440,8 @@ same as in any compilation buffer."
             (with-selected-window win (recenter -1))))
         (ghostel-compile--set-mode-line-exit exit)
         (setq next-error-last-buffer buffer)
+        (run-hook-with-args 'compilation-finish-functions
+                            buffer (ghostel-compile--status-message exit))
         (ghostel-compile--auto-jump buffer)
         (run-hook-with-args 'ghostel-compile-finish-functions
                             buffer (ghostel-compile--status-message exit))))))
