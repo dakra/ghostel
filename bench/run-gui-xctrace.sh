@@ -22,6 +22,7 @@ MIN_DURATION=""
 COUNT=""
 OUTPUT_DIR="$GHOSTEL_DIR/bench/profiles"
 OPEN_TRACE=false
+ELISP_PROFILE_MODE=""
 REDISPLAY="nil"
 INCLUDE_VTERM="t"
 INCLUDE_EAT="t"
@@ -45,6 +46,10 @@ Options:
   --template NAME   xctrace template (default: Time Profiler)
   --output-dir DIR  Directory for .trace and .log files
   --open            Open the resulting .trace in Instruments
+  --elisp-profile MODE
+                   Also run Emacs's Elisp profiler during the benchmark.
+                   MODE is cpu, mem, or cpu+mem. Use mem to find allocation
+                   sites that make GC run.
   --emacs PATH      GUI Emacs executable
   --emacsclient PATH
   --vterm-dir DIR   Path to vterm package directory
@@ -59,6 +64,7 @@ Examples:
   $(basename "$0") --case e2e/urls/ghostel --size 1048576 --iterations 5
   $(basename "$0") --case tui-partial/40x120 --min-duration 10
   $(basename "$0") --case backend/mixed/native --redisplay
+  $(basename "$0") --case backend/mixed/native --elisp-profile mem
 EOF
     exit 0
 }
@@ -83,6 +89,8 @@ while [[ $# -gt 0 ]]; do
         --template)    need_arg "$1" "${2-}"; TEMPLATE="$2"; shift 2 ;;
         --output-dir)  need_arg "$1" "${2-}"; OUTPUT_DIR="$2"; shift 2 ;;
         --open)        OPEN_TRACE=true; shift ;;
+        --elisp-profile)
+                       need_arg "$1" "${2-}"; ELISP_PROFILE_MODE="$2"; shift 2 ;;
         --emacs)       need_arg "$1" "${2-}"; EMACS_BIN="$2"; shift 2 ;;
         --emacsclient) need_arg "$1" "${2-}"; EMACSCLIENT="$2"; shift 2 ;;
         --vterm-dir)   need_arg "$1" "${2-}"; VTERM_DIR="$2"; shift 2 ;;
@@ -102,6 +110,15 @@ fi
 if [[ ! "$CASE" =~ ^[A-Za-z0-9_./-]+$ ]]; then
     echo "ERROR: invalid benchmark case syntax: $CASE" >&2
     exit 1
+fi
+if [ -n "$ELISP_PROFILE_MODE" ]; then
+    case "$ELISP_PROFILE_MODE" in
+        cpu|mem|cpu+mem) ;;
+        *)
+            echo "ERROR: --elisp-profile MODE must be cpu, mem, or cpu+mem" >&2
+            exit 1
+            ;;
+    esac
 fi
 
 if ! command -v xcrun >/dev/null 2>&1; then
@@ -187,6 +204,7 @@ TRACE_PATH="$BASE.trace"
 BENCH_LOG="$BASE.log"
 EMACS_LOG="$BASE.emacs.log"
 XCTRACE_LOG="$BASE.xctrace.log"
+ELISP_PROFILE_BASE="$BASE.elisp"
 SERVER_SOCKET="$TMPDIR/server"
 NOTIFY="com.ghostel.xctrace.started.$STAMP.$$"
 
@@ -198,6 +216,8 @@ GHOSTEL_LISP_EL="$(elisp_string "$GHOSTEL_DIR/lisp")"
 BENCH_FILE_EL="$(elisp_string "$SCRIPT_DIR/ghostel-bench.el")"
 CASE_EL="$(elisp_string "$CASE")"
 BENCH_LOG_EL="$(elisp_string "$BENCH_LOG")"
+ELISP_PROFILE_MODE_EL="$(elisp_string "$ELISP_PROFILE_MODE")"
+ELISP_PROFILE_BASE_EL="$(elisp_string "$ELISP_PROFILE_BASE")"
 VTERM_DIR_EL="$(elisp_string "$VTERM_DIR")"
 EAT_DIR_EL="$(elisp_string "$EAT_DIR")"
 SERVER_SOCKET_EL="$(elisp_string "$SERVER_SOCKET")"
@@ -272,13 +292,66 @@ RUN_EVAL="
       (setq ghostel-bench-include-vterm $INCLUDE_VTERM
             ghostel-bench-include-eat $INCLUDE_EAT
             ghostel-bench-include-term $INCLUDE_TERM
-            ghostel-bench-force-gui-redisplay $REDISPLAY)
+            ghostel-bench-force-gui-redisplay $REDISPLAY
+            ghostel-bench-reuse-backend-terminal t)
       $(if $QUICK; then echo "(setq ghostel-bench-data-size (* 100 1024) ghostel-bench-iterations 2 ghostel-bench-typing-count 50)"; fi)
       $(if [ -n "$SIZE" ]; then echo "(setq ghostel-bench-data-size $SIZE)"; fi)
       $(if [ -n "$ITERS" ]; then echo "(setq ghostel-bench-iterations $ITERS)"; fi)
       $(if [ -n "$MIN_DURATION" ]; then echo "(setq ghostel-bench-min-duration $MIN_DURATION)"; fi)
       $(if [ -n "$COUNT" ]; then echo "(setq ghostel-bench-typing-count $COUNT)"; fi)
-      (ghostel-bench-run-one $CASE_EL)
+      (let* ((profile-mode-name $ELISP_PROFILE_MODE_EL)
+             (profile-enabled (> (length profile-mode-name) 0))
+             (profile-mode (and profile-enabled (intern profile-mode-name)))
+             (profile-base $ELISP_PROFILE_BASE_EL)
+             profile-start-gcs profile-start-gc-elapsed profile-start-memory
+             profile-end-gcs profile-end-gc-elapsed profile-end-memory
+             profile-write-error)
+        (when profile-enabled
+          (require 'profiler)
+          (profiler-reset)
+          (profiler-start profile-mode)
+          (setq profile-start-gcs gcs-done
+                profile-start-gc-elapsed gc-elapsed
+                profile-start-memory (memory-use-counts)))
+        (unwind-protect
+            (ghostel-bench-run-one $CASE_EL)
+          (when profile-enabled
+            (condition-case profile-err
+                (progn
+                  (setq profile-end-gcs gcs-done
+                        profile-end-gc-elapsed gc-elapsed
+                        profile-end-memory (memory-use-counts))
+                  (profiler-stop)
+                  (let ((gc-file (concat profile-base \"-gc.txt\")))
+                    (with-temp-buffer
+                      (insert (format \"mode: %s\\n\" profile-mode-name))
+                      (insert (format \"gcs-done: %d -> %d (delta %d)\\n\"
+                                      profile-start-gcs profile-end-gcs
+                                      (- profile-end-gcs profile-start-gcs)))
+                      (insert (format \"gc-elapsed: %.6f -> %.6f (delta %.6f seconds)\\n\"
+                                      profile-start-gc-elapsed profile-end-gc-elapsed
+                                      (- profile-end-gc-elapsed profile-start-gc-elapsed)))
+                      (insert (format \"gc-cons-threshold: %S\\n\" gc-cons-threshold))
+                      (insert (format \"memory-use-counts start: %S\\n\" profile-start-memory))
+                      (insert (format \"memory-use-counts end:   %S\\n\" profile-end-memory))
+                      (insert (format \"memory-use-counts delta: %S\\n\"
+                                      (cl-mapcar #'- profile-end-memory profile-start-memory)))
+                      (write-region (point-min) (point-max) gc-file nil 'silent))
+                    (message \"Elisp GC stats: %s\" gc-file))
+                  (when (and (boundp 'profiler-cpu-log) profiler-cpu-log)
+                    (let ((data-file (concat profile-base \"-cpu.profile\")))
+                      (profiler-write-profile (profiler-cpu-profile) data-file)
+                      (message \"Elisp CPU profile: %s\" data-file)))
+                  (when (and (boundp 'profiler-memory-log) profiler-memory-log)
+                    (let ((data-file (concat profile-base \"-memory.profile\")))
+                      (profiler-write-profile (profiler-memory-profile) data-file)
+                      (message \"Elisp memory profile: %s\" data-file))))
+              (error
+               (setq profile-write-error (error-message-string profile-err))
+               (message \"ERROR writing Elisp profile: %s\"
+                        profile-write-error)))))
+        (when profile-write-error
+          (error \"ERROR writing Elisp profile: %s\" profile-write-error)))
       (with-current-buffer \"*Messages*\"
         (write-region (point-min) (point-max) $BENCH_LOG_EL nil 'silent))
       'ok)
@@ -315,6 +388,21 @@ echo "trace: $TRACE_PATH"
 echo "bench log: $BENCH_LOG"
 echo "emacs log: $EMACS_LOG"
 echo "xctrace log: $XCTRACE_LOG"
+if [ -n "$ELISP_PROFILE_MODE" ]; then
+    echo "elisp GC stats: $ELISP_PROFILE_BASE-gc.txt"
+    case "$ELISP_PROFILE_MODE" in
+        cpu)
+            echo "elisp CPU profile: $ELISP_PROFILE_BASE-cpu.profile"
+            ;;
+        mem)
+            echo "elisp memory profile: $ELISP_PROFILE_BASE-memory.profile"
+            ;;
+        cpu+mem)
+            echo "elisp CPU profile: $ELISP_PROFILE_BASE-cpu.profile"
+            echo "elisp memory profile: $ELISP_PROFILE_BASE-memory.profile"
+            ;;
+    esac
+fi
 
 if $OPEN_TRACE; then
     open -a Instruments "$TRACE_PATH"

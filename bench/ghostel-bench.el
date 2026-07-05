@@ -67,6 +67,11 @@ This is intended for GUI profiling runs where the trace should include
 window redisplay/font/rendering work, not only terminal parsing and buffer
 mutation.")
 
+(defvar ghostel-bench-reuse-backend-terminal nil
+  "When non-nil, keep one terminal alive for backend/* case iterations.
+This is intended for profiler runs where repeated native PTY reader
+thread creation would obscure the terminal output path being profiled.")
+
 (defvar ghostel-bench-min-duration 0.5
   "Minimum target duration in seconds for very fast benchmark cases.
 When the warmup trial shows a case is too fast to time reliably,
@@ -625,6 +630,7 @@ covers the full read -> libghostty -> buffer pipeline."
     (unwind-protect
         (with-current-buffer buf
           (ghostel-mode)
+          (setq-local ghostel-detect-password-prompts nil)
           (setq ghostel--term (ghostel--new rows cols
                                             (* ghostel-bench-scrollback 1024))
                 ghostel--term-rows rows
@@ -645,6 +651,76 @@ covers the full read -> libghostty -> buffer pipeline."
       (when (buffer-live-p buf)
         (when ghostel--term
           (ignore-errors (ghostel--kill-native-process ghostel--term)))
+        (kill-buffer buf)))))
+
+(defun ghostel-bench--backend-send-string (native-p string)
+  "Send STRING to the current backend PTY.
+NATIVE-P selects the native Zig PTY writer; nil uses the Emacs process."
+  (if native-p
+      (ghostel--write-pty ghostel--term string)
+    (process-send-string ghostel--process string)))
+
+(defun ghostel-bench--buffer-contains-p (string)
+  "Return non-nil when the current buffer contains STRING."
+  (save-excursion
+    (goto-char (point-min))
+    (search-forward string nil t)))
+
+(defun ghostel-bench--with-persistent-cat (data-file native-p body-fn)
+  "Run BODY-FN with a reusable `cat DATA-FILE' backend driver.
+BODY-FN is called with a thunk that streams DATA-FILE through one live
+terminal process and waits until the corresponding completion marker is
+rendered.  NATIVE-P selects the native Zig PTY or Emacs process backend."
+  (let* ((rows 24) (cols 80)
+         (buf (generate-new-buffer " *ghostel-backend-bench*"))
+         (marker-prefix (format "__ghostel_bench_done_%s_"
+                                (md5 (format "%s%s" data-file (float-time)))))
+         (driver (format (concat "stty -echo 2>/dev/null || true; "
+                                 "i=0; while IFS= read -r file; do "
+                                 "cat \"$file\"; i=$((i + 1)); "
+                                 "printf '\\r\\n%s%%06d\\r\\n' \"$i\"; done")
+                         marker-prefix))
+         (counter 0)
+         (ghostel-use-native-pty native-p)
+         (ghostel-kill-buffer-on-exit nil)
+         (ghostel-shell-integration nil)
+         (ghostel-macos-login-shell nil)
+         (ghostel-enable-url-detection nil)
+         (ghostel-enable-file-detection nil)
+         (ghostel-shell (list "/bin/sh" "-c" driver)))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (setq-local ghostel-detect-password-prompts nil)
+          (setq ghostel--term (ghostel--new rows cols
+                                            (* ghostel-bench-scrollback 1024))
+                ghostel--term-rows rows
+                ghostel--term-cols cols)
+          (when (window-live-p (selected-window))
+            (set-window-buffer (selected-window) buf))
+          (ghostel--start-process)
+          (funcall
+           body-fn
+           (lambda ()
+             (cl-incf counter)
+             (let ((marker (format "%s%06d" marker-prefix counter))
+                   (deadline (+ (float-time) 120)))
+               (ghostel-bench--backend-send-string
+                native-p (concat (expand-file-name data-file) "\n"))
+               (while (and (< (float-time) deadline)
+                           (not (ghostel-bench--buffer-contains-p marker)))
+                 (accept-process-output ghostel--process 0.01)
+                 (when (buffer-live-p buf)
+                   (ghostel--redraw-now buf)))
+               (unless (ghostel-bench--buffer-contains-p marker)
+                 (error "Timed out waiting for backend benchmark marker: %s"
+                        marker))))))
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          (when ghostel--term
+            (ignore-errors (ghostel--kill-native-process ghostel--term)))
+          (when (and ghostel--process (process-live-p ghostel--process))
+            (delete-process ghostel--process)))
         (kill-buffer buf)))))
 
 (defun ghostel-bench--run-backend-scenarios ()
@@ -1180,8 +1256,14 @@ real-world performance (see the end-to-end and backend benchmarks)."
                  (plist-get r :per-iter-ms)
                  (plist-get r :throughput-mbs))))
     (when backend-results
-      (message "\n  Native vs Emacs PTY backend (cat %s, real spawn):"
-               (ghostel-bench--human-size ghostel-bench-data-size))
+      (message "\n  Native vs Emacs PTY backend (cat %s, %s):"
+               (ghostel-bench--human-size ghostel-bench-data-size)
+               (if (cl-some (lambda (r)
+                              (eq (plist-get r :backend-mode)
+                                  'persistent-terminal))
+                            backend-results)
+                   "one persistent terminal"
+                 "real spawn"))
       (dolist (r (sort (copy-sequence backend-results)
                        (lambda (a b) (string< (plist-get a :name)
                                               (plist-get b :name)))))
@@ -1336,10 +1418,23 @@ backend-include flags do not apply."
                    ((string= backend "emacs") nil)
                    (t (error "Unknown backend benchmark backend: %s" backend)))))
     (unwind-protect
-        (ghostel-bench--measure
-         (format "backend/%s/%s" shape backend)
-         ghostel-bench-data-size ghostel-bench-iterations
-         (lambda () (ghostel-bench--spawn-cat data-file native-p)))
+        (if ghostel-bench-reuse-backend-terminal
+            (progn
+              (message "  [reusing one backend terminal for all iterations]")
+              (let ((result
+                     (ghostel-bench--with-persistent-cat
+                      data-file native-p
+                      (lambda (run-cat)
+                        (ghostel-bench--measure
+                         (format "backend/%s/%s" shape backend)
+                         ghostel-bench-data-size ghostel-bench-iterations
+                         run-cat)))))
+                (plist-put result :backend-mode 'persistent-terminal)
+                result))
+          (ghostel-bench--measure
+           (format "backend/%s/%s" shape backend)
+           ghostel-bench-data-size ghostel-bench-iterations
+           (lambda () (ghostel-bench--spawn-cat data-file native-p))))
       (delete-file data-file))))
 
 (defun ghostel-bench--parse-size (size)
