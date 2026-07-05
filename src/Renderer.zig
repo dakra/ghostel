@@ -33,14 +33,14 @@ alloc: Allocator,
 /// Terminal being rendered.
 term: *gt.Terminal,
 
-/// Render state for incremental screen updates.
-render_state: gt.RenderState,
-
 /// Tracked pin of which row to render down from.
 render_pin: ?*gt.Pin,
 
 /// The screen that is currently rendered into the buffer.
 rendered_screen: *gt.Screen,
+
+/// Pin of the last rendered cursor position
+rendered_cursor: ?gt.Pin,
 
 /// Number of libghostty rows already materialized into the Emacs buffer.
 rows_in_buffer: usize = 0,
@@ -109,11 +109,11 @@ pub fn init(alloc: Allocator, env: emacs.Env, term: *gt.Terminal) !Self {
     var renderer = Self{
         .alloc = alloc,
         .term = term,
-        .render_state = gt.RenderState.empty,
         .render_pin = try term.screens.active.pages.trackPin(
             term.screens.active.pages.getTopLeft(.screen),
         ),
         .rendered_screen = term.screens.active,
+        .rendered_cursor = null,
         .pending_resize = .{ .cols = term.cols, .rows = term.rows, .cell_w = 1, .cell_h = 1 },
         .row = .{ .alloc = alloc },
     };
@@ -123,7 +123,6 @@ pub fn init(alloc: Allocator, env: emacs.Env, term: *gt.Terminal) !Self {
 
 pub fn deinit(self: *Self) void {
     self.saved_markers.deinit(self.alloc);
-    self.render_state.deinit(self.alloc);
     self.row.deinit();
     self.clearPages();
     if (self.render_pin) |p| self.rendered_screen.pages.untrackPin(p);
@@ -159,10 +158,10 @@ pub fn redraw(self: *Self, env: emacs.Env, force_full: bool) !void {
     if (self.rendered_screen != self.term.screens.active) {
         try self.clear(env);
     }
-    try self.validateScrollback(env);
+    try self.invalidate(env);
     self.evictScrollback(env);
 
-    try self.renderToEnd(
+    try self.render(
         env,
         if (self.render_pin) |p|
             p.*
@@ -181,7 +180,7 @@ pub fn redraw(self: *Self, env: emacs.Env, force_full: bool) !void {
         self.rendered_screen.pages.total_rows);
 }
 
-fn validateScrollback(self: *Self, env: emacs.Env) !void {
+fn invalidate(self: *Self, env: emacs.Env) !void {
     const scrollback_cleared = self.rows_in_buffer > self.term.rows and
         self.render_pin != null and
         self.render_pin.?.eql(self.rendered_screen.pages.getTopLeft(.screen));
@@ -294,18 +293,21 @@ fn createCellProps(
     self: *Self,
     page: *const gt.Page,
     key: CellPropKey,
-    cell: *const gt.RenderState.Cell,
+    cell: *const gt.Cell,
 ) ?CellProps {
     var props: CellProps = .{};
 
-    const style: gt.Style = if (cell.raw.hasStyling()) cell.style else .{};
+    const style: gt.Style = if (cell.hasStyling())
+        page.styles.get(page.memory, cell.style_id).*
+    else
+        .{};
 
     props.fg = style_face.resolveForeground(
         &style,
         &self.term.colors.palette.current,
         self.bold_config,
     );
-    props.bg = style.bg(&cell.raw, &self.render_state.colors.palette);
+    props.bg = style.bg(cell, &self.term.colors.palette.current);
     props.bold = style.flags.bold;
     props.italic = style.flags.italic;
     props.faint = style.flags.faint;
@@ -313,9 +315,9 @@ fn createCellProps(
     props.strikethrough = style.flags.strikethrough;
     props.overline = style.flags.overline;
     props.inverse = style.flags.inverse;
-    props.underline_color = style.underlineColor(&self.render_state.colors.palette);
+    props.underline_color = style.underlineColor(&self.term.colors.palette.current);
     props.hyperlink = resolveHyperlink(page, key.hyperlink_id);
-    props.semantic_content = cell.raw.semantic_content;
+    props.semantic_content = cell.semantic_content;
 
     return if (props.isPlain()) null else props;
 }
@@ -481,11 +483,13 @@ pub const RowContent = struct {
     pub fn build(
         self: *RowContent,
         renderer: *Self,
-        row: *const gt.RenderState.Row,
-        cursor_col: ?u16,
+        row_pin: gt.Pin,
         adjustment_threshold: u32,
     ) !void {
         try self.clear();
+
+        const term = renderer.term;
+        const screen = term.screens.active;
 
         // Position at the end of the last non-blank cell; final row length
         // is trimmed back to this. Any run of blank cells past the end is
@@ -493,26 +497,29 @@ pub const RowContent = struct {
         var trim_byte_len: usize = 0;
         var trim_char_len: usize = 0;
 
-        const page = &row.pin.node.data;
-        var current_prop_key: ?CellPropKey = null;
-        var col: u16 = 0;
-        while (col < row.cells.len) : (col += 1) {
-            const cell = row.cells.get(col);
-            const raw_cell = page.getRowAndCell(col, row.pin.y).cell;
+        const cursor_visible = term.modes.get(.cursor_visible);
+        const cursor_col = if (cursor_visible and isSameRow(row_pin, screen.cursor.page_pin.*))
+            screen.cursor.page_pin.x
+        else
+            null;
 
-            const has_cursor = col == cursor_col;
+        const page = &row_pin.node.data;
+        const row = row_pin.rowAndCell().row;
+        var current_prop_key: ?CellPropKey = null;
+        for (page.getCells(row), 0..) |*cell, col| {
+            const has_cursor = @as(u16, @intCast(col)) == cursor_col;
             if (has_cursor) self.cursor_char_pos = self.char_len;
 
-            if (cell.raw.wide == .spacer_tail or cell.raw.wide == .spacer_head) continue;
+            if (cell.wide == .spacer_tail or cell.wide == .spacer_head) continue;
 
             // We use a "key" that holds a minimum set of values that are cheap to
             // compare to detect style run breaks.
-            const prop_key = CellPropKey.create(&row.pin.node.data, raw_cell);
+            const prop_key = CellPropKey.create(&row_pin.node.data, cell);
             if (prop_key != current_prop_key) {
                 try self.runs.append(self.alloc, .{
                     .start_char = self.char_len,
                     .end_char = self.char_len,
-                    .props = createCellProps(renderer, page, prop_key, &cell),
+                    .props = createCellProps(renderer, page, prop_key, cell),
                 });
                 current_prop_key = prop_key;
             }
@@ -520,24 +527,24 @@ pub const RowContent = struct {
             const byte_start = self.text.items.len;
             const char_start = self.char_len;
 
-            const codepoint: u21 = if (raw_cell.hasText()) raw_cell.codepoint() else ' ';
+            const codepoint: u21 = if (cell.hasText()) cell.codepoint() else ' ';
             try self.appendCodepoints(&[1]u21{codepoint});
-            if (raw_cell.hasGrapheme()) {
-                try self.appendCodepoints(cell.grapheme);
+            if (cell.hasGrapheme()) {
+                try self.appendCodepoints(page.lookupGrapheme(cell).?);
             }
 
             // If this is a grapheme cluster, or if the char is not covered by
             // the default font, we register it as needing font glyph adjustment
             // to fit into the monospace grid.
-            if (raw_cell.hasGrapheme() or codepoint >= adjustment_threshold) {
+            if (cell.hasGrapheme() or codepoint >= adjustment_threshold) {
                 try self.adjust_cells.append(self.alloc, .{
                     .col = @intCast(col),
                     .char_start = @intCast(char_start),
                     .char_end = @intCast(self.char_len),
                     .text_start = byte_start,
                     .text_end = self.text.items.len,
-                    .wide = raw_cell.wide == .wide,
-                    .page_serial = row.pin.node.serial,
+                    .wide = cell.wide == .wide,
+                    .page_serial = row_pin.node.serial,
                     .style_id = if (current_prop_key) |key| key.style_id else 0,
                 });
             }
@@ -548,7 +555,7 @@ pub const RowContent = struct {
             // We trim cells that neither have content nor styling. A blank
             // cursor cell only requires enough whitespace to place point at
             // the cursor column, not an extra rendered space under it.
-            if (raw_cell.hasText() or last_run.props != null) {
+            if (cell.hasText() or last_run.props != null) {
                 trim_byte_len = self.text.items.len;
                 trim_char_len = self.char_len;
             } else if (has_cursor) {
@@ -803,13 +810,11 @@ fn findGlyphString(
 fn insertRow(
     self: *Self,
     env: emacs.Env,
-    row: *const gt.RenderState.Row,
-    cursor_col: ?u16,
+    row_pin: gt.Pin,
 ) !usize {
     try self.row.build(
         self,
-        row,
-        cursor_col,
+        row_pin,
         if (self.font_info) |f| f.coverage else std.math.maxInt(u32),
     );
 
@@ -829,7 +834,7 @@ fn insertRow(
 
     try self.adjustGlyphs(env, row_start);
 
-    if (row.raw.wrap) {
+    if (row_pin.rowAndCell().row.wrap) {
         // Mark newlines from soft-wrapped rows so copy mode can filter them
         const point = env.f("point", .{});
         _ = env.f("put-text-property", .{
@@ -850,136 +855,104 @@ fn insertRow(
     return @intCast(row_end - row_start);
 }
 
+fn isSameRow(a: gt.Pin, b: gt.Pin) bool {
+    return a.node == b.node and a.y == b.y;
+}
+
+fn isRowDirty(self: *Self, pin: gt.Pin) bool {
+    if (pin.rowAndCell().row.dirty) return true;
+
+    const cursor = if (self.term.modes.get(.cursor_visible))
+        self.term.screens.active.cursor.page_pin.*
+    else
+        null;
+
+    // If the cursor moved, both the old row and the new row are dirty.
+    if (!std.meta.eql(cursor, self.rendered_cursor)) {
+        if (cursor) |c| if (isSameRow(c, pin)) return true;
+        if (self.rendered_cursor) |c| if (isSameRow(c, pin)) return true;
+    }
+
+    return false;
+}
+
 fn render(
     self: *Self,
     env: emacs.Env,
-    pin: gt.Pin,
+    start_pin: gt.Pin,
 ) !void {
-    self.term.screens.active.pages.scroll(.{ .pin = pin });
-    try self.updateRenderState();
+    const term = self.term;
 
-    if (self.render_state.dirty != .false) {
-        const skip = switch (pin.downOverflow(self.term.rows)) {
-            .overflow => |of| of.remaining - 1,
-            else => 0,
-        };
+    var page = if (term.screens.active.no_scrollback)
+        null
+    else
+        try self.getOrAddPage(start_pin.node.serial);
 
-        var page = if (self.term.screens.active.no_scrollback)
-            null
-        else
-            try self.getOrAddPage(pin.node.serial);
+    var it = start_pin.rowIterator(.right_down, null);
+    while (it.next()) |row_pin| {
+        const row = row_pin.rowAndCell().row;
+        defer row.dirty = false;
 
-        var i: usize = 0;
-        const row_dirty = self.render_state.row_data.items(.dirty);
-        while (i < self.render_state.rows) : ({
-            // Clear per-row dirty flag
-            row_dirty[i] = false;
-            i += 1;
-        }) {
-            if (i < skip) continue;
-
-            const row = self.render_state.row_data.get(i);
-            if (page) |p| {
-                if (p.serial != row.pin.node.serial) {
-                    page = p.next() orelse try self.addPage(row.pin.node.serial);
-                    std.debug.assert(page != null);
-                    std.debug.assert(page.?.serial == row.pin.node.serial);
-                }
+        if (page) |p| {
+            if (p.serial != row_pin.node.serial) {
+                page = p.next() orelse try self.addPage(row_pin.node.serial);
+                std.debug.assert(page != null);
+                std.debug.assert(page.?.serial == row_pin.node.serial);
             }
+        }
 
-            const dirty_row = self.render_state.dirty == .full or row_dirty[i];
-            // Only process dirty rows, or there's no existing row
-            const eob = env.isNotNil(env.f("eobp", .{}));
-            if (dirty_row or eob) {
-                const cursor_col = blk: {
-                    if (self.render_state.cursor.viewport) |vp| {
-                        if (vp.y == i) break :blk vp.x;
-                    }
-
-                    break :blk null;
-                };
-
-                if (eob) {
-                    // We're adding one line since we're at the end of the buffer
-                    const line_char_len = try self.insertRow(env, &row, cursor_col);
-                    self.rows_in_buffer += 1;
-                    if (page) |p| {
-                        p.rows += 1;
-                        p.char_len += line_char_len;
-                    }
-                } else {
-                    // Line is dirty and we're not at the end of the buffer,
-                    // so we're replacing the line.
-                    const line_start_val = env.f("point", .{});
-                    const line_start = env.cast(usize, line_start_val);
-                    const old_line_end_val = env.f("pos-bol", .{2});
-                    const old_line_len = env.cast(usize, old_line_end_val) - line_start;
-                    _ = env.f("delete-region", .{ line_start_val, old_line_end_val });
-                    const new_line_len = try self.insertRow(env, &row, cursor_col);
-
-                    if (page) |p| {
-                        p.char_len -|= old_line_len;
-                        p.char_len += new_line_len;
-                    }
-                    self.saved_markers.adjustRegion(line_start, old_line_len, new_line_len);
+        // Only process dirty rows, or if there's no existing row
+        const eob = env.isNotNil(env.f("eobp", .{}));
+        if (self.isRowDirty(row_pin) or eob) {
+            if (eob) {
+                // We're adding one line since we're at the end of the buffer
+                const line_char_len = try self.insertRow(env, row_pin);
+                self.rows_in_buffer += 1;
+                if (page) |p| {
+                    p.rows += 1;
+                    p.char_len += line_char_len;
                 }
             } else {
-                _ = env.f("forward-line", .{1});
+                // Line is dirty and we're not at the end of the buffer,
+                // so we're replacing the line.
+                const line_start_val = env.f("point", .{});
+                const line_start = env.cast(usize, line_start_val);
+                const old_line_end_val = env.f("pos-bol", .{2});
+                const old_line_len = env.cast(usize, old_line_end_val) - line_start;
+                _ = env.f("delete-region", .{ line_start_val, old_line_end_val });
+                const new_line_len = try self.insertRow(env, row_pin);
+
+                if (page) |p| {
+                    p.char_len -|= old_line_len;
+                    p.char_len += new_line_len;
+                }
+                self.saved_markers.adjustRegion(line_start, old_line_len, new_line_len);
             }
+        } else {
+            _ = env.f("forward-line", .{1});
         }
-
-        // Reset dirty state
-        self.render_state.dirty = .false;
-    }
-}
-
-fn updateRenderState(self: *Self) !void {
-    const pre_cursor: ?gt.RenderState.Cursor.Viewport =
-        self.render_state.cursor.viewport;
-
-    try self.render_state.update(self.alloc, self.term);
-    if (self.render_state.dirty == .full) return;
-
-    const post_cursor: ?gt.RenderState.Cursor.Viewport =
-        self.render_state.cursor.viewport;
-
-    if (!std.meta.eql(pre_cursor, post_cursor)) {
-        // The cursor moved. Both the old row and the new row are dirty.
-        if (self.render_state.dirty == .false) {
-            self.render_state.dirty = .partial;
-        }
-        const row_dirty = self.render_state.row_data.items(.dirty);
-        if (pre_cursor) |vp| row_dirty[vp.y] = true;
-        if (post_cursor) |vp| row_dirty[vp.y] = true;
     }
 }
 
 fn renderCursor(self: *Self, env: emacs.Env) !void {
-    if (self.render_state.cursor.viewport) |vp| {
-        _ = env.set("ghostel--cursor-pos", env.cons(vp.x, vp.y));
-    } else {
-        _ = env.set("ghostel--cursor-pos", env.nil());
-    }
-
-    _ = env.set("ghostel--cursor-blinking", if (self.render_state.cursor.blinking) env.t() else env.nil());
-
-    if (self.render_state.cursor.visible) {
+    if (self.term.modes.get(.cursor_visible)) {
+        const screen = self.term.screens.active;
+        _ = env.set("ghostel--cursor-pos", env.cons(screen.cursor.x, screen.cursor.y));
         env.set(
             "ghostel--cursor-style",
-            @intFromEnum(self.render_state.cursor.visual_style),
+            @intFromEnum(screen.cursor.cursor_style),
         );
+        self.rendered_cursor = self.rendered_screen.cursor.page_pin.*;
     } else {
+        _ = env.set("ghostel--cursor-pos", env.nil());
         env.set("ghostel--cursor-style", env.nil());
+        self.rendered_cursor = null;
     }
-}
 
-// Render all pages from start_pin through the end of the active area,
-// one viewport-sized chunk per page.
-fn renderToEnd(self: *Self, env: emacs.Env, start_pin: gt.Pin) !void {
-    var p: ?gt.Pin = start_pin;
-    while (p) |pin| : (p = pin.down(self.term.rows)) {
-        try self.render(env, pin);
-    }
+    _ = env.set("ghostel--cursor-blinking", if (self.term.modes.get(.cursor_blinking))
+        env.t()
+    else
+        env.nil());
 }
 
 fn commitResize(self: *Self, env: emacs.Env) !void {
@@ -1035,7 +1008,6 @@ fn addPage(self: *Self, serial: PageSerial) !*MaterializedPage {
 fn clear(self: *Self, env: emacs.Env) !void {
     _ = env.f("erase-buffer", .{});
     self.rows_in_buffer = 0;
-    self.render_state.dirty = .full;
     self.clearPages();
     if (self.render_pin) |p| self.rendered_screen.pages.untrackPin(p);
     self.render_pin = null;
