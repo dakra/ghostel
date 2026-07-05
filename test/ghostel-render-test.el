@@ -618,7 +618,19 @@ are retained — only unwritten padding cells are trimmed."
   (let ((s (concat "aaa" (propertize "\n" 'ghostel-wrap t) "bbb\nccc")))
     (should (equal "aaabbb\nccc" (ghostel--filter-soft-wraps s)))))
 
-
+(ert-deftest ghostel-test-kill-ring-save-filters-soft-wraps ()
+  "Generic copy commands filter renderer-inserted soft-wrap newlines."
+  (let ((kill-ring nil)
+        (kill-ring-yank-pointer nil)
+        (interprogram-cut-function nil))
+    (with-temp-buffer
+      (ghostel-mode)
+      (let ((inhibit-read-only t))
+        (insert "hello")
+        (insert (propertize "\n" 'ghostel-wrap t))
+        (insert "world   "))
+      (kill-ring-save (point-min) (point-max))
+      (should (equal (car kill-ring) "helloworld")))))
 
 ;;; Palette, faces, and theme sync
 
