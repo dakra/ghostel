@@ -99,6 +99,35 @@ Set to nil to skip automatic compilation."
          (fboundp 'dired-get-file-for-visit))
     (dired-get-file-for-visit))))
 
+(defun ghostel-dape--evil-checkout-dir ()
+  "Return the vendored evil checkout directory, mirroring `make test-evil'.
+`EVIL_DIR ?= $(XDG_CACHE_HOME)/evil' in the Makefile, defaulting to
+~/.cache/evil when `XDG_CACHE_HOME' is unset."
+  (expand-file-name "evil"
+                    (or (getenv "XDG_CACHE_HOME")
+                        (expand-file-name "~/.cache"))))
+
+(defun ghostel-dape--evil-p (file)
+  "Return non-nil if FILE is an evil-ghostel test needing evil on load-path."
+  (and file
+       (string-match-p "evil-ghostel" (file-name-nondirectory file))))
+
+(defun ghostel-dape--ert-load-path-args (file)
+  "Return extra `-L' args needed to load test FILE under Dape.
+Evil-ghostel tests need the vendored evil checkout and the in-repo
+`extensions/evil-ghostel' directory on `load-path', matching the
+`test-evil' Makefile target.  Non-evil files need no extra args."
+  (if (not (ghostel-dape--evil-p file))
+      nil
+    (let ((evil-dir (ghostel-dape--evil-checkout-dir)))
+      (unless (file-directory-p evil-dir)
+        (user-error
+         "Evil checkout not found at %s; run `make test-evil' to clone it"
+         evil-dir))
+      (list "-L" evil-dir
+            "-L" (expand-file-name "extensions/evil-ghostel"
+                                   (ghostel-dape--root))))))
+
 (defun ghostel-dape--read-hypothesis-case-file ()
   "Read a Hypothesis JSON case file name from the minibuffer."
   (let* ((root (ghostel-dape--root))
@@ -140,14 +169,15 @@ name.  The current buffer's test file is loaded into a fresh batch Emacs."
                    (ghostel-dape--current-ert-test)
                    (read-string "ERT test name: ")))
          (regexp (concat "^" (regexp-quote test) "$")))
-    (ghostel-dape--launch-emacs
-     "--batch" "-Q"
-     "-L" "lisp"
-     "-L" "test"
-     "-l" "ert"
-     "-l" "test/ghostel-test-helpers.el"
-     "-l" (ghostel-dape--relative-file file)
-     "--eval" (ghostel-dape--ert-eval regexp))))
+    (apply #'ghostel-dape--launch-emacs
+           "--batch" "-Q"
+           "-L" "lisp"
+           "-L" "test"
+           (append (ghostel-dape--ert-load-path-args file)
+                   (list "-l" "ert"
+                         "-l" "test/ghostel-test-helpers.el"
+                         "-l" (ghostel-dape--relative-file file)
+                         "--eval" (ghostel-dape--ert-eval regexp))))))
 
 ;;;###autoload
 (defun ghostel-dape-ert-file ()
@@ -156,14 +186,15 @@ name.  The current buffer's test file is loaded into a fresh batch Emacs."
   (let ((file (buffer-file-name)))
     (unless file
       (user-error "Current buffer is not visiting a file"))
-    (ghostel-dape--launch-emacs
-     "--batch" "-Q"
-     "-L" "lisp"
-     "-L" "test"
-     "-l" "ert"
-     "-l" "test/ghostel-test-helpers.el"
-     "-l" (ghostel-dape--relative-file file)
-     "--eval" "(ert-run-tests-batch-and-exit t)")))
+    (apply #'ghostel-dape--launch-emacs
+           "--batch" "-Q"
+           "-L" "lisp"
+           "-L" "test"
+           (append (ghostel-dape--ert-load-path-args file)
+                   (list "-l" "ert"
+                         "-l" "test/ghostel-test-helpers.el"
+                         "-l" (ghostel-dape--relative-file file)
+                         "--eval" "(ert-run-tests-batch-and-exit t)")))))
 
 ;;;###autoload
 (defun ghostel-dape-hypothesis-case-file (case-file)
