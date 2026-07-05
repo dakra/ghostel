@@ -341,6 +341,26 @@ bindings from the caller are honored."
       (ghostel-test--wait-for-text text proc timeout)
       (ghostel-test--terminal-text))))
 
+(defun ghostel-test--enable-start-logging ()
+  "Log each ERT test name as it starts, gated on `GHOSTEL_DEBUG_TESTS'.
+
+When the `GHOSTEL_DEBUG_TESTS' environment variable is set, add
+`:before' advice to `ert-run-test' so the name of the test about to
+run is printed synchronously before its body executes.  The last
+printed line is then the test that hung or crashed — useful for
+isolating failures in the native module or in PTY-driven tests that
+never return.  No-op when the env var is unset, so production batch
+runs are unaffected."
+  (when (getenv "GHOSTEL_DEBUG_TESTS")
+    (unless (advice-member-p #'ghostel-test--log-start 'ert-run-test)
+      (advice-add 'ert-run-test :before #'ghostel-test--log-start))))
+
+(defun ghostel-test--log-start (test)
+  "Message the ERT TEST about to run."
+  (message "ERT starting: %s" (ert-test-name test)))
+
+(ghostel-test--enable-start-logging)
+
 (defun ghostel-test-run-elisp ()
   "Run only pure Elisp tests (no native module required)."
   (ert-run-tests-batch-and-exit '(not (tag native))))
