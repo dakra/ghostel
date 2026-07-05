@@ -2582,6 +2582,12 @@ These are newlines with the `ghostel-wrap' text property."
          (trimmed (mapcar (lambda (line) (string-trim-right line)) lines)))
     (mapconcat #'identity trimmed "\n")))
 
+(defun ghostel--filter-buffer-substring (beg end delete)
+  "Filter Ghostel buffer text between BEG and END for copying.
+DELETE has the same meaning as in `filter-buffer-substring'."
+  (ghostel--clean-copy-text
+   (funcall (default-value 'filter-buffer-substring-function) beg end delete)))
+
 (defun ghostel-readonly-copy ()
   "Copy the selected region.
 Soft-wrapped newlines are removed and trailing whitespace is
@@ -2589,11 +2595,7 @@ stripped so the copied text matches the original terminal content.
 When `ghostel-readonly-fast-exit' is non-nil, also exits read-only mode."
   (interactive)
   (when (use-region-p)
-    (let ((text (ghostel--clean-copy-text
-                 (buffer-substring (region-beginning) (region-end)))))
-      (kill-new text)
-      (setq deactivate-mark t)  ; matching `kill-ring-save'
-      (message "Copied to kill ring")))
+    (kill-ring-save (region-beginning) (region-end)))
   (when ghostel-readonly-fast-exit
     (ghostel-readonly-exit)))
 
@@ -4990,6 +4992,7 @@ for both native and Emacs PTY paths."
   (setq-local truncate-lines t)
   (setq-local scroll-conservatively 101)
   (setq-local line-spacing 0)
+  (setq-local filter-buffer-substring-function #'ghostel--filter-buffer-substring)
   ;; expose cwd to buffer-menu/ibuffer
   (setq-local list-buffers-directory (expand-file-name default-directory))
   ;; bookmark this buffer's cwd (loads ghostel-bookmark.el lazily on use)
