@@ -36,15 +36,16 @@ Requires the native module; without it the test is skipped
             (buf (ghostel--create " *evil-ghostel-test*" nil ,rows ,cols))
             (term (buffer-local-value 'ghostel--term buf)))
        (unwind-protect
-           (with-current-buffer buf
-             (ghostel--write-vt term ,text)
-             (evil-local-mode 1)
-             (evil-ghostel-mode 1)
-             (let ((inhibit-read-only t))
-               (ghostel--redraw term t))
-             (cl-macrolet ((insert (&rest args)
-                             `(evil-ghostel-test--insert ,@args)))
-               ,@body))
+		   (with-selected-window (display-buffer buf)
+			 (with-current-buffer buf
+               (ghostel--write-vt term ,text)
+               (evil-local-mode 1)
+               (evil-ghostel-mode 1)
+               (let ((inhibit-read-only t))
+				 (ghostel--redraw term t))
+               (cl-macrolet ((insert (&rest args)
+                               `(evil-ghostel-test--insert ,@args)))
+				 ,@body)))
          (when (buffer-live-p buf)
            (kill-buffer buf))))))
 
