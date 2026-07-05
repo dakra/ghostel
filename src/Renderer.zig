@@ -1,8 +1,3 @@
-/// RenderState-based terminal rendering to Emacs buffers.
-///
-/// Reads rows/cells from the ghostty render state, extracts text and
-/// style attributes, and inserts propertized text into the current
-/// Emacs buffer.  See `redraw' below for the per-redraw algorithm.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -97,14 +92,11 @@ const FontInfo = struct {
 pub fn init(alloc: Allocator, env: emacs.Env, term: *gt.Terminal) !Self {
     const s = emacs.sym;
 
-    _ = env.f("make-local-variable", .{s.@"ghostel--query-font-cache"});
-    _ = env.set("ghostel--query-font-cache", env.f("make-hash-table", .{
+    env.defvarLocal("ghostel--query-font-cache", env.f("make-hash-table", .{
         s.@":test",
         s.eq,
     }));
-
-    _ = env.f("make-local-variable", .{s.@"ghostel--rendered-font"});
-    _ = env.set("ghostel--rendered-font", env.nil());
+    env.defvarLocal("ghostel--rendered-font", env.nil());
 
     var renderer = Self{
         .alloc = alloc,
@@ -117,7 +109,7 @@ pub fn init(alloc: Allocator, env: emacs.Env, term: *gt.Terminal) !Self {
         .pending_resize = .{ .cols = term.cols, .rows = term.rows, .cell_w = 1, .cell_h = 1 },
         .row = .{ .alloc = alloc },
     };
-    _ = try renderer.commitResize(env);
+    try renderer.commitResize(env);
     return renderer;
 }
 
@@ -288,46 +280,14 @@ fn resolveHyperlink(page: *const gt.page.Page, local_id: gt.size.HyperlinkCountI
     };
 }
 
-/// Read the style for the current cell from the render state.
-fn createCellProps(
-    self: *Self,
-    page: *const gt.Page,
-    key: CellPropKey,
-    cell: *const gt.Cell,
-) ?CellProps {
-    var props: CellProps = .{};
-
-    const style: gt.Style = if (cell.hasStyling())
-        page.styles.get(page.memory, cell.style_id).*
-    else
-        .{};
-
-    props.fg = style_face.resolveForeground(
-        &style,
-        &self.term.colors.palette.current,
-        self.bold_config,
-    );
-    props.bg = style.bg(cell, &self.term.colors.palette.current);
-    props.bold = style.flags.bold;
-    props.italic = style.flags.italic;
-    props.faint = style.flags.faint;
-    props.underline = style.flags.underline;
-    props.strikethrough = style.flags.strikethrough;
-    props.overline = style.flags.overline;
-    props.inverse = style.flags.inverse;
-    props.underline_color = style.underlineColor(&self.term.colors.palette.current);
-    props.hyperlink = resolveHyperlink(page, key.hyperlink_id);
-    props.semantic_content = cell.semantic_content;
-
-    return if (props.isPlain()) null else props;
-}
-
 /// Apply text properties to a region of the buffer.
 fn applyProps(
+    self: *Self,
     env: emacs.Env,
     start: i64,
     end: i64,
-    props: CellProps,
+    node: *const gt.PageList.List.Node,
+    prop_key: *const CellPropKey,
 ) !void {
     if (start >= end) return;
     const s = emacs.sym;
@@ -335,7 +295,7 @@ fn applyProps(
     const start_val = env.makeInteger(start);
     const end_val = env.makeInteger(end);
 
-    if (try style_face.buildFacePlist(env, props)) |face| {
+    if (try self.getFace(env, node, prop_key)) |face| {
         _ = env.f("put-text-property", .{
             start_val,
             end_val,
@@ -344,7 +304,8 @@ fn applyProps(
         });
     }
 
-    if (props.hyperlink) |link| {
+    const hyperlink = resolveHyperlink(&node.data, prop_key.hyperlink_id);
+    if (hyperlink) |link| {
         _ = env.f("put-text-property", .{
             start_val,
             end_val,
@@ -385,7 +346,7 @@ fn applyProps(
         });
     }
 
-    switch (props.semantic_content) {
+    switch (prop_key.semantic_content) {
         .prompt => _ = env.f("put-text-property", .{
             start_val,
             end_val,
@@ -402,6 +363,30 @@ fn applyProps(
     }
 }
 
+fn getFace(
+    self: *Self,
+    env: emacs.Env,
+    node: *const gt.PageList.List.Node,
+    key: *const CellPropKey,
+) !?emacs.Value {
+    return if (key.style_id != 0)
+        try style_face.buildFacePlist(
+            env,
+            node.data.styles.get(node.data.memory, key.style_id),
+            &self.term.colors.palette.current,
+            self.bold_config,
+        )
+    else if (key.bg_color != .none)
+        try style_face.buildFacePlist(
+            env,
+            &gt.Style{ .bg_color = key.bg_color },
+            &self.term.colors.palette.current,
+            self.bold_config,
+        )
+    else
+        null;
+}
+
 // TODO: Style ID type is not exported from ghostty-vt for some reason.
 //       We should file an issue.
 const StyleId = @FieldType(gt.page.Cell, "style_id");
@@ -409,19 +394,37 @@ const StyleId = @FieldType(gt.page.Cell, "style_id");
 /// Unique identifier that is cheaper to read and compare relative to `CellProps`.
 /// We read this first and if it differs from the previous cell, we read the full
 /// `CellProps`.
-const CellPropKey = packed struct {
+const CellPropKey = struct {
     style_id: StyleId,
     hyperlink_id: gt.size.HyperlinkCountInt,
     semantic_content: gt.page.Cell.SemanticContent,
+    bg_color: gt.Style.Color,
 
-    fn create(page: *const gt.Page, cell: *const gt.page.Cell) CellPropKey {
+    fn create(page: *const gt.Page, cell: *const gt.page.Cell) ?CellPropKey {
+        const hyperlink_id = if (cell.hyperlink) page.lookupHyperlink(cell) else null;
+        const bg_color: gt.Style.Color = switch (cell.content_tag) {
+            .bg_color_palette => .{ .palette = cell.content.color_palette },
+            .bg_color_rgb => .{ .rgb = .{
+                .r = cell.content.color_rgb.r,
+                .g = cell.content.color_rgb.g,
+                .b = cell.content.color_rgb.b,
+            } },
+            else => .none,
+        };
+
+        if (cell.style_id == 0 and
+            hyperlink_id == null and
+            cell.semantic_content == .output and
+            bg_color == .none)
+        {
+            return null;
+        }
+
         return .{
             .style_id = cell.style_id,
-            .hyperlink_id = if (cell.hyperlink)
-                page.lookupHyperlink(cell) orelse 0
-            else
-                0,
+            .hyperlink_id = hyperlink_id orelse 0,
             .semantic_content = cell.semantic_content,
+            .bg_color = bg_color,
         };
     }
 };
@@ -430,7 +433,7 @@ pub const RowContent = struct {
     const Run = struct {
         start_char: usize,
         end_char: usize,
-        props: ?CellProps,
+        key: ?CellPropKey,
     };
 
     const CellInfo = struct {
@@ -515,11 +518,11 @@ pub const RowContent = struct {
             // We use a "key" that holds a minimum set of values that are cheap to
             // compare to detect style run breaks.
             const prop_key = CellPropKey.create(&row_pin.node.data, cell);
-            if (prop_key != current_prop_key) {
+            if (!std.meta.eql(prop_key, current_prop_key) or self.runs.items.len == 0) {
                 try self.runs.append(self.alloc, .{
                     .start_char = self.char_len,
                     .end_char = self.char_len,
-                    .props = createCellProps(renderer, page, prop_key, cell),
+                    .key = prop_key,
                 });
                 current_prop_key = prop_key;
             }
@@ -555,7 +558,7 @@ pub const RowContent = struct {
             // We trim cells that neither have content nor styling. A blank
             // cursor cell only requires enough whitespace to place point at
             // the cursor column, not an extra rendered space under it.
-            if (cell.hasText() or last_run.props != null) {
+            if (cell.hasText() or last_run.key != null) {
                 trim_byte_len = self.text.items.len;
                 trim_char_len = self.char_len;
             } else if (has_cursor) {
@@ -827,8 +830,8 @@ fn insertRow(
 
         const prop_start = row_start + @as(i64, @intCast(run.start_char));
         const prop_end = row_start + @as(i64, @intCast(run.end_char));
-        if (run.props) |props| {
-            try applyProps(env, prop_start, prop_end, props);
+        if (run.key) |*key| {
+            try self.applyProps(env, prop_start, prop_end, row_pin.node, key);
         }
     }
 
