@@ -2025,6 +2025,31 @@ through; fully default text carries no face at all."
               (should (equal "#123456" (plist-get face :background))))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-render-bg-only-empty-cells-split-runs ()
+  "Adjacent bg-only empty cells with different colors render separately."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-bg-only-runs*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 1 6 100))
+                 (inhibit-read-only t))
+            (ghostel--write-vt
+             term
+             (concat "\e[48;2;17;34;51m\e[2K"
+                     "\e[4G\e[48;2;68;85;102m\e[K"))
+            (ghostel--redraw term)
+            (goto-char (point-min))
+            (should (equal "      " (buffer-substring-no-properties
+                                     (line-beginning-position)
+                                     (line-end-position))))
+            (let ((first-face (get-text-property (point-min) 'face))
+                  (second-face (get-text-property (+ (point-min) 3) 'face)))
+              (should (equal "#112233" (plist-get first-face :background)))
+              (should (equal "#445566" (plist-get second-face :background)))
+              (should (= (+ (point-min) 3)
+                         (next-single-property-change (point-min) 'face))))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-render-inverse-omits-fg-bg ()
   "Inverse video (7) on a default cell emits :inverse-video with no fg/bg.
 Emacs swaps the default face at display time, so theme colors and frame

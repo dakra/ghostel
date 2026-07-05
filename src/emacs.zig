@@ -86,6 +86,11 @@ pub const Env = struct {
         _ = self.f("set", .{ @field(sym, symbol), value });
     }
 
+    pub fn defvarLocal(self: Env, comptime symbol: []const u8, default_value: anytype) void {
+        _ = self.f("make-local-variable", .{@field(sym, symbol)});
+        _ = self.set(symbol, default_value);
+    }
+
     pub fn symbolValue(self: Env, comptime symbol: []const u8) Value {
         return self.f("symbol-value", .{@field(sym, symbol)});
     }
@@ -416,6 +421,7 @@ const interned_symbols = [_][:0]const u8{
     "car",
     "cdr",
     "char-after",
+    "clrhash",
     "composition-get-gstring",
     "cons",
     "dash",
@@ -445,8 +451,9 @@ const interned_symbols = [_][:0]const u8{
     "format",
     "forward-line",
     "fset",
-    "gethash",
     "get-buffer-window-list",
+    "getenv",
+    "gethash",
     "ghostel",
     "ghostel--cursor-blinking",
     "ghostel--cursor-char-pos",
@@ -479,7 +486,6 @@ const interned_symbols = [_][:0]const u8{
     "ghostel-module",
     "ghostel-prompt",
     "ghostel-wrap",
-    "getenv",
     "goto-char",
     "height",
     "help-echo",
@@ -507,11 +513,11 @@ const interned_symbols = [_][:0]const u8{
     "process-live-p",
     "process-send-string",
     "process-tty-name",
-    "puthash",
-    "query-font",
     "propertize",
     "provide",
     "put-text-property",
+    "puthash",
+    "query-font",
     "reverse",
     "run-at-time",
     "selected-window",

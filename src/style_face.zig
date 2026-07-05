@@ -25,8 +25,13 @@ pub const Hyperlink = struct {
     uri: []const u8,
 };
 
+// TODO: Style ID type is not exported from ghostty-vt for some reason.
+//       We should file an issue.
+const StyleId = @FieldType(gt.page.Cell, "style_id");
+
 /// Resolved style attributes for a run of cells.
 pub const CellProps = struct {
+    style_id: StyleId = 0,
     fg: ?gt.color.RGB = null,
     bg: ?gt.color.RGB = null,
     bold: bool = false,
@@ -84,12 +89,12 @@ pub fn dimColor(env: emacs.Env, fg: ?gt.color.RGB, bg: ?gt.color.RGB) !gt.color.
 pub fn resolveForeground(
     style: *const gt.Style,
     palette: *const gt.color.Palette,
-    bold_opt: ?gt.Style.BoldColor,
+    bold_config: ?gt.Style.BoldColor,
 ) ?gt.color.RGB {
     switch (style.fg_color) {
         .none => {
             if (style.flags.bold) {
-                if (bold_opt) |bold| switch (bold) {
+                if (bold_config) |bold| switch (bold) {
                     .bright => {},
                     .color => |v| return v,
                 };
@@ -98,7 +103,7 @@ pub fn resolveForeground(
 
         .palette => |idx| {
             if (style.flags.bold) {
-                if (bold_opt) |_| {
+                if (bold_config) |_| {
                     const bright_offset = @intFromEnum(gt.color.Name.bright_black);
                     if (idx < bright_offset) {
                         return palette[idx + bright_offset];
@@ -115,6 +120,17 @@ pub fn resolveForeground(
     return null;
 }
 
+fn resolveColor(
+    palette: *const gt.color.Palette,
+    color: gt.Style.Color,
+) ?gt.color.RGB {
+    return switch (color) {
+        .rgb => |rgb| rgb,
+        .palette => |idx| palette[idx],
+        .none => null,
+    };
+}
+
 /// Build a face plist (`(:foreground "#xxx" :background "#yyy" ...)`)
 /// from CellProps.  Returns null if the resulting plist is empty.
 ///
@@ -122,55 +138,61 @@ pub fn resolveForeground(
 /// `put-text-property` against either the current buffer or a string.
 pub fn buildFacePlist(
     env: emacs.Env,
-    props: CellProps,
-) !?emacs.Value {
+    style: *const gt.Style,
+    palette: *const gt.color.Palette,
+    bold_config: ?gt.Style.BoldColor,
+) !emacs.Value {
     var face_props: FixedArrayList(emacs.Value, 32) = .{};
 
     const s = &emacs.sym;
 
-    if (props.faint) {
+    const fg = resolveForeground(style, palette, bold_config);
+    const bg = resolveColor(palette, style.bg_color);
+    if (style.flags.faint) {
         var buf: [7]u8 = undefined;
-        const dimmed = try dimColor(env, props.fg, props.bg);
+        const dimmed = try dimColor(env, fg, bg);
         const dim_str = formatColor(dimmed, &buf);
         try face_props.append(s.@":foreground");
         try face_props.append(env.makeString(dim_str));
-    } else if (props.fg) |fg| {
+    } else if (fg) |rgb| {
         var buf: [7]u8 = undefined;
-        const fg_str = formatColor(fg, &buf);
+        const fg_str = formatColor(rgb, &buf);
         try face_props.append(s.@":foreground");
         try face_props.append(env.makeString(fg_str));
     }
 
-    if (props.bg) |bg| {
+    if (bg) |rgb| {
         var buf: [7]u8 = undefined;
-        const bg_str = formatColor(bg, &buf);
+        const bg_str = formatColor(rgb, &buf);
         try face_props.append(s.@":background");
         try face_props.append(env.makeString(bg_str));
     }
 
-    if (props.inverse) {
+    if (style.flags.inverse) {
         try face_props.append(s.@":inverse-video");
         try face_props.append(env.t());
     }
 
-    if (props.bold) {
+    if (style.flags.bold) {
         try face_props.append(s.@":weight");
         try face_props.append(s.bold);
     }
 
-    if (props.italic) {
+    if (style.flags.italic) {
         try face_props.append(s.@":slant");
         try face_props.append(s.italic);
     }
 
-    if (props.underline != .none) {
+    if (style.flags.underline != .none) {
+        const underline_color = resolveColor(palette, style.underline_color);
+
         try face_props.append(s.@":underline");
-        if (props.underline == .single and props.underline_color == null) {
+        if (style.flags.underline == .single and underline_color == null) {
             try face_props.append(env.t());
         } else {
             var ul_props: FixedArrayList(emacs.Value, 4) = .{};
             try ul_props.append(s.@":style");
-            try ul_props.append(switch (props.underline) {
+            try ul_props.append(switch (style.flags.underline) {
                 .curly => s.wave,
                 .double => s.@"double-line",
                 .dotted => s.dot,
@@ -178,7 +200,7 @@ pub fn buildFacePlist(
                 else => s.line,
             });
 
-            if (props.underline_color) |uc| {
+            if (underline_color) |uc| {
                 var uc_buf: [7]u8 = undefined;
                 try ul_props.append(s.@":color");
                 try ul_props.append(env.makeString(formatColor(uc, &uc_buf)));
@@ -188,16 +210,15 @@ pub fn buildFacePlist(
         }
     }
 
-    if (props.strikethrough) {
+    if (style.flags.strikethrough) {
         try face_props.append(s.@":strike-through");
         try face_props.append(env.t());
     }
 
-    if (props.overline) {
+    if (style.flags.overline) {
         try face_props.append(s.@":overline");
         try face_props.append(env.t());
     }
 
-    if (face_props.len == 0) return null;
     return env.funcall(s.list, face_props.items());
 }
