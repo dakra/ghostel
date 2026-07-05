@@ -4753,9 +4753,8 @@ opportunistic output redraws that may safely wait for the frame to end."
                    (inhibit-read-only t)
                    (inhibit-redisplay t)
                    (inhibit-modification-hooks t)
-                   ;; Raise GC threshold to defer GC during redraw.
-                   (gc-cons-threshold (min most-positive-fixnum
-                                           (* gc-cons-threshold 3))))
+                   ;; Disable GC during redraw.
+                   (gc-cons-threshold most-positive-fixnum))
               (with-selected-window render-win
                 ;; Line mode snapshots editable input out of the buffer;
                 ;; redraw fully so the prompt row is always rebuilt
