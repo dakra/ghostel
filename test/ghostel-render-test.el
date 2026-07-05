@@ -967,6 +967,51 @@ scrolling libghostty's viewport."
               (should (string-prefix-p "$ " content)))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-full-reset-clears-everything ()
+  "RIS (ESC c) resets the terminal entirely: screen, scrollback, cursor,\nSGR styles, and alt-screen state all return to initial.\nThe renderer rebuilds the buffer from libghostty's reset state, so no\npre-reset content (scrollback, styled cells, or alt-screen rows) may\nsurvive in the Emacs buffer."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-full-reset*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 1000))
+                 (inhibit-read-only t))
+            ;; Seed every kind of state a partial clear might leave behind:
+            ;; scrollback, SGR-styled cells, a moved cursor, and alt screen.
+            (dotimes (i 12)
+              (ghostel--write-vt term (format "row-%02d\r\n" i)))
+            (ghostel--write-vt term "\e[1;31mRED\e[0m")
+            (ghostel--redraw term t)
+            ;; Sanity-check the pre-reset state has all the things we reset.
+            (let ((before (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p "row-00" before))   ; scrollback present
+              (should (string-match-p "RED" before)))     ; styled text present
+            ;; Enter alt screen and fill it so the reset must exit it.
+            (ghostel--write-vt term "\e[?1049h\e[H\e[2J")
+            (dotimes (i 5)
+              (ghostel--write-vt term (format "\e[%d;1HALT-%d" (1+ i) i)))
+            (ghostel--redraw term t)
+            (should (string-match-p
+                    "ALT-"
+                    (buffer-substring-no-properties (point-min) (point-max))))
+            ;; Full reset (RIS) — everything returns to initial state.
+            (ghostel--write-vt term "\ec")
+            (ghostel--redraw term t)
+            (let ((content (buffer-substring-no-properties (point-min) (point-max))))
+              ;; Scrollback rows are gone.
+              (should-not (string-match-p "row-" content))
+              ;; Alt-screen rows are gone.
+              (should-not (string-match-p "ALT-" content))
+              ;; Styled text is gone — every rendered cell is blank.
+              (should (string-blank-p content))
+              ;; No SGR face survives on the first cell.
+              (goto-char (point-min))
+              (should-not (get-text-property (point) 'face))
+              ;; Cursor returned home (col 0, row 0).
+              (should (equal '(0 . 0) ghostel--cursor-pos))
+              ;; Buffer collapsed to the viewport with no scrollback.
+              (should (= 5 (count-lines (point-min) (point-max)))))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-scrollback-csi3j-then-refill ()
   "CSI 3 J must not leave stale pre-clear rows in the buffer.
 
