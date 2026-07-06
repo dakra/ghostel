@@ -22,6 +22,8 @@ const State = struct {
     hpc: HPCON = null,
     pty_input: c.HANDLE = c.INVALID_HANDLE_VALUE,
     pty_output: c.HANDLE = c.INVALID_HANDLE_VALUE,
+    command_event: c.HANDLE = c.INVALID_HANDLE_VALUE,
+    output_read_event: c.HANDLE = c.INVALID_HANDLE_VALUE,
     shell_process: c.HANDLE = c.INVALID_HANDLE_VALUE,
     running: std.atomic.Value(bool) = .init(true),
     pid: i64 = -1,
@@ -32,6 +34,7 @@ state: *State,
 var create_pseudo_console: ?CreatePseudoConsoleFn = null;
 var resize_pseudo_console: ?ResizePseudoConsoleFn = null;
 var close_pseudo_console: ?ClosePseudoConsoleFn = null;
+var pipe_name_counter = std.atomic.Value(u32).init(1);
 
 pub const ProcessParams = @import("ProcessParams.zig");
 
@@ -183,8 +186,12 @@ pub fn init(alloc: Allocator, initial_cols: u16, initial_rows: u16, params: Proc
     errdefer alloc.destroy(state);
     state.* = .{ .alloc = alloc };
 
-    try createConPty(state, initial_rows, initial_cols);
+    state.command_event = c.CreateEventW(null, c.TRUE, c.FALSE, null);
+    if (state.command_event == null) return error.CreateEventFailed;
     errdefer closeConPtyHandles(state);
+    state.output_read_event = c.CreateEventW(null, c.TRUE, c.FALSE, null);
+    if (state.output_read_event == null) return error.CreateEventFailed;
+    try createConPty(state, initial_rows, initial_cols);
     try spawnChild(state, params);
 
     return .{ .state = state };
@@ -195,64 +202,168 @@ pub fn pidValue(self: *const Self) i64 {
 }
 
 pub fn drain(self: *Self, stream: anytype) !bool {
-    var drained = false;
     var buf: [READ_BUFFER_SIZE]u8 = undefined;
 
     while (self.state.running.load(.acquire)) {
-        const available = try peekOutputAvailable(self.state);
-        if (available == 0) {
-            if (drained) return true;
-            if (shellProcessExited(self.state)) {
+        switch (try self.readOutput(stream, buf[0..])) {
+            .output, .command => return false,
+            .eof => {
                 stopRunning(self.state);
-                return drained;
-            }
-            // The ConPTY output pipe is polled with PeekNamedPipe; wait briefly
-            // on the child process handle to avoid a hot spin while still
-            // noticing process exit promptly.
-            _ = c.WaitForSingleObject(self.state.shell_process, 10);
-            continue;
+                return true;
+            },
         }
-
-        var bytes_read: c.DWORD = 0;
-        const read_len: c.DWORD = @intCast(@min(buf.len, available));
-        if (c.ReadFile(self.state.pty_output, buf[0..].ptr, read_len, &bytes_read, null) == 0) {
-            const err = c.GetLastError();
-            switch (err) {
-                c.ERROR_OPERATION_ABORTED, c.ERROR_BROKEN_PIPE, c.ERROR_INVALID_HANDLE => {
-                    stopRunning(self.state);
-                    return drained;
-                },
-                else => return error.ReadFailed,
-            }
-        }
-        if (bytes_read == 0) {
-            stopRunning(self.state);
-            return drained;
-        }
-        stream.nextSlice(buf[0..@as(usize, @intCast(bytes_read))]);
-        drained = true;
     }
 
-    return drained;
+    return true;
 }
 
-fn peekOutputAvailable(state: *State) !c.DWORD {
-    if (state.pty_output == c.INVALID_HANDLE_VALUE) return 0;
+const ReadOutputResult = enum {
+    output,
+    eof,
+    command,
+};
 
-    var available: c.DWORD = 0;
-    if (c.PeekNamedPipe(state.pty_output, null, 0, null, &available, null) == 0) {
+fn readOutput(self: *Self, stream: anytype, buf: []u8) !ReadOutputResult {
+    const state = self.state;
+    if (state.pty_output == c.INVALID_HANDLE_VALUE) return .eof;
+    if (state.output_read_event == c.INVALID_HANDLE_VALUE) return error.ReadFailed;
+
+    _ = c.ResetEvent(state.output_read_event);
+
+    var overlapped = std.mem.zeroes(c.OVERLAPPED);
+    overlapped.hEvent = state.output_read_event;
+
+    var bytes_read: c.DWORD = 0;
+    if (c.ReadFile(
+        state.pty_output,
+        buf.ptr,
+        @intCast(buf.len),
+        &bytes_read,
+        &overlapped,
+    ) != 0) {
+        return finishRead(stream, buf, bytes_read);
+    }
+
+    switch (c.GetLastError()) {
+        c.ERROR_IO_PENDING => {},
+        c.ERROR_OPERATION_ABORTED => return .command,
+        c.ERROR_BROKEN_PIPE, c.ERROR_INVALID_HANDLE => return .eof,
+        else => return error.ReadFailed,
+    }
+
+    var include_process = true;
+    while (true) {
+        switch (try waitForReadOrCommand(state, include_process)) {
+            .read => return finishOverlappedRead(state, stream, buf, &overlapped),
+            .command => {
+                clearCommandEvent(state);
+                return cancelPendingRead(state, stream, buf, &overlapped);
+            },
+            .process => {
+                closePseudoConsole(state);
+                include_process = false;
+            },
+        }
+    }
+}
+
+fn finishRead(stream: anytype, buf: []u8, bytes_read: c.DWORD) ReadOutputResult {
+    if (bytes_read == 0) return .eof;
+    stream.nextSlice(buf[0..@as(usize, @intCast(bytes_read))]);
+    return .output;
+}
+
+fn finishOverlappedRead(
+    state: *State,
+    stream: anytype,
+    buf: []u8,
+    overlapped: *c.OVERLAPPED,
+) !ReadOutputResult {
+    var bytes_read: c.DWORD = 0;
+    if (c.GetOverlappedResult(
+        state.pty_output,
+        overlapped,
+        &bytes_read,
+        c.FALSE,
+    ) == 0) {
         const err = c.GetLastError();
         switch (err) {
-            c.ERROR_OPERATION_ABORTED, c.ERROR_BROKEN_PIPE, c.ERROR_INVALID_HANDLE => return 0,
+            c.ERROR_OPERATION_ABORTED => return .command,
+            c.ERROR_BROKEN_PIPE, c.ERROR_INVALID_HANDLE => return .eof,
             else => return error.ReadFailed,
         }
     }
-    return available;
+
+    return finishRead(stream, buf, bytes_read);
 }
 
-fn shellProcessExited(state: *State) bool {
-    if (state.shell_process == c.INVALID_HANDLE_VALUE) return true;
-    return c.WaitForSingleObject(state.shell_process, 0) == c.WAIT_OBJECT_0;
+fn cancelPendingRead(
+    state: *State,
+    stream: anytype,
+    buf: []u8,
+    overlapped: *c.OVERLAPPED,
+) !ReadOutputResult {
+    if (c.CancelIoEx(state.pty_output, overlapped) == 0) {
+        const err = c.GetLastError();
+        switch (err) {
+            c.ERROR_NOT_FOUND => {},
+            c.ERROR_INVALID_HANDLE => return .eof,
+            else => return error.ReadFailed,
+        }
+    }
+
+    var bytes_read: c.DWORD = 0;
+    if (c.GetOverlappedResult(
+        state.pty_output,
+        overlapped,
+        &bytes_read,
+        c.TRUE,
+    ) == 0) {
+        const err = c.GetLastError();
+        switch (err) {
+            c.ERROR_OPERATION_ABORTED => return .command,
+            c.ERROR_BROKEN_PIPE, c.ERROR_INVALID_HANDLE => return .eof,
+            else => return error.ReadFailed,
+        }
+    }
+
+    return finishRead(stream, buf, bytes_read);
+}
+
+const WaitResult = enum {
+    read,
+    process,
+    command,
+};
+
+fn waitForReadOrCommand(state: *State, include_process: bool) !WaitResult {
+    var handles: [3]c.HANDLE = undefined;
+    var count: c.DWORD = 0;
+    const read_index = count;
+    handles[count] = state.output_read_event;
+    count += 1;
+
+    var process_index: ?c.DWORD = null;
+    var command_index: c.DWORD = undefined;
+
+    if (include_process and state.shell_process != c.INVALID_HANDLE_VALUE) {
+        process_index = count;
+        handles[count] = state.shell_process;
+        count += 1;
+    }
+
+    command_index = count;
+    handles[count] = state.command_event;
+    count += 1;
+
+    const result = c.WaitForMultipleObjects(count, &handles, c.FALSE, c.INFINITE);
+    if (result < c.WAIT_OBJECT_0 or result >= c.WAIT_OBJECT_0 + count) return error.WaitFailed;
+
+    const index = result - c.WAIT_OBJECT_0;
+    if (index == read_index) return .read;
+    if (process_index != null and index == process_index.?) return .process;
+    if (index == command_index) return .command;
+    return error.WaitFailed;
 }
 
 pub fn write(self: *Self, data: []const u8) !void {
@@ -283,6 +394,7 @@ pub fn resize(self: *Self, cols: u16, rows: u16) !void {
 
 pub fn requestStop(self: *Self, read_thread: std.Thread) void {
     stopRunning(self.state);
+    wake(self.state);
 
     if (self.state.pty_input != c.INVALID_HANDLE_VALUE) {
         _ = c.CloseHandle(self.state.pty_input);
@@ -340,7 +452,7 @@ fn createConPty(state: *State, rows: u16, cols: u16) !void {
     sa.bInheritHandle = c.TRUE;
 
     if (c.CreatePipe(&in_read, &in_write, &sa, 0) == 0) return error.CreatePipeFailed;
-    if (c.CreatePipe(&out_read, &out_write, &sa, 0) == 0) return error.CreatePipeFailed;
+    try createOverlappedPipe(&out_read, &out_write);
 
     const size = c.COORD{
         .X = @intCast(cols),
@@ -369,11 +481,83 @@ fn closeConPtyHandles(state: *State) void {
         _ = c.CloseHandle(state.pty_output);
         state.pty_output = c.INVALID_HANDLE_VALUE;
     }
-    if (state.hpc != null) {
-        // ClosePseudoConsole owns the documented ConPTY teardown path.
-        close_pseudo_console.?(state.hpc);
-        state.hpc = null;
+    closePseudoConsole(state);
+    if (state.command_event != c.INVALID_HANDLE_VALUE) {
+        _ = c.CloseHandle(state.command_event);
+        state.command_event = c.INVALID_HANDLE_VALUE;
     }
+    if (state.output_read_event != c.INVALID_HANDLE_VALUE) {
+        _ = c.CloseHandle(state.output_read_event);
+        state.output_read_event = c.INVALID_HANDLE_VALUE;
+    }
+}
+
+fn closePseudoConsole(state: *State) void {
+    if (state.hpc == null) return;
+    // ClosePseudoConsole owns the documented ConPTY teardown path.
+    close_pseudo_console.?(state.hpc);
+    state.hpc = null;
+}
+
+fn wake(state: *State) void {
+    if (state.command_event == c.INVALID_HANDLE_VALUE) return;
+    _ = c.SetEvent(state.command_event);
+}
+
+fn clearCommandEvent(state: *State) void {
+    if (state.command_event == c.INVALID_HANDLE_VALUE) return;
+    _ = c.ResetEvent(state.command_event);
+}
+
+fn createOverlappedPipe(read_handle: *c.HANDLE, write_handle: *c.HANDLE) !void {
+    var pipe_path_buf: [128]u8 = undefined;
+    var pipe_path_buf_w: [128]u16 = undefined;
+    const pipe_path = std.fmt.bufPrintZ(
+        &pipe_path_buf,
+        "\\\\.\\pipe\\ghostel-conpty-{d}-{d}",
+        .{
+            c.GetCurrentProcessId(),
+            pipe_name_counter.fetchAdd(1, .monotonic),
+        },
+    ) catch unreachable;
+
+    const pipe_path_w_len = std.unicode.utf8ToUtf16Le(
+        &pipe_path_buf_w,
+        pipe_path,
+    ) catch unreachable;
+    pipe_path_buf_w[pipe_path_w_len] = 0;
+    const pipe_path_w = pipe_path_buf_w[0..pipe_path_w_len :0];
+
+    var sa = std.mem.zeroes(c.SECURITY_ATTRIBUTES);
+    sa.nLength = @sizeOf(c.SECURITY_ATTRIBUTES);
+    sa.bInheritHandle = c.TRUE;
+
+    read_handle.* = c.CreateNamedPipeW(
+        pipe_path_w.ptr,
+        c.PIPE_ACCESS_INBOUND | c.FILE_FLAG_OVERLAPPED | c.FILE_FLAG_FIRST_PIPE_INSTANCE,
+        c.PIPE_TYPE_BYTE,
+        1,
+        4096,
+        4096,
+        0,
+        &sa,
+    );
+    if (read_handle.* == c.INVALID_HANDLE_VALUE) return error.CreatePipeFailed;
+    errdefer {
+        _ = c.CloseHandle(read_handle.*);
+        read_handle.* = c.INVALID_HANDLE_VALUE;
+    }
+
+    write_handle.* = c.CreateFileW(
+        pipe_path_w.ptr,
+        c.GENERIC_WRITE,
+        0,
+        &sa,
+        c.OPEN_EXISTING,
+        c.FILE_ATTRIBUTE_NORMAL,
+        null,
+    );
+    if (write_handle.* == c.INVALID_HANDLE_VALUE) return error.CreatePipeFailed;
 }
 
 fn spawnChild(state: *State, params: ProcessParams) !void {

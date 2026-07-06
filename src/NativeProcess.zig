@@ -19,9 +19,12 @@ const log = std.log.scoped(.NativeProcessHandler);
 pub const ChannelFd = EventWriter.Fd;
 pub const ProcessParams = Backend.ProcessParams;
 
-backend: Backend,
-backend_alive: std.atomic.Value(bool) = .init(false),
+backend_mutex: std.Thread.Mutex = .{},
+backend: ?Backend,
 event_writer: EventWriter,
+alloc: Allocator,
+pid: i64,
+replica_name: []u8,
 // Buffer event notifications so large terminal updates can be reported with
 // few writes to Emacs.
 event_buf: FixedArrayList(u8, 16 * 1024) = .{},
@@ -35,10 +38,12 @@ thread: std.Thread,
 
 const LockedStream = struct {
     process: *Self,
+    drained: bool = false,
 
     pub fn nextSlice(self: *LockedStream, data: []const u8) void {
         self.process.term_mutex.lock();
         defer self.process.term_mutex.unlock();
+        self.drained = true;
         self.process.stream.nextSlice(data);
     }
 };
@@ -61,10 +66,15 @@ pub fn init(
     var stream: @TypeOf(self.stream) = .initAlloc(alloc, .init(self, term));
     errdefer stream.deinit();
 
+    const replica_name = try alloc.dupe(u8, backend.replicaName());
+    errdefer alloc.free(replica_name);
+
     self.* = .{
         .backend = backend,
-        .backend_alive = .init(true),
         .event_writer = event_writer,
+        .alloc = alloc,
+        .pid = backend.pidValue(),
+        .replica_name = replica_name,
         .term = term,
         .stream = stream,
         .thread = undefined,
@@ -81,21 +91,25 @@ pub fn unlockTerm(self: *Self) void {
 }
 
 pub fn ptyWrite(self: *Self, data: []const u8) !void {
-    if (!self.isBackendAlive()) return error.ProcessExited;
-    return self.backend.write(data);
+    self.backend_mutex.lock();
+    defer self.backend_mutex.unlock();
+
+    if (self.backend) |*backend| return backend.write(data);
+    return error.ProcessExited;
 }
 
 pub fn resizePty(self: *Self, cols: u16, rows: u16) !void {
-    if (!self.isBackendAlive()) return;
-    try self.backend.resize(cols, rows);
+    self.backend_mutex.lock();
+    defer self.backend_mutex.unlock();
+
+    if (self.backend) |*backend| try backend.resize(cols, rows);
 }
 
 pub fn isBackendAlive(self: *Self) bool {
-    return self.backend_alive.load(.acquire);
-}
+    self.backend_mutex.lock();
+    defer self.backend_mutex.unlock();
 
-fn takeBackendAlive(self: *Self) bool {
-    return self.backend_alive.swap(false, .acq_rel);
+    return self.backend != null;
 }
 
 pub fn effect(self: *Self, comptime func: []const u8, args: anytype) void {
@@ -105,7 +119,11 @@ pub fn effect(self: *Self, comptime func: []const u8, args: anytype) void {
 }
 
 pub fn replicaName(self: *Self) []const u8 {
-    return self.backend.replicaName();
+    return self.replica_name;
+}
+
+pub fn pidValue(self: *Self) i64 {
+    return self.pid;
 }
 
 fn effectFallible(self: *Self, comptime func: []const u8, args: anytype) !void {
@@ -155,7 +173,14 @@ fn run(self: *Self) void {
     self.loop() catch |err| {
         log.warn("ghostel: error in read loop: {any}", .{err});
     };
-    _ = self.takeBackendAlive();
+    const backend = blk: {
+        self.backend_mutex.lock();
+        defer self.backend_mutex.unlock();
+
+        const backend = self.backend orelse return;
+        self.backend = null;
+        break :blk backend;
+    };
 
     // The reader thread must not waitpid here: it may be joined from Emacs
     // during buffer teardown, and blocking that path would freeze Emacs.  Hand
@@ -165,7 +190,7 @@ fn run(self: *Self) void {
     const reaper_thread = std.Thread.spawn(
         .{ .stack_size = 1024 * 1024 },
         reapChild,
-        .{ self.backend, self.event_writer },
+        .{ backend, self.event_writer },
     ) catch |err| {
         log.err("Failed to spawn reaper thread: {any}", .{err});
         return;
@@ -181,9 +206,9 @@ fn loopOnce(self: *Self) !bool {
     if (@atomicLoad(bool, &self.quit, .monotonic)) return false;
 
     var stream = LockedStream{ .process = self };
-    const drained = try self.backend.drain(&stream);
-    try self.notifyVtUpdate();
-    return drained;
+    const eof = try self.backend.?.drain(&stream);
+    if (stream.drained) try self.notifyVtUpdate();
+    return !eof;
 }
 
 fn notifyVtUpdate(self: *Self) !void {
@@ -230,10 +255,13 @@ fn reapChild(process: Backend, event_writer: EventWriter) void {
 
 pub fn deinit(self: *Self) void {
     @atomicStore(bool, &self.quit, true, .monotonic);
-    if (self.takeBackendAlive()) {
-        self.backend.requestStop(self.thread);
+    self.backend_mutex.lock();
+    if (self.backend) |*backend| {
+        backend.requestStop(self.thread);
     }
+    self.backend_mutex.unlock();
     self.thread.join();
 
     self.stream.deinit();
+    self.alloc.free(self.replica_name);
 }

@@ -285,7 +285,7 @@ pub fn spawnNativeProcess(
         event_fd,
     );
     self.process = process;
-    return process.backend.pidValue();
+    return process.pidValue();
 }
 
 pub fn killNativeProcess(self: *Self) void {

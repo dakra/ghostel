@@ -257,7 +257,7 @@ pub fn write(self: *Self, data: []const u8) !void {
 }
 
 pub fn drain(self: *Self, stream: anytype) !bool {
-    var buf: [64 * 1024]u8 = undefined;
+    var buf: [4096]u8 = undefined;
 
     var pollfds = [_]posix.pollfd{
         .{
@@ -274,17 +274,14 @@ pub fn drain(self: *Self, stream: anytype) !bool {
     _ = try posix.poll(&pollfds, -1);
     if (pollfds[1].revents != 0) return false;
 
-    var drained = false;
-    while (true) {
-        const len = posix.read(self.pty.primary_fd, buf[0..]) catch |err| switch (err) {
-            error.WouldBlock => return drained,
-            error.NotOpenForReading, error.InputOutput => return drained,
-            else => return err,
-        };
-        if (len == 0) return drained;
-        stream.nextSlice(buf[0..len]);
-        drained = true;
-    }
+    const len = posix.read(self.pty.primary_fd, buf[0..]) catch |err| switch (err) {
+        error.WouldBlock => return false,
+        error.NotOpenForReading, error.InputOutput => return true,
+        else => return err,
+    };
+    if (len == 0) return true;
+    stream.nextSlice(buf[0..len]);
+    return false;
 }
 
 pub fn requestStop(self: *Self, _: std.Thread) void {
