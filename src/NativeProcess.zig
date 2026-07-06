@@ -236,8 +236,8 @@ fn flushEvents(self: *Self) !void {
     self.event_buf.resize(0);
 }
 
-fn reapChild(process: Backend, event_writer: EventWriter) void {
-    var proc = process;
+fn reapChild(backend: Backend, event_writer: EventWriter) void {
+    var proc = backend;
     var writer = event_writer;
     const exit_code = proc.deinitAndWait();
 
