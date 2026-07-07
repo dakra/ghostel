@@ -11,8 +11,6 @@ const GhostelHandler = @import("handler.zig").GhostelHandler;
 const Renderer = @import("Renderer.zig");
 const input = @import("input.zig");
 const kitty_graphics = @import("kitty_graphics.zig");
-const utils = @import("utils.zig");
-const parseHexColor = utils.parseHexColor;
 const PtyProcess = @import("PtyProcess.zig");
 const NativeProcess = @import("NativeProcess.zig");
 const pty_utils = @import("pty_utils.zig");
@@ -651,7 +649,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 var idx: usize = 0;
                 while (idx < 16) : (idx += 1) {
                     const pos = idx * 7;
-                    palette[idx] = try parseHexColor(colors_str[pos .. pos + 7]);
+                    palette[idx] = try gt.color.RGB.parse(colors_str[pos .. pos + 7]);
                 }
                 term.setColorPalette(palette);
                 return env.t();
@@ -679,8 +677,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 const bg_str = try env.extractString(args[2], &bg_buf);
                 term.lockTerm();
                 defer term.unlockTerm();
-                term.terminal.colors.foreground.default = try parseHexColor(fg_str);
-                term.terminal.colors.background.default = try parseHexColor(bg_str);
+                term.terminal.colors.foreground.default = try gt.color.RGB.parse(fg_str);
+                term.terminal.colors.background.default = try gt.color.RGB.parse(bg_str);
                 return env.t();
             }
         },
@@ -706,7 +704,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 } else {
                     var hex_buf: [16]u8 = undefined;
                     const hex = try env.extractString(val, &hex_buf);
-                    term.renderer.bold_config = .{ .color = try parseHexColor(hex) };
+                    term.renderer.bold_config = .{ .color = try gt.color.RGB.parse(hex) };
                 }
                 return env.t();
             }

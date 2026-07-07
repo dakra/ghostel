@@ -8,7 +8,6 @@ const std = @import("std");
 const emacs = @import("emacs.zig");
 const gt = @import("ghostty-vt");
 const FixedArrayList = @import("fixed_array_list.zig").FixedArrayList;
-const utils = @import("utils.zig");
 
 /// Globally-stable identity for an OSC 8 hyperlink span.  `.explicit`
 /// holds the user-supplied `id=...`; `.implicit` is ghostty's auto-counter
@@ -70,7 +69,7 @@ pub fn getGhostelDefaultColor(env: emacs.Env, comptime prop: anytype) !gt.color.
         .{ s.@"ghostel-default", @field(s, prop) },
     );
     var buf: [8]u8 = undefined;
-    return try utils.parseHexColor(try env.extractString(color_val, &buf));
+    return try gt.color.RGB.parse(try env.extractString(color_val, &buf));
 }
 
 /// Blend a foreground color toward a background color to produce a "dim"

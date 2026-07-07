@@ -17,7 +17,6 @@ const gt = @import("ghostty-vt");
 
 const emacs = @import("emacs.zig");
 const style_face = @import("style_face.zig");
-const parseHexColor = @import("utils.zig").parseHexColor;
 
 const Self = @This();
 
@@ -427,7 +426,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 var idx: usize = 0;
                 while (idx < 16) : (idx += 1) {
                     const pos = idx * 7;
-                    palette16[idx] = try parseHexColor(colors_str[pos .. pos + 7]);
+                    palette16[idx] = try gt.color.RGB.parse(colors_str[pos .. pos + 7]);
                 }
                 filter.setPalette16(palette16);
                 return env.t();
