@@ -392,6 +392,23 @@ with TERM and must write MARK_TARGET, POINT_TARGET, and START_TARGET."
     (ghostel--write-vt term "\e[1;31mHELLO\e[0m normal")
     (should (equal "HELLO normal" (ghostel-test--row0 term)))))
 
+(ert-deftest ghostel-test-property-runs-stop-at-row-boundaries ()
+  "Background-only property runs must not leak onto following rows."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-prop-row-boundary*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 3 20 100))
+                 (inhibit-read-only t))
+            (ghostel--write-vt term "\e[H\e[2J\e[44mselected\e[K\e[0m\r\nplain")
+            (ghostel--redraw term t)
+            (goto-char (point-min))
+            (should (plist-get (get-text-property (point) 'face) :background))
+            (forward-line 1)
+            (should (looking-at-p "plain"))
+            (should-not (get-text-property (point) 'face))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-dim-text ()
   "Test that SGR 2 (faint) produces a dimmed foreground color, not :weight light."
   :tags '(native)
