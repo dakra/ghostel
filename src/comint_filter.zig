@@ -187,6 +187,14 @@ const Handler = struct {
             .print => self.appendCodepoint(value.cp) catch |err| {
                 log.warn("appendCodepoint failed: {s}", .{@errorName(err)});
             },
+            .print_slice => {
+                for (value.cps) |cp| {
+                    self.appendCodepoint(@intCast(cp)) catch |err| {
+                        log.warn("appendCodepoint failed: {s}", .{@errorName(err)});
+                        return;
+                    };
+                }
+            },
 
             // C0 controls — pass through so comint's carriage-motion
             // filter can interpret them.
