@@ -2,8 +2,9 @@
 
 ## Architectural guidelines
 
-- Calling `render_state.update(...)`, directly or indirectly, **consumes** dirty state from the terminal. For this reason, **only** the Renderer (in `Renderer.zig`) may do so. Any other usage of `render_state.update` **will** break the Renderer.
-- If you need information from the rendering process, add a way for the Renderer to communicate it as render output: text properties, buffer-local variables, or, as a last resort, callbacks.
+- `Renderer.zig` owns the terminal-grid → Emacs-buffer projection. It reads libghostty pages directly, combines row dirtiness with cursor movement to decide what to rewrite, clears dirty rows once rendered, and publishes render-derived state through buffer text/properties or buffer-local variables.
+- Do not read-and-clear or otherwise modify libghostty dirty flags outside the renderer. `RenderState.update` also mutates dirty state, so using it alongside the current renderer will make incremental redraws miss changes.
+- If non-renderer code needs information from the rendering process, add a way for the Renderer to communicate it as render output: text properties, buffer-local variables, or, as a last resort, callbacks.
 
 ## Emacs module function entries
 
