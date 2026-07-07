@@ -919,6 +919,7 @@ fn render(
     var current_span: ?struct {
         start_val: emacs.Value,
         node: *const gt.PageList.List.Node,
+        adjusted_line_start: usize,
     } = null;
 
     var it = start_pin.rowIterator(.right_down, null);
@@ -952,6 +953,7 @@ fn render(
                 current_span = .{
                     .start_val = line_start_val,
                     .node = row_pin.node,
+                    .adjusted_line_start = env.cast(usize, line_start_val),
                 };
                 try self.span.clear();
             }
@@ -960,7 +962,12 @@ fn render(
             const line_start = env.cast(usize, line_start_val);
             const old_line_len = env.cast(usize, old_line_end_val) - line_start;
             if (old_line_len > 0) {
-                self.saved_markers.adjustRegion(line_start, old_line_len, new_line_len);
+                self.saved_markers.adjustRegion(
+                    current_span.?.adjusted_line_start,
+                    old_line_len,
+                    new_line_len,
+                );
+                current_span.?.adjusted_line_start += new_line_len;
             }
 
             if (page) |p| {

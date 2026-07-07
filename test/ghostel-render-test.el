@@ -261,6 +261,24 @@ with TERM and must write MARK_TARGET, POINT_TARGET, and START_TARGET."
      (should (= old-mark (ghostel-test--token-position "MARK_TARGET")))
      (should (= old-point (ghostel-test--token-position "POINT_TARGET"))))))
 
+(ert-deftest ghostel-test-position-preservation-batched-changed-length-lines ()
+  "Adjacent changed-length dirty rows preserve later positions when batched."
+  :tags '(native)
+  (ghostel-test--with-position-preservation-case
+   (buf term 12 120 2000 (lambda (term)
+                           (ghostel--write-vt term
+                                              "aaaaaaaaaaaaaaaaaaaa mutable-one\r\n")
+                           (ghostel--write-vt term
+                                              "bbbbbbbbbbbbbbbbbbbb mutable-two\r\n")
+                           (ghostel--write-vt term "START_TARGET start-row\r\n")
+                           (ghostel--write-vt term "mark row MARK_TARGET here\r\n")
+                           (ghostel--write-vt term "point row POINT_TARGET here\r\n")
+                           (dotimes (i 3)
+                             (ghostel--write-vt term
+                                                (format "tail-%02d\r\n" i)))))
+   (ghostel--write-vt term "\e[1;1H\e[2Kx\e[2;1H\e[2Ky")
+   (ghostel--redraw term)))
+
 (ert-deftest ghostel-test-position-preservation-on-shortened-line-clamps ()
   "Positions past a shortened dirty row clamp to that row's end."
   :tags '(native)
