@@ -2,9 +2,8 @@
 ///
 /// Both the renderer (which materialises a 2D grid into an Emacs buffer)
 /// and the comint stream filter (which transforms a byte stream into
-/// propertized text for `comint-preoutput-filter-functions') need the
-/// same SGR-to-face plist mapping.  This module owns the data type
-/// (`CellProps`) and the plist builder so the two paths stay in sync.
+/// propertized text for `comint-preoutput-filter-functions') use the same
+/// SGR-to-face plist mapping.
 const std = @import("std");
 const emacs = @import("emacs.zig");
 const gt = @import("ghostty-vt");
@@ -132,7 +131,7 @@ fn resolveColor(
 }
 
 /// Build a face plist (`(:foreground "#xxx" :background "#yyy" ...)`)
-/// from CellProps.  Returns null if the resulting plist is empty.
+/// from a libghostty style.
 ///
 /// The caller is responsible for actually applying the plist via
 /// `put-text-property` against either the current buffer or a string.

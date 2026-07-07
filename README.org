@@ -732,7 +732,7 @@ TRAMP-aware =auth-source-pick-first-password= example.
 :custom_id: rendering
 :end:
 
-- Incremental redraw - only dirty rows are re-rendered.
+- Incremental redraw - unchanged rows are skipped.
 - Timer-based batched updates with adaptive frame rate.
 - *Immediate redraw* for interactive typing echo - PTY output arriving shortly
   after a keystroke bypasses the timer, eliminating 16-33ms of latency per
@@ -1965,9 +1965,9 @@ in =view-lossage=, the recent-keys ring, and anything else watching input.
 *Input methods.*  Ghostel and vterm forward Emacs input methods into the terminal
 (ghostel via =ghostel-ime-mode=); eat does not.
 
-*Rendering.*  All three use text properties rather than overlays.  Ghostel's
-engine provides three-level dirty tracking (none / partial / full) at per-row
-granularity and defaults to ~30 fps; vterm uses damage-rectangle callbacks and
+*Rendering.*  All three use text properties rather than overlays.  Ghostel uses
+libghostty's row dirtiness plus cursor tracking to update only the rows that need
+to change, and defaults to ~30 fps; vterm uses damage-rectangle callbacks and
 defaults to ~10 fps; eat coalesces output within an 8-33 ms latency window.
 
 *Performance.*  On the cross-emulator benchmark (1 MB streamed, ~1,000 lines of
@@ -1995,7 +1995,7 @@ Ghostel has a two-layer design: a *Zig native module* (the terminal engine) and
 ghostel.el            Elisp: keymap, process management, mode, commands
 src/module.zig        Entry point: emacs_module_init, function registration
 src/GhostelTerm.zig   Terminal state wrapping libghostty-vt (and the native reader)
-src/Renderer.zig      RenderState -> Emacs buffer with styled text
+src/Renderer.zig      Terminal pages -> Emacs buffer with styled text
 src/input.zig         Key encoding via ghostty encoders
 src/handler.zig       Intercepts OSC actions and routes them to Elisp callbacks
 src/PtyProcess.zig    Native PTY: open master/replica, spawn the child
@@ -2044,8 +2044,8 @@ the VT parser):
    =ghostel--filter=, which calls =ghostel--write-vt= and then =ghostel--invalidate=
    synchronously.)
 3. =ghostel--invalidate= runs =ghostel--redraw-now= - immediately for interactive
-   echo, otherwise on a coalescing timer - which drives =Renderer.zig= to read the
-   dirty rows and update the buffer with propertized text.
+   echo, otherwise on a coalescing timer - which drives =Renderer.zig= to scan the
+   terminal pages and update dirty rows with propertized text.
 
 ** Renderer and buffer positions
 :properties:

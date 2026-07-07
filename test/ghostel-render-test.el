@@ -1218,8 +1218,8 @@ already in scrollback must remain untouched."
 
 (ert-deftest ghostel-test-partial-redraw-only-dirty-row-rebuilt ()
   "Modifying one active row rebuilds only that row; unchanged rows are preserved.
-The incremental dirty-row path calls `delete-region' + re-insert for dirty rows
-and `forward-line' for clean ones.  Only the dirty row loses the sentinel."
+Dirty rows are replaced and clean rows are skipped.  Only the dirty row loses
+the sentinel."
   :tags '(native)
   (let ((buf (generate-new-buffer " *ghostel-test-partial-dirty*")))
     (unwind-protect

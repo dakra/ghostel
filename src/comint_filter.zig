@@ -23,8 +23,8 @@ const Self = @This();
 
 const log = std.log.scoped(.comint_filter);
 
-/// One styled run within the output buffer.  If it has a hyperlink,
-/// `props.hyperlink.uri` is owned and freed on run-list reset.
+/// One styled run within the output buffer.  Hyperlink URIs are owned
+/// by the run and freed on run-list reset.
 ///
 /// Positions are *character* offsets (codepoints), not byte offsets:
 /// Emacs string positions are character-indexed for multibyte strings,
@@ -84,9 +84,8 @@ const Handler = struct {
 
     /// Push the pending run onto `runs` if it has content.
     ///
-    /// `pending_props.hyperlink.uri` borrows from the current OSC 8 state;
-    /// duplicate it for the stored run because the active hyperlink can end
-    /// before Emacs properties are applied.
+    /// Duplicate the active OSC 8 URI for stored runs because the active
+    /// hyperlink can end before Emacs properties are applied.
     fn closePending(self: *Handler) !void {
         const here = self.text_chars;
         if (here > self.pending_start) {

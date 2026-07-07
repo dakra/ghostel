@@ -11,8 +11,7 @@ const gt = @import("ghostty-vt");
 const ppm = @import("ppm.zig");
 
 /// Query all visible kitty graphics placements from libghostty and
-/// emit them to Elisp for display.  Called after render_state_update()
-/// during each redraw.
+/// emit them to Elisp during redraw.
 pub fn emitPlacements(env: emacs.Env, term: *GhostelTerm) !void {
     const storage = &term.terminal.screens.active.kitty_images;
     var iterator = storage.placements.iterator();

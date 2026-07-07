@@ -46,7 +46,7 @@ pages_in_buffer: std.DoublyLinkedList = .{},
 /// Any pending resize as `.{cols, rows}`. Resizes are committed on next redraw.
 pending_resize: ?ViewportSize = null,
 
-/// Currently accumulated content ready to be inserted.
+/// Accumulates adjacent dirty rows before inserting them into Emacs.
 span: SpanContent,
 
 /// Cached font metrics and rendering parameters that affect glyph layout.
@@ -409,9 +409,7 @@ fn getFace(
 //       We should file an issue.
 const StyleId = @FieldType(gt.page.Cell, "style_id");
 
-/// Unique identifier that is cheaper to read and compare relative to `CellProps`.
-/// We read this first and if it differs from the previous cell, we read the full
-/// `CellProps`.
+/// Compact key for deciding where Emacs text-property runs begin and end.
 const CellPropKey = struct {
     style_id: StyleId,
     hyperlink_id: gt.size.HyperlinkCountInt,
@@ -484,13 +482,13 @@ pub const SpanContent = struct {
 
     alloc: Allocator,
 
-    /// The UTF-8 text content of the row
+    /// UTF-8 text for the accumulated rows.
     text: std.ArrayList(u8) = .empty,
 
     /// The positions of any line wraps
     line_wraps: std.ArrayList(usize) = .empty,
 
-    /// Cells that need their glyphs metrics adjusted after insetions
+    /// Cells whose glyph metrics need display-property adjustment.
     adjust_cells: std.ArrayList(CellInfo) = .empty,
 
     /// The number of codepoints (as opposed to bytes) in the text. Emacs
@@ -896,7 +894,7 @@ fn isRowDirty(self: *Self, pin: gt.Pin) bool {
     else
         null;
 
-    // If the cursor moved, both the old row and the new row are dirty.
+    // Cursor movement requires rebuilding both the previous and current cursor rows.
     if (!std.meta.eql(cursor, self.rendered_cursor)) {
         if (cursor) |c| if (isSameRow(c, pin)) return true;
         if (self.rendered_cursor) |c| if (isSameRow(c, pin)) return true;
