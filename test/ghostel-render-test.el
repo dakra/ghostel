@@ -1245,6 +1245,29 @@ and `forward-line' for clean ones.  Only the dirty row loses the sentinel."
             (should (ghostel-test--line-clean-p 4))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-cursor-only-redraw-updates-char-pos ()
+  "Cursor movement without cell changes updates the buffer cursor position."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-cursor-only-redraw*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 3 10 100))
+                 (inhibit-read-only t))
+            (ghostel--write-vt term "abc")
+            (ghostel--redraw term t)
+            (should (equal '(3 . 0) ghostel--cursor-pos))
+            (should (= (+ (point-min) 3) ghostel--cursor-char-pos))
+            ;; Move the cursor within the same row.  No cell content changes, but
+            ;; `ghostel--cursor-char-pos' must still follow the terminal cursor.
+            (ghostel--write-vt term "\e[1;2H")
+            (ghostel--redraw term)
+            (should (equal '(1 . 0) ghostel--cursor-pos))
+            (should (= (+ (point-min) 1) ghostel--cursor-char-pos))
+            (should (equal "abc\n\n\n"
+                           (buffer-substring-no-properties
+                            (point-min) (point-max))))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-alt-screen-partial-redraw-only-dirty-row-rebuilt ()
   "Incremental alt-screen redraw rebuilds only changed rows."
   :tags '(native)
