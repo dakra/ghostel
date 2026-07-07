@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.42.1] — 2026-07-07
+
+### Fixed
+- Hidden terminal cursors now keep their logical cursor position updated, so
+  focus clicks and input anchoring no longer jump to `point-max` or expose the
+  trailing empty row when terminal applications hide the cursor.
+- Batched renderer redraws now preserve saved markers and window positions
+  across adjacent changed-length rows.
+
 ## [0.42.0] — 2026-07-07
 
 ### Fixed

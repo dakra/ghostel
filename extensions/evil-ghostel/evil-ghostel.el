@@ -4,8 +4,8 @@
 
 ;; Author: Daniel Kraus <daniel@kraus.my>
 ;; URL: https://github.com/dakra/ghostel
-;; Version: 0.42.0
-;; Package-Requires: ((emacs "28.1") (evil "1.0") (ghostel "0.42.0"))
+;; Version: 0.42.1
+;; Package-Requires: ((emacs "28.1") (evil "1.0") (ghostel "0.42.1"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is NOT part of GNU Emacs.
