@@ -1245,6 +1245,28 @@ and `forward-line' for clean ones.  Only the dirty row loses the sentinel."
             (should (ghostel-test--line-clean-p 4))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-alt-screen-partial-redraw-only-dirty-row-rebuilt ()
+  "Incremental alt-screen redraw rebuilds only changed rows."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-alt-partial-dirty*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let* ((term (ghostel--new 5 40 1000))
+                 (inhibit-read-only t))
+            (ghostel--write-vt term "\e[?1049h\e[H\e[2J")
+            (dotimes (i 5)
+              (ghostel--write-vt term (format "\e[%d;1Hrow-%d" (1+ i) i)))
+            (ghostel--write-vt term "\e[3;1H")
+            (ghostel--redraw term t)
+            (should (= 5 (count-lines (point-min) (point-max))))
+            (ghostel-test--mark-all-lines-clean)
+            (ghostel--write-vt term "modified")
+            (ghostel--redraw term)
+            (should-not (ghostel-test--line-clean-p 2))
+            (dolist (row '(0 1 3 4))
+              (should (ghostel-test--line-clean-p row)))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-incremental-redraw ()
   "Test that incremental redraw correctly updates dirty rows."
   :tags '(native)
