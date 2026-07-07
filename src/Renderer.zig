@@ -524,8 +524,7 @@ pub const SpanContent = struct {
         var trim_byte_len: usize = self.text.items.len;
         var trim_char_len: usize = self.char_len;
 
-        const cursor_visible = term.modes.get(.cursor_visible);
-        const cursor_col = if (cursor_visible and isSameRow(row_pin, screen.cursor.page_pin.*))
+        const cursor_col = if (isSameRow(row_pin, screen.cursor.page_pin.*))
             screen.cursor.page_pin.x
         else
             null;
@@ -889,10 +888,7 @@ fn isSameRow(a: gt.Pin, b: gt.Pin) bool {
 fn isRowDirty(self: *Self, pin: gt.Pin) bool {
     if (pin.rowAndCell().row.dirty) return true;
 
-    const cursor = if (self.term.modes.get(.cursor_visible))
-        self.term.screens.active.cursor.page_pin.*
-    else
-        null;
+    const cursor: ?gt.Pin = self.term.screens.active.cursor.page_pin.*;
 
     // Cursor movement requires rebuilding both the previous and current cursor rows.
     if (!std.meta.eql(cursor, self.rendered_cursor)) {
@@ -986,18 +982,17 @@ fn render(
 }
 
 fn renderCursor(self: *Self, env: emacs.Env) !void {
+    const screen = self.term.screens.active;
+    _ = env.set("ghostel--cursor-pos", env.cons(screen.cursor.x, screen.cursor.y));
+    self.rendered_cursor = screen.cursor.page_pin.*;
+
     if (self.term.modes.get(.cursor_visible)) {
-        const screen = self.term.screens.active;
-        _ = env.set("ghostel--cursor-pos", env.cons(screen.cursor.x, screen.cursor.y));
         env.set(
             "ghostel--cursor-style",
             @intFromEnum(screen.cursor.cursor_style),
         );
-        self.rendered_cursor = screen.cursor.page_pin.*;
     } else {
-        _ = env.set("ghostel--cursor-pos", env.nil());
         env.set("ghostel--cursor-style", env.nil());
-        self.rendered_cursor = null;
     }
 
     _ = env.set("ghostel--cursor-blinking", if (self.term.modes.get(.cursor_blinking))

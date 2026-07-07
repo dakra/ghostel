@@ -1303,6 +1303,29 @@ the sentinel."
                             (point-min) (point-max))))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-hidden-cursor-keeps-logical-position ()
+  "Hiding the terminal cursor keeps its logical buffer position."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-hidden-cursor*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((term (ghostel--new 3 10 100))
+                (inhibit-read-only t))
+            (ghostel--write-vt term "abc")
+            (ghostel--redraw term t)
+            (should (equal '(3 . 0) ghostel--cursor-pos))
+            (should (= (+ (point-min) 3) ghostel--cursor-char-pos))
+            (ghostel--write-vt term "\e[?25l")
+            (ghostel--redraw term)
+            (should (equal '(3 . 0) ghostel--cursor-pos))
+            (should (= (+ (point-min) 3) ghostel--cursor-char-pos))
+            (should-not ghostel--cursor-style)
+            (ghostel--write-vt term "\e[1;2H")
+            (ghostel--redraw term)
+            (should (equal '(1 . 0) ghostel--cursor-pos))
+            (should (= (+ (point-min) 1) ghostel--cursor-char-pos))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-alt-screen-partial-redraw-only-dirty-row-rebuilt ()
   "Incremental alt-screen redraw rebuilds only changed rows."
   :tags '(native)
