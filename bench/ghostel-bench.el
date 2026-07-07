@@ -900,7 +900,7 @@ terminal engine with periodic redraws, all in a tight loop."
 Measures how fast each backend can update a full screen of styled
 content — relevant for apps like htop, vim, claude-code."
   (message "\n--- TUI Frame Rendering (full-screen rewrites) ---")
-  (message "  %-50s %5s  %8s  %10s  %8s" "SCENARIO" "ITERS" "TOTAL(s)" "ITER(ms)" "fps")
+  (message "  %-50s %5s  %8s  %10s  %8s" "SCENARIO" "ITERS" "TOTAL(s)" "ITER(ms)" "MB/s")
   (message "  %s" (make-string 90 ?-))
   (let ((tui-iterations (* ghostel-bench-iterations 20)))
     (dolist (size ghostel-bench-terminal-sizes)
@@ -989,7 +989,7 @@ re-render unconditionally.  Here the static screen is rendered once and
 only the bottom row is rewritten per iteration — the workload that
 status bars, prompt redraws, and most TUI updates actually produce."
   (message "\n--- TUI Partial Update (bottom-row update over static screen) ---")
-  (message "  %-50s %5s  %8s  %10s  %8s" "SCENARIO" "ITERS" "TOTAL(s)" "ITER(ms)" "fps")
+  (message "  %-50s %5s  %8s  %10s  %8s" "SCENARIO" "ITERS" "TOTAL(s)" "ITER(ms)" "MB/s")
   (message "  %s" (make-string 90 ?-))
   (let ((partial-iters (* ghostel-bench-iterations 1000)))
     (dolist (size ghostel-bench-terminal-sizes)
@@ -1465,7 +1465,7 @@ backend-include flags do not apply."
          (raw-frame (ghostel-bench--gen-tui-frame rows cols))
          (frame (ghostel-bench--encode-for-backend raw-frame 'ghostel)))
     (message "\n--- TUI Frame Rendering (single case) ---")
-    (message "  %-50s %5s  %8s  %10s  %8s" "SCENARIO" "ITERS" "TOTAL(s)" "ITER(ms)" "fps")
+    (message "  %-50s %5s  %8s  %10s  %8s" "SCENARIO" "ITERS" "TOTAL(s)" "ITER(ms)" "MB/s")
     (message "  %s" (make-string 90 ?-))
     (ghostel-bench--with-bench-buffer
      (let ((term (ghostel-bench--make-ghostel rows cols))
@@ -1491,7 +1491,7 @@ backend-include flags do not apply."
          (static (ghostel-bench--encode-for-backend static-frame 'ghostel))
          (status-template (format "\e[%d;1H\e[1;33;41m%%-%ds\e[0m" rows cols)))
     (message "\n--- TUI Partial Update (single case) ---")
-    (message "  %-50s %5s  %8s  %10s  %8s" "SCENARIO" "ITERS" "TOTAL(s)" "ITER(ms)" "fps")
+    (message "  %-50s %5s  %8s  %10s  %8s" "SCENARIO" "ITERS" "TOTAL(s)" "ITER(ms)" "MB/s")
     (message "  %s" (make-string 90 ?-))
     (ghostel-bench--with-bench-buffer
      (let ((term (ghostel-bench--make-ghostel rows cols))
