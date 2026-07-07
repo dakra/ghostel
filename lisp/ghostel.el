@@ -2073,7 +2073,8 @@ point to the live cursor and stays in semi-char (skipped when
      ((and active
            (= (event-click-count event) 1)
            (not ghostel--mouse-press-was-selected))
-      (goto-char (or ghostel--cursor-char-pos (point-max)))
+      (when ghostel--cursor-char-pos
+        (goto-char ghostel--cursor-char-pos))
       (deactivate-mark))
      ;; Multi-click, or a single click in an already-selected window: set
      ;; point/selection, then freeze (a focus click never reaches here).

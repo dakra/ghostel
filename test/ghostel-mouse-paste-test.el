@@ -583,6 +583,40 @@ previously-unselected window sets point normally and enters no mode."
       (should (equal fake-event set-point-event))
       (should-not copy-mode-called))))
 
+(ert-deftest ghostel-test-mouse-1-release-focus-click-hidden-cursor-does-not-anchor ()
+  "A focus click with no visible terminal cursor preserves point and scroll."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-focus-hidden-cursor*"))
+        (orig-buf (window-buffer (selected-window)))
+        (ghostel-mouse-drag-input-mode 'copy)
+        (ghostel--mouse-press-was-selected nil))
+    (unwind-protect
+        (progn
+          (set-window-buffer (selected-window) buf)
+          (with-current-buffer buf
+            (ghostel-mode)
+            (let ((inhibit-read-only t))
+              (dotimes (i 50)
+                (insert (format "row-%02d\n" i))))
+            (setq-local ghostel--term 'fake)
+            (setq-local ghostel--input-mode 'semi-char)
+            (setq-local ghostel--cursor-char-pos nil)
+            (goto-char (point-min))
+            (set-window-point (selected-window) (point-min))
+            (set-window-start (selected-window) (point-min) t)
+            (cl-letf (((symbol-function 'ghostel--mode-enabled)
+                       (lambda (_term _mode) nil))
+                      ((symbol-function 'ghostel--mouse-event)
+                       (lambda (&rest _) nil)))
+              (ghostel-mouse-release-or-set-point
+               `(mouse-1 (,(selected-window) 1 (10 . 5) 0)) 1))
+            (should (= (point) (point-min)))
+            (should (= (window-point) (point-min)))
+            (should (= (window-start) (point-min)))))
+      (when (buffer-live-p orig-buf)
+        (set-window-buffer (selected-window) orig-buf))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-mouse-1-release-single-click-already-selected-nil-target-stays ()
   "Already-selected single click with a nil target only sets point.
 With `ghostel-mouse-drag-input-mode' nil there is no copy/Emacs mode to
