@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.42.0] — 2026-07-07
+
+### Fixed
+- Copy, Emacs, and line modes now keep normal Emacs mouse selection even when
+  the terminal application has DEC mouse tracking enabled, so copy-mode
+  selection works while TUIs are capturing mouse input.
+- `ghostel-module-recompile` now installs the freshly compiled native module
+  after a successful rebuild.
+- `ghostel-compile` now runs live buffer-local finish hooks before switching to
+  the final compilation mode and standard finish hooks after, matching
+  `compilation-start` semantics for callers such as Dape.
+- Lisp input methods that check `buffer-read-only` (for example Korean Hangul
+  methods) now compose in read-only ghostel buffers before forwarding committed
+  text.
+- Generic copy commands such as `kill-ring-save` now filter terminal soft-wrap
+  newlines and trailing padding the same way `ghostel-readonly-copy` does.
+- Terminal color parsing now uses libghostty's parser, keeping OSC color
+  handling aligned with Ghostty.
+
+### Changed
+- Renderer redraws batch buffer insertions, read styles lazily, render directly
+  from terminal state, and defer GC during redraws, reducing redraw overhead.
+
+### Internal
+- Updated the libghostty pin.
+- Added render regression coverage for full resets, alt-screen partial redraws,
+  cursor-only updates, and property runs across row boundaries.
+- Added `GHOSTEL_DEBUG_TESTS` for printing tests as they start and expanded
+  Dape/xctrace benchmark debugging and profiling helpers.
+
 ## [0.41.0] — 2026-07-03
 
 ### Fixed
