@@ -114,6 +114,14 @@ Add a `ghostel:` Org link type.
   :after org)
 ```
 
+Attach to tmux sessions via control mode (`tmux -CC`), one Ghostel buffer per
+pane.  Typing `tmux` in a Ghostel shell attaches automatically — see
+[tmux integration](https://dakra.github.io/ghostel/#tmux-integration).
+```emacs-lisp
+(use-package ghostel-tmux
+  :commands (ghostel-tmux-new ghostel-tmux-attach))
+```
+
 If you use an Emacs Lisp input method (Korean Hangul, Japanese, Chinese, or any
 other Quail-based method), add Ghostel support:
 ```emacs-lisp
@@ -243,6 +251,7 @@ Emacs selection even if the terminal app enabled mouse tracking.
   - [Evil](https://dakra.github.io/ghostel/#evil-mode)
   - [Compilation mode](https://dakra.github.io/ghostel/#compilation-mode)
   - [Eshell integration](https://dakra.github.io/ghostel/#eshell-integration)
+  - [Tmux integration](https://dakra.github.io/ghostel/#tmux-integration)
   - [Comint integration](https://dakra.github.io/ghostel/#comint-integration)
   - [Emacs Lisp input methods](https://dakra.github.io/ghostel/#emacs-lisp-input-methods)
 - [Commands](https://dakra.github.io/ghostel/#commands)

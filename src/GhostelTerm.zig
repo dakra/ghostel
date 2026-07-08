@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const emacs = @import("emacs.zig");
 const gt = @import("ghostty-vt");
 const GhostelHandler = @import("handler.zig").GhostelHandler;
+const tmuxDcsReset = @import("handler.zig").tmuxDcsReset;
 const Renderer = @import("Renderer.zig");
 const RecursiveMutex = @import("RecursiveMutex.zig");
 const input = @import("input.zig");
@@ -130,16 +131,20 @@ pub fn vtWrite(self: *Self, data: []const u8) !void {
     try self.lock();
     defer self.unlock();
     self.stream.nextSlice(data);
+    self.stream.handler.flushTmuxDcs();
 }
 
+/// Write outbound bytes to the PTY.  Without a native process they go
+/// through `ghostel--pty-out', so processless terminals (tmux panes) can
+/// reroute them.
 pub fn ptyWrite(self: *Self, data: []const u8) !void {
     const env = emacs.current_env orelse return error.MissingEmacsEnv;
     if (self.process) |proc| {
         try proc.ptyWrite(env, data);
     } else {
         _ = env.funcall(
-            @field(emacs.sym, "process-send-string"),
-            &env.makeValues(.{ env.symbolValue("ghostel--process"), data }),
+            @field(emacs.sym, "ghostel--pty-out"),
+            &env.makeValues(.{data}),
         );
         const exit = env.nonLocalExitGet();
         if (exit.status == .signal) {
@@ -499,6 +504,29 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 const raw = try env.extractStringAlloc(module_alloc, args[1], &term.string_buffer);
                 try term.ptyWrite(raw);
                 return env.t();
+            }
+        },
+    },
+    .{
+        .name = "ghostel--tmux-dcs-reset",
+        .arity = .{ 1, 1 },
+        .doc =
+        \\Drop TERM's active tmux control-mode DCS frame.
+        \\
+        \\Recovery hatch for a wedged control-mode session: the VT parser
+        \\returns to ground so shell output renders again.  Buffered body
+        \\bytes are dropped.
+        \\
+        \\(ghostel--tmux-dcs-reset TERM)
+        ,
+        .impl = struct {
+            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
+                const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
+                try term.lock();
+                defer term.unlock();
+                tmuxDcsReset(&term.stream);
+                if (term.process) |proc| tmuxDcsReset(&proc.stream);
+                return env.nil();
             }
         },
     },

@@ -30,6 +30,11 @@ the parallel bash/zsh/fish/python3 sessions from the evil-ghostel rewrite
   (#228 / #454); see the point-tracking section below.
 - `matrix/word-boundaries-ghostel.json` — double-click selection under evil-ghostel's
   Vim-style syntax table, on bash; see the word-boundary section below.
+- `matrix/tmux-cc-ghostel.json` — tmux control-mode auto-takeover (`tmux new` in a ghostel
+  shell, pane materialization, UTF-8 pane output, detach, the reset escape hatch), one
+  variant per shell × inbound path (`bash-native`, `bash-emacs-pty`, `zsh-…`, `fish-…`);
+  needs `tmux` on `PATH` and uses a private socket per variant. Run with
+  `elate matrix test/elate/matrix/tmux-cc-ghostel.json` or `elate run --variant bash-native …`.
 
 ## Running (elate 0.11.0+)
 

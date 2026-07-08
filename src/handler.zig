@@ -25,6 +25,10 @@ pub fn GhostelHandler(Effects: type) type {
         // Null entries represent an unset title.
         title_stack: [title_stack_max]?[]u8,
         title_stack_len: usize,
+        /// Inside a tmux control-mode DCS (`ESC P 1000 p`).  Body bytes are
+        /// buffered for Elisp; the inner handler never sees the frame.
+        tmux_dcs: bool,
+        tmux_buf: std.ArrayList(u8),
 
         pub fn init(alloc: Allocator, term: *GhostelTerm, effects: Effects) Self {
             var self = Self{
@@ -34,6 +38,8 @@ pub fn GhostelHandler(Effects: type) type {
                 .inner = .init(&term.terminal),
                 .title_stack = @splat(null),
                 .title_stack_len = 0,
+                .tmux_dcs = false,
+                .tmux_buf = .empty,
             };
             self.inner.effects.write_pty = &writePtyCallback;
             self.inner.effects.bell = &bellCallback;
@@ -47,6 +53,7 @@ pub fn GhostelHandler(Effects: type) type {
         /// Called by `gt.Stream.deinit`.
         pub fn deinit(self: *Self) void {
             self.clearTitleStack();
+            self.tmux_buf.deinit(self.alloc);
             self.inner.deinit();
         }
 
@@ -84,12 +91,38 @@ pub fn GhostelHandler(Effects: type) type {
                     self.handleProgressReport(.{ .state = .remove });
                 },
 
+                .dcs_hook => if (isTmuxControlMode(value)) {
+                    self.tmux_dcs = true;
+                    self.effects.effect("ghostel--tmux-dcs-enter", .{});
+                } else self.inner.vt(action, value),
+                .dcs_put => if (self.tmux_dcs) {
+                    self.tmux_buf.append(self.alloc, value) catch {};
+                } else self.inner.vt(action, value),
+                .dcs_unhook => if (self.tmux_dcs) {
+                    self.flushTmuxDcs();
+                    self.tmux_dcs = false;
+                    self.effects.effect("ghostel--tmux-dcs-exit", .{});
+                } else self.inner.vt(action, value),
+
                 // The parser filters icon-title forms; indexed stacks are unsupported.
                 .title_push => if (value == 0) self.titlePush(),
                 .title_pop => if (value == 0) self.titlePop(),
 
                 else => self.inner.vt(action, value),
             }
+        }
+
+        fn isTmuxControlMode(dcs: gt.StreamAction.Value(.dcs_hook)) bool {
+            return dcs.intermediates.len == 0 and dcs.final == 'p' and
+                dcs.params.len == 1 and dcs.params[0] == 1000;
+        }
+
+        /// Deliver buffered tmux DCS body bytes to Elisp.  Call once per input
+        /// chunk, never per byte.
+        pub fn flushTmuxDcs(self: *Self) void {
+            if (self.tmux_buf.items.len == 0) return;
+            self.effects.effect("ghostel--tmux-dcs-data", .{self.tmux_buf.items});
+            self.tmux_buf.clearRetainingCapacity();
         }
 
         /// Called when the terminal needs to write response data back to the PTY.
@@ -283,4 +316,15 @@ pub fn GhostelHandler(Effects: type) type {
             self.effects.effect("ghostel--osc-progress", .{ state_str, progress_val });
         }
     };
+}
+
+/// Drop an active tmux DCS frame on STREAM: the parser returns to ground so
+/// following bytes render as VT again.  Recovery hatch for a wedged Elisp
+/// control-mode parser.
+pub fn tmuxDcsReset(stream: anytype) void {
+    const handler = &stream.handler;
+    if (!handler.tmux_dcs) return;
+    handler.tmux_dcs = false;
+    handler.tmux_buf.clearRetainingCapacity();
+    stream.parser.state = .ground;
 }

@@ -845,6 +845,11 @@ to nil to disable the regex fallback entirely (OSC 133 only)."
 (declare-function ghostel--spawn-native-process "ghostel-module" (term command pipe))
 (declare-function ghostel--kill-native-process "ghostel-module" (term))
 
+;; Lazily loaded on the first tmux control-mode DCS; see ghostel-tmux.el.
+(declare-function ghostel-tmux--dcs-enter "ghostel-tmux" ())
+(declare-function ghostel-tmux--dcs-data "ghostel-tmux" (data))
+(declare-function ghostel-tmux--dcs-exit "ghostel-tmux" ())
+
 (declare-function spinner-create "spinner")
 (declare-function spinner-start "spinner")
 (declare-function spinner-stop "spinner")
@@ -1481,6 +1486,22 @@ keyboard protocol receives the protocol-correct sequence."
      ((and (integerp event) (< event #x400000))
       (ghostel--send-string (encode-coding-string (string event) 'utf-8)))
      (t (message "ghostel: unrecognized key %S" event)))))
+
+(defvar-local ghostel--pty-out-function nil
+  "When non-nil, function receiving outbound terminal bytes.
+Called with one unibyte string argument instead of writing to
+`ghostel--process'.  Set in processless terminal buffers (tmux
+control-mode panes) to reroute encoder output and query replies.")
+
+(defun ghostel--pty-out (data)
+  "Deliver outbound DATA bytes from the native module.
+Dispatches to `ghostel--pty-out-function' when set, otherwise to the
+buffer's terminal process.  Only Emacs-PTY and processless sessions
+reach this; native PTY sessions write directly in Zig.  Errors other
+than `quit' are swallowed by the caller."
+  (if ghostel--pty-out-function
+      (funcall ghostel--pty-out-function data)
+    (process-send-string ghostel--process data)))
 
 (defun ghostel--send-string (string)
   "Send STRING as raw bytes to the terminal's PTY.
@@ -3295,6 +3316,35 @@ Only acts when `ghostel-enable-osc52' is non-nil."
         (kill-new text)
         (when (fboundp 'gui-set-selection)
           (gui-set-selection 'CLIPBOARD text))))))
+
+;; tmux control-mode DCS dispatch.  The native VT handler calls these for
+;; every `\eP1000p ... \e\\' frame; they must be bound even when
+;; ghostel-tmux is not loaded, so `enter' loads it on demand and
+;; `data'/`exit' drop silently if that load failed.
+
+(defun ghostel--tmux-dcs-enter ()
+  "Handle the start of a tmux control-mode DCS from the native module.
+Loads `ghostel-tmux' on first use and delegates to it.  When the
+takeover is declined (`ghostel-tmux-auto-detect' nil, a pane or
+controller buffer, or a failed load), the frame's bytes stay hidden
+until the DCS ends — the same as in any terminal without control-mode
+support — so tell the user what happened and how to recover."
+  (unless (and (require 'ghostel-tmux nil t)
+               (ghostel-tmux--dcs-enter))
+    (message (concat "ghostel: ignoring tmux control-mode output in %s; "
+                     "it stays hidden until tmux detaches "
+                     "(M-x ghostel-tmux-reset to force)")
+             (buffer-name))))
+
+(defun ghostel--tmux-dcs-data (data)
+  "Forward tmux control-mode DCS body DATA to `ghostel-tmux'."
+  (when (featurep 'ghostel-tmux)
+    (ghostel-tmux--dcs-data data)))
+
+(defun ghostel--tmux-dcs-exit ()
+  "Forward the end of a tmux control-mode DCS to `ghostel-tmux'."
+  (when (featurep 'ghostel-tmux)
+    (ghostel-tmux--dcs-exit)))
 
 (defun ghostel-default-notify (title body)
   "Default handler for OSC 9 / OSC 777 notifications.

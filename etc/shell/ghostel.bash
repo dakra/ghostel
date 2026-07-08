@@ -367,6 +367,42 @@ if [[ -n "${GHOSTEL_SSH_INSTALL_TERMINFO:-}" ]]; then
     }
 fi
 
+# Auto-inject `-CC' for `tmux new'/`tmux attach' so tmux runs in
+# control mode and ghostel-tmux's auto-detection takes over.  Bypass
+# at any time with `command tmux ...' or by exporting
+# GHOSTEL_TMUX_NO_CC=1 before sourcing this file.
+if [[ -z "$GHOSTEL_TMUX_NO_CC" ]] && [[ "$(builtin type -t tmux)" != "function" ]]; then
+    tmux() {
+        local _arg
+        # If user already passed -C/-CC, run as-is.
+        for _arg in "$@"; do
+            case "$_arg" in -C|-CC) builtin command tmux "$@"; return $? ;; esac
+        done
+        # Bare `tmux' defaults to new-session, which benefits from -CC.
+        if (( $# == 0 )); then
+            builtin command tmux -CC
+            return $?
+        fi
+        # Find the first non-flag argument (the subcommand), skipping
+        # values for flags that take arguments.  See tmux(1) §OPTIONS.
+        local _subcmd="" _skip=0
+        for _arg in "$@"; do
+            if (( _skip )); then _skip=0; continue; fi
+            case "$_arg" in
+                -[cfLST]) _skip=1 ;;
+                -*) ;;
+                *) _subcmd="$_arg"; break ;;
+            esac
+        done
+        case "$_subcmd" in
+            ""|new|new-session|attach|attach-session|a)
+                builtin command tmux -CC "$@" ;;
+            *)
+                builtin command tmux "$@" ;;
+        esac
+    }
+fi
+
 # Call an Emacs Elisp function from the shell.
 # Usage: ghostel_cmd FUNCTION [ARGS...]
 # The function must be in `ghostel-eval-cmds'.

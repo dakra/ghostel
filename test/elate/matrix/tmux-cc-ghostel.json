@@ -1,0 +1,66 @@
+{
+  "name": "tmux-cc-ghostel",
+  "comment": "tmux control-mode auto-takeover of a ghostel shell: wrapper-injected -CC, pane materialization, UTF-8 pane output, detach, reset escape hatch. One variant per shell x inbound path; private tmux socket per variant, killed at the end.",
+  "variants": {
+    "bash-native":    {"shell": "/opt/homebrew/bin/bash", "native": "t",   "unset": "unset TMUX"},
+    "bash-emacs-pty": {"shell": "/opt/homebrew/bin/bash", "native": "nil", "unset": "unset TMUX"},
+    "zsh-native":     {"shell": "/bin/zsh",               "native": "t",   "unset": "unset TMUX"},
+    "zsh-emacs-pty":  {"shell": "/bin/zsh",               "native": "nil", "unset": "unset TMUX"},
+    "fish-native":    {"shell": "/opt/homebrew/bin/fish", "native": "t",   "unset": "set -e TMUX"},
+    "fish-emacs-pty": {"shell": "/opt/homebrew/bin/fish", "native": "nil", "unset": "set -e TMUX"}
+  },
+  "session": {
+    "ui": "tty",
+    "size": "120x36",
+    "config": "minimal",
+    "eval": [
+      "(load \"/Users/daniel/.emacs.d/lib/ghostel/test/elate/lib/ghostel-setup.el\")",
+      "(setq ghostel-shell \"{{shell}}\" ghostel-use-native-pty {{native}})",
+      "(defun elate-tmux--pane () (and (boundp 'ghostel-tmux-pane-mode) (seq-find (lambda (b) (and (buffer-local-value 'ghostel-tmux-pane-mode b) (buffer-local-value 'ghostel--pty-out-function b))) (buffer-list))))",
+      "(defun elate-tmux--host () (and (boundp 'ghostel-tmux--dcs-active) (seq-find (lambda (b) (buffer-local-value 'ghostel-tmux--dcs-active b)) (buffer-list))))",
+      "(defun elate-tmux--pane-text () (with-current-buffer (elate-tmux--pane) (buffer-substring-no-properties (point-min) (point-max))))"
+    ]
+  },
+  "defaults": {"timeout": 20},
+  "steps": [
+    {"eval": "(ghostel)"},
+    {"wait": "until", "pred": "(save-excursion (goto-char (point-max)) (skip-chars-backward \" \\n\") (memq (char-before) (list ?$ ?% ?>)))", "timeout": 20},
+
+    {"group": "takeover", "comment": "typing `tmux new' in the shell enters control mode via the wrapper's -CC; the host hides itself and a pane buffer appears"},
+    {"eval": "(ghostel-send-string \"{{unset}}; tmux -L gt-{{variant}} new -s t1\\n\")"},
+    {"wait": "until", "pred": "(and (elate-tmux--pane) (buffer-local-value 'ghostel-tmux--initialized (elate-tmux--pane)) t)", "timeout": 20},
+    {"assert": {"eval": "(and (elate-tmux--host) (string-prefix-p \" *ghostel-tmux-host:\" (buffer-name (elate-tmux--host))))"}},
+    {"assert": {"eval": "(eq (window-buffer (selected-window)) (elate-tmux--pane))"}},
+
+    {"group": "utf8", "comment": "raw UTF-8 in the DCS body (0xC3 0x97 = ×, whose second byte is a C1 code) reaches the pane intact"},
+    {"eval": "(with-current-buffer (elate-tmux--pane) (ghostel-send-string \"echo h\u00e9llo \u00d7 w\u00f6rld; echo DO''NE1\\n\"))"},
+    {"wait": "until", "pred": "(string-match-p \"^DONE1$\" (elate-tmux--pane-text))", "timeout": 15},
+    {"assert": {"eval": "(string-match-p \"^h\u00e9llo \u00d7 w\u00f6rld$\" (elate-tmux--pane-text))"}},
+    {"eval": "(with-current-buffer (elate-tmux--pane) (ghostel-send-string \"printf '\\\\033[31mRED\\\\033[0m ok\\\\n'\\n\"))", "comment": "SGR in the pane content: the re-attach capture below must carry it as escaped text, since a raw ESC would end the DCS"},
+    {"wait": "until", "pred": "(string-match-p \"^RED ok$\" (elate-tmux--pane-text))", "timeout": 15},
+
+    {"group": "detach", "comment": "detach-client makes tmux close the DCS; the unhook exits control mode, seals the pane and gives the host shell back"},
+    {"eval": "(let ((pane (elate-tmux--pane))) (with-current-buffer pane (ghostel-tmux-detach)) (setq elate-tmux--old-pane pane))", "timeout": 20},
+    {"wait": "until", "pred": "(and (get-buffer \"*ghostel*\") (not (elate-tmux--host)))", "timeout": 15},
+    {"assert": {"eval": "(with-current-buffer elate-tmux--old-pane (and buffer-read-only (null ghostel--pty-out-function)))"}},
+    {"eval": "(with-current-buffer \"*ghostel*\" (ghostel-send-string \"echo BA''CK-OK\\n\"))"},
+    {"wait": "text", "pattern": "^BACK-OK$", "buffer": "*ghostel*", "timeout": 15},
+
+    {"group": "reset", "comment": "re-attach, then M-x ghostel-tmux-reset from the pane: the native frame is dropped, so tmux's own reply text renders in the host as VT"},
+    {"eval": "(with-current-buffer \"*ghostel*\" (ghostel-send-string \"tmux -L gt-{{variant}} attach -t t1\\n\"))"},
+    {"wait": "until", "pred": "(and (elate-tmux--pane) (buffer-local-value 'ghostel-tmux--initialized (elate-tmux--pane)) t)", "timeout": 20},
+    {"assert": {"eval": "(string-match-p \"^RED ok$\" (elate-tmux--pane-text))"}},
+    {"eval": "(with-current-buffer (elate-tmux--pane) (ghostel-tmux-reset))"},
+    {"wait": "until", "pred": "(and (get-buffer \"*ghostel*\") (not (elate-tmux--host)))", "timeout": 10},
+    {"eval": "(with-current-buffer \"*ghostel*\" (ghostel-send-string \"display-message -p RESET-FL''OW-OK\\n\"))"},
+    {"wait": "text", "pattern": "RESET-FLOW-OK", "buffer": "*ghostel*", "timeout": 15},
+    {"eval": "(with-current-buffer \"*ghostel*\" (ghostel-send-string \"detach-client\\n\"))"},
+    {"eval": "(with-current-buffer \"*ghostel*\" (ghostel-send-string \"echo AF''TER-OK\\n\"))"},
+    {"wait": "text", "pattern": "^AFTER-OK$", "buffer": "*ghostel*", "timeout": 15},
+
+    {"group": "cleanup"},
+    {"eval": "(with-current-buffer \"*ghostel*\" (ghostel-send-string \"tmux -L gt-{{variant}} kill-server\\n\"))"},
+    {"wait": "idle", "min_idle": 0.5, "timeout": 10},
+    {"assert": {"eval": "(null (elate-tmux--host))"}}
+  ]
+}

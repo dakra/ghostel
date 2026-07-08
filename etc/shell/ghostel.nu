@@ -156,3 +156,45 @@ mkdir -p \"$HOME/.terminfo\" && tic -x - >/dev/null 2>&1"
         with-env {TERM: "xterm-256color"} { ^ssh ...$args }
     }
 }
+
+# Auto-inject `-CC' for `tmux new'/`tmux attach' so tmux runs in
+# control mode and ghostel-tmux's auto-detection takes over.  Always
+# defined and gated at runtime (like the `ssh' wrapper above: nushell
+# `def' cannot be conditionally defined by a runtime env var).  Bypass
+# at any time with `^tmux ...' or by setting GHOSTEL_TMUX_NO_CC.
+def --wrapped tmux [...args] {
+    # Wrapper disabled, or the user already passed -C/-CC: run as-is.
+    if ((not ($env.GHOSTEL_TMUX_NO_CC? | is-empty))
+        or ("-C" in $args) or ("-CC" in $args)) {
+        ^tmux ...$args
+        return
+    }
+    # Bare `tmux' defaults to new-session, which benefits from -CC.
+    if ($args | is-empty) {
+        ^tmux -CC
+        return
+    }
+    # Find the first non-flag argument (the subcommand), skipping
+    # values for flags that take arguments.  See tmux(1) §OPTIONS.
+    mut subcmd = ""
+    mut skip = false
+    for arg in $args {
+        if $skip {
+            $skip = false
+            continue
+        }
+        if ($arg in ["-c" "-f" "-L" "-S" "-T"]) {
+            $skip = true
+        } else if ($arg | str starts-with "-") {
+            # flag without an argument
+        } else {
+            $subcmd = $arg
+            break
+        }
+    }
+    if ($subcmd in ["" "new" "new-session" "attach" "attach-session" "a"]) {
+        ^tmux -CC ...$args
+    } else {
+        ^tmux ...$args
+    }
+}
