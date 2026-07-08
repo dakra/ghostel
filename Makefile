@@ -57,7 +57,7 @@ ZIG_BUILD_FLAGS := --prefix . -Doptimize=ReleaseFast -Dcpu=baseline $(ZIG_TARGET
 ZIG_SOURCES := $(wildcard src/*.zig src/*.c build.zig build.zig.zon symbols.map) \
                $(wildcard vendor/*.h)
 
-.PHONY: all build test test-native test-zig test-hypothesis test-hypothesis-cases test-all test-evil test-consult lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel melpazoid-consult-ghostel byte-compile checkdoc docquotes package-lint bench bench-quick bench-e2e bench-tui-partial html clean regen-terminfo
+.PHONY: all build test test-native test-zig test-shell test-hypothesis test-hypothesis-cases test-all test-evil test-consult lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel melpazoid-consult-ghostel byte-compile checkdoc docquotes package-lint bench bench-quick bench-e2e bench-tui-partial html clean regen-terminfo
 
 # Recommended invocation: `make -j$(nproc) all' on Linux,
 # `make -j$(sysctl -n hw.ncpu) all' on macOS.  GNU make 4+ also accepts
@@ -141,7 +141,17 @@ $(TEST_STAMPS_DIR)/native-%.ok: test/%.el test/ghostel-test-helpers.el $(TEST_FI
 		-f ghostel-test-run-native
 	@touch $@
 
-test-all: test test-zig test-native
+test-all: test test-zig test-native test-shell
+
+# Shell integration tests (no Emacs needed; verifies the `tmux' wrapper
+# auto-injects -CC for attaching subcommands; the bash and nushell
+# implementations are exercised directly, the zsh/fish ports mirror bash).
+test-shell: $(TEST_STAMPS_DIR)/shell-tmux-wrapper.ok
+
+$(TEST_STAMPS_DIR)/shell-tmux-wrapper.ok: test/ghostel-tmux-shell-wrapper-test.sh etc/shell/ghostel.bash etc/shell/ghostel.nu | $(TEST_STAMPS_DIR)
+	@printf '  SHELL   %s\n' $(notdir $<)
+	@bash $<
+	@touch $@
 
 test-evil: build $(ELC) | $(EVIL_DIR)
 	$(EMACS) --batch $(EMACSFLAGS) -Q -L "$(EVIL_DIR)" -L lisp -L extensions/evil-ghostel \

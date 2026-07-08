@@ -822,6 +822,10 @@ to nil to disable the regex fallback entirely (OSC 133 only)."
 (declare-function ghostel--terminate-native-child "ghostel-module" (child))
 (declare-function ghostel--native-child-pid "ghostel-module" (child))
 
+;; Lazily loaded on the first tmux control-mode DCS; see ghostel-tmux.el.
+(declare-function ghostel-tmux--dcs-enter "ghostel-tmux" ())
+(declare-function ghostel-tmux--dcs-data "ghostel-tmux" (data))
+(declare-function ghostel-tmux--dcs-exit "ghostel-tmux" ())
 
 ;; Emacs 29+; registration is `fboundp'-gated in `ghostel-mode'.
 (declare-function yank-media-handler "yank-media" (types handler))
@@ -3428,6 +3432,35 @@ Only acts when `ghostel-enable-osc52' is non-nil."
         (kill-new text)
         (when (fboundp 'gui-set-selection)
           (gui-set-selection 'CLIPBOARD text))))))
+
+;; tmux control-mode DCS dispatch.  The native VT handler calls these for
+;; every `\eP1000p ... \e\\' frame; they must be bound even when
+;; ghostel-tmux is not loaded, so `enter' loads it on demand and
+;; `data'/`exit' drop silently if that load failed.
+
+(defun ghostel--tmux-dcs-enter ()
+  "Handle the start of a tmux control-mode DCS from the native module.
+Loads `ghostel-tmux' on first use and delegates to it.  When the
+takeover is declined (`ghostel-tmux-auto-detect' nil, a pane or
+controller buffer, or a failed load), the frame's bytes stay hidden
+until the DCS ends — the same as in any terminal without control-mode
+support — so tell the user what happened and how to recover."
+  (unless (and (require 'ghostel-tmux nil t)
+               (ghostel-tmux--dcs-enter))
+    (message (concat "ghostel: ignoring tmux control-mode output in %s; "
+                     "it stays hidden until tmux detaches "
+                     "(M-x ghostel-tmux-reset to force)")
+             (buffer-name))))
+
+(defun ghostel--tmux-dcs-data (data)
+  "Forward tmux control-mode DCS body DATA to `ghostel-tmux'."
+  (when (featurep 'ghostel-tmux)
+    (ghostel-tmux--dcs-data data)))
+
+(defun ghostel--tmux-dcs-exit ()
+  "Forward the end of a tmux control-mode DCS to `ghostel-tmux'."
+  (when (featurep 'ghostel-tmux)
+    (ghostel-tmux--dcs-exit)))
 
 (defun ghostel--defer (function &rest args)
   "Run FUNCTION with ARGS soon, using the current buffer when it fires."

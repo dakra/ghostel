@@ -53,6 +53,7 @@ const LockedStream = struct {
         try self.process.owner.lock();
         defer self.process.owner.unlock();
         self.process.stream.nextSlice(data);
+        self.process.stream.handler.flushTmuxDcs();
     }
 };
 
