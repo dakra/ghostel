@@ -1654,13 +1654,17 @@ Detect that case via `this-command-keys-vector' and re-inject meta."
 
 ;;; Public input API
 
+(defun ghostel--ensure-ghostel-buffer ()
+  "Signal a `user-error' unless the current buffer is a ghostel buffer."
+  (unless (derived-mode-p 'ghostel-mode)
+    (user-error "Must be called from a ghostel buffer")))
+
 (defun ghostel-send-string (string)
   "Send STRING to the terminal process in the current ghostel buffer.
 Signals a `user-error' when called outside a ghostel buffer.  STRING
 is passed through unchanged, including any embedded control
 characters; callers are responsible for UTF-8 encoding if needed."
-  (unless (derived-mode-p 'ghostel-mode)
-    (user-error "Must be called from a ghostel buffer"))
+  (ghostel--ensure-ghostel-buffer)
   (ghostel--on-user-input)
   (ghostel--send-string string))
 
@@ -1672,8 +1676,7 @@ nil for no modifiers.  The encoder respects the terminal's current
 mode (application cursor keys, Kitty keyboard protocol, etc.).
 
 Signals a `user-error' when called outside a ghostel buffer."
-  (unless (derived-mode-p 'ghostel-mode)
-    (user-error "Must be called from a ghostel buffer"))
+  (ghostel--ensure-ghostel-buffer)
   (ghostel--on-user-input)
   (ghostel--send-encoded key-name (or mods "")))
 
@@ -1685,8 +1688,7 @@ Unlike `ghostel-send-string', this wraps STRING in bracketed paste
 markers (ESC [200~ / ESC [201~) when the terminal supports bracketed
 paste mode (mode 2004), so the shell treats the input as an atomic
 paste rather than character-by-character typed keystrokes."
-  (unless (derived-mode-p 'ghostel-mode)
-    (user-error "Must be called from a ghostel buffer"))
+  (ghostel--ensure-ghostel-buffer)
   (ghostel--on-user-input)
   (ghostel--paste-text string))
 
@@ -2332,6 +2334,7 @@ Accepts an optional unused WINDOW argument so it can serve as a
 Most keys are sent to the terminal; keys in
 `ghostel-keymap-exceptions' pass through to Emacs."
   (interactive)
+  (ghostel--ensure-ghostel-buffer)
   (setq ghostel--line-mode-paused nil)
   (unless (eq ghostel--input-mode 'semi-char)
     (pcase ghostel--input-mode
@@ -2359,6 +2362,7 @@ Even keys listed in `ghostel-keymap-exceptions' (\\`C-c', \\`C-x',
 \\<ghostel-char-mode-map>The only way to exit is
 \\[ghostel-semi-char-mode]."
   (interactive)
+  (ghostel--ensure-ghostel-buffer)
   ;; Manual mode switch — see `ghostel-semi-char-mode' for why.
   (setq ghostel--line-mode-paused nil)
   (unless (eq ghostel--input-mode 'char)
@@ -2450,6 +2454,7 @@ in Emacs mode this exits back to the previous mode (mirroring
 command (`\\[ghostel-semi-char-mode]'), or \\`q'/\\`C-g'/any
 self-insert key when `ghostel-readonly-fast-exit' is non-nil."
   (interactive)
+  (ghostel--ensure-ghostel-buffer)
   (if (eq ghostel--input-mode 'emacs)
       (ghostel-readonly-exit)
     (ghostel--enter-readonly
@@ -2465,6 +2470,7 @@ across the full scrollback.  When `ghostel-readonly-fast-exit' is
 non-nil press \\`q' or \\[ghostel-readonly-exit] to exit; exiting
 returns to whichever input mode was active before."
   (interactive)
+  (ghostel--ensure-ghostel-buffer)
   (if (eq ghostel--input-mode 'copy)
       (ghostel-readonly-exit)
     (ghostel--enter-readonly 'copy t ":Copy"

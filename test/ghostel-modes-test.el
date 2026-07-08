@@ -1062,5 +1062,29 @@ snap to the live cursor."
       (set-window-buffer (selected-window) previous-buffer)
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-mode-commands-reject-non-ghostel-buffer ()
+  "Input-mode commands signal `user-error' outside ghostel buffers.
+None of them may touch the buffer's local keymap or
+`ghostel--input-mode' (issue #518)."
+  (dolist (command (list #'ghostel-semi-char-mode
+                         #'ghostel-char-mode
+                         #'ghostel-copy-mode
+                         #'ghostel-emacs-mode
+                         #'ghostel-line-mode))
+    (with-temp-buffer
+      (should-error (funcall command) :type 'user-error)
+      (should-not (current-local-map))
+      (should (eq ghostel--input-mode 'semi-char)))))
+
+(ert-deftest ghostel-test-readonly-fast-exit-set-skips-non-ghostel-buffer ()
+  "The `ghostel-readonly-fast-exit' setter leaves non-ghostel buffers alone.
+Its `buffer-list' walk only matches buffers in copy/Emacs mode, a state
+unreachable outside ghostel buffers now that entry is guarded (issue #518)."
+  (with-temp-buffer
+    (should-error (ghostel-copy-mode) :type 'user-error)
+    (let ((setter (get 'ghostel-readonly-fast-exit 'custom-set)))
+      (funcall setter 'ghostel-readonly-fast-exit ghostel-readonly-fast-exit))
+    (should-not (current-local-map))))
+
 (provide 'ghostel-modes-test)
 ;;; ghostel-modes-test.el ends here

@@ -19,6 +19,7 @@
 (require 'compat)
 
 (declare-function ghostel--cursor-blink-stop "ghostel")
+(declare-function ghostel--ensure-ghostel-buffer "ghostel")
 (declare-function ghostel--invalidate "ghostel")
 (declare-function ghostel--leave-readonly-state "ghostel")
 (declare-function ghostel--mode-enabled "ghostel-module")
@@ -474,6 +475,7 @@ On the alt screen, line mode enters at a shell prompt whose OSC 133
 markers reach Ghostel; over a raw TUI (vim, less) it arms and resumes
 when the TUI exits.  A prefix arg FORCE forces immediate entry."
   (interactive "P")
+  (ghostel--ensure-ghostel-buffer)
   (unless ghostel--term
     (user-error "No terminal in this buffer"))
   (cond
