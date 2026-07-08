@@ -1489,6 +1489,22 @@ of waiting for a continuation keystroke."
             (ghostel--send-encoded key-name mod-str)
           (message "ghostel: unrecognized key %S" event)))))))
 
+(defvar-local ghostel--pty-out-function nil
+  "When non-nil, function receiving outbound terminal bytes.
+Called with one unibyte string argument instead of writing to
+`ghostel--process'.  Set in processless terminal buffers (tmux
+control-mode panes) to reroute encoder output and query replies.")
+
+(defun ghostel--pty-out (data)
+  "Deliver outbound DATA bytes from the native module.
+Dispatches to `ghostel--pty-out-function' when set, otherwise to the
+buffer's live terminal process.  Only Emacs-PTY and processless
+sessions reach this; native PTY sessions write directly in Zig."
+  (if ghostel--pty-out-function
+      (funcall ghostel--pty-out-function data)
+    (when (process-live-p ghostel--process)
+      (process-send-string ghostel--process data))))
+
 (defun ghostel--send-string (string)
   "Send STRING as raw bytes to the terminal's PTY.
 Records the send time for immediate-redraw detection."

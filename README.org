@@ -1305,7 +1305,7 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 * Extensions
 :properties:
 :custom_id: extensions
-:description: Evil, compile, eshell, comint, and input methods
+:description: Evil, compile, eshell, tmux, comint, and input methods
 :end:
 
 These features live in separate files (or, for evil, a separate package) so the
@@ -1557,6 +1557,101 @@ Add a shorter alias if you like:
 The public primitive behind the mode is =ghostel-exec BUFFER PROGRAM &optional
 ARGS=, which launches an arbitrary program in a ghostel buffer with no shell
 integration applied.  Useful for building your own integrations.
+
+** Tmux integration
+:properties:
+:custom_id: tmux-integration
+:end:
+#+cindex: tmux
+
+=ghostel-tmux= connects to an external tmux session via control mode (=tmux -CC=)
+and materializes each tmux pane into a real ghostel buffer - full VT engine,
+full scrollback, isearch, occur, copy-mode, evil integration, all working on
+tmux pane content.  Switching panes is a buffer switch (=tab-line-mode= shows
+siblings as tabs).
+
+#+begin_src emacs-lisp
+(require 'ghostel-tmux)   ;; autoloaded; require not strictly needed
+#+end_src
+
+*** Commands
+:properties:
+:custom_id: tmux-commands
+:end:
+
+| Command                                             | What it does                                                                           |
+|-----------------------------------------------------+----------------------------------------------------------------------------------------|
+| =M-x ghostel-tmux-new=                                | Create or attach to a session by name (=tmux -CC new-session -As <name>=).               |
+| =M-x ghostel-tmux-attach=                             | Pick a running session via =completing-read= and attach.                                 |
+| =M-x ghostel-tmux-detach=                             | Detach the current session.  Pane buffers stay as read-only snapshots.                 |
+| =M-x ghostel-tmux-capture=                            | One-shot snapshot: dump a single pane's scrollback into a fresh buffer (no live link). |
+| =M-x ghostel-tmux-next-pane= / =ghostel-tmux-prev-pane= | Cycle through sibling panes (also bound to =C-c C-n= / =C-c C-p=).                         |
+| =M-x ghostel-tmux-switch-pane=                        | =completing-read= picker over sibling panes (=C-c C-s=).                                   |
+| =M-x ghostel-tmux-reset=                              | Escape hatch: kill the control-mode subprocess and seal its pane buffers.              |
+
+*** Prefix bindings
+:properties:
+:custom_id: tmux-prefix-bindings
+:end:
+
+Pane buffers bind =C-t= (customizable via =ghostel-tmux-prefix-key=, e.g. to =C-b=)
+as a tmux-style prefix.  These translate into tmux control-mode commands sent
+over the active session.
+
+| Key sequence | tmux command         | Action                                       |
+|--------------+----------------------+----------------------------------------------|
+| =C-t "=        | =split-window -v=      | Split current pane horizontally (new below). |
+| =C-t %=        | =split-window -h=      | Split current pane vertically (new right).   |
+| =C-t c=        | =new-window=           | Create a new window.                         |
+| =C-t x=        | =kill-pane=            | Kill the current pane.                       |
+| =C-t &=        | =kill-window=          | Kill the current window.                     |
+| =C-t n=        | =next-window=          | Cycle to the next window.                    |
+| =C-t p=        | =previous-window=      | Cycle to the previous window.                |
+| =C-t o=        | =select-pane -t :.+=   | Cycle to the next pane.                      |
+| =C-t ,=        | =rename-window=        | Prompt and rename the current window.        |
+| =C-t $=        | =rename-session=       | Prompt and rename the current session.       |
+| =C-t z=        | =resize-pane -Z=       | Toggle zoom on the current pane.             |
+| =C-t 0= ... =9=  | =select-window -t :N=  | Jump to window N.                            |
+| =C-t :=        | (prompt for any cmd) | Run an arbitrary tmux command.               |
+| =C-t d=        | -                    | Detach (=ghostel-tmux-detach=).                |
+| =C-t ?=        | -                    | Describe the prefix map.                     |
+| =C-t C-t=      | -                    | Send a literal prefix byte to the program.   |
+
+The map is =ghostel-tmux-prefix-map=; rebind individual keys however you like.
+Switching panes via the Emacs keymap (=C-c C-n= / =C-c C-p= / =C-c C-s=) also works,
+as does clicking a tab in the tab-line.
+
+*** Tab line
+:properties:
+:custom_id: tmux-tab-line
+:end:
+
+Each pane buffer enables =tab-line-mode= and lists the session's other panes as
+tabs.  Click a tab - or hit =C-c C-n= / =C-c C-p= - to switch panes in the same
+window.
+
+*** Sizing
+:properties:
+:custom_id: tmux-sizing
+:end:
+
+Pane terminals are sized to the actual Emacs window they're displayed in.  When
+the window is resized (or a pane is first displayed), ghostel-tmux sends
+=refresh-client -C cols,rows= to tmux so the server lays out the panes for the
+real client size, then resizes the ghostel terminal to match.
+
+*** Customization
+:properties:
+:custom_id: tmux-customization
+:end:
+
+| Option                            | Effect                                                                        |
+|-----------------------------------+-------------------------------------------------------------------------------|
+| =ghostel-tmux-program=              | tmux executable.  Default ="tmux"=.                                             |
+| =ghostel-tmux-prefix-key=           | Prefix key in pane buffers.  Default ="C-t"=.                                   |
+| =ghostel-tmux-history-lines=        | Scrollback lines to backfill via =capture-pane= on attach.  Default =10000=.      |
+| =ghostel-tmux-default-rows= / =-cols= | Initial pane terminal size before the layout-resize fires.  Default =40= x =120=. |
+| =ghostel-tmux-buffer-name-function= | Customize pane buffer naming.  Called with =(SESSION WINDOW PANE-ID)=.          |
 
 ** Comint integration
 :properties:

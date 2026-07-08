@@ -138,16 +138,17 @@ pub fn vtWrite(self: *Self, data: []const u8) void {
     self.unlockTerm();
 }
 
+/// Write outbound bytes (key/mouse/paste encoders, query replies) to the
+/// terminal's PTY.  Native PTY sessions write directly; everything else is
+/// routed through `ghostel--pty-out', which dispatches to the buffer-local
+/// `ghostel--pty-out-function' hook (processless terminals such as tmux
+/// control-mode panes) or the Emacs process.
 pub fn ptyWrite(self: *Self, data: []const u8) !void {
-    if (!self.isProcessLive()) return;
-
     if (self.process) |proc| {
         try proc.process.pty.write(data);
     } else if (emacs.current_env) |env| {
-        _ = env.f(
-            "process-send-string",
-            .{ env.symbolValue("ghostel--process"), data },
-        );
+        const str = env.makeUnibyteString(data) orelse env.makeString(data);
+        _ = env.f("ghostel--pty-out", .{str});
     }
 }
 

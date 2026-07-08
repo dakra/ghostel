@@ -103,6 +103,13 @@ Replace comint's built-in `ansi-color-process-output` with Ghostel's VT parser.
   :hook (after-init . ghostel-comint-global-mode))
 ```
 
+Attach to tmux sessions via control mode (`tmux -CC`), one Ghostel buffer per
+pane — see [tmux integration](https://dakra.github.io/ghostel/#tmux-integration).
+```emacs-lisp
+(use-package ghostel-tmux
+  :commands (ghostel-tmux-new ghostel-tmux-attach))
+```
+
 If you use an Emacs Lisp input method (e.g. Korean Hangul), add Ghostel support:
 ```emacs-lisp
 (use-package ghostel-ime
@@ -188,6 +195,7 @@ Emacs selection even if the terminal app enabled mouse tracking.
   - [Evil](https://dakra.github.io/ghostel/#evil-mode)
   - [Compilation mode](https://dakra.github.io/ghostel/#compilation-mode)
   - [Eshell integration](https://dakra.github.io/ghostel/#eshell-integration)
+  - [Tmux integration](https://dakra.github.io/ghostel/#tmux-integration)
   - [Comint integration](https://dakra.github.io/ghostel/#comint-integration)
   - [Emacs Lisp input methods](https://dakra.github.io/ghostel/#emacs-lisp-input-methods)
 - [Commands](https://dakra.github.io/ghostel/#commands)
