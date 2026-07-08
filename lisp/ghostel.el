@@ -4852,32 +4852,36 @@ If WINDOW was anchored to the live viewport before the size change,
 keep it anchored.  Redraw synchronously when the terminal size
 actually changes.  When FORCE is non-nil, run the resize/redraw
 path even when the row/column count is unchanged."
-  (when (and ghostel--term ghostel--process (ghostel--terminal-live-p))
-    (when (ghostel--window-anchored-p
-           window (window-old-body-pixel-height window))
-      (ghostel--anchor-window window))
-    (when-let* ((adjust-fn (or (default-value 'window-adjust-process-window-size-function)
-                               #'window-adjust-process-window-size-smallest))
-                (windows (ghostel--windows (current-buffer) t))
-                (size (funcall adjust-fn ghostel--process windows))
-                (width (car size))
-                (height (cdr size)))
-      (let* ((same-size-p (and (eql height ghostel--term-rows)
-                               (eql width ghostel--term-cols)))
-             ;; Don't resize on minibuffer-induced rows-only change.
-             ;; E.g. fish clears and re-emits its prompt on every SIGWINCH; a
-             ;; `consult-buffer'/`M-x' cycle that grows then shrinks the body
-             ;; would otherwise produce two prompt repaints in quick succession.
-             ;; Skip the deferral on the alt screen TUIs.
-             (minibuffer-excepted-p (and (active-minibuffer-window)
-                                         (eql width ghostel--term-cols)
-                                         (not (ghostel--alt-screen-p ghostel--term)))))
-        (when (or force (and (not same-size-p) (not minibuffer-excepted-p)))
-          (ghostel--set-size-with-cell-dims ghostel--term (max 1 height) (max 1 width))
-          (setq ghostel--force-next-redraw t)
-          ;; Redraw synchronously so the buffer is updated before
-          ;; Emacs displays the stale content at the new window size.
-          (ghostel--redraw-now (current-buffer)))))))
+  ;; Buffer-local `window-size-change-functions' are run by redisplay
+  ;; with an arbitrary buffer current, so the terminal state must be
+  ;; resolved from WINDOW's buffer.
+  (with-current-buffer (window-buffer window)
+    (when (and ghostel--term ghostel--process (ghostel--terminal-live-p))
+      (when (ghostel--window-anchored-p
+             window (window-old-body-pixel-height window))
+        (ghostel--anchor-window window))
+      (when-let* ((adjust-fn (or (default-value 'window-adjust-process-window-size-function)
+                                 #'window-adjust-process-window-size-smallest))
+                  (windows (ghostel--windows (current-buffer) t))
+                  (size (funcall adjust-fn ghostel--process windows))
+                  (width (car size))
+                  (height (cdr size)))
+        (let* ((same-size-p (and (eql height ghostel--term-rows)
+                                 (eql width ghostel--term-cols)))
+               ;; Don't resize on minibuffer-induced rows-only change.
+               ;; E.g. fish clears and re-emits its prompt on every SIGWINCH; a
+               ;; `consult-buffer'/`M-x' cycle that grows then shrinks the body
+               ;; would otherwise produce two prompt repaints in quick succession.
+               ;; Skip the deferral on the alt screen TUIs.
+               (minibuffer-excepted-p (and (active-minibuffer-window)
+                                           (eql width ghostel--term-cols)
+                                           (not (ghostel--alt-screen-p ghostel--term)))))
+          (when (or force (and (not same-size-p) (not minibuffer-excepted-p)))
+            (ghostel--set-size-with-cell-dims ghostel--term (max 1 height) (max 1 width))
+            (setq ghostel--force-next-redraw t)
+            ;; Redraw synchronously so the buffer is updated before
+            ;; Emacs displays the stale content at the new window size.
+            (ghostel--redraw-now (current-buffer))))))))
 
 (defun ghostel--around-font-scale (fn args &optional buffer)
   "Resize and re-anchor Ghostel windows around font scaling by FN with ARGS.
