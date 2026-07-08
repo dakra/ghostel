@@ -730,7 +730,8 @@ and affected buffers will pick up the new value on the next mode transition."
          (set-default sym newval)
          (dolist (buf (buffer-list))
            (with-current-buffer buf
-             (when (memq ghostel--input-mode '(copy emacs))
+             (when (and (derived-mode-p 'ghostel-mode)
+                        (memq ghostel--input-mode '(copy emacs)))
                (use-local-map (ghostel--readonly-keymap)))))))
 
 (defcustom ghostel-readonly-fake-cursor t
@@ -2451,6 +2452,8 @@ in Emacs mode this exits back to the previous mode (mirroring
 command (`\\[ghostel-semi-char-mode]'), or \\`q'/\\`C-g'/any
 self-insert key when `ghostel-readonly-fast-exit' is non-nil."
   (interactive)
+  (unless (derived-mode-p 'ghostel-mode)
+    (user-error "Must be called from a ghostel buffer"))
   (if (eq ghostel--input-mode 'emacs)
       (ghostel-readonly-exit)
     (ghostel--enter-readonly
@@ -2466,6 +2469,8 @@ across the full scrollback.  When `ghostel-readonly-fast-exit' is
 non-nil press \\`q' or \\[ghostel-readonly-exit] to exit; exiting
 returns to whichever input mode was active before."
   (interactive)
+  (unless (derived-mode-p 'ghostel-mode)
+    (user-error "Must be called from a ghostel buffer"))
   (if (eq ghostel--input-mode 'copy)
       (ghostel-readonly-exit)
     (ghostel--enter-readonly 'copy t ":Copy"

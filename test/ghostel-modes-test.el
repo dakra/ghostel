@@ -738,6 +738,28 @@ repurposed as exit shortcuts, while the quit keys stay bound to the fast exit."
   (should (eq (lookup-key ghostel-readonly-fast-exit-mode-map (kbd "C-g"))
               #'ghostel-readonly-exit)))
 
+(ert-deftest ghostel-test-readonly-mode-commands-reject-non-ghostel-buffers ()
+  "Copy and Emacs modes must not install Ghostel maps outside `ghostel-mode'."
+  (dolist (command (list #'ghostel-copy-mode #'ghostel-emacs-mode))
+    (with-temp-buffer
+      (let ((map (current-local-map)))
+        (should-error (funcall command) :type 'user-error)
+        (should-not (local-variable-p 'ghostel--input-mode))
+        (should (eq (current-local-map) map))))))
+
+(ert-deftest ghostel-test-readonly-fast-exit-setter-skips-non-ghostel-buffers ()
+  "Changing `ghostel-readonly-fast-exit' only rebinds Ghostel buffers."
+  (let ((old ghostel-readonly-fast-exit))
+    (unwind-protect
+        (with-temp-buffer
+          (text-mode)
+          (let ((map (current-local-map)))
+            (setq-local ghostel--input-mode 'copy)
+            (customize-set-variable 'ghostel-readonly-fast-exit
+                                    (not old))
+            (should (eq (current-local-map) map))))
+      (customize-set-variable 'ghostel-readonly-fast-exit old))))
+
 (ert-deftest ghostel-test-emacs-mode-toggles-off ()
   "`ghostel-emacs-mode' is a toggle: calling it while in Emacs mode exits.
 Exiting returns to whatever mode the user was in beforehand, mirroring
