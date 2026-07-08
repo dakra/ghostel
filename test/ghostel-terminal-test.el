@@ -187,6 +187,8 @@ modes (47 / 1047 / 1049) are handled uniformly."
                 (lambda (&rest _) '(fake-win)))
                ((symbol-function 'process-buffer)
                 (lambda (_proc) cur-buf))
+               ((symbol-function 'window-buffer)
+                (lambda (&optional _window) cur-buf))
                ((default-value 'window-adjust-process-window-size-function)
                 (lambda (_proc _wins) ,size)))
        ,@body)))
@@ -257,6 +259,28 @@ modes (47 / 1047 / 1049) are handled uniformly."
         (should (equal '(fake 40 120) set-size-args))
         (should ghostel--force-next-redraw)
         (should redraw-called)))))
+
+(ert-deftest ghostel-test-resize-window-buffer-not-current ()
+  "Resize works when WINDOW's buffer is not the current buffer.
+Buffer-local `window-size-change-functions' are run by redisplay with
+an arbitrary buffer current, so `ghostel--adjust-size' must resolve
+the terminal from WINDOW's buffer rather than the ambient current
+buffer.  Regression test: a split from another window (or any
+programmatic resize) silently skipped the resize, leaving the grid at
+its old size."
+  (with-temp-buffer
+    (let ((set-size-args nil))
+      (setq-local ghostel--term 'fake
+                  ghostel--process 'fake-proc
+                  ghostel--force-next-redraw nil)
+      (cl-letf (((symbol-function 'ghostel--set-size-with-cell-dims)
+                 (lambda (_term h w) (setq set-size-args (list h w))))
+                ((symbol-function 'ghostel--redraw-now) #'ignore))
+        (ghostel-test--with-resize-stubs '(120 . 40)
+          (with-temp-buffer            ; unrelated buffer is current
+            (ghostel--adjust-size 'fake-window))))
+      (should (equal '(40 120) set-size-args))
+      (should ghostel--force-next-redraw))))
 
 (ert-deftest ghostel-test-windows-excludes-daemon-dummy-frame ()
   "`ghostel--windows' drops windows on the daemon's dummy initial frame.
