@@ -2031,8 +2031,9 @@ Return non-nil when the event was encoded and sent to the terminal."
 
 (defun ghostel-mouse-press-or-copy-mode (event)
   "Forward EVENT to the terminal, or hand off to `mouse-drag-region'.
-When terminal input consumes the press, forwards it to the program;
-otherwise hands off to `mouse-drag-region'.  Records in
+When terminal input consumes the press, forwards it to the program.
+Otherwise, active focus-only clicks are consumed before Emacs can move
+point; interaction clicks hand off to `mouse-drag-region'.  Records in
 `ghostel--mouse-press-was-selected' whether the window was already
 selected, in an already-focused frame, before focusing it, for
 `ghostel-mouse-release-or-set-point'."
@@ -2048,11 +2049,16 @@ selected, in an already-focused frame, before focusing it, for
     (setq ghostel--mouse-press-was-selected
           (and (eq win (selected-window)) (not refocused)))
     (select-window win)
-    (unless (ghostel--mouse-press event)
-      ;; `mouse-drag-region' activates the mark mid-drag; the release
-      ;; handler picks the input mode.  `ghostel--mark-activated' ignores
-      ;; activations made under the mouse handlers, so the hook stays out of it.
-      (mouse-drag-region event))))
+    (let ((active (and ghostel-mouse-drag-input-mode
+                       (eq ghostel--input-mode 'semi-char))))
+      (unless (or (ghostel--mouse-press event)
+                  (and active (not ghostel--mouse-press-was-selected)))
+        ;; Do not call `mouse-drag-region' for focus-only clicks: it may
+        ;; move point while preparing click/drag handling.
+        ;; `mouse-drag-region' activates the mark mid-drag; the release
+        ;; handler picks the input mode.  `ghostel--mark-activated' ignores
+        ;; activations made under the mouse handlers, so the hook stays out of it.
+        (mouse-drag-region event)))))
 
 (defun ghostel-mouse-release-or-set-point (event &optional promote-to-region)
   "Forward EVENT to the terminal, or set point / switch input mode.
@@ -2060,21 +2066,19 @@ Without terminal mouse input, sets point (PROMOTE-TO-REGION keeps
 the word/line selection of a multi-click) and, in semi-char mode,
 switches to `ghostel-mouse-drag-input-mode' after a multi-click or
 a single click in an already-selected window.  A single click that
-only focuses a previously-unselected window or frame instead snaps
-point to the live cursor and stays in semi-char (skipped when
+only focuses a previously-unselected window or frame instead preserves
+the pre-click view and stays in semi-char (skipped when
 `ghostel-mouse-drag-input-mode' is nil)."
   (interactive "e\np")
   (let ((active (and ghostel-mouse-drag-input-mode
                      (eq ghostel--input-mode 'semi-char))))
     (cond
      ((ghostel--mouse-release event))
-     ;; Pure focus click of a previously-unselected window: just focus,
-     ;; snapping point to the live input cursor instead of the click.
+     ;; Focus-only clicks must not move point; the saved window view is
+     ;; what the user clicked back to inspect.
      ((and active
            (= (event-click-count event) 1)
            (not ghostel--mouse-press-was-selected))
-      (when ghostel--cursor-char-pos
-        (goto-char ghostel--cursor-char-pos))
       (deactivate-mark))
      ;; Multi-click, or a single click in an already-selected window: set
      ;; point/selection, then freeze (a focus click never reaches here).
