@@ -610,7 +610,7 @@ fresh."
         (should (equal "PARTIAL" ghostel--last-directory))))))
 
 (ert-deftest ghostel-test-osc-color-query ()
-  "Test that OSC 4/10/11 color queries get responses."
+  "Test that OSC 4/10/11/12 and Kitty OSC 21 color queries get responses."
   :tags '(native)
   (let ((python (executable-find "python3")))
     (skip-unless python)
@@ -648,7 +648,30 @@ fresh."
             ;; Multi-pair OSC 4 query: the index=1 value seeded above is still
             ;; there, and both indices get replied to in order.
             '("\e]4;1;?;3;?\e\\" :match
-              "\\`1b5d343b313b7267623a313131312f323232322f333333331b5c1b5d343b333b7267623a.*1b5c\\'"))))
+              "\\`1b5d343b313b7267623a313131312f323232322f333333331b5c1b5d343b333b7267623a.*1b5c\\'")
+            ;; OSC 12 cursor query with no cursor color set falls back to the
+            ;; foreground color (xterm-style reporting) — rgb:aa/bb/cc was
+            ;; seeded by the OSC 10 set above.
+            '("\e]12;?\e\\" :equal
+              "1b5d31323b7267623a616161612f626262622f636363631b5c")
+            ;; OSC 12 set (no reply), then a query that must see it.
+            '("\e]12;rgb:11/22/33\e\\" :none)
+            '("\e]12;?\e\\" :equal
+              "1b5d31323b7267623a313131312f323232322f333333331b5c")
+            ;; Kitty OSC 21 cursor query while the cursor color is set uses
+            ;; the 8-bit rgb form: \e]21;cursor=rgb:11/22/33 ST.
+            '("\e]21;cursor=?\e\\" :equal
+              "1b5d32313b637572736f723d7267623a31312f32322f33331b5c")
+            ;; OSC 112 resets the cursor color (no reply)...
+            '("\e]112\e\\" :none)
+            ;; ...after which OSC 12 falls back to the foreground again and
+            ;; the Kitty query reports an empty value: \e]21;cursor= ST.
+            '("\e]12;?\e\\" :equal
+              "1b5d31323b7267623a616161612f626262622f636363631b5c")
+            '("\e]21;cursor=?\e\\" :equal "1b5d32313b637572736f723d1b5c")
+            ;; Kitty OSC 21 foreground query: \e]21;foreground=rgb:aa/bb/cc ST.
+            '("\e]21;foreground=?\e\\" :equal
+              "1b5d32313b666f726567726f756e643d7267623a61612f62622f63631b5c"))))
       (cl-labels ((run-probe (payloads)
                     (ghostel-test--with-exec-buffer
                         (buf proc python

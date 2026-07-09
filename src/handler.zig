@@ -2,8 +2,6 @@
 //! standard terminal handler but intercepts OSC-related actions so we can route
 //! them to Elisp callbacks instead of re-parsing the same bytes ourselves.
 
-const std = @import("std");
-
 const emacs = @import("emacs.zig");
 const gt = @import("ghostty-vt");
 const GhostelTerm = @import("GhostelTerm.zig");
@@ -39,17 +37,12 @@ pub fn GhostelHandler(Context: type) type {
             value: gt.StreamAction.Value(action),
         ) void {
             switch (action) {
-                // For `semantic_prompt` and `color_operation` we forward FIRST
-                // so the standard handler updates terminal state (per-row
-                // semantic flag, palette/dynamic color sets), then fire the
-                // Elisp callback / emit the query reply.
+                // For `semantic_prompt` we forward FIRST so the standard
+                // handler updates terminal state (per-row semantic flag),
+                // then fire the Elisp callback.
                 .semantic_prompt => {
                     self.inner.vt(action, value);
                     self.handleSemanticPrompt(value);
-                },
-                .color_operation => {
-                    self.inner.vt(action, value);
-                    self.handleColorOperation(value);
                 },
 
                 // For these, the standard handler is a no-op (see
@@ -215,96 +208,6 @@ pub fn GhostelHandler(Context: type) type {
             };
             const progress_val = if (v.progress) |p| p else null;
             self.context.effect("ghostel--osc-progress", .{ state_str, progress_val });
-        }
-
-        // ---------------------------------------------------------------------------
-        // OSC 4 / 10 / 11 — color query reply
-        // ---------------------------------------------------------------------------
-
-        /// Walk the request list looking for `.query` entries and emit a reply for each.
-        /// The standard handler has already applied any `.set` / `.reset` entries in
-        /// the same list, so the colors we read are the post-update values - which
-        /// matches what shells expect when a single OSC carries both a set and a query.
-        ///
-        /// We reply for OSC 4 (palette), OSC 10 (foreground), and OSC 11 (background).
-        /// Other dynamic colors (cursor, pointer, highlight, tektronix) are queryable through
-        /// this same action but ghostel doesn't track them, so their queries silently drop.
-        fn handleColorOperation(self: *Self, v: gt.StreamAction.ColorOperation) void {
-            var it = v.requests.constIterator(0);
-            while (it.next()) |req| {
-                const target = switch (req.*) {
-                    .query => |t| t,
-                    else => continue,
-                };
-                switch (target) {
-                    .palette => |idx| {
-                        const color = self.inner.terminal.colors.palette.current[idx];
-                        self.sendPaletteColorReply(idx, color, v.terminator);
-                    },
-                    .dynamic => |d| switch (d) {
-                        .foreground => {
-                            if (self.inner.terminal.colors.foreground.get()) |color|
-                                self.sendDynamicColorReply(10, color, v.terminator);
-                        },
-                        .background => {
-                            if (self.inner.terminal.colors.background.get()) |color|
-                                self.sendDynamicColorReply(11, color, v.terminator);
-                        },
-                        else => {}, // cursor / highlight / pointer / tektronix — drop
-                    },
-                    .special => {}, // OSC 5 — drop
-                }
-            }
-        }
-
-        /// Send `OSC N;rgb:RRRR/GGGG/BBBB <term>` for a dynamic color (OSC 10/11).
-        fn sendDynamicColorReply(
-            self: *Self,
-            osc_num: u8,
-            color: gt.color.RGB,
-            terminator: gt.osc.Terminator,
-        ) void {
-            var buf: [64]u8 = undefined;
-            const written = std.fmt.bufPrint(
-                &buf,
-                "\x1b]{d};rgb:{x:0>2}{x:0>2}/{x:0>2}{x:0>2}/{x:0>2}{x:0>2}{s}",
-                .{
-                    osc_num,
-                    color.r,
-                    color.r,
-                    color.g,
-                    color.g,
-                    color.b,
-                    color.b,
-                    terminator.string(),
-                },
-            ) catch return;
-            self.context.ptyWrite(written) catch {};
-        }
-
-        /// Send `OSC 4;INDEX;rgb:RRRR/GGGG/BBBB <term>` for a palette entry.
-        fn sendPaletteColorReply(
-            self: *Self,
-            index: u8,
-            color: gt.color.RGB,
-            terminator: gt.osc.Terminator,
-        ) void {
-            var buf: [64]u8 = undefined;
-            const written = std.fmt.bufPrint(
-                &buf,
-                "\x1b]4;{d};rgb:{x:0>2}{x:0>2}/{x:0>2}{x:0>2}/{x:0>2}{x:0>2}{s}",
-                .{
-                    index,
-                    color.r,
-                    color.r,
-                    color.g,
-                    color.g,
-                    color.b,
-                    color.b,
-                    terminator.string(),
-                },
-            ) catch return;
-            self.context.ptyWrite(written) catch {};
         }
     };
 }
