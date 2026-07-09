@@ -282,10 +282,10 @@ first real focus event."
 
 (ert-deftest ghostel-test-mouse-1-press-no-tracking-semi-char ()
   "Left-press in semi-char with no tracking does NOT enter copy mode.
-The press only hands EVENT off to `mouse-drag-region' so that pure
-clicks merely focus the window and set point.  Copy mode is entered
-later by `ghostel-mouse-drag-or-set-region' if the press grows into
-a drag, so streaming output cannot clobber the resulting region."
+In an already-focused window, the press hands EVENT off to
+`mouse-drag-region'.  Copy mode is entered later by
+`ghostel-mouse-drag-or-set-region' if the press grows into a drag,
+so streaming output cannot clobber the resulting region."
   :tags '(native)
   (let ((fake-event `(down-mouse-1 (,(selected-window) 1 (10 . 5) 0)))
         (copy-mode-called nil)
@@ -301,7 +301,9 @@ a drag, so streaming output cannot clobber the resulting region."
                  (lambda () (setq copy-mode-called t)))
                 ((symbol-function 'mouse-drag-region)
                  (lambda (event) (setq drag-region-arg event)))
-                ((symbol-function 'select-window) (lambda (&rest _) nil)))
+                ((symbol-function 'select-window) (lambda (&rest _) nil))
+                ((symbol-function 'frame-focus-state)
+                 (lambda (&optional _frame) t)))
         (ghostel-mouse-press-or-copy-mode fake-event))
       (should-not copy-mode-called)
       (should (equal fake-event drag-region-arg)))))
@@ -532,8 +534,8 @@ buffer freezes so streaming output cannot clobber the view."
 (ert-deftest ghostel-test-mouse-1-release-single-click-focus-click-only-focuses ()
   "A focus click of an unselected window only focuses.
 With the feature on (`ghostel-mouse-drag-input-mode' non-nil) the click
-does not enter copy mode (the #257 case) and snaps point to the live
-cursor (`ghostel--cursor-char-pos'), not the click position."
+does not enter copy mode (the #257 case), set point to the click, or snap
+point to the live cursor (`ghostel--cursor-char-pos')."
   :tags '(native)
   (let ((fake-event `(mouse-1 (,(selected-window) 1 (10 . 5) 0)))
         (ghostel-mouse-drag-input-mode 'copy)
@@ -557,8 +559,8 @@ cursor (`ghostel--cursor-char-pos'), not the click position."
         (ghostel-mouse-release-or-set-point fake-event 1))
       (should-not set-point-called)
       (should-not copy-mode-called)
-      ;; Cursor snapped to the live input position, not the click.
-      (should (= (point) 11)))))
+      ;; Point is left where it was before the focus-only release.
+      (should (= (point) 8)))))
 
 (ert-deftest ghostel-test-mouse-1-release-focus-click-feature-off-sets-point ()
   "With the feature off, a focus click sets point like standard Emacs.
@@ -584,6 +586,53 @@ previously-unselected window sets point normally and enters no mode."
         (ghostel-mouse-release-or-set-point fake-event 1))
       (should (equal fake-event set-point-event))
       (should-not copy-mode-called))))
+
+(ert-deftest ghostel-test-mouse-1-focus-click-preserves-scrollback-view ()
+  "A focus click back into a scrolled window preserves its viewport."
+  (let ((buf (generate-new-buffer " *ghostel-test-focus-scrollback*"))
+        (other-buf (generate-new-buffer " *ghostel-test-focus-other*"))
+        (orig-config (current-window-configuration))
+        (ghostel-mouse-drag-input-mode 'copy))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (let ((ghostel-win (selected-window))
+                (other-win (split-window-right)))
+            (set-window-buffer ghostel-win buf)
+            (set-window-buffer other-win other-buf)
+            (with-current-buffer buf
+              (ghostel-mode)
+              (let ((inhibit-read-only t))
+                (dotimes (i 80)
+                  (insert (format "row-%02d\n" i))))
+              (setq-local ghostel--term 'fake)
+              (setq-local ghostel--input-mode 'semi-char)
+              (setq-local ghostel--cursor-char-pos (point-max))
+              (let ((saved-point (point-min))
+                    (saved-start (point-min)))
+                (set-window-point ghostel-win saved-point)
+                (set-window-start ghostel-win saved-start t)
+                (with-current-buffer other-buf
+                  (setq-local ghostel--input-mode nil)
+                  (select-window other-win)
+                  (cl-letf (((symbol-function 'ghostel--mode-enabled)
+                             (lambda (_term _mode) nil))
+                            ((symbol-function 'ghostel--mouse-event)
+                             (lambda (&rest _) nil))
+                            ((symbol-function 'mouse-drag-region)
+                             (lambda (_event)
+                               (ert-fail "focus click called mouse-drag-region"))))
+                    (ghostel-mouse-press-or-copy-mode
+                     `(down-mouse-1 (,ghostel-win 1 (10 . 5) 0)))
+                    (ghostel-mouse-release-or-set-point
+                     `(mouse-1 (,ghostel-win 1 (10 . 5) 0)) 1)))
+                (should (eq (selected-window) ghostel-win))
+                (should (= (point) saved-point))
+                (should (= (window-point ghostel-win) saved-point))
+                (should (= (window-start ghostel-win) saved-start))))))
+      (set-window-configuration orig-config)
+      (kill-buffer buf)
+      (kill-buffer other-buf))))
 
 (ert-deftest ghostel-test-mouse-1-release-focus-click-hidden-cursor-does-not-anchor ()
   "A focus click with no visible terminal cursor preserves point and scroll."
@@ -723,7 +772,7 @@ The window stays selected while the frame is in the background."
     (set-frame-parameter nil 'ghostel--frame-refocused t)
     (click)
     (should-not copy-mode-called)
-    (should (= (point) 11))             ; snapped to the live cursor
+    (should (= (point) 8))              ; preserved pre-click point
     (click)
     (should copy-mode-called)))
 
@@ -760,7 +809,7 @@ into a pending flag, so the press is a focus click."
     (ghostel--frame-focus-flags)
     (click)
     (should-not copy-mode-called)
-    (should (= (point) 11))             ; snapped to the live cursor
+    (should (= (point) 8))              ; preserved pre-click point
     ;; A genuine second interaction click (no new focus-in) freezes.
     (click)
     (should copy-mode-called)))
@@ -955,8 +1004,8 @@ on the next redraw - neither copy nor Emacs mode is entered."
 (ert-deftest ghostel-test-mouse-1-drag-focus-click-microdrag-stays-semi-char ()
   "A focus-click micro-drag (no region) stays in semi-char.
 A tiny pointer wiggle on a click that only focuses the window makes Emacs
-report a drag with equal start/end points; it sets no region, snaps
-to the live cursor, and does not enter copy mode."
+report a drag with equal start/end points; it sets no region, preserves
+point, and does not enter copy mode."
   :tags '(native)
   (let ((fake-event `(drag-mouse-1
                       (,(selected-window) 5 (161 . 6) 0)
@@ -986,7 +1035,7 @@ to the live cursor, and does not enter copy mode."
       (should-not set-region-called)     ; no region established for a focus click
       (should-not copy-mode-called)
       (should-not emacs-mode-called)
-      (should (= (point) 11)))))         ; snapped to the live cursor
+      (should (= (point) 3)))))          ; preserved pre-click point
 
 (ert-deftest ghostel-test-mouse-1-drag-microdrag-already-selected-enters-copy-mode ()
   "A micro-drag in an already-selected window still enters copy mode.
