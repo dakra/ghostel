@@ -280,6 +280,18 @@ pub const Env = struct {
         self.raw.non_local_exit_signal.?(self.raw, symbol, data);
     }
 
+    pub fn checkQuit(self: Env) !void {
+        if (self.raw.should_quit) |shouldQuit| {
+            if (shouldQuit(self.raw)) return error.EmacsQuit;
+        }
+        if (self.raw.process_input) |processInput| {
+            if (processInput(self.raw) == c.emacs_process_input_quit) return error.EmacsQuit;
+        }
+        if (self.raw.should_quit) |shouldQuit| {
+            if (shouldQuit(self.raw)) return error.EmacsQuit;
+        }
+    }
+
     pub fn makeFunction(
         self: Env,
         min_arity: i32,
@@ -313,8 +325,16 @@ pub const Env = struct {
                 current_env = env;
                 defer current_env = prev_env;
                 return entry.impl.call(env, nargs, args) catch |e| {
-                    env.logStackTrace(@errorReturnTrace());
-                    env.signalError("error in %s: %s", .{ entry.name, @errorName(e) });
+                    // Widen narrow per-function error sets so the shared wrapper can
+                    // handle EmacsQuit even for functions that don't return it.
+                    const err: anyerror = e;
+                    switch (err) {
+                        error.EmacsQuit => env.nonLocalExitSignal(sym.quit, env.nil()),
+                        else => {
+                            env.logStackTrace(@errorReturnTrace());
+                            env.signalError("error in %s: %s", .{ entry.name, @errorName(err) });
+                        },
+                    }
                     return env.nil();
                 };
             }
@@ -518,6 +538,7 @@ const interned_symbols = [_][:0]const u8{
     "put-text-property",
     "puthash",
     "query-font",
+    "quit",
     "reverse",
     "run-at-time",
     "selected-window",

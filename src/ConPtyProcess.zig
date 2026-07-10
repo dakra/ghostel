@@ -1,6 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const backend_types = @import("backend_types.zig");
+
 const c = @cImport({
     @cInclude("windows.h");
 });
@@ -13,23 +15,27 @@ const ResizePseudoConsoleFn = *const fn (HPCON, c.COORD) callconv(.winapi) c.HRE
 const ClosePseudoConsoleFn = *const fn (HPCON) callconv(.winapi) void;
 
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x00020016;
+const PIPE_REJECT_REMOTE_CLIENTS: c.DWORD = 0x00000008;
+const GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT: c.DWORD = 0x00000002;
+const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: c.DWORD = 0x00000004;
 const READ_BUFFER_SIZE = 64 * 1024;
+const WRITE_CHUNK_SIZE = 4096;
 
+const OverlappedPipeEnd = enum { read, write };
+
+alloc: Allocator,
 hpc: HPCON = null,
 pty_input: c.HANDLE = c.INVALID_HANDLE_VALUE,
 pty_output: c.HANDLE = c.INVALID_HANDLE_VALUE,
-command_event: c.HANDLE = c.INVALID_HANDLE_VALUE,
+interrupt_event: c.HANDLE = c.INVALID_HANDLE_VALUE,
 output_read_event: c.HANDLE = c.INVALID_HANDLE_VALUE,
+input_write_event: c.HANDLE = c.INVALID_HANDLE_VALUE,
 shell_process: c.HANDLE = c.INVALID_HANDLE_VALUE,
-running: std.atomic.Value(bool) = .init(true),
 pid: i64 = -1,
 
 var create_pseudo_console: ?CreatePseudoConsoleFn = null;
 var resize_pseudo_console: ?ResizePseudoConsoleFn = null;
 var close_pseudo_console: ?ClosePseudoConsoleFn = null;
-var pipe_name_counter = std.atomic.Value(u32).init(1);
-
-pub const ProcessParams = @import("ProcessParams.zig");
 
 pub const EventWriter = struct {
     pub const Fd = c_int;
@@ -85,6 +91,8 @@ pub const EventWriter = struct {
     fn notifyCrtProviderForImport(dll_name: []const u8, symbol_name: []const u8) ?NotifyCrtProvider {
         if (!std.mem.eql(u8, symbol_name, "_dup")) return null;
 
+        // Emacs' `open_channel' returns a CRT fd owned by Emacs, so event
+        // writes must go through the same mainstream CRT family Emacs imports.
         if (std.ascii.eqlIgnoreCase(dll_name, "msvcrt.dll")) return .msvcrt;
         if (std.ascii.eqlIgnoreCase(dll_name, "ucrtbase.dll")) return .ucrt;
         // Newer Emacs builds may link the UCRT through api-ms-win-crt
@@ -172,17 +180,23 @@ pub const EventWriter = struct {
     }
 };
 
-pub fn init(alloc: Allocator, initial_cols: u16, initial_rows: u16, params: ProcessParams) !Self {
+pub fn init(alloc: Allocator, initial_cols: u16, initial_rows: u16, params: backend_types.ProcessParams) !Self {
     try initApi();
 
-    var self: Self = .{};
-    self.command_event = c.CreateEventW(null, c.TRUE, c.FALSE, null);
-    if (self.command_event == null) return error.CreateEventFailed;
-    errdefer self.closeConPtyHandles();
+    var self: Self = .{ .alloc = alloc };
+
+    self.interrupt_event = c.CreateEventW(null, c.TRUE, c.FALSE, null);
+    if (self.interrupt_event == null) return error.CreateEventFailed;
+    errdefer closeConPtyHandles(&self);
+
     self.output_read_event = c.CreateEventW(null, c.TRUE, c.FALSE, null);
     if (self.output_read_event == null) return error.CreateEventFailed;
-    try self.createConPty(initial_rows, initial_cols);
-    try self.spawnChild(alloc, params);
+
+    self.input_write_event = c.CreateEventW(null, c.TRUE, c.FALSE, null);
+    if (self.input_write_event == null) return error.CreateEventFailed;
+
+    try createConPty(&self, initial_rows, initial_cols);
+    try spawnChild(&self, params);
 
     return self;
 }
@@ -191,210 +205,191 @@ pub fn pidValue(self: *const Self) i64 {
     return self.pid;
 }
 
-pub fn drain(
-    self: *Self,
-    stream: anytype,
-) !bool {
-    var buf: [READ_BUFFER_SIZE]u8 = undefined;
+pub fn drain(self: *Self, stream: anytype) !bool {
+    const interrupt_handles = [_]c.HANDLE{
+        self.shell_process,
+        self.interrupt_event,
+    };
 
-    while (self.running.load(.acquire)) {
-        switch (try self.readOutput(stream, buf[0..])) {
-            .output, .command => return false,
-            .eof => {
-                self.stopRunning();
-                return true;
-            },
-        }
-    }
-
-    return true;
+    return try self.readOutput(stream, &interrupt_handles) == .ok;
 }
 
-const ReadOutputResult = enum {
-    output,
-    eof,
-    command,
-};
+pub fn finishDrain(self: *Self, stream: anytype) !void {
+    self.clearInterruptEvent();
+    const close_thread = startPseudoConsoleClose(self) orelse return;
+    defer close_thread.join();
+
+    while (try self.readOutput(stream, &.{}) == .ok) {}
+}
 
 fn readOutput(
     self: *Self,
     stream: anytype,
-    buf: []u8,
-) !ReadOutputResult {
-    if (self.pty_output == c.INVALID_HANDLE_VALUE) return .eof;
-    if (self.output_read_event == c.INVALID_HANDLE_VALUE) return error.ReadFailed;
+    interrupt_handles: []const c.HANDLE,
+) !union(enum) { ok, finished } {
+    if (self.pty_output == c.INVALID_HANDLE_VALUE) return .finished;
+    if (self.output_read_event == c.INVALID_HANDLE_VALUE) return error.IoFailed;
 
     _ = c.ResetEvent(self.output_read_event);
 
     var overlapped = std.mem.zeroes(c.OVERLAPPED);
     overlapped.hEvent = self.output_read_event;
 
+    var buf: [READ_BUFFER_SIZE]u8 = undefined;
     var bytes_read: c.DWORD = 0;
     if (c.ReadFile(
         self.pty_output,
-        buf.ptr,
+        &buf,
         @intCast(buf.len),
         &bytes_read,
         &overlapped,
     ) != 0) {
-        return self.finishRead(stream, buf, bytes_read);
+        stream.nextSlice(buf[0..bytes_read]);
+        return .ok;
     }
 
     switch (c.GetLastError()) {
         c.ERROR_IO_PENDING => {},
-        c.ERROR_OPERATION_ABORTED => return .command,
-        c.ERROR_BROKEN_PIPE, c.ERROR_INVALID_HANDLE => return .eof,
-        else => return error.ReadFailed,
+        c.ERROR_OPERATION_ABORTED, c.ERROR_BROKEN_PIPE, c.ERROR_INVALID_HANDLE => {
+            return .finished;
+        },
+        else => return error.IoFailed,
     }
+    errdefer _ = completeOverlapped(self.pty_output, &overlapped, true) catch {};
 
-    var include_process = true;
-    while (true) {
-        switch (try self.waitForReadOrCommand(include_process)) {
-            .read => return self.finishOverlappedRead(stream, buf, &overlapped),
-            .command => {
-                self.clearCommandEvent();
-                return self.cancelPendingRead(stream, buf, &overlapped);
-            },
-            .process => {
-                self.closePseudoConsole();
-                include_process = false;
-            },
-        }
-    }
-}
-
-fn finishRead(self: *Self, stream: anytype, buf: []u8, bytes_read: c.DWORD) ReadOutputResult {
-    _ = self;
-    if (bytes_read == 0) return .eof;
-    stream.nextSlice(buf[0..@as(usize, @intCast(bytes_read))]);
-    return .output;
-}
-
-fn finishOverlappedRead(
-    self: *Self,
-    stream: anytype,
-    buf: []u8,
-    overlapped: *c.OVERLAPPED,
-) !ReadOutputResult {
-    var bytes_read: c.DWORD = 0;
-    if (c.GetOverlappedResult(
+    const wait_result = try self.waitForRead(interrupt_handles);
+    const complete_result = try completeOverlapped(
         self.pty_output,
-        overlapped,
-        &bytes_read,
-        c.FALSE,
-    ) == 0) {
-        const err = c.GetLastError();
-        switch (err) {
-            c.ERROR_OPERATION_ABORTED => return .command,
-            c.ERROR_BROKEN_PIPE, c.ERROR_INVALID_HANDLE => return .eof,
-            else => return error.ReadFailed,
-        }
-    }
+        &overlapped,
+        wait_result == .interrupted,
+    );
+    if (complete_result == .bytes) stream.nextSlice(buf[0..complete_result.bytes]);
 
-    return self.finishRead(stream, buf, bytes_read);
+    if (wait_result == .interrupted or complete_result != .bytes) return .finished;
+    return .ok;
 }
 
-fn cancelPendingRead(
-    self: *Self,
-    stream: anytype,
-    buf: []u8,
+fn completeOverlapped(
+    handle: c.HANDLE,
     overlapped: *c.OVERLAPPED,
-) !ReadOutputResult {
-    if (c.CancelIoEx(self.pty_output, overlapped) == 0) {
-        const err = c.GetLastError();
-        switch (err) {
-            c.ERROR_NOT_FOUND => {},
-            c.ERROR_INVALID_HANDLE => return .eof,
-            else => return error.ReadFailed,
-        }
+    cancel: bool,
+) !union(enum) { bytes: usize, aborted, closed } {
+    if (cancel and c.CancelIoEx(handle, overlapped) == 0 and
+        c.GetLastError() == c.ERROR_INVALID_HANDLE)
+    {
+        return .closed;
     }
 
-    var bytes_read: c.DWORD = 0;
+    var bytes_transferred: c.DWORD = 0;
     if (c.GetOverlappedResult(
-        self.pty_output,
+        handle,
         overlapped,
-        &bytes_read,
+        &bytes_transferred,
         c.TRUE,
     ) == 0) {
         const err = c.GetLastError();
         switch (err) {
-            c.ERROR_OPERATION_ABORTED => return .command,
-            c.ERROR_BROKEN_PIPE, c.ERROR_INVALID_HANDLE => return .eof,
-            else => return error.ReadFailed,
+            c.ERROR_OPERATION_ABORTED => return .aborted,
+            c.ERROR_BROKEN_PIPE, c.ERROR_INVALID_HANDLE => return .closed,
+            else => return error.IoFailed,
         }
     }
 
-    return self.finishRead(stream, buf, bytes_read);
+    return .{ .bytes = @intCast(bytes_transferred) };
 }
 
-const WaitResult = enum {
-    read,
-    process,
-    command,
-};
-
-fn waitForReadOrCommand(self: *Self, include_process: bool) !WaitResult {
+fn waitForRead(
+    self: *Self,
+    interrupt_handles: []const c.HANDLE,
+) !union(enum) { ready, interrupted } {
     var handles: [3]c.HANDLE = undefined;
     var count: c.DWORD = 0;
     const read_index = count;
     handles[count] = self.output_read_event;
     count += 1;
 
-    var process_index: ?c.DWORD = null;
-    var command_index: c.DWORD = undefined;
-
-    if (include_process and self.shell_process != c.INVALID_HANDLE_VALUE) {
-        process_index = count;
-        handles[count] = self.shell_process;
+    for (interrupt_handles) |handle| {
+        if (handle == c.INVALID_HANDLE_VALUE) continue;
+        handles[count] = handle;
         count += 1;
     }
-
-    command_index = count;
-    handles[count] = self.command_event;
-    count += 1;
 
     const result = c.WaitForMultipleObjects(count, &handles, c.FALSE, c.INFINITE);
     if (result < c.WAIT_OBJECT_0 or result >= c.WAIT_OBJECT_0 + count) return error.WaitFailed;
 
     const index = result - c.WAIT_OBJECT_0;
-    if (index == read_index) return .read;
-    if (process_index != null and index == process_index.?) return .process;
-    if (index == command_index) return .command;
-    return error.WaitFailed;
+    return if (index == read_index) .ready else .interrupted;
 }
 
-pub fn write(self: *Self, data: []const u8) !void {
-    if (data.len == 0) return;
-    if (self.pty_input == c.INVALID_HANDLE_VALUE) return error.WriteFailed;
+pub fn write(
+    self: *Self,
+    data: []const u8,
+    cancellation: ?backend_types.CancellationToken,
+) !backend_types.WriteResult {
+    if (data.len == 0) return .{ .written = 0 };
+    if (self.pty_input == c.INVALID_HANDLE_VALUE) return error.IoFailed;
+    if (self.input_write_event == c.INVALID_HANDLE_VALUE) return error.IoFailed;
+    if (self.interrupt_event == c.INVALID_HANDLE_VALUE) return error.IoFailed;
 
-    var offset: usize = 0;
-    while (offset < data.len) {
-        var wrote: c.DWORD = 0;
-        const chunk_len: c.DWORD = @intCast(@min(data.len - offset, std.math.maxInt(c.DWORD)));
-        if (c.WriteFile(self.pty_input, data[offset..].ptr, chunk_len, &wrote, null) == 0) {
-            return error.WriteFailed;
+    _ = c.ResetEvent(self.input_write_event);
+
+    var overlapped = std.mem.zeroes(c.OVERLAPPED);
+    overlapped.hEvent = self.input_write_event;
+
+    var bytes_written: c.DWORD = 0;
+    const chunk_len: c.DWORD = @intCast(@min(data.len, WRITE_CHUNK_SIZE));
+    if (c.WriteFile(
+        self.pty_input,
+        data.ptr,
+        chunk_len,
+        &bytes_written,
+        &overlapped,
+    ) != 0) {
+        if (bytes_written == 0) return error.IoFailed;
+        return .{ .written = @intCast(bytes_written) };
+    }
+
+    switch (c.GetLastError()) {
+        c.ERROR_IO_PENDING => {},
+        c.ERROR_BROKEN_PIPE, c.ERROR_INVALID_HANDLE => return error.ProcessExited,
+        else => return error.IoFailed,
+    }
+    errdefer _ = completeOverlapped(self.pty_input, &overlapped, true) catch {};
+
+    const handles = [_]c.HANDLE{
+        self.input_write_event,
+        self.interrupt_event,
+    };
+    const timeout = if (cancellation) |token| token.poll_interval_ms else c.INFINITE;
+    while (true) {
+        const wait_result = c.WaitForMultipleObjects(
+            handles.len,
+            &handles,
+            c.FALSE,
+            timeout,
+        );
+        if (wait_result == c.WAIT_TIMEOUT) {
+            try cancellation.?.check();
+            continue;
         }
-        if (wrote == 0) return error.WriteFailed;
-        offset += wrote;
-    }
-}
 
-pub fn requestStop(self: *Self, read_thread: std.Thread) void {
-    self.stopRunning();
-    if (self.command_event != c.INVALID_HANDLE_VALUE) {
-        _ = c.SetEvent(self.command_event);
-    }
+        const interrupted = wait_result == c.WAIT_OBJECT_0 + 1;
+        if (!interrupted and wait_result != c.WAIT_OBJECT_0) return error.IoFailed;
 
-    if (self.pty_input != c.INVALID_HANDLE_VALUE) {
-        _ = c.CloseHandle(self.pty_input);
-        self.pty_input = c.INVALID_HANDLE_VALUE;
+        const complete_result = try completeOverlapped(
+            self.pty_input,
+            &overlapped,
+            interrupted,
+        );
+        return switch (complete_result) {
+            .bytes => |n| if (n > 0) .{ .written = n } else error.IoFailed,
+            .aborted => if (interrupted) .interrupted else error.IoFailed,
+            else => error.IoFailed,
+        };
     }
-
-    _ = c.CancelSynchronousIo(read_thread.getHandle());
 }
 
 pub fn resize(self: *Self, cols: u16, rows: u16) !void {
-    if (!self.running.load(.acquire)) return error.PtyResizeFailed;
     const hpc = self.hpc orelse return error.PtyResizeFailed;
     const size = c.COORD{
         .X = @intCast(cols),
@@ -403,12 +398,16 @@ pub fn resize(self: *Self, cols: u16, rows: u16) !void {
     if (resize_pseudo_console.?(hpc, size) < 0) return error.PtyResizeFailed;
 }
 
+pub fn requestStop(self: *Self, _: std.Thread) void {
+    if (self.interrupt_event == c.INVALID_HANDLE_VALUE) return;
+    _ = c.SetEvent(self.interrupt_event);
+}
+
 pub fn replicaName(_: *Self) []const u8 {
     return "";
 }
 
 pub fn deinitAndWait(self: *Self) u8 {
-    self.stopRunning();
     self.closeConPtyHandles();
 
     var exit_code: c.DWORD = 0;
@@ -425,10 +424,72 @@ pub fn deinitAndWait(self: *Self) u8 {
 fn initApi() !void {
     if (create_pseudo_console != null) return;
 
+    // Prefer the redistributable Microsoft.Windows.Console.ConPTY runtime when
+    // it is shipped next to ghostel-module.dll. Its side-by-side OpenConsole
+    // path avoids the stock conhost response-to-input latency seen through
+    // kernel32!CreatePseudoConsole. Fall back to kernel32 so local/debug builds
+    // and unsupported layouts keep working with the public OS API.
+    if (loadSideBySideConpty()) |conpty| {
+        if (resolveApi(conpty, "ConptyCreatePseudoConsole", "ConptyResizePseudoConsole", "ConptyClosePseudoConsole")) {
+            return;
+        }
+    }
+
+    try resolveKernel32Api();
+}
+
+fn resolveKernel32Api() !void {
     const kernel32 = c.GetModuleHandleA("kernel32.dll") orelse return error.MissingConPty;
-    create_pseudo_console = @ptrCast(c.GetProcAddress(kernel32, "CreatePseudoConsole") orelse return error.MissingConPty);
-    resize_pseudo_console = @ptrCast(c.GetProcAddress(kernel32, "ResizePseudoConsole") orelse return error.MissingConPty);
-    close_pseudo_console = @ptrCast(c.GetProcAddress(kernel32, "ClosePseudoConsole") orelse return error.MissingConPty);
+    if (!resolveApi(kernel32, "CreatePseudoConsole", "ResizePseudoConsole", "ClosePseudoConsole")) {
+        return error.MissingConPty;
+    }
+}
+
+fn resolveApi(module: c.HMODULE, create_name: [*:0]const u8, resize_name: [*:0]const u8, close_name: [*:0]const u8) bool {
+    const create_proc = c.GetProcAddress(module, create_name) orelse return false;
+    const resize_proc = c.GetProcAddress(module, resize_name) orelse return false;
+    const close_proc = c.GetProcAddress(module, close_name) orelse return false;
+    create_pseudo_console = @ptrCast(create_proc);
+    resize_pseudo_console = @ptrCast(resize_proc);
+    close_pseudo_console = @ptrCast(close_proc);
+    return true;
+}
+
+fn loadSideBySideConpty() ?c.HMODULE {
+    var module_dir_buf: [32768]u8 = undefined;
+    const module_dir = currentModuleDir(&module_dir_buf) orelse return null;
+    var conpty_path_buf: [32768]u8 = undefined;
+    const conpty_path = std.fmt.bufPrintZ(
+        &conpty_path_buf,
+        "{s}\\conpty.dll",
+        .{module_dir},
+    ) catch return null;
+
+    var conpty_path_w_buf: [32768]u16 = undefined;
+    const conpty_path_w_len = std.unicode.utf8ToUtf16Le(
+        &conpty_path_w_buf,
+        conpty_path,
+    ) catch return null;
+    conpty_path_w_buf[conpty_path_w_len] = 0;
+    const conpty_path_w = conpty_path_w_buf[0..conpty_path_w_len :0];
+    return c.LoadLibraryW(conpty_path_w.ptr);
+}
+
+fn currentModuleDir(module_path_buf: *[32768]u8) ?[]const u8 {
+    var self_module: c.HMODULE = null;
+    const flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+    if (c.GetModuleHandleExW(flags, @ptrCast(&create_pseudo_console), &self_module) == 0) return null;
+
+    var module_path_w: [32768]u16 = undefined;
+    const len = c.GetModuleFileNameW(self_module, &module_path_w, module_path_w.len);
+    if (len == 0 or len >= module_path_w.len) return null;
+
+    const module_path_len = std.unicode.utf16LeToUtf8(
+        module_path_buf,
+        module_path_w[0..@intCast(len)],
+    ) catch return null;
+    const module_path = module_path_buf[0..module_path_len];
+    return std.fs.path.dirname(module_path);
 }
 
 fn createConPty(self: *Self, rows: u16, cols: u16) !void {
@@ -444,20 +505,15 @@ fn createConPty(self: *Self, rows: u16, cols: u16) !void {
         if (out_write != c.INVALID_HANDLE_VALUE) _ = c.CloseHandle(out_write);
     }
 
-    var sa = std.mem.zeroes(c.SECURITY_ATTRIBUTES);
-    sa.nLength = @sizeOf(c.SECURITY_ATTRIBUTES);
-    sa.bInheritHandle = c.TRUE;
-
-    if (c.CreatePipe(&in_read, &in_write, &sa, 0) == 0) return error.CreatePipeFailed;
-    try createOverlappedPipe(&out_read, &out_write);
+    try createOverlappedPipe(&in_read, &in_write, .write);
+    try createOverlappedPipe(&out_read, &out_write, .read);
 
     const size = c.COORD{
         .X = @intCast(cols),
         .Y = @intCast(rows),
     };
-    if (create_pseudo_console.?(size, in_read, out_write, 0, &self.hpc) < 0) {
-        return error.CreatePseudoConsoleFailed;
-    }
+    const create_result = create_pseudo_console.?(size, in_read, out_write, 0, &self.hpc);
+    if (create_result < 0) return error.CreatePseudoConsoleFailed;
 
     self.pty_input = in_write;
     self.pty_output = out_read;
@@ -469,52 +525,73 @@ fn createConPty(self: *Self, rows: u16, cols: u16) !void {
     out_write = c.INVALID_HANDLE_VALUE;
 }
 
+fn closeHandle(handle: *c.HANDLE) void {
+    if (handle.* != c.INVALID_HANDLE_VALUE) {
+        _ = c.CloseHandle(handle.*);
+        handle.* = c.INVALID_HANDLE_VALUE;
+    }
+}
+
 fn closeConPtyHandles(self: *Self) void {
-    if (self.pty_input != c.INVALID_HANDLE_VALUE) {
-        _ = c.CloseHandle(self.pty_input);
-        self.pty_input = c.INVALID_HANDLE_VALUE;
-    }
-    if (self.pty_output != c.INVALID_HANDLE_VALUE) {
-        _ = c.CloseHandle(self.pty_output);
-        self.pty_output = c.INVALID_HANDLE_VALUE;
-    }
+    closeHandle(&self.pty_input);
+    closeHandle(&self.pty_output);
+    self.closePseudoConsole();
+    closeHandle(&self.interrupt_event);
+    closeHandle(&self.output_read_event);
+    closeHandle(&self.input_write_event);
+}
+
+fn closePseudoConsole(self: *Self) void {
     if (self.hpc != null) {
         // ClosePseudoConsole owns the documented ConPTY teardown path.
         close_pseudo_console.?(self.hpc);
         self.hpc = null;
     }
-    if (self.command_event != c.INVALID_HANDLE_VALUE) {
-        _ = c.CloseHandle(self.command_event);
-        self.command_event = c.INVALID_HANDLE_VALUE;
-    }
-    if (self.output_read_event != c.INVALID_HANDLE_VALUE) {
-        _ = c.CloseHandle(self.output_read_event);
-        self.output_read_event = c.INVALID_HANDLE_VALUE;
-    }
 }
 
-fn closePseudoConsole(self: *Self) void {
-    if (self.hpc != null) {
-        close_pseudo_console.?(self.hpc);
-        self.hpc = null;
-    }
+fn startPseudoConsoleClose(self: *Self) ?std.Thread {
+    const hpc = self.hpc;
+    if (hpc == null) return null;
+    self.hpc = null;
+
+    // Child exit only tells us when to initiate teardown; EOF on the output
+    // pipe tells us when ConPTY has flushed its final output. Older Windows can
+    // block inside ClosePseudoConsole until that drain completes, so the reader
+    // thread must hand the handle to a helper, keep reading to EOF, and then
+    // join the helper.
+    return std.Thread.spawn(
+        .{ .stack_size = 128 * 1024 },
+        closePseudoConsoleHandle,
+        .{hpc},
+    ) catch |err| {
+        std.log.scoped(.ConPtyProcess).err(
+            "Failed to spawn ConPTY closer thread; leaking pseudoconsole handle to avoid reader deadlock: {any}",
+            .{err},
+        );
+        return null;
+    };
 }
 
-fn clearCommandEvent(self: *Self) void {
-    if (self.command_event == c.INVALID_HANDLE_VALUE) return;
-    _ = c.ResetEvent(self.command_event);
+fn closePseudoConsoleHandle(hpc: HPCON) void {
+    close_pseudo_console.?(hpc);
 }
 
-fn createOverlappedPipe(read_handle: *c.HANDLE, write_handle: *c.HANDLE) !void {
-    var pipe_path_buf: [128]u8 = undefined;
-    var pipe_path_buf_w: [128]u16 = undefined;
+fn clearInterruptEvent(self: *Self) void {
+    if (self.interrupt_event == c.INVALID_HANDLE_VALUE) return;
+    _ = c.ResetEvent(self.interrupt_event);
+}
+
+fn createOverlappedPipe(
+    read_handle: *c.HANDLE,
+    write_handle: *c.HANDLE,
+    overlapped_end: OverlappedPipeEnd,
+) !void {
+    var pipe_path_buf: [160]u8 = undefined;
+    var pipe_path_buf_w: [160]u16 = undefined;
     const pipe_path = std.fmt.bufPrintZ(
         &pipe_path_buf,
-        "\\\\.\\pipe\\ghostel-conpty-{d}-{d}",
-        .{
-            c.GetCurrentProcessId(),
-            pipe_name_counter.fetchAdd(1, .monotonic),
-        },
+        "\\\\.\\pipe\\ghostel-conpty-{d}-{x}",
+        .{ c.GetCurrentProcessId(), std.crypto.random.int(u64) },
     ) catch unreachable;
 
     const pipe_path_w_len = std.unicode.utf8ToUtf16Le(
@@ -524,19 +601,22 @@ fn createOverlappedPipe(read_handle: *c.HANDLE, write_handle: *c.HANDLE) !void {
     pipe_path_buf_w[pipe_path_w_len] = 0;
     const pipe_path_w = pipe_path_buf_w[0..pipe_path_w_len :0];
 
-    var sa = std.mem.zeroes(c.SECURITY_ATTRIBUTES);
-    sa.nLength = @sizeOf(c.SECURITY_ATTRIBUTES);
-    sa.bInheritHandle = c.TRUE;
+    var read_flags: c.DWORD = @intCast(c.PIPE_ACCESS_INBOUND);
+    read_flags |= @intCast(c.FILE_FLAG_FIRST_PIPE_INSTANCE);
+    if (overlapped_end == .read) read_flags |= @intCast(c.FILE_FLAG_OVERLAPPED);
+
+    var write_flags: c.DWORD = @intCast(c.FILE_ATTRIBUTE_NORMAL);
+    if (overlapped_end == .write) write_flags |= @intCast(c.FILE_FLAG_OVERLAPPED);
 
     read_handle.* = c.CreateNamedPipeW(
         pipe_path_w.ptr,
-        c.PIPE_ACCESS_INBOUND | c.FILE_FLAG_OVERLAPPED | c.FILE_FLAG_FIRST_PIPE_INSTANCE,
-        c.PIPE_TYPE_BYTE,
+        read_flags,
+        c.PIPE_TYPE_BYTE | PIPE_REJECT_REMOTE_CLIENTS,
         1,
         4096,
         4096,
         0,
-        &sa,
+        null,
     );
     if (read_handle.* == c.INVALID_HANDLE_VALUE) return error.CreatePipeFailed;
     errdefer {
@@ -548,16 +628,16 @@ fn createOverlappedPipe(read_handle: *c.HANDLE, write_handle: *c.HANDLE) !void {
         pipe_path_w.ptr,
         c.GENERIC_WRITE,
         0,
-        &sa,
+        null,
         c.OPEN_EXISTING,
-        c.FILE_ATTRIBUTE_NORMAL,
+        write_flags,
         null,
     );
     if (write_handle.* == c.INVALID_HANDLE_VALUE) return error.CreatePipeFailed;
 }
 
-fn spawnChild(self: *Self, alloc: Allocator, params: ProcessParams) !void {
-    var arena_allocator = std.heap.ArenaAllocator.init(alloc);
+fn spawnChild(self: *Self, params: backend_types.ProcessParams) !void {
+    var arena_allocator = std.heap.ArenaAllocator.init(self.alloc);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
 
@@ -570,11 +650,19 @@ fn spawnChild(self: *Self, alloc: Allocator, params: ProcessParams) !void {
 
     var attr_list_size: usize = 0;
     _ = c.InitializeProcThreadAttributeList(null, 1, 0, &attr_list_size);
-    const attr_list_buf = try arena.alloc(u8, attr_list_size);
+    const attr_list_word_count = try std.math.divCeil(usize, attr_list_size, @sizeOf(usize));
+    const attr_list_buf = try arena.alloc(usize, attr_list_word_count);
 
     var si = std.mem.zeroes(c.STARTUPINFOEXW);
     si.StartupInfo.cb = @sizeOf(c.STARTUPINFOEXW);
-    si.lpAttributeList = @ptrCast(@alignCast(attr_list_buf.ptr));
+    // Prevent console children from inheriting Emacs' redirected stdio when
+    // Emacs itself is running under SSH or another pipe-backed parent.  This
+    // intentionally follows the ConPTY workaround recommended by Microsoft
+    // Terminal maintainers: set STARTF_USESTDHANDLES with null hStd* handles
+    // so Windows does not copy the parent's redirected handles into the child.
+    // The child's console association comes from PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE.
+    si.StartupInfo.dwFlags = c.STARTF_USESTDHANDLES;
+    si.lpAttributeList = @ptrCast(attr_list_buf.ptr);
     if (c.InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &attr_list_size) == 0) {
         return error.InitializeProcThreadAttributeListFailed;
     }
@@ -623,27 +711,19 @@ fn argvToCommandLineWindows(
 
     if (argv.len != 0) {
         const arg0 = argv[0];
-
-        var needs_quotes = arg0.len == 0;
         for (arg0) |ch| {
-            if (ch <= ' ') {
-                needs_quotes = true;
-            } else if (ch == '"') {
-                return error.InvalidArg0;
-            }
+            if (ch == '"') return error.InvalidArg0;
         }
-        if (needs_quotes) {
-            try buf.append('"');
-            try buf.appendSlice(arg0);
-            try buf.append('"');
-        } else {
-            try buf.appendSlice(arg0);
+        try buf.append('"');
+        for (arg0) |ch| {
+            try buf.append(if (ch == '/') '\\' else ch);
         }
+        try buf.append('"');
 
         for (argv[1..]) |arg| {
             try buf.append(' ');
 
-            needs_quotes = for (arg) |ch| {
+            const needs_quotes = for (arg) |ch| {
                 if (ch <= ' ' or ch == '"') {
                     break true;
                 }
@@ -719,10 +799,6 @@ fn appendWtf8AsWtf16(builder: *std.ArrayList(u16), arena: Allocator, value: []co
     std.debug.assert(written == len);
 }
 
-fn stopRunning(self: *Self) void {
-    self.running.store(false, .release);
-}
-
 test "notify CRT provider follows the CRT that owns Emacs dup" {
     try std.testing.expectEqual(
         EventWriter.NotifyCrtProvider.msvcrt,
@@ -747,6 +823,22 @@ test "notify CRT provider ignores non-dup CRT imports" {
         @as(?EventWriter.NotifyCrtProvider, null),
         EventWriter.notifyCrtProviderForImport("kernel32.dll", "_dup"),
     );
+}
+
+test "argvToCommandLineWindows quotes argv0" {
+    const argv = [_][:0]const u8{
+        "c:/Windows/System32/cmd.exe",
+        "/d",
+        "/c",
+        "echo hi",
+    };
+    const command_line = try argvToCommandLineWindows(std.testing.allocator, &argv);
+    defer std.testing.allocator.free(command_line);
+
+    const expected = std.unicode.utf8ToUtf16LeStringLiteral(
+        "\"c:\\Windows\\System32\\cmd.exe\" /d /c \"echo hi\"",
+    );
+    try std.testing.expectEqualSlices(u16, expected, command_line);
 }
 
 test "buildEnvironmentBlock writes nul-separated UTF-16 entries" {

@@ -145,9 +145,19 @@ pub fn vtWrite(self: *Self, data: []const u8) void {
 pub fn ptyWrite(self: *Self, data: []const u8) !void {
     if (!self.isProcessLive()) return;
 
+    const env = emacs.current_env orelse return error.MissingEmacsEnv;
     if (self.process) |proc| {
-        try proc.ptyWrite(data);
-    } else if (emacs.current_env) |env| {
+        try proc.ptyWrite(env, data);
+    } else {
+        _ = env.f(
+            "process-send-string",
+            .{ env.symbolValue("ghostel--process"), data },
+        );
+    }
+}
+
+pub fn ptyWriteFromTerminal(_: *Self, data: []const u8) void {
+    if (emacs.current_env) |env| {
         _ = env.f(
             "process-send-string",
             .{ env.symbolValue("ghostel--process"), data },
@@ -316,6 +326,7 @@ pub fn isPasswordMode(self: *Self) !bool {
             "process-tty-name",
             .{env.symbolValue("ghostel--process")},
         );
+        if (env.isNil(tty_name_val)) return false;
         const tty_name = try env.extractStringAlloc(
             self.alloc,
             tty_name_val,

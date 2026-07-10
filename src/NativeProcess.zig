@@ -4,6 +4,8 @@ const Allocator = std.mem.Allocator;
 
 const gt = @import("ghostty-vt");
 
+const backend_types = @import("backend_types.zig");
+const emacs = @import("emacs.zig");
 const GhostelHandler = @import("handler.zig").GhostelHandler;
 const FixedArrayList = @import("fixed_array_list.zig").FixedArrayList;
 
@@ -16,10 +18,13 @@ const EventWriter = Backend.EventWriter;
 const Self = @This();
 
 const log = std.log.scoped(.NativeProcessHandler);
-pub const ChannelFd = EventWriter.Fd;
-pub const ProcessParams = Backend.ProcessParams;
+const CANCELLATION_POLL_INTERVAL_MS = 20;
 
-backend_mutex: std.Thread.Mutex = .{},
+pub const ChannelFd = EventWriter.Fd;
+pub const ProcessParams = backend_types.ProcessParams;
+
+backend_handoff_mutex: std.Thread.Mutex = .{},
+write_mutex: std.Thread.Mutex = .{},
 backend: ?Backend,
 event_writer: EventWriter,
 alloc: Allocator,
@@ -38,12 +43,10 @@ thread: std.Thread,
 
 const LockedStream = struct {
     process: *Self,
-    drained: bool = false,
 
     pub fn nextSlice(self: *LockedStream, data: []const u8) void {
         self.process.term_mutex.lock();
         defer self.process.term_mutex.unlock();
-        self.drained = true;
         self.process.stream.nextSlice(data);
     }
 };
@@ -90,31 +93,91 @@ pub fn unlockTerm(self: *Self) void {
     self.term_mutex.unlock();
 }
 
-pub fn ptyWrite(self: *Self, data: []const u8) !void {
-    self.backend_mutex.lock();
-    defer self.backend_mutex.unlock();
+pub fn ptyWrite(self: *Self, env: emacs.Env, data: []const u8) !void {
+    while (!self.write_mutex.tryLock()) {
+        try env.checkQuit();
+        std.Thread.sleep(CANCELLATION_POLL_INTERVAL_MS * std.time.ns_per_ms);
+    }
+    defer self.write_mutex.unlock();
 
-    if (self.backend) |*backend| return backend.write(data);
-    return error.ProcessExited;
+    var cancellation_env = env;
+    const cancellation = backend_types.CancellationToken{
+        .context = &cancellation_env,
+        .check_fn = checkEmacsQuit,
+        .poll_interval_ms = CANCELLATION_POLL_INTERVAL_MS,
+    };
+
+    var offset: usize = 0;
+    while (offset < data.len) {
+        switch (try self.ptyWriteBackend(data[offset..], cancellation)) {
+            .written => |n| {
+                offset += n;
+                try env.checkQuit();
+            },
+            .interrupted => return error.ProcessExited,
+        }
+    }
+}
+
+pub fn ptyWriteFromTerminal(self: *Self, data: []const u8) void {
+    // This callback runs on the reader thread, which cannot retire the backend
+    // until the callback returns. Avoid the handoff mutex so shutdown can signal
+    // a blocked write through the backend's existing interrupt mechanism.
+    const backend = if (self.backend) |*backend| backend else return;
+
+    self.write_mutex.lock();
+    defer self.write_mutex.unlock();
+
+    var offset: usize = 0;
+    while (offset < data.len) {
+        if (@atomicLoad(bool, &self.quit, .monotonic)) return;
+        const write_result = backend.write(data[offset..], null) catch |err| {
+            log.err("ghostel: Failed to write to PTY from terminal: {any}", .{err});
+            return;
+        };
+        switch (write_result) {
+            .written => |n| offset += n,
+            .interrupted => return,
+        }
+    }
+}
+
+fn ptyWriteBackend(
+    self: *Self,
+    data: []const u8,
+    cancellation: ?backend_types.CancellationToken,
+) !backend_types.WriteResult {
+    self.backend_handoff_mutex.lock();
+    defer self.backend_handoff_mutex.unlock();
+
+    return if (self.backend) |*backend|
+        backend.write(data, cancellation)
+    else
+        error.ProcessExited;
+}
+
+fn checkEmacsQuit(context: *const anyopaque) !void {
+    const env: *const emacs.Env = @ptrCast(@alignCast(context));
+    try env.checkQuit();
 }
 
 pub fn resizePty(self: *Self, cols: u16, rows: u16) !void {
-    self.backend_mutex.lock();
-    defer self.backend_mutex.unlock();
+    self.backend_handoff_mutex.lock();
+    defer self.backend_handoff_mutex.unlock();
 
     if (self.backend) |*backend| try backend.resize(cols, rows);
 }
 
 pub fn isBackendAlive(self: *Self) bool {
-    self.backend_mutex.lock();
-    defer self.backend_mutex.unlock();
+    self.backend_handoff_mutex.lock();
+    defer self.backend_handoff_mutex.unlock();
 
     return self.backend != null;
 }
 
 pub fn effect(self: *Self, comptime func: []const u8, args: anytype) void {
     self.effectFallible(func, args) catch |err| {
-        log.err("Failed to write to event pipe: {s}", .{@errorName(err)});
+        log.err("ghostel: Failed to write to event pipe: {s}", .{@errorName(err)});
     };
 }
 
@@ -173,13 +236,15 @@ fn run(self: *Self) void {
     self.loop() catch |err| {
         log.warn("ghostel: error in read loop: {any}", .{err});
     };
-    const backend = blk: {
-        self.backend_mutex.lock();
-        defer self.backend_mutex.unlock();
 
-        const backend = self.backend orelse return;
-        self.backend = null;
-        break :blk backend;
+    var backend = self.retireBackend() orelse return;
+
+    var final_stream = LockedStream{ .process = self };
+    backend.finishDrain(&final_stream) catch |err| {
+        log.warn("ghostel: error finishing read loop: {any}", .{err});
+    };
+    self.notifyVtUpdate() catch |err| {
+        log.warn("ghostel: error notifying final terminal update: {any}", .{err});
     };
 
     // The reader thread must not waitpid here: it may be joined from Emacs
@@ -192,7 +257,8 @@ fn run(self: *Self) void {
         reapChild,
         .{ backend, self.event_writer },
     ) catch |err| {
-        log.err("Failed to spawn reaper thread: {any}", .{err});
+        log.err("Failed to spawn reaper thread; reaping synchronously: {any}", .{err});
+        reapChild(backend, self.event_writer);
         return;
     };
     reaper_thread.detach();
@@ -205,10 +271,25 @@ fn loop(self: *Self) !void {
 fn loopOnce(self: *Self) !bool {
     if (@atomicLoad(bool, &self.quit, .monotonic)) return false;
 
-    var stream = LockedStream{ .process = self };
-    const eof = try self.backend.?.drain(&stream);
-    if (stream.drained) try self.notifyVtUpdate();
-    return !eof;
+    // The reader thread exclusively owns backend retirement, so self.backend is
+    // stable here without the handoff mutex.
+    if (self.backend) |*backend| {
+        var stream = LockedStream{ .process = self };
+        const keep_going = try backend.drain(&stream);
+        try self.notifyVtUpdate();
+        return keep_going;
+    }
+
+    return false;
+}
+
+fn retireBackend(self: *Self) ?Backend {
+    self.backend_handoff_mutex.lock();
+    defer self.backend_handoff_mutex.unlock();
+
+    const backend = self.backend orelse return null;
+    self.backend = null;
+    return backend;
 }
 
 fn notifyVtUpdate(self: *Self) !void {
@@ -237,9 +318,9 @@ fn flushEvents(self: *Self) !void {
 }
 
 fn reapChild(backend: Backend, event_writer: EventWriter) void {
-    var proc = backend;
+    var be = backend;
     var writer = event_writer;
-    const exit_code = proc.deinitAndWait();
+    const exit_code = be.deinitAndWait();
 
     // A bare number is not a terminal callback; the Elisp event filter treats
     // it as the child's exit status and deletes the pipe process to run its
@@ -255,11 +336,13 @@ fn reapChild(backend: Backend, event_writer: EventWriter) void {
 
 pub fn deinit(self: *Self) void {
     @atomicStore(bool, &self.quit, true, .monotonic);
-    self.backend_mutex.lock();
-    if (self.backend) |*backend| {
-        backend.requestStop(self.thread);
+
+    {
+        self.backend_handoff_mutex.lock();
+        defer self.backend_handoff_mutex.unlock();
+        if (self.backend) |*backend| backend.requestStop(self.thread);
     }
-    self.backend_mutex.unlock();
+
     self.thread.join();
 
     self.stream.deinit();

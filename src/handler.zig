@@ -62,7 +62,7 @@ pub fn GhostelHandler(Context: type) type {
         fn writePtyCallback(handler: *gt.TerminalStream.Handler, data: [:0]const u8) void {
             const self: *Self = @fieldParentPtr("inner", handler);
             if (data.len == 0) return;
-            self.context.ptyWrite(data) catch {};
+            self.context.ptyWriteFromTerminal(data);
         }
 
         /// Called when the terminal receives BEL.

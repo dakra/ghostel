@@ -64,6 +64,26 @@ function and should call it under any dynamic bindings needed by the test."
         (when (process-live-p pipe)
           (delete-process pipe))))))
 
+(ert-deftest ghostel-test-native-process-exit-hook-kills-children ()
+  "Emacs exit signals every live native child with SIGKILL."
+  (let (signals)
+    (cl-letf (((symbol-function 'process-list)
+               (lambda () '(pipe-a unrelated pipe-b dead-pipe)))
+              ((symbol-function 'process-live-p)
+               (lambda (process) (not (eq process 'dead-pipe))))
+              ((symbol-function 'process-get)
+               (lambda (process property)
+                 (and (eq property 'ghostel--native-pid)
+                      (pcase process
+                        ('pipe-a 101)
+                        ('pipe-b 202)
+                        ('dead-pipe 303)))))
+              ((symbol-function 'signal-process)
+               (lambda (pid signal)
+                 (push (list pid signal) signals))))
+      (ghostel--kill-native-processes-on-exit)
+      (should (equal (nreverse signals) '((101 9) (202 9)))))))
+
 (ert-deftest ghostel-test-events-filter-multiple-events-per-chunk ()
   "Native process event filter evaluates multiple events in one chunk."
   (ghostel-test-native-process--with-events-filter

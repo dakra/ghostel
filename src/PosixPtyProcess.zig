@@ -2,6 +2,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const posix = std.posix;
 
+const backend_types = @import("backend_types.zig");
+
 const c = @cImport({
     @cDefine("_GNU_SOURCE", {});
     @cInclude("stdlib.h");
@@ -13,6 +15,7 @@ const c = @cImport({
 });
 
 const Self = @This();
+const WRITE_CHUNK_SIZE = 4096;
 
 const Pty = struct {
     primary_fd: c_int = -1,
@@ -80,30 +83,6 @@ const Pty = struct {
         }
     }
 
-    pub fn write(self: *@This(), data: []const u8) !void {
-        var offset: usize = 0;
-        while (offset < data.len) {
-            offset += posix.write(self.primary_fd, data[offset..data.len]) catch |err| switch (err) {
-                // If the master fd is non-blocking, a write that would fill the
-                // replica's input buffer fails with WouldBlock; wait for the
-                // replica to drain rather than dropping the tail of a large
-                // write (e.g. a big paste to a child that reads slowly). Under
-                // a blocking fd this branch never fires and the loop is an
-                // ordinary blocking write, so write() works in either mode.
-                error.WouldBlock => {
-                    var pollfds = [_]posix.pollfd{.{
-                        .fd = self.primary_fd,
-                        .events = posix.POLL.OUT,
-                        .revents = undefined,
-                    }};
-                    _ = try posix.poll(&pollfds, -1);
-                    continue;
-                },
-                else => return err,
-            };
-        }
-    }
-
     pub fn closePrimary(self: *@This()) void {
         if (self.primary_fd != -1) {
             posix.close(self.primary_fd);
@@ -139,8 +118,6 @@ const Pty = struct {
 pty: Pty,
 pid: posix.pid_t = -1,
 wake_pipe: [2]posix.fd_t = .{ -1, -1 },
-
-pub const ProcessParams = @import("ProcessParams.zig");
 
 pub const EventWriter = struct {
     pub const Fd = posix.fd_t;
@@ -192,7 +169,7 @@ pub const EventWriter = struct {
     }
 };
 
-pub fn init(alloc: Allocator, initial_cols: u16, initial_rows: u16, params: ProcessParams) !Self {
+pub fn init(alloc: Allocator, initial_cols: u16, initial_rows: u16, params: backend_types.ProcessParams) !Self {
     var self = Self{ .pty = try .init() };
     errdefer self.pty.deinit();
     try self.pty.resize(initial_cols, initial_rows);
@@ -252,8 +229,46 @@ pub fn resize(self: *Self, cols: u16, rows: u16) !void {
     try self.pty.resize(cols, rows);
 }
 
-pub fn write(self: *Self, data: []const u8) !void {
-    try self.pty.write(data);
+pub fn write(
+    self: *Self,
+    data: []const u8,
+    cancellation: ?backend_types.CancellationToken,
+) !backend_types.WriteResult {
+    if (data.len == 0) return .{ .written = 0 };
+
+    const chunk = data[0..@min(data.len, WRITE_CHUNK_SIZE)];
+    while (true) {
+        const written = posix.write(self.pty.primary_fd, chunk) catch |err| switch (err) {
+            error.WouldBlock => {
+                var pollfds = [_]posix.pollfd{
+                    .{
+                        .fd = self.pty.primary_fd,
+                        .events = posix.POLL.OUT,
+                        .revents = undefined,
+                    },
+                    .{
+                        .fd = self.wake_pipe[0],
+                        .events = posix.POLL.IN,
+                        .revents = undefined,
+                    },
+                };
+                const timeout: i32 = if (cancellation) |token|
+                    @intCast(@min(token.poll_interval_ms, @as(u32, @intCast(std.math.maxInt(i32)))))
+                else
+                    -1;
+                const ready = try posix.poll(&pollfds, timeout);
+                if (ready == 0) {
+                    try cancellation.?.check();
+                    continue;
+                }
+                if (pollfds[1].revents != 0) return .interrupted;
+                continue;
+            },
+            else => return err,
+        };
+        if (written == 0) return error.IoFailed;
+        return .{ .written = written };
+    }
 }
 
 pub fn drain(self: *Self, stream: anytype) !bool {
@@ -274,15 +289,19 @@ pub fn drain(self: *Self, stream: anytype) !bool {
     _ = try posix.poll(&pollfds, -1);
     if (pollfds[1].revents != 0) return false;
 
-    const len = posix.read(self.pty.primary_fd, buf[0..]) catch |err| switch (err) {
-        error.WouldBlock => return false,
-        error.NotOpenForReading, error.InputOutput => return true,
-        else => return err,
-    };
-    if (len == 0) return true;
-    stream.nextSlice(buf[0..len]);
-    return false;
+    const eof = pollfds[0].revents & posix.POLL.HUP != 0;
+    while (true) {
+        const len = posix.read(self.pty.primary_fd, buf[0..]) catch |err| switch (err) {
+            error.WouldBlock => return !eof,
+            error.NotOpenForReading, error.InputOutput => return false,
+            else => return err,
+        };
+        if (len == 0) return !eof;
+        stream.nextSlice(buf[0..len]);
+    }
 }
+
+pub fn finishDrain(_: *Self, _: anytype) !void {}
 
 pub fn requestStop(self: *Self, _: std.Thread) void {
     if (self.wake_pipe[1] != -1) {
@@ -295,6 +314,7 @@ pub fn replicaName(self: *Self) []const u8 {
 }
 
 pub fn deinitAndWait(self: *Self) u8 {
+    std.debug.assert(self.pid > 0);
     self.pty.deinit();
     posix.close(self.wake_pipe[0]);
     posix.close(self.wake_pipe[1]);

@@ -4378,6 +4378,7 @@ writes a final exit status before closing it."
                 :noquery t))
          (pid (ghostel--spawn-native-process ghostel--term command pipe)))
     (setq ghostel--pid pid)
+    (process-put pipe 'ghostel--native-pid pid)
 
     (set-process-sentinel pipe
                           (lambda (process event)
@@ -4385,10 +4386,21 @@ writes a final exit status before closing it."
                             ;; If Emacs deletes it before normal exit, make sure
                             ;; the child is not left running.  After normal exit
                             ;; the reaper has already waited, so this is a no-op.
-                            (signal-process pid 9)
+                            (signal-process
+                             (process-get process 'ghostel--native-pid) 9)
                             (ghostel--sentinel process event)))
     (add-hook 'kill-buffer-hook #'ghostel--kill-native-process-hook nil t)
     pipe))
+
+(defun ghostel--kill-native-processes-on-exit ()
+  "Force native children to exit before Emacs disables process sentinels."
+  (dolist (process (process-list))
+    (let ((pid (and (process-live-p process)
+                    (process-get process 'ghostel--native-pid))))
+      (when pid
+        (ignore-errors (signal-process pid 9))))))
+
+(add-hook 'kill-emacs-hook #'ghostel--kill-native-processes-on-exit)
 
 (defun ghostel--kill-native-process-hook ()
   "Detach the native event pipe and request child termination.
