@@ -28,13 +28,28 @@ elisp-string-list = $(foreach f,$(1),\"$(f)\")
 # file so the per-test stamp rules depend on its mtime instead of on the
 # phony `build' target — that way the Zig sources, not the act of asking
 # for `build', decide whether tests need to re-run.
-UNAME := $(shell uname)
-ifeq ($(UNAME),Darwin)
+UNAME := $(shell uname 2>/dev/null)
+ifeq ($(OS),Windows_NT)
+  MODULE := ghostel-module.dll
+  # Use MinGW rather than Zig's MSVC-flavoured native Windows target so local
+  # builds match release artifacts and do not require a Windows SDK.  The DLL
+  # architecture must match Emacs, not necessarily the OS (e.g. x64 Emacs under
+  # ARM64 Windows emulation).
+  ifndef ZIG_WINDOWS_TARGET
+    WINDOWS_EMACS_ARCH := $(shell $(EMACS) --batch -Q --eval "(princ (car (split-string system-configuration \"-\")))" 2>/dev/null)
+    WINDOWS_ZIG_ARCH := x86_64
+    ifneq ($(filter arm64 aarch64,$(WINDOWS_EMACS_ARCH)),)
+      WINDOWS_ZIG_ARCH := aarch64
+    endif
+    ZIG_WINDOWS_TARGET := $(WINDOWS_ZIG_ARCH)-windows-gnu
+  endif
+  ZIG_TARGET_FLAG ?= -Dtarget=$(ZIG_WINDOWS_TARGET)
+else ifeq ($(UNAME),Darwin)
   MODULE := ghostel-module.dylib
 else
   MODULE := ghostel-module.so
 endif
-ZIG_BUILD_FLAGS := --prefix . -Doptimize=ReleaseFast -Dcpu=baseline
+ZIG_BUILD_FLAGS := --prefix . -Doptimize=ReleaseFast -Dcpu=baseline $(ZIG_TARGET_FLAG)
 ZIG_SOURCES := $(wildcard src/*.zig src/*.c build.zig build.zig.zon symbols.map) \
                $(wildcard vendor/*.h)
 
@@ -51,7 +66,7 @@ $(MODULE): $(ZIG_SOURCES)
 	zig build $(ZIG_BUILD_FLAGS)
 
 test-zig:
-	zig build test
+	zig build $(ZIG_TARGET_FLAG) test
 
 test-hypothesis: build
 	$(PYTHON) -m unittest test/hypothesis/test_render.py
@@ -84,6 +99,7 @@ TEST_BASES        := $(notdir $(basename $(TEST_FILES)))
 TEST_STAMPS_DIR   := .build/tests
 TEST_ELISP_STAMPS  := $(patsubst %,$(TEST_STAMPS_DIR)/elisp-%.ok,$(TEST_BASES))
 TEST_NATIVE_STAMPS := $(patsubst %,$(TEST_STAMPS_DIR)/native-%.ok,$(TEST_BASES))
+TEST_FIXTURES      := $(wildcard test/fixtures/*.py)
 
 test: $(TEST_ELISP_STAMPS)
 
@@ -98,14 +114,14 @@ $(TEST_STAMPS_DIR)/elisp-%.ok: test/%.el test/ghostel-test-helpers.el $(ELC) | $
 	@printf '  ELISP   %s\n' $*
 	@$(EMACS) --batch $(EMACSFLAGS) -Q -L lisp -L test \
 		-l ert -l test/ghostel-test-helpers.el -l $< \
-		--eval "(ert-run-tests-batch-and-exit '(not (tag native)))"
+		-f ghostel-test-run-elisp
 	@touch $@
 
-$(TEST_STAMPS_DIR)/native-%.ok: test/%.el test/ghostel-test-helpers.el $(ELC) $(MODULE) | $(TEST_STAMPS_DIR)
+$(TEST_STAMPS_DIR)/native-%.ok: test/%.el test/ghostel-test-helpers.el $(TEST_FIXTURES) $(ELC) $(MODULE) | $(TEST_STAMPS_DIR)
 	@printf '  NATIVE  %s\n' $*
 	@$(EMACS) --batch $(EMACSFLAGS) -Q -L lisp -L test \
 		-l ert -l test/ghostel-test-helpers.el -l $< \
-		--eval "(ert-run-tests-batch-and-exit '(tag native))"
+		-f ghostel-test-run-native
 	@touch $@
 
 test-all: test test-zig test-native
@@ -244,7 +260,7 @@ public/index.html: README.org $(DOC_DEPS_STAMP)
 		          (org-export-to-file 'html \"public/index.html\"))"
 
 clean:
-	rm -f ghostel-module.dylib ghostel-module.so ghostel-module.version
+	rm -f ghostel-module.dylib ghostel-module.so ghostel-module.dll ghostel-module.version
 	rm -f $(ELC)
 	rm -rf zig-out .zig-cache .build public
 
