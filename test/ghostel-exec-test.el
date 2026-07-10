@@ -127,32 +127,31 @@ is nil, SIGHUP is ignored."
   (when (ghostel-test-exec--pid-live-p pid)
     (ignore-errors (signal-process pid 'KILL))))
 
-(ert-deftest ghostel-test-exec-cat-roundtrip ()
+(ert-deftest ghostel-test-exec-pty-roundtrip ()
   "Bytes written to a `ghostel-exec' PTY reach the child."
   :tags '(native)
-  (skip-unless (file-executable-p "/bin/cat"))
   (ghostel-test--with-pty-matrix backend
-    (ghostel-test--with-exec-buffer (buf proc "/bin/cat")
-      (ghostel--write-pty ghostel--term "GHOSTEL_CAT_OK\r")
-      (ghostel-test--wait-for-text "GHOSTEL_CAT_OK" proc 5))))
+    (ghostel-test--with-raw-echo-buffer (buf proc)
+      (ghostel--write-pty ghostel--term "GHOSTEL_ECHO_OK")
+      (ghostel-test--wait-for-text "GHOSTEL_ECHO_OK" proc 5))))
 
 (ert-deftest ghostel-test-exec-keeps-final-output-after-exit ()
   "Final `ghostel-exec' output remains readable after process exit."
   :tags '(native)
-  (skip-unless (file-executable-p "/bin/sh"))
-  (ghostel-test--with-pty-matrix backend
-    (ghostel-test--with-exec-buffer
-        (buf proc "/bin/sh" '("-c" "printf GHOSTEL_FINAL_OUTPUT"))
-      (ghostel-test--wait-for-text "GHOSTEL_FINAL_OUTPUT" nil 5)
-      (ghostel-test--wait-until
-       (lambda () (not (process-live-p proc))) nil 5)
-      (should (buffer-live-p buf))
-      (should (string-match-p "GHOSTEL_FINAL_OUTPUT"
-                              (ghostel-test--terminal-text))))))
+  (pcase-let ((`(,program . ,args)
+               (ghostel-test--shell-command "echo GHOSTEL_FINAL_OUTPUT")))
+    (ghostel-test--with-pty-matrix backend
+      (ghostel-test--with-exec-buffer (buf proc program args)
+        (ghostel-test--wait-for-text "GHOSTEL_FINAL_OUTPUT" nil 5)
+        (ghostel-test--wait-until
+         (lambda () (not (process-live-p proc))) nil 5)
+        (should (buffer-live-p buf))
+        (should (string-match-p "GHOSTEL_FINAL_OUTPUT"
+                                (ghostel-test--terminal-text)))))))
 
 (ert-deftest ghostel-test-exec-kill-buffer-sends-sighup ()
   "Killing a `ghostel-exec' buffer sends SIGHUP to the child."
-  :tags '(native)
+  :tags '(native posix)
   (skip-unless (file-executable-p "/bin/sh"))
   (ghostel-test--with-pty-matrix backend
     (let* ((dir (make-temp-file (expand-file-name "ghostel-life-" default-directory) t))
@@ -181,7 +180,7 @@ is nil, SIGHUP is ignored."
 
 (ert-deftest ghostel-test-exec-kill-buffer-leaves-sighup-ignoring-child-live ()
   "A child that ignores SIGHUP keeps the lifecycle process alive after buffer kill."
-  :tags '(native)
+  :tags '(native posix)
   (skip-unless (file-executable-p "/bin/sh"))
   (ghostel-test--with-pty-matrix backend
     (let* ((dir (make-temp-file (expand-file-name "ghostel-life-" default-directory) t))
@@ -215,7 +214,7 @@ is nil, SIGHUP is ignored."
 
 (ert-deftest ghostel-test-exec-child-kill-runs-exit-lifecycle ()
   "Killing the child process runs the normal Ghostel exit lifecycle."
-  :tags '(native)
+  :tags '(native posix)
   (skip-unless (file-executable-p "/bin/sh"))
   (ghostel-test--with-pty-matrix backend
     (let* ((dir (make-temp-file (expand-file-name "ghostel-life-" default-directory) t))
@@ -247,7 +246,7 @@ is nil, SIGHUP is ignored."
 
 (ert-deftest ghostel-test-exec-delete-process-kills-sighup-ignoring-child ()
   "Deleting the lifecycle process kills the child even when it ignores SIGHUP."
-  :tags '(native)
+  :tags '(native posix)
   (skip-unless (file-executable-p "/bin/sh"))
   (ghostel-test--with-pty-matrix backend
     (let* ((dir (make-temp-file (expand-file-name "ghostel-life-" default-directory) t))

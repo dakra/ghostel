@@ -135,7 +135,7 @@ SETUP, when non-nil, is called before sending the key."
 
 (ert-deftest ghostel-test-encode-key-kitty-backspace ()
   "Test that backspace is correctly encoded when kitty keyboard mode is active."
-  :tags '(native)
+  :tags '(native posix)
   (ghostel-test--with-pty-matrix backend
     ;; Activate kitty keyboard protocol (flags=5: disambiguate +
     ;; report-alternates) on the terminal model, then encode backspace —
@@ -147,7 +147,7 @@ SETUP, when non-nil, is called before sending the key."
 
 (ert-deftest ghostel-test-encode-key-legacy-backspace ()
   "Test that backspace is correctly encoded in legacy mode (no kitty)."
-  :tags '(native)
+  :tags '(native posix)
   (ghostel-test--with-pty-matrix backend
     (should (equal "7f" (ghostel-test--send-key-and-read-hex "backspace" "" 1)))))
 
@@ -258,7 +258,7 @@ SETUP, when non-nil, is called before sending the paste."
 
 (ert-deftest ghostel-test-encode-paste-bracketed ()
   "Bracketed-paste mode wraps pasted data via libghostty's paste encoder."
-  :tags '(native)
+  :tags '(native posix)
   (ghostel-test--with-pty-matrix backend
     (let ((expected (ghostel-test--hex-encode-string "\e[200~hello\e[201~")))
       (should (equal expected
@@ -268,7 +268,7 @@ SETUP, when non-nil, is called before sending the paste."
 
 (ert-deftest ghostel-test-encode-paste-unbracketed-newline ()
   "Without bracketed-paste mode, libghostty normalizes paste newlines to CR."
-  :tags '(native)
+  :tags '(native posix)
   (ghostel-test--with-pty-matrix backend
     (let ((expected (ghostel-test--hex-encode-string "hello\rworld")))
       (should (equal expected
@@ -276,7 +276,7 @@ SETUP, when non-nil, is called before sending the paste."
 
 (ert-deftest ghostel-test-encode-paste-strips-unsafe-bytes ()
   "Libghostty replaces unsafe paste control bytes with spaces."
-  :tags '(native)
+  :tags '(native posix)
   (ghostel-test--with-pty-matrix backend
     (let ((expected (ghostel-test--hex-encode-string "a b")))
       (should (equal expected
@@ -525,7 +525,7 @@ Only keys that the ghostty encoder maps to a terminal byte are forwarded."
   "Control-Meta letter chords encode to ESC + control byte in legacy mode.
 Regression test for issue #239: these byte sequences match readline
 `.inputrc' rules of the form \"\\e\\<C-letter>\"."
-  :tags '(native)
+  :tags '(native posix)
   (ghostel-test--with-pty-matrix backend
     (pcase-dolist (`(,name ,expected) '(("f" "1b06") ("v" "1b16")))
       (should (equal expected
@@ -536,7 +536,7 @@ Regression test for issue #239: these byte sequences match readline
 C-] is the headline case (-> 0x1d); C-/ -> 0x1f.  Control-Meta prepends
 ESC, matching the bytes eat sends.  (Only the punctuation the ghostty
 encoder recognizes is forwarded; see `ghostel--define-terminal-keys'.)"
-  :tags '(native)
+  :tags '(native posix)
   (ghostel-test--with-pty-matrix backend
     (pcase-dolist (`(,name ,mods ,count ,expected)
                    '(("]" "ctrl" 1 "1d")

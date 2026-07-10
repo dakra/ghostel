@@ -260,15 +260,17 @@ E.g. `compilation-mode' error loci in `ghostel-compile-view-mode'."
       (ghostel--detect-urls))
     (should (equal "https://example.com/path"              ; url strips trailing dot
                    (get-text-property 5 'help-echo))))
-  ;; File:line detection with absolute path
-  (let ((test-file (locate-library "ghostel")))
+  ;; File:line detection with an existing relative path.
+  (let* ((test-file (locate-library "ghostel"))
+         (display-file (concat "./" (file-name-nondirectory test-file))))
     (with-temp-buffer
-      (insert (format "Error at %s:42 bad\n" test-file))
-      (let ((ghostel-enable-url-detection t))
-        (ghostel--detect-urls))
-      (let ((he (get-text-property 10 'help-echo)))
-        (should (and he (string-prefix-p "fileref:" he)))  ; file:line help-echo set
-        (should (and he (string-suffix-p ":42" he)))))     ; file:line contains line number
+      (let ((default-directory (file-name-directory test-file)))
+        (insert (format "Error at %s:42 bad\n" display-file))
+        (let ((ghostel-enable-url-detection t))
+          (ghostel--detect-urls))
+        (let ((he (get-text-property 10 'help-echo)))
+          (should (and he (string-prefix-p "fileref:" he))) ; file:line help-echo set
+          (should (and he (string-suffix-p ":42" he))))))   ; file:line contains line number
     ;; File:line for non-existent file produces no link
     (with-temp-buffer
       (insert "Error at /no/such/file.el:10 bad\n")
@@ -277,11 +279,12 @@ E.g. `compilation-mode' error loci in `ghostel-compile-view-mode'."
       (should (null (get-text-property 10 'help-echo))))   ; nonexistent file: no help-echo
     ;; File detection disabled
     (with-temp-buffer
-      (insert (format "Error at %s:42 bad\n" test-file))
-      (let ((ghostel-enable-url-detection t)
-            (ghostel-enable-file-detection nil))
-        (ghostel--detect-urls))
-      (should (null (get-text-property 10 'help-echo))))   ; file detection disabled
+      (let ((default-directory (file-name-directory test-file)))
+        (insert (format "Error at %s:42 bad\n" display-file))
+        (let ((ghostel-enable-url-detection t)
+              (ghostel-enable-file-detection nil))
+          (ghostel--detect-urls))
+        (should (null (get-text-property 10 'help-echo))))) ; file detection disabled
     ;; ghostel--open-link dispatches fileref:
     (let ((opened nil))
       (cl-letf (((symbol-function 'find-file-other-window)
@@ -423,27 +426,28 @@ E.g. `compilation-mode' error loci in `ghostel-compile-view-mode'."
 - Other lines (historical typed commands, output): linkified, so users
   can follow paths in past commands and program output."
   :tags '(native)
-  (let ((test-file (locate-library "ghostel")))
+  (let* ((test-file (locate-library "ghostel"))
+         (display-file (concat "./" (file-name-nondirectory test-file))))
     ;; History line → both file ref and URL linkified.  Active line
     ;; (cursor's line) → both skipped, regardless of whether the cells
     ;; carry `ghostel-input' or not.
     (with-temp-buffer
       (let ((default-directory (file-name-directory test-file)))
-        (insert (format "$ ls %s https://hist.example\n" test-file)) ; line 1: history
-        (insert (format "$ cat %s https://live.example" test-file))  ; line 2: active
+        (insert (format "$ ls %s https://hist.example\n" display-file)) ; line 1: history
+        (insert (format "$ cat %s https://live.example" display-file))  ; line 2: active
         (put-text-property (point-min) (point-max) 'ghostel-input t)
         (goto-char (point-max))                                       ; cursor on line 2
         (let ((ghostel-enable-url-detection t)
               (ghostel-enable-file-detection t))
           (ghostel--detect-urls))
         (goto-char (point-min))
-        (search-forward test-file nil t)
+        (search-forward display-file nil t)
         (let ((he (get-text-property (match-beginning 0) 'help-echo)))
           (should (and he (string-prefix-p "fileref:" he)))) ; history file → linked
         (search-forward "https://hist.example")
         (should (equal "https://hist.example"
                        (get-text-property (match-beginning 0) 'help-echo))) ; history URL → linked
-        (search-forward test-file nil t)
+        (search-forward display-file nil t)
         (should (null (get-text-property (match-beginning 0) 'help-echo))) ; active file → skipped
         (search-forward "https://live.example")
         (should (null (get-text-property (match-beginning 0) 'help-echo))))) ; active URL → skipped
@@ -484,9 +488,9 @@ E.g. `compilation-mode' error loci in `ghostel-compile-view-mode'."
     ;; cwd display; output below is plain text and stays linkifiable.
     (with-temp-buffer
       (let ((default-directory (file-name-directory test-file)))
-        (insert (format "%s λ ls\n" test-file))           ; line 1: prompt prefix
-        (insert (format "%s\n" test-file))                ; line 2: output
-        (insert (format "%s λ " test-file))               ; line 3: live prompt
+        (insert (format "%s λ ls\n" display-file))        ; line 1: prompt prefix
+        (insert (format "%s\n" display-file))             ; line 2: output
+        (insert (format "%s λ " display-file))            ; line 3: live prompt
         ;; Prompt rows carry `ghostel-prompt' on the prefix; output does not.
         (save-excursion
           (goto-char (point-min))
@@ -499,11 +503,11 @@ E.g. `compilation-mode' error loci in `ghostel-compile-view-mode'."
               (ghostel-enable-file-detection t))
           (ghostel--detect-urls))
         (goto-char (point-min))
-        (search-forward test-file nil t)                  ; line 1: prompt prefix
+        (search-forward display-file nil t)               ; line 1: prompt prefix
         (should (null (get-text-property (match-beginning 0) 'help-echo)))
-        (search-forward test-file nil t)                  ; line 2: output
+        (search-forward display-file nil t)               ; line 2: output
         (should (get-text-property (match-beginning 0) 'help-echo))
-        (search-forward test-file nil t)                  ; line 3: live prompt prefix
+        (search-forward display-file nil t)               ; line 3: live prompt prefix
         (should (null (get-text-property (match-beginning 0) 'help-echo)))))))
 
 (ert-deftest ghostel-test-delayed-redraw-defers-plain-link-detection ()

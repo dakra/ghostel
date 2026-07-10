@@ -19,8 +19,8 @@ Returns the buffer."
       (ghostel-mode)
       (setq ghostel--term (vector 'fake-term))
       (setq ghostel--process
-            (start-process (concat "ghostel-test-focus-" name)
-                           nil "cat"))
+            (ghostel-test--dummy-process
+             (concat "ghostel-test-focus-" name) nil))
       (set-process-query-on-exit-flag ghostel--process nil))
     buf))
 
@@ -1693,7 +1693,7 @@ Emacs's regular `yank' so paste lands in the input region."
          (kill-ring-yank-pointer kill-ring)
          (ghostel--yank-index 0)
          (last-command 'ghostel-yank)
-         (ghostel--process (start-process "true" nil "true")))
+         (ghostel--process 'fake-process))
     (cl-letf (((symbol-function 'ghostel--paste-text)
                (lambda (text) (push text pasted)))
               ((symbol-function 'process-live-p) (lambda (_) t))
@@ -1846,6 +1846,7 @@ The paste is still forwarded to the terminal (matching `ghostel-yank')."
         (exit-called nil)
         (kill-ring '("payload"))
         (kill-ring-yank-pointer nil)
+        (interprogram-paste-function nil)
         (ghostel--input-mode 'copy)
         (ghostel-readonly-fast-exit t))
     (cl-letf (((symbol-function 'ghostel--paste-text)
@@ -1862,6 +1863,7 @@ The paste is still forwarded to the terminal (matching `ghostel-yank')."
         (exit-called nil)
         (kill-ring '("payload"))
         (kill-ring-yank-pointer nil)
+        (interprogram-paste-function nil)
         (ghostel--input-mode 'emacs)
         (ghostel-readonly-fast-exit t))
     (cl-letf (((symbol-function 'ghostel--paste-text)
@@ -1878,6 +1880,7 @@ The paste is still forwarded to the terminal (matching `ghostel-yank')."
         (exit-called nil)
         (kill-ring '("payload"))
         (kill-ring-yank-pointer nil)
+        (interprogram-paste-function nil)
         (ghostel--input-mode 'copy)
         (ghostel-readonly-fast-exit nil))
     (cl-letf (((symbol-function 'ghostel--paste-text)

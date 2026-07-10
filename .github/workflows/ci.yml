@@ -60,7 +60,13 @@ jobs:
         run: make package-lint checkdoc docquotes
 
   test-zig:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -185,13 +191,24 @@ jobs:
           version: 0.15.2
           cache-key: ${{ matrix.platform }}-zig-0.15.2
 
+      - name: Download ConPTY runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://www.nuget.org/api/v2/package/Microsoft.Windows.Console.ConPTY/1.24.260512001 -OutFile conpty.zip
+          Expand-Archive -LiteralPath conpty.zip -DestinationPath conpty-package -Force
+
       - name: Build native module
         shell: bash
         run: |
+          conpty_args=()
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            conpty_args=(-Dwindows-conpty-package-dir=conpty-package)
+          fi
           if [ -n "${{ matrix.target }}" ]; then
-            zig build --prefix . -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast -Dcpu=baseline
+            zig build --prefix . -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast -Dcpu=baseline "${conpty_args[@]}"
           else
-            zig build --prefix . -Doptimize=ReleaseFast -Dcpu=baseline
+            zig build --prefix . -Doptimize=ReleaseFast -Dcpu=baseline "${conpty_args[@]}"
           fi
 
       - name: Upload module artifact
@@ -201,6 +218,9 @@ jobs:
           path: |
             ghostel-module${{ matrix.suffix }}
             ghostel-module.version
+            conpty.dll
+            x64/OpenConsole.exe
+            arm64/OpenConsole.exe
 
   test-native:
     needs: build-native
@@ -227,6 +247,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
       - uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ github.token }}
@@ -257,6 +280,36 @@ jobs:
 
       - name: Run native module tests
         run: |
+          make -j$(getconf _NPROCESSORS_ONLN) \
+            EMACSFLAGS="-L /tmp/compat" \
+            test-native
+
+  test-native-windows:
+    needs: build-native
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            make
+            mingw-w64-ucrt-x86_64-emacs
+            mingw-w64-ucrt-x86_64-python
+
+      - name: Download native module
+        uses: actions/download-artifact@v4
+        with:
+          name: ghostel-module-x86_64-windows
+
+      - name: Run Windows native module tests
+        shell: msys2 {0}
+        run: |
+          touch ghostel-module.dll
+          git clone --depth 1 https://github.com/emacs-compat/compat.git /tmp/compat
           make -j$(getconf _NPROCESSORS_ONLN) \
             EMACSFLAGS="-L /tmp/compat" \
             test-native

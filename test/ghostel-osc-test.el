@@ -13,7 +13,7 @@
   "Test OSC 52 clipboard handling."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       ;; With osc52 disabled, kill ring should not be modified.
       (let ((ghostel-enable-osc52 nil)
             (kill-ring nil))
@@ -49,7 +49,7 @@
   :tags '(native)
   (let ((ghostel-buffer-name-function #'ghostel-buffer-name-by-title))
     (ghostel-test--with-pty-matrix backend
-      (ghostel-test--with-raw-cat-buffer (buf proc)
+      (ghostel-test--with-raw-echo-buffer (buf proc)
         (let* ((title (format "Matrix Title %S" backend))
                (expected (format "*ghostel: %s*" title)))
           (ghostel--write-pty ghostel--term (format "\e]2;%s\e\\" title))
@@ -66,7 +66,7 @@
   :tags '(native)
   (ghostel-test--with-pty-matrix
       backend
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       (let* ((calls nil)
              (ghostel-notification-function
               (lambda (title body) (push (cons title body) calls))))
@@ -105,7 +105,7 @@ mode, prompt start).  Payloads that ghostty-vt rejects fall through
 to the notification path — see `ghostel-test-osc9-invalid-conemu-notifies'."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       (let (calls)
         (cl-letf (((symbol-function 'ghostel--handle-notification)
                    (lambda (title body) (push (cons title body) calls)))
@@ -145,7 +145,7 @@ the handler-based dispatch we trust ghostty's parser as the
 authority for OSC 9 disambiguation."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       (let (calls)
         (cl-letf (((symbol-function 'ghostel--handle-notification)
                    (lambda (title body) (push (cons title body) calls)))
@@ -171,7 +171,7 @@ ConEmu's CWD-reporting alias uses the same callback as OSC 7, so
 `ghostel--last-directory' records the reported path and no notification fires."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       (let (notifs)
         (cl-letf (((symbol-function 'ghostel--handle-notification)
                    (lambda (title body) (push (cons title body) notifs))))
@@ -185,7 +185,7 @@ ConEmu's CWD-reporting alias uses the same callback as OSC 7, so
   "OSC 9;4 progress reports reach `ghostel-progress-function'."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       (let* ((calls nil)
              (ghostel-progress-function
               (lambda (state progress) (push (list state progress) calls))))
@@ -235,7 +235,7 @@ ConEmu's CWD-reporting alias uses the same callback as OSC 7, so
   :tags '(native)
   (ghostel-test--with-pty-matrix
       backend
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       (let (calls)
         (cl-letf (((symbol-function 'ghostel--handle-notification)
                    (lambda (title body) (push (cons title body) calls))))
@@ -595,7 +595,7 @@ The parser dispatches the truncated OSC 7 payload and then starts OSC 52
 fresh."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       (let ((ghostel-enable-osc52 t)
             (kill-ring nil))
         (ghostel--write-pty ghostel--term "\e]7;PARTIAL\e]52;c;aGVsbG8=\a")
@@ -612,8 +612,7 @@ fresh."
 (ert-deftest ghostel-test-osc-color-query ()
   "Test that OSC 4/10/11/12 and Kitty OSC 21 color queries get responses."
   :tags '(native)
-  (let ((python (executable-find "python3")))
-    (skip-unless python)
+  (let ((python (ghostel-test--python)))
     ;; Each case pairs a payload written to the terminal with a CHECK on the
     ;; reply the terminal writes back to the child (reported as lowercase hex):
     ;;   (PAYLOAD :none)       no reply expected
@@ -674,11 +673,12 @@ fresh."
               "1b5d32313b666f726567726f756e643d7267623a61612f62622f63631b5c"))))
       (cl-labels ((run-probe (payloads)
                     (ghostel-test--with-exec-buffer
-                        (buf proc python
-                             (append (list "-c" ghostel-test--pty-reply-probe-script "0.15")
-                                     (mapcar #'ghostel-test--hex-encode-string payloads)))
-                      (cl-loop for i below (length payloads)
-                               collect (ghostel-test--wait-for-pty-reply i proc 6)))))
+                     (buf proc python
+                          (append (list "-c" ghostel-test--pty-reply-probe-script
+                                        (ghostel-test--fixture-directory) "0.15")
+                                  (mapcar #'ghostel-test--hex-encode-string payloads)))
+                     (cl-loop for i below (length payloads)
+                              collect (ghostel-test--wait-for-pty-reply i proc 6)))))
         (ghostel-test--with-pty-matrix backend
           (let ((replies (run-probe (mapcar #'car cases))))
             (cl-loop for (payload check arg) in cases
@@ -728,7 +728,7 @@ through the filter."
   "OSC 52 kind \='e\=' reaches `ghostel--osc52-eval'."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       (let* ((called-with nil)
              (ghostel-eval-cmds
               `(("test-fn" ,(lambda (&rest args) (setq called-with args))))))
@@ -740,7 +740,7 @@ through the filter."
   "OSC 52 dispatches on kind: \='e\=' to eval, others to clipboard."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       (let* ((eval-called nil)
              (ghostel-eval-cmds
               `(("k" ,(lambda (&rest _) (setq eval-called t)))))
@@ -764,7 +764,7 @@ elisp callback fires exactly when the terminator arrives in the second
 call.  The OSC 51 scanner this replaces could not handle this case."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       (let* ((called-with nil)
              (ghostel-eval-cmds
               `(("test-fn" ,(lambda (&rest args) (setq called-with args))))))
@@ -779,7 +779,7 @@ call.  The OSC 51 scanner this replaces could not handle this case."
   "A single PTY write containing both OSC 52;e and OSC 52;c dispatches both."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       (let* ((eval-payloads nil)
              (ghostel-eval-cmds
               `(("k" ,(lambda (&rest args) (push args eval-payloads)))))
@@ -797,7 +797,7 @@ call.  The OSC 51 scanner this replaces could not handle this case."
   "OSC 7 child output updates the buffer-local directory report."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       (should (equal nil ghostel--last-directory))
 
       (ghostel--write-pty ghostel--term "\e]7;file:///tmp/testdir\e\\")
@@ -816,7 +816,7 @@ call.  The OSC 51 scanner this replaces could not handle this case."
   "OSC 133 child output dispatches prompt markers."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       (let (markers)
         (cl-letf (((symbol-function 'ghostel--osc133-marker)
                    (lambda (type param) (push (cons type param) markers))))
@@ -877,7 +877,7 @@ call.  The OSC 51 scanner this replaces could not handle this case."
   "Deferred VT effects run in the buffer that produced the terminal output."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       (let ((other (generate-new-buffer " *ghostel-test-vt-effect-other*"))
             captured)
         (unwind-protect
@@ -919,7 +919,7 @@ call.  The OSC 51 scanner this replaces could not handle this case."
   "OSC 133 D child output fires `ghostel-command-finish-functions'."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       (let* ((calls nil)
              (ghostel-command-finish-functions
               (list (lambda (_buf exit) (push exit calls)))))

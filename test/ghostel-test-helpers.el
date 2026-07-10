@@ -5,7 +5,7 @@
 ;; Helpers shared across the per-topic test files (ghostel-*-test.el).
 ;; Also defines the batch runner functions used by the Makefile:
 ;; `ghostel-test-run-elisp' and `ghostel-test-run-native' select via the
-;; `native' ERT tag (set per-test in files that require the Zig module).
+;; `native' and `posix' ERT tags.
 
 ;;; Code:
 
@@ -111,6 +111,49 @@ run; only a genuinely slow startup (or a failing predicate) waits the
 extra time.  Override with the `GHOSTEL_TEST_TIMEOUT_SCALE'
 environment variable (must parse to a positive number).")
 
+(defun ghostel-test--windows-p ()
+  "Return non-nil when the tests are running on native Windows."
+  (eq system-type 'windows-nt))
+
+(defun ghostel-test--posix-p ()
+  "Return non-nil when the tests are running on a POSIX-like system."
+  (not (ghostel-test--windows-p)))
+
+(defun ghostel-test--temp-directory ()
+  "Return a writable local directory for spawned test processes."
+  (file-name-as-directory (expand-file-name temporary-file-directory)))
+
+(defun ghostel-test--shell-command (script)
+  "Return a command list that runs SCRIPT in the platform shell."
+  (if (ghostel-test--windows-p)
+      (list (or (getenv "COMSPEC") "cmd.exe") "/s" "/d" "/c" script)
+    (list "/bin/sh" "-c" script)))
+
+(defun ghostel-test--env-command ()
+  "Return a command list that prints the process environment."
+  (if (ghostel-test--windows-p)
+      (ghostel-test--shell-command "set")
+    (list (executable-find "env"))))
+
+(defun ghostel-test--env-done-command ()
+  "Return a shell command that prints the environment and a done marker."
+  (if (ghostel-test--windows-p)
+      (ghostel-test--shell-command "set & echo GHOSTEL_ENV_DONE")
+    '("/bin/sh" "-c" "env; printf GHOSTEL_ENV_DONE")))
+
+(defun ghostel-test--base-process-environment ()
+  "Return a small process environment suitable for native spawn tests."
+  (if (ghostel-test--windows-p)
+      (delq nil
+            (list (and (getenv "SystemRoot")
+                       (format "SystemRoot=%s" (getenv "SystemRoot")))
+                  (and (getenv "COMSPEC")
+                       (format "COMSPEC=%s" (getenv "COMSPEC")))
+                  (format "PATH=%s" (or (getenv "PATH") ""))
+                  (format "TEMP=%s" (or (getenv "TEMP")
+                                         (ghostel-test--temp-directory)))))
+    '("PATH=/usr/bin:/bin" "HOME=/tmp")))
+
 (defun ghostel-test--wait-for (proc pred &optional timeout)
   "Poll PROC until PRED returns non-nil, or TIMEOUT seconds (default 5).
 Signal an ERT failure if TIMEOUT is reached or PROC exits before PRED
@@ -131,11 +174,16 @@ succeeds.  TIMEOUT is scaled by `ghostel-test--timeout-scale'."
 
 (defmacro ghostel-test--with-pty-matrix (backend &rest body)
   "Run BODY once per local PTY backend.
-BACKEND is bound to `emacs-pty' and `native-pty' in turn.  The
-corresponding `ghostel-use-native-pty' value is let-bound around
-BODY, and failures include the backend name in ERT output."
+BACKEND is bound to `emacs-pty' and `native-pty' in turn on POSIX.
+On Windows, only `native-pty' is exercised because these tests target
+ConPTY and Emacs does not provide the POSIX PTY setup used by the
+`emacs-pty' branch.  The corresponding `ghostel-use-native-pty' value
+is let-bound around BODY, and failures include the backend name in ERT
+output."
   (declare (indent 1))
-  `(dolist (entry '((emacs-pty . nil) (native-pty . t)))
+  `(dolist (entry (if (ghostel-test--windows-p)
+                      '((native-pty . t))
+                    '((emacs-pty . nil) (native-pty . t))))
      (let ((,backend (car entry))
            (ghostel-use-native-pty (cdr entry)))
        (ert-info ((format "backend: %S" ,backend))
@@ -149,12 +197,16 @@ BUFFER defaults to the current buffer."
 
 (defun ghostel-test--cleanup-exec-buffer (buffer)
   "Best-effort cleanup for a ghostel exec BUFFER."
+  ;; Test cleanup is forceful: start child termination before releasing
+  ;; native state.
+  (when (buffer-live-p buffer)
+    (let ((process (buffer-local-value 'ghostel--process buffer)))
+      (when (and process (process-live-p process))
+        (ignore-errors (delete-process process)))))
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (when ghostel--term
         (ignore-errors (ghostel--kill-native-process ghostel--term)))
-      (when (process-live-p ghostel--process)
-        (ignore-errors (delete-process ghostel--process)))
       (when ghostel--redraw-timer
         (cancel-timer ghostel--redraw-timer)
         (setq ghostel--redraw-timer nil))
@@ -162,6 +214,10 @@ BUFFER defaults to the current buffer."
         (cancel-timer ghostel--plain-link-detection-timer)
         (setq ghostel--plain-link-detection-timer nil)))
     (kill-buffer buffer)))
+
+(defun ghostel-test--dummy-process (name buffer)
+  "Return a live pipe process named NAME attached to BUFFER."
+  (make-pipe-process :name name :buffer buffer :noquery t))
 
 (defmacro ghostel-test--with-exec-buffer (spec &rest body)
   "Run BODY in a fresh ghostel buffer running PROGRAM.
@@ -181,32 +237,73 @@ to the lifecycle process returned by `ghostel-exec'; see
              ,@body)
          (ghostel-test--cleanup-exec-buffer ,buffer)))))
 
-(defmacro ghostel-test--with-raw-cat-buffer (spec &rest body)
-  "Run BODY in a fresh ghostel buffer backed by a raw `/bin/cat'.
-SPEC is (BUFFER PROCESS).  The child PTY is switched to raw/no-echo
-before `cat' starts, so bytes written with `ghostel--write-pty' are
-round-tripped to ghostel as terminal output without line-discipline
-rewriting."
+(defvar ghostel-test--python-executable :unknown
+  "Cached Python 3 executable used by integration tests.")
+
+(defun ghostel-test--python ()
+  "Return a Python 3 executable, or skip the current test."
+  (when (eq ghostel-test--python-executable :unknown)
+    (setq ghostel-test--python-executable
+          (cl-find-if
+           (lambda (program)
+             (and program
+                  (eql 0 (call-process
+                          program nil nil nil "-c"
+                          "import sys; raise SystemExit(sys.version_info[0] != 3)"))))
+           (list (executable-find "python3")
+                 (executable-find "python")))))
+  (or ghostel-test--python-executable
+      (ert-skip "Python 3 is unavailable")))
+
+(defun ghostel-test--fixture-directory ()
+  "Return the absolute path of the test fixture directory."
+  (expand-file-name
+   "fixtures"
+   (file-name-directory (locate-library "ghostel-test-helpers"))))
+
+(defconst ghostel-test--raw-echo-script
+  (string-join
+   '("import os, sys"
+     "sys.path.insert(0, sys.argv[1])"
+     "from pty_setup import set_raw_stdio"
+     "set_raw_stdio()"
+     "stdin_fd = sys.stdin.fileno()"
+     "stdout_fd = sys.stdout.fileno()"
+     "def write_all(data):"
+     "    while data:"
+     "        data = data[os.write(stdout_fd, data):]"
+     "write_all(b'GHOSTEL_RAW_ECHO_READY')"
+     "while True:"
+     "    data = os.read(stdin_fd, 4096)"
+     "    if not data:"
+     "        break"
+     "    write_all(data)")
+   "\n")
+  "Python code that copies raw PTY input to output.")
+
+(defmacro ghostel-test--with-raw-echo-buffer (spec &rest body)
+  "Run BODY in a fresh ghostel buffer backed by a raw byte echo process.
+SPEC is (BUFFER PROCESS).  Bytes written with `ghostel--write-pty' are
+returned as terminal output without line-discipline rewriting."
   (declare (indent 1))
   (pcase-let ((`(,buffer ,process) spec))
-    `(progn
-       (skip-unless (and (file-executable-p "/bin/sh")
-                         (file-executable-p "/bin/cat")))
-       (let ((,buffer (generate-new-buffer " *ghostel-test-raw-cat*"))
-             (,process nil)
-             (ghostel-kill-buffer-on-exit nil))
-         (unwind-protect
-             (with-current-buffer ,buffer
-               (let ((ghostel-detect-password-prompts nil))
-                 (setq ,process
-                       (ghostel-exec
-                        ,buffer "/bin/sh"
-                        '("-c" "stty raw -echo; printf GHOSTEL_RAW_CAT_READY; exec /bin/cat"))))
-               (setq-local ghostel-detect-password-prompts nil)
-               (ghostel-test--wait-for-text "GHOSTEL_RAW_CAT_READY"
-                                            ,process 5)
-               ,@body)
-           (ghostel-test--cleanup-exec-buffer ,buffer))))))
+    `(let ((python (ghostel-test--python))
+           (,buffer (generate-new-buffer " *ghostel-test-raw-echo*"))
+           (,process nil)
+           (ghostel-kill-buffer-on-exit nil))
+       (unwind-protect
+           (with-current-buffer ,buffer
+             (let ((ghostel-detect-password-prompts nil))
+               (setq ,process
+                     (ghostel-exec
+                      ,buffer python
+                      (list "-u" "-c" ghostel-test--raw-echo-script
+                            (ghostel-test--fixture-directory)))))
+             (setq-local ghostel-detect-password-prompts nil)
+             (ghostel-test--wait-for-text "GHOSTEL_RAW_ECHO_READY"
+                                          ,process 5)
+             ,@body)
+         (ghostel-test--cleanup-exec-buffer ,buffer)))))
 
 (defun ghostel-test--hex-encode-string (string)
   "Return lowercase hex for STRING's raw bytes."
@@ -216,34 +313,49 @@ rewriting."
 
 (defconst ghostel-test--pty-reply-probe-script
   (string-join
-   '("import os, select, sys, tty, time"
-     "fd = sys.stdin.fileno()"
-     "if os.isatty(fd):"
-     "    tty.setraw(fd)"
-     "timeout = float(sys.argv[1])"
-     "payloads = sys.argv[2:]"
+   '("import os, queue, sys, threading, time"
+     "sys.path.insert(0, sys.argv[1])"
+     "from pty_setup import set_raw_stdio"
+     "set_raw_stdio()"
+     "stdin_fd = sys.stdin.fileno()"
+     "stdout_fd = sys.stdout.fileno()"
+     "timeout = float(sys.argv[2])"
+     "payloads = sys.argv[3:]"
+     "input_queue = queue.Queue()"
+     "def read_input():"
+     "    while True:"
+     "        chunk = os.read(stdin_fd, 4096)"
+     "        input_queue.put(chunk)"
+     "        if not chunk:"
+     "            return"
+     "def write_all(data):"
+     "    while data:"
+     "        data = data[os.write(stdout_fd, data):]"
+     "threading.Thread(target=read_input, daemon=True).start()"
      "for idx, payload_hex in enumerate(payloads):"
-     "    sys.stdout.buffer.write(bytes.fromhex(payload_hex))"
-     "    sys.stdout.buffer.flush()"
-     "    buf = b''"
-     "    deadline = time.time() + timeout"
-     "    while time.time() < deadline:"
-     "        readable, _, _ = select.select([fd], [], [], 0.02)"
-     "        if not readable:"
-     "            continue"
-     "        chunk = os.read(fd, 4096)"
+     "    write_all(bytes.fromhex(payload_hex))"
+     "    buf = bytearray()"
+     "    deadline = time.monotonic() + timeout"
+     "    while True:"
+     "        remaining = deadline - time.monotonic()"
+     "        if remaining <= 0:"
+     "            break"
+     "        try:"
+     "            chunk = input_queue.get(timeout=remaining)"
+     "        except queue.Empty:"
+     "            break"
      "        if not chunk:"
      "            break"
-     "        buf += chunk"
+     "        buf.extend(chunk)"
      "    marker = ('\\r\\nGHOSTEL_PTY_REPLY_%d_HEX:' % idx).encode('ascii')"
-     "    sys.stdout.buffer.write(marker + buf.hex().encode('ascii') + b'\\r\\n')"
-     "    sys.stdout.buffer.flush()")
+     "    write_all(marker + buf.hex().encode('ascii') + b'\\r\\n')")
    "\n")
   "Python code that writes hex payloads and reports PTY replies.
-The first argument is a per-payload read timeout in seconds.  Remaining
-arguments are hex-encoded payloads to write to stdout.  After each write,
-the script prints `GHOSTEL_PTY_REPLY_N_HEX:' followed by any reply bytes
-read from stdin as lowercase hex.")
+The first argument locates the portable PTY setup module, the second is
+a per-payload read timeout in seconds, and the rest are hex-encoded
+payloads to write to stdout.  After each write, the script prints
+`GHOSTEL_PTY_REPLY_N_HEX:' followed by any reply bytes read from stdin
+as lowercase hex.")
 
 (defun ghostel-test--wait-for-pty-reply (index &optional process timeout)
   "Return reply hex for PTY probe reply INDEX.
@@ -361,17 +473,35 @@ runs are unaffected."
 
 (ghostel-test--enable-start-logging)
 
+(defun ghostel-test--elisp-selector ()
+  "Return the ERT selector for pure Elisp tests on the current platform."
+  (if (ghostel-test--windows-p)
+      '(and (not (tag native)) (not (tag posix)))
+    '(not (tag native))))
+
 (defun ghostel-test-run-elisp ()
-  "Run only pure Elisp tests (no native module required)."
-  (ert-run-tests-batch-and-exit '(not (tag native))))
+  "Run only pure Elisp tests for this platform."
+  (ert-run-tests-batch-and-exit (ghostel-test--elisp-selector)))
+
+(defun ghostel-test--native-selector ()
+  "Return the ERT selector for native tests on the current platform."
+  (if (ghostel-test--windows-p)
+      '(and (tag native) (not (tag posix)))
+    '(tag native)))
 
 (defun ghostel-test-run-native ()
-  "Run only tests that require the native module."
-  (ert-run-tests-batch-and-exit '(tag native)))
+  "Run only tests that require the native module for this platform."
+  (ert-run-tests-batch-and-exit (ghostel-test--native-selector)))
+
+(defun ghostel-test--all-selector ()
+  "Return the ERT selector for all tests on the current platform."
+  (if (ghostel-test--windows-p)
+      '(and "^ghostel-test-" (not (tag posix)))
+    "^ghostel-test-"))
 
 (defun ghostel-test-run ()
-  "Run all ghostel tests."
-  (ert-run-tests-batch-and-exit "^ghostel-test-"))
+  "Run all ghostel tests for this platform."
+  (ert-run-tests-batch-and-exit (ghostel-test--all-selector)))
 
 (provide 'ghostel-test-helpers)
 ;;; ghostel-test-helpers.el ends here
