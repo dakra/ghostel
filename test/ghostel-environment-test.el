@@ -16,13 +16,13 @@ out — otherwise outbound `ssh' (or any consumer of those vars) would
 falsely conclude that ghostty is the controlling terminal."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (let* ((process-environment '("PATH=/usr/bin:/bin" "HOME=/tmp"))
-           (ghostel-shell '("/bin/sh" "-c" "env; printf GHOSTEL_ENV_DONE"))
+    (let* ((process-environment (ghostel-test--base-process-environment))
+           (ghostel-shell (ghostel-test--env-done-command))
            (ghostel-shell-integration nil)
            (ghostel-macos-login-shell nil)
            (ghostel-kill-buffer-on-exit nil)
            (ghostel-term "xterm-256color")
-           (default-directory "/tmp/")
+           (default-directory (ghostel-test--temp-directory))
            (text (ghostel-test--start-process-and-wait-for-text
                   "GHOSTEL_ENV_DONE" 25 80 5)))
       (should (ghostel-test--terminal-text-line-p "TERM=xterm-256color" text))
@@ -43,12 +43,12 @@ when that's non-nil, off otherwise.  Setting it to t forces on,
 setting it to nil forces off."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (let* ((process-environment '("PATH=/usr/bin:/bin" "HOME=/tmp"))
-           (ghostel-shell '("/bin/sh" "-c" "env; printf GHOSTEL_ENV_DONE"))
+    (let* ((process-environment (ghostel-test--base-process-environment))
+           (ghostel-shell (ghostel-test--env-done-command))
            (ghostel-shell-integration nil)
            (ghostel-macos-login-shell nil)
            (ghostel-kill-buffer-on-exit nil)
-           (default-directory "/tmp/"))
+           (default-directory (ghostel-test--temp-directory)))
       ;; auto + tramp-shell-integration nil → not exported.
       (let* ((ghostel-ssh-install-terminfo 'auto)
              (ghostel-tramp-shell-integration nil)
@@ -113,13 +113,13 @@ internal `TERM=xterm-ghostty' so a `process-environment' lookup (which
 returns the first match) resolves to the user's value."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
-    (let* ((process-environment '("PATH=/usr/bin:/bin" "HOME=/tmp"))
-           (ghostel-shell '("/bin/sh" "-c" "env; printf GHOSTEL_ENV_DONE"))
+    (let* ((process-environment (ghostel-test--base-process-environment))
+           (ghostel-shell (ghostel-test--env-done-command))
            (ghostel-shell-integration nil)
            (ghostel-macos-login-shell nil)
            (ghostel-kill-buffer-on-exit nil)
            (ghostel-environment '("TERM=dumb" "MY_VAR=42"))
-           (default-directory "/tmp/")
+           (default-directory (ghostel-test--temp-directory))
            (text (ghostel-test--start-process-and-wait-for-text
                   "GHOSTEL_ENV_DONE" 25 80 5)))
       (should (ghostel-test--terminal-text-line-p "MY_VAR=42" text))

@@ -447,13 +447,14 @@ so no actual shell is spawned."
         (display-buffer-overriding-action '(display-buffer-no-window))
         (inhibit-message t)
         (ghostel-use-native-pty nil)
-        (orig-make-process (symbol-function #'make-process)))
+        (orig-make-process (symbol-function #'make-process))
+        (executed-command (ghostel-test--shell-command "")))
     (cl-letf (((symbol-function #'make-process)
                (lambda (&rest plist)
                  ;; Return a dummy process object so the advice still
                  ;; records :command from (process-command proc).
                  (apply orig-make-process
-                        (plist-put plist :command '("true"))))))
+                        (plist-put plist :command executed-command)))))
       (let* ((buf (generate-new-buffer " *ghostel-test-debug-ghostel*"))
              ;; Stub `ghostel' to call `ghostel--spawn-pty' synchronously
              ;; in `buf' — mimics the path through `ghostel--start-process'
@@ -502,8 +503,8 @@ so no actual shell is spawned."
                     (should (equal "/bin/sh" (car cmd)))
                     (should (equal "-c" (cadr cmd))))
                   ;; :executed-command is what process-command returns,
-                  ;; which is the test-substituted '("true").
-                  (should (equal '("true")
+                  ;; which is the test-substituted portable no-op command.
+                  (should (equal executed-command
                                  (plist-get cap :executed-command)))))
             (when (buffer-live-p buf)
               (let ((p (buffer-local-value 'ghostel--process buf)))

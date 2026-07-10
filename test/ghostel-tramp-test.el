@@ -8,6 +8,10 @@
 
 (require 'ghostel-test-helpers)
 
+(defun ghostel-test--remote-assignment-regexp (name value)
+  "Return a regexp matching NAME=VALUE with optional shell quotes."
+  (format "\\b%s=\\\"?%s\\\"?;" name (regexp-quote value)))
+
 (ert-deftest ghostel-test-remote-term-preamble ()
   "`ghostel--remote-term-preamble' embeds an `infocmp' probe.
 The probe runs *on the remote* (inside the per-spawn wrapper), so
@@ -25,11 +29,17 @@ and absent (fall back to `xterm-256color' so echo works)."
   (let* ((ghostel-term "xterm-ghostty")
          (preamble (ghostel--remote-term-preamble)))
     ;; Default value for the case infocmp fails.
-    (should (string-match-p "\\bTERM=xterm-256color;" preamble))
+    (should (string-match-p
+             (ghostel-test--remote-assignment-regexp "TERM" "xterm-256color")
+             preamble))
     ;; Probe and conditional upgrade.
     (should (string-match-p "infocmp xterm-ghostty" preamble))
-    (should (string-match-p "\\bTERM=xterm-ghostty;" preamble))
-    (should (string-match-p "TERM_PROGRAM=ghostty;" preamble))
+    (should (string-match-p
+             (ghostel-test--remote-assignment-regexp "TERM" "xterm-ghostty")
+             preamble))
+    (should (string-match-p
+             (ghostel-test--remote-assignment-regexp "TERM_PROGRAM" "ghostty")
+             preamble))
     (should (string-match-p "TERM_PROGRAM_VERSION=" preamble))
     ;; Co-located bundle gets prepended to TERMINFO_DIRS — so a
     ;; user can `scp` the terminfo dir alongside the shell
@@ -66,12 +76,16 @@ and absent (fall back to `xterm-256color' so echo works)."
     (should-not (string-match-p "infocmp" preamble))
     (should-not (string-match-p "TERM_PROGRAM=ghostty" preamble))
     (should-not (string-match-p "TERMINFO_DIRS" preamble))
-    (should (string-match-p "TERM=xterm-256color" preamble))
+    (should (string-match-p
+             (ghostel-test--remote-assignment-regexp "TERM" "xterm-256color")
+             preamble))
     (should (string-match-p "COLORTERM=truecolor" preamble)))
   (let* ((ghostel-term "screen-256color")
          (preamble (ghostel--remote-term-preamble)))
     (should-not (string-match-p "infocmp" preamble))
-    (should (string-match-p "TERM=screen-256color" preamble))))
+    (should (string-match-p
+             (ghostel-test--remote-assignment-regexp "TERM" "screen-256color")
+             preamble))))
 
 (ert-deftest ghostel-test-spawn-pty-uses-remote-term-preamble ()
   "`ghostel--spawn-pty' embeds the remote preamble in the wrapper script.
@@ -117,7 +131,8 @@ Local spawns must not get the preamble; their TERM still rides in
       (setq captured-env nil
             captured-cmd nil)
       (let ((process-environment '("PATH=/usr/bin:/bin" "HOME=/tmp")))
-        (ghostel--spawn-pty "/bin/sh" nil nil nil)
+        (pcase-let ((`(,program . ,args) (ghostel-test--shell-command "")))
+          (ghostel--spawn-pty program args nil nil))
         (let ((script (nth 2 captured-cmd)))
           (should-not (string-match-p "infocmp" script))
           (should (member "TERM=xterm-ghostty" captured-env)))))))

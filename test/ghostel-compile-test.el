@@ -1011,14 +1011,14 @@ custom MODE / NAME-FUNCTION / HIGHLIGHT-REGEXP survive a revert."
                #'ignore)
               ((symbol-function 'ghostel-compile--spawn)
                (lambda (_cmd buf _h _w)
-                 (let ((p (start-process "ghostel-test-args" buf
-                                         "sleep" "100")))
+                 (let ((p (ghostel-test--dummy-process
+                           "ghostel-test-args" buf)))
                    (set-process-sentinel p #'ignore)
-                   (set-process-query-on-exit-flag p nil)
                    (with-current-buffer buf (setq ghostel--process p))
                    p))))
       (unwind-protect
-          (let ((buf (ghostel-compile--start "make" buf-name "/tmp/" nil nil)))
+          (let ((buf (ghostel-compile--start
+                      "make" buf-name (ghostel-test--temp-directory) nil nil)))
             (with-current-buffer buf
               ;; Default tuple records nil in MODE (read-only run).
               (should (equal '("make" nil nil nil) compilation-arguments))
@@ -1046,16 +1046,15 @@ custom MODE / NAME-FUNCTION / HIGHLIGHT-REGEXP survive a revert."
                #'ignore)
               ((symbol-function 'ghostel-compile--spawn)
                (lambda (_cmd buf _h _w)
-                 (let ((p (start-process "ghostel-test-args2" buf
-                                         "sleep" "100")))
+                 (let ((p (ghostel-test--dummy-process "ghostel-test-args2" buf)))
                    (set-process-sentinel p #'ignore)
-                   (set-process-query-on-exit-flag p nil)
                    (with-current-buffer buf (setq ghostel--process p))
                    p))))
       (unwind-protect
           (let* ((tuple '("make" my-mode my-namer "rgxp"))
-                 (buf (ghostel-compile--start "make" buf-name "/tmp/"
-                                              nil nil tuple)))
+                 (buf (ghostel-compile--start
+                       "make" buf-name (ghostel-test--temp-directory)
+                       nil nil tuple)))
             (with-current-buffer buf
               (should (equal tuple compilation-arguments))
               (let ((p ghostel--process))
@@ -1409,10 +1408,9 @@ the same dimensions so PTY and VT always agree."
                     (lambda (_cmd buf h w)
                       (push 'spawn call-order)
                       (push (list h w) spawn-calls)
-                      (let ((p (start-process "ghostel-test-size-fake"
-                                              buf "sleep" "100")))
+                      (let ((p (ghostel-test--dummy-process
+                                "ghostel-test-size-fake" buf)))
                         (set-process-sentinel p #'ignore)
-                        (set-process-query-on-exit-flag p nil)
                         (with-current-buffer buf
                           (setq ghostel--process p))
                         p))))
@@ -1470,10 +1468,9 @@ dimensions when no output window exists."
                    (ghostel--cursor-pos (cons 0 0))
                    ((symbol-function 'ghostel-compile--spawn)
                     (lambda (_cmd buf _h _w)
-                      (let ((p (start-process "ghostel-test-nowin-fake"
-                                              buf "sleep" "100")))
+                      (let ((p (ghostel-test--dummy-process
+                                "ghostel-test-nowin-fake" buf)))
                         (set-process-sentinel p #'ignore)
-                        (set-process-query-on-exit-flag p nil)
                         (with-current-buffer buf
                           (setq ghostel--process p))
                         p))))
@@ -1580,13 +1577,15 @@ It must also raise `read-process-output-max'.  Same reason as
 `ghostel--spawn-pty' (issue #85)."
   :tags '(native)
   (let ((captured-adaptive 'unset)
-        (captured-max nil)
-        (orig-make-process (symbol-function #'make-process)))
+        (captured-max nil))
     (cl-letf (((symbol-function #'make-process)
                (lambda (&rest plist)
                  (setq captured-adaptive process-adaptive-read-buffering
                        captured-max read-process-output-max)
-                 (apply orig-make-process plist))))
+                 (make-pipe-process
+                  :name "ghostel-compile-test-spawn"
+                  :buffer (plist-get plist :buffer)
+                  :noquery t))))
       (with-temp-buffer
         (let ((proc (ghostel-compile--spawn "true" (current-buffer) 24 80)))
           (unwind-protect
@@ -1604,14 +1603,14 @@ so this path needs its own coverage — without it, users setting
 compile jobs.  Also pins the position: `compilation-environment'
 entries must precede `ghostel-environment', and both must precede
 ghostel's own `INSIDE_EMACS=...,compile' marker."
-  (let ((captured-env nil)
-        (orig-make-process (symbol-function #'make-process)))
+  (let ((captured-env nil))
     (cl-letf (((symbol-function #'make-process)
                (lambda (&rest plist)
                  (setq captured-env process-environment)
-                 (apply orig-make-process plist))))
+                 (ghostel-test--dummy-process
+                  "ghostel-compile-test-env" (plist-get plist :buffer)))))
       (with-temp-buffer
-        (let* ((default-directory "/tmp/")
+        (let* ((default-directory (ghostel-test--temp-directory))
                (compilation-environment '("COMPENV=first"))
                (ghostel-environment '("CC=clang"))
                (proc (ghostel-compile--spawn "true" (current-buffer) 24 80)))

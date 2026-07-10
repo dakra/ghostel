@@ -289,17 +289,17 @@ regressing to a bare `fboundp' check, which is true on Emacs 28 because
   (let ((orig-config (current-window-configuration)))
     (unwind-protect
         (ghostel-test-scroll--with-buffer (buf term 10 40 200)
-            (ghostel-test-scroll--write-lines term "scroll" 30)
-            (ghostel--redraw term t)
-            (let ((w1 (selected-window)))
+          (ghostel-test-scroll--write-lines term "scroll" 30)
+          (ghostel--redraw term t)
+          (let ((w1 (selected-window)))
             (set-window-start w1 (point-min) t)
             (set-window-point w1 (point-min))
             (let ((start-before (window-start w1))
-                (w2 (split-window w1)))
-            (set-window-buffer w2 buf)
-            (run-hook-with-args 'window-buffer-change-functions w2)
-            (should (= start-before (window-start w1)))
-            (should (= (window-start w2) (ghostel--viewport-start))))))
+                  (w2 (split-window w1)))
+              (set-window-buffer w2 buf)
+              (run-hook-with-args 'window-buffer-change-functions w2)
+              (should (= start-before (window-start w1)))
+              (should (ghostel--window-anchored-p w2)))))
       (set-window-configuration orig-config))))
 
 (ert-deftest ghostel-test-user-rescroll-is-preserved ()
@@ -593,6 +593,7 @@ rows in the viewport — with or without the trailing newline."
   "Paste scrolls the window to the live cursor."
   (let ((kill-ring '("hello"))
         (kill-ring-yank-pointer nil)
+        (interprogram-paste-function nil)
         sent-text)
     (ghostel-test--with-scroll-on-input-window t
       (cl-letf (((symbol-function 'ghostel--encode-paste)
@@ -606,6 +607,7 @@ rows in the viewport — with or without the trailing newline."
   "Yanking in Emacs mode scrolls the window to the live cursor."
   (let ((kill-ring '("hello"))
         (kill-ring-yank-pointer nil)
+        (interprogram-paste-function nil)
         (ghostel-readonly-fast-exit nil)
         sent-text)
     (ghostel-test--with-scroll-on-input-window t

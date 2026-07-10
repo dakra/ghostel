@@ -1734,7 +1734,7 @@ app redraws all rows at new width via the filter pipeline."
           (ghostel-mode)
           (setq ghostel--term (ghostel--new 6 80 100))
           (let* ((ghostel-detect-password-prompts nil)
-                 (proc (start-process "ghostel-test-w" buf "sleep" "60"))
+                 (proc (ghostel-test--dummy-process "ghostel-test-w" buf))
                  (ghostel--process proc)
                  (inhibit-read-only t))
             (set-process-coding-system proc 'binary 'binary)
@@ -1801,7 +1801,7 @@ rendered by `ghostel--redraw-now'.  This is the exact real-world path."
                  (process-environment
                   (append (list "TERM=xterm-256color" "COLUMNS=40" "LINES=10")
                           process-environment))
-                 (proc (start-process "ghostel-test-pipe" buf "sleep" "60")))
+                 (proc (ghostel-test--dummy-process "ghostel-test-pipe" buf)))
             (setq ghostel--process proc)
             (set-process-coding-system proc 'binary 'binary)
             (set-process-window-size proc 10 40)

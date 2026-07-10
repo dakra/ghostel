@@ -36,10 +36,11 @@ returning the number of redraw invalidations requested."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(defun ghostel-test-native-process--env-output (env-program &optional spawn-wrapper)
-  "Spawn ENV-PROGRAM through the native primitive and return its output.
-SPAWN-WRAPPER, when non-nil, is called with the zero-argument spawn
-function and should call it under any dynamic bindings needed by the test."
+(defun ghostel-test-native-process--env-output (env-command &optional spawn-wrapper)
+  "Spawn ENV-COMMAND through the native primitive and return its output.
+ENV-COMMAND is a command argv list.  SPAWN-WRAPPER, when non-nil, is
+called with the zero-argument spawn function and should call it under
+any dynamic bindings needed by the test."
   (ghostel-test--with-terminal-buffer (buf _term 200 32767 2000000)
     (let ((pipe (make-pipe-process
                  :name "ghostel-native-env-test"
@@ -51,7 +52,7 @@ function and should call it under any dynamic bindings needed by the test."
           (progn
             (let ((spawn (lambda ()
                            (setq pid (ghostel--spawn-native-process
-                                      ghostel--term (list env-program) pipe)))))
+                                      ghostel--term env-command pipe)))))
               (if spawn-wrapper
                   (funcall spawn-wrapper spawn)
                 (funcall spawn)))
@@ -155,12 +156,13 @@ must not leave `ghostel--event-buf' in a poisoned state."
 (ert-deftest ghostel-test-native-process-adds-display-for-graphical-frame ()
   "Native env builder mirrors Emacs' DISPLAY fallback for graphical frames."
   :tags '(native)
-  (let ((env-program (executable-find "env")))
-    (skip-unless env-program)
-    (let* ((process-environment '("DISPLAY_FOO=1" "PATH=/usr/bin:/bin" "HOME=/tmp"))
-           (default-directory "/tmp/")
+  (let ((env-command (ghostel-test--env-command)))
+    (skip-unless (car env-command))
+    (let* ((process-environment (append '("DISPLAY_FOO=1")
+                                        (ghostel-test--base-process-environment)))
+           (default-directory (ghostel-test--temp-directory))
            (text (ghostel-test-native-process--env-output
-                  env-program
+                  env-command
                   (lambda (spawn)
                     (cl-letf (((symbol-function 'display-graphic-p)
                                (lambda (&optional _display) t))
@@ -174,12 +176,12 @@ must not leave `ghostel--event-buf' in a poisoned state."
 (ert-deftest ghostel-test-native-process-does-not-add-display-for-terminal-frame ()
   "Native env builder does not synthesize DISPLAY for non-graphical frames."
   :tags '(native)
-  (let ((env-program (executable-find "env")))
-    (skip-unless env-program)
-    (let* ((process-environment '("PATH=/usr/bin:/bin" "HOME=/tmp"))
-           (default-directory "/tmp/")
+  (let ((env-command (ghostel-test--env-command)))
+    (skip-unless (car env-command))
+    (let* ((process-environment (ghostel-test--base-process-environment))
+           (default-directory (ghostel-test--temp-directory))
            (text (ghostel-test-native-process--env-output
-                  env-program
+                  env-command
                   (lambda (spawn)
                     (cl-letf (((symbol-function 'display-graphic-p)
                                (lambda (&optional _display) nil))
@@ -192,16 +194,15 @@ must not leave `ghostel--event-buf' in a poisoned state."
 (ert-deftest ghostel-test-native-process-env-first-entry-wins ()
   "Native env builder follows `process-environment' first-entry semantics."
   :tags '(native)
-  (let ((env-program (executable-find "env")))
-    (skip-unless env-program)
-    (let* ((process-environment '("GHOSTEL_ENV_TEST_UNSET"
-                                  "GHOSTEL_ENV_TEST_UNSET=later"
-                                  "GHOSTEL_ENV_TEST_DUP=first"
-                                  "GHOSTEL_ENV_TEST_DUP=later"
-                                  "PATH=/usr/bin:/bin"
-                                  "HOME=/tmp"))
-           (default-directory "/tmp/")
-           (text (ghostel-test-native-process--env-output env-program)))
+  (let ((env-command (ghostel-test--env-command)))
+    (skip-unless (car env-command))
+    (let* ((process-environment (append '("GHOSTEL_ENV_TEST_UNSET"
+                                          "GHOSTEL_ENV_TEST_UNSET=later"
+                                          "GHOSTEL_ENV_TEST_DUP=first"
+                                          "GHOSTEL_ENV_TEST_DUP=later")
+                                        (ghostel-test--base-process-environment)))
+           (default-directory (ghostel-test--temp-directory))
+           (text (ghostel-test-native-process--env-output env-command)))
       (should-not (ghostel-test--terminal-text-line-prefix-p
                    "GHOSTEL_ENV_TEST_UNSET=" text))
       (should (ghostel-test--terminal-text-line-p
@@ -212,12 +213,13 @@ must not leave `ghostel--event-buf' in a poisoned state."
 (ert-deftest ghostel-test-native-process-display-unset-suppresses-fallback ()
   "A bare DISPLAY entry suppresses graphical DISPLAY fallback."
   :tags '(native)
-  (let ((env-program (executable-find "env")))
-    (skip-unless env-program)
-    (let* ((process-environment '("DISPLAY" "PATH=/usr/bin:/bin" "HOME=/tmp"))
-           (default-directory "/tmp/")
+  (let ((env-command (ghostel-test--env-command)))
+    (skip-unless (car env-command))
+    (let* ((process-environment (cons "DISPLAY"
+                                      (ghostel-test--base-process-environment)))
+           (default-directory (ghostel-test--temp-directory))
            (text (ghostel-test-native-process--env-output
-                  env-program
+                  env-command
                   (lambda (spawn)
                     (cl-letf (((symbol-function 'display-graphic-p)
                                (lambda (&optional _display) t))
@@ -237,7 +239,7 @@ must not leave `ghostel--event-buf' in a poisoned state."
                     "quoted \") (setq ghostel-test-native-process--evil 'quote) (\" title"
                     "backslash \\\") (setq ghostel-test-native-process--evil 'backslash) (\" title"
                     "newline\n\")\n(setq ghostel-test-native-process--evil 'newline)\n(\" title")))
-    (ghostel-test--with-raw-cat-buffer (buf proc)
+    (ghostel-test--with-raw-echo-buffer (buf proc)
       (should ghostel--process)
       (cl-letf (((symbol-function 'ghostel--set-title)
                  (lambda (title) (push title titles))))

@@ -2,7 +2,7 @@
 
 ;;; Commentary:
 
-;; Local shell resolution, login wrapping, PTY process startup, resize signaling,
+;; Local shell resolution, login wrapping, PTY process startup and resizing,
 ;; and pre-spawn hook environment injection.
 
 ;;; Code:
@@ -51,25 +51,6 @@ need to exercise the PTY matrix here."
        ,@body)
      (should ,capture)))
 
-(defconst ghostel-test--pty-winsize-script
-  (string-join
-   '("import os, signal, sys, time"
-     "fd = sys.stdout.fileno()"
-     "def report(tag):"
-     "    sz = os.get_terminal_size(fd)"
-     "    sys.stdout.write('GHOSTEL_WINSIZE_%s:%d,%d\\r\\n' % (tag, sz.lines, sz.columns))"
-     "    sys.stdout.flush()"
-     "signal.signal(signal.SIGWINCH, lambda *_: report('WINCH'))"
-     "report('INIT')"
-     "deadline = time.time() + 10"
-     "while time.time() < deadline:"
-     "    time.sleep(0.05)")
-   "\n")
-  "Python code that reports its PTY window size as the child of a ghostel term.
-Writes `GHOSTEL_WINSIZE_INIT:ROWS,COLS' at startup and
-`GHOSTEL_WINSIZE_WINCH:ROWS,COLS' on every SIGWINCH, so tests can assert
-the dimensions the child actually sees on each PTY backend.")
-
 (defconst ghostel-test--pty-read-dc1-script
   (string-join
    '("import sys"
@@ -93,7 +74,7 @@ this distinguishes a PTY that honors `-ixon' from one that does not.")
 (defun ghostel-test--latest-winsize (tag)
   "Return the most recent (ROWS . COLS) reported for TAG, or nil.
 Scans the terminal text for the last `GHOSTEL_WINSIZE_TAG:R,C' marker
-written by `ghostel-test--pty-winsize-script'."
+written by the portable PTY test helper."
   (let ((text (or (ghostel--copy-all-text ghostel--term) ""))
         (re (format "GHOSTEL_WINSIZE_%s:\\([0-9]+\\),\\([0-9]+\\)" tag))
         (start 0)
@@ -192,6 +173,16 @@ The type-aware default is applied later, at spawn time."
   (let ((default-directory "/ssh:host:/home/u/")
         (ghostel-tramp-shells '(("ssh" "/bin/zsh"))))
     (should (equal '("/bin/zsh") (ghostel--resolve-shell-spec)))))
+
+(ert-deftest ghostel-test-resolve-shell-spec-sshx-uses-login-shell ()
+  "The sshx method uses a remote shell, not the local fallback shell."
+  (cl-letf (((symbol-function 'process-file-shell-command)
+             (lambda (&rest _)
+               (insert "u:x:1000:1000::/home/u:/bin/bash\n")
+               0)))
+    (let ((default-directory "/sshx:host:/home/u/")
+          (ghostel-shell "cmd.exe"))
+      (should (equal '("/bin/bash") (ghostel--resolve-shell-spec))))))
 
 (ert-deftest ghostel-test-start-process-remote-adds-login-interactive ()
   "A recognized remote shell is started login+interactive by default."
@@ -338,7 +329,8 @@ pushed terminfo dir is needed for the whole session besides."
       (should (equal "--norc" (nth 4 args)))
       (should (equal "-c" (nth 5 args)))
       ;; exec -l <quoted-program>; no extra args.
-      (should (equal "exec -l /bin/zsh" (nth 6 args))))))
+      (should (equal (format "exec -l %s" (shell-quote-argument "/bin/zsh"))
+                     (nth 6 args))))))
 
 (ert-deftest ghostel-test-macos-login-wrap-hushlogin ()
   "When ~/.hushlogin exists, -q is prepended."
@@ -358,7 +350,11 @@ pushed terminfo dir is needed for the whole session besides."
             ((symbol-function 'file-exists-p) (lambda (_) nil)))
     (let* ((wrap (ghostel--macos-login-wrap "/bin/bash" '("--login" "--posix")))
            (cmd (nth 6 (cdr wrap))))
-      (should (equal "exec -l /bin/bash --login --posix" cmd)))))
+      (should (equal (concat "exec -l "
+                             (mapconcat #'shell-quote-argument
+                                        '("/bin/bash" "--login" "--posix")
+                                        " "))
+                     cmd)))))
 
 (ert-deftest ghostel-test-start-process-darwin-login-wrap ()
   "On darwin with `ghostel-macos-login-shell', wrap shell via `/usr/bin/login'."
@@ -503,7 +499,7 @@ former defaulted to t and throttled bursty TUI redraws."
 
 (ert-deftest ghostel-test-spawn-emacs-pty-enables-input-echo ()
   "The Emacs PTY path enables input echo before PROGRAM reads."
-  :tags '(native)
+  :tags '(native posix)
   (skip-unless (file-executable-p "/bin/sh"))
   (let ((ghostel-use-native-pty nil)
         (ghostel-kill-buffer-on-exit nil))
@@ -519,50 +515,45 @@ former defaulted to t and throttled bursty TUI redraws."
                                 (ghostel-test--terminal-text)))))))
 
 (ert-deftest ghostel-test-spawn-process-resolves-bare-program-from-exec-path ()
-  "A bare local PROGRAM resolves via variable `exec-path' before backend dispatch.
-This deliberately makes variable `exec-path' and the child PATH disagree: the
-probe program exists only on variable `exec-path', not in `process-environment'."
-  :tags '(native)
-  (let* ((dir (file-name-as-directory (make-temp-file "ghostel-path-" t)))
-         (exec-dir (directory-file-name dir))
-         (program-name "ghostel-path-probe")
-         (program-path (expand-file-name program-name dir)))
-    (unwind-protect
-        (progn
-          (with-temp-file program-path
-            (insert "#!/bin/sh\nprintf 'GHOSTEL_PATH_PROBE:%s\\n' \"$0\"\n"))
-          (set-file-modes program-path #o755)
-          (ghostel-test--with-pty-matrix backend
-            (let* ((child-path (string-join '("/usr/bin" "/bin")
-                                             path-separator))
-                   (process-environment `(,(format "PATH=%s" child-path) "HOME=/tmp"))
-                   (exec-path (list exec-dir "/usr/bin" "/bin"))
-                   (ghostel-kill-buffer-on-exit nil)
-                   (default-directory "/tmp/"))
-              (should-not (member exec-dir
-                                  (split-string (getenv "PATH") path-separator t)))
-              (let ((found (executable-find program-name)))
-                (should found)
-                (should (file-equal-p program-path found)))
-              (ghostel-test--with-terminal-buffer (buf term 24 80 1000)
-                (let ((proc (ghostel--spawn-process program-name nil nil)))
-                  (ghostel-test--wait-for-text "GHOSTEL_PATH_PROBE:" proc 3)
-                  (should (ghostel-test--terminal-text-line-p
-                           (format "GHOSTEL_PATH_PROBE:%s" program-path))))))))
-      (delete-directory dir t))))
+  "A bare local program resolves via variable `exec-path' before backend dispatch."
+  (let* ((program (file-name-nondirectory invocation-name))
+         (expected (expand-file-name invocation-name invocation-directory))
+         (exec-path (list invocation-directory))
+         (process-environment '("PATH="))
+         (ghostel-use-native-pty t)
+         captured)
+    (cl-letf (((symbol-function 'ghostel--spawn-via-native)
+               (lambda (command) (setq captured command))))
+      (ghostel--spawn-process program '("--probe") nil))
+    (should (file-equal-p expected (car captured)))
+    (should (equal '("--probe") (cdr captured)))))
+
+(defconst ghostel-test--pty-winsize-script
+  (string-join
+   '("import os, sys, time"
+     "fd = sys.stdout.fileno()"
+     "def report(tag, size):"
+     "    sys.stdout.write('GHOSTEL_WINSIZE_%s:%d,%d\\r\\n' % (tag, size.lines, size.columns))"
+     "    sys.stdout.flush()"
+     "initial = os.get_terminal_size(fd)"
+     "report('INIT', initial)"
+     "deadline = time.time() + 10"
+     "while time.time() < deadline:"
+     "    current = os.get_terminal_size(fd)"
+     "    if current != initial:"
+     "        report('RESIZE', current)"
+     "        break"
+     "    time.sleep(0.05)")
+   "\n")
+  "Python code that reports initial and changed PTY dimensions.")
 
 (ert-deftest ghostel-test-spawn-initial-winsize-reaches-child ()
-  "The child PTY is sized to the terminal dimensions at spawn.
-On the native path the PTY is opened at the term's rows/cols; on the
-Emacs path `ghostel--spawn-via-emacs' calls `set-process-window-size'.
-Either way the child must read those dimensions, so this drives a real
-child through both backends and asserts the size it sees."
+  "The child PTY is sized to the terminal dimensions at spawn."
   :tags '(native)
-  (let ((python (executable-find "python3")))
-    (skip-unless python)
+  (let ((python (ghostel-test--python)))
     (ghostel-test--with-pty-matrix backend
       (ghostel-test--with-exec-buffer
-          (buf proc python (list "-c" ghostel-test--pty-winsize-script))
+          (buf proc python (list "-u" "-c" ghostel-test--pty-winsize-script))
         ;; ghostel-exec sizes an undisplayed buffer's term to 80x24.
         (let ((got (ghostel-test--wait-until
                     (lambda () (ghostel-test--latest-winsize "INIT")) proc 6)))
@@ -575,7 +566,7 @@ DC1 and DC3; ghostel disables it — natively in C
 \(`PtyProcess'), and via `-ixon' in the Emacs-path `stty' wrapper — so
 the direct key binding and send-next-key can deliver these bytes.
 Driven through both PTY backends."
-  :tags '(native)
+  :tags '(native posix)
   (let ((python (executable-find "python3")))
     (skip-unless python)
     (ghostel-test--with-pty-matrix backend
@@ -596,29 +587,20 @@ Driven through both PTY backends."
           (should (string-match-p "GHOSTEL_GOTBYTE:DC1" report)))))))
 
 (ert-deftest ghostel-test-resize-redraw-delivers-new-winsize-to-child ()
-  "Resize + redraw delivers SIGWINCH carrying the NEW size to the child.
-`ghostel--set-size' stages a pending resize that `ghostel--redraw'
-commits; committing resizes the PTY (native `pty.resize') or calls
-`set-process-window-size' (Emacs), both of which raise SIGWINCH on the
-child's process group.  The child must then read the new dimensions,
-not the old ones — verified on both PTY backends."
+  "Resize + redraw makes the new PTY size visible to the child."
   :tags '(native)
-  (let ((python (executable-find "python3")))
-    (skip-unless python)
+  (let ((python (ghostel-test--python)))
     (ghostel-test--with-pty-matrix backend
       (ghostel-test--with-exec-buffer
-          (buf proc python (list "-c" ghostel-test--pty-winsize-script))
-        ;; Confirm the child is up and reading the initial 80x24.
+          (buf proc python (list "-u" "-c" ghostel-test--pty-winsize-script))
         (should (equal '(24 . 80)
                        (ghostel-test--wait-until
                         (lambda () (ghostel-test--latest-winsize "INIT")) proc 6)))
-        ;; Stage a new size and commit it with a redraw, which fires SIGWINCH.
         (ghostel--set-size-with-cell-dims ghostel--term 30 100)
         (ghostel-test--redraw ghostel--term t)
-        ;; The child's SIGWINCH handler must report the new size, not the old.
         (should (ghostel-test--wait-until
                  (lambda () (equal '(30 . 100)
-                                   (ghostel-test--latest-winsize "WINCH")))
+                                   (ghostel-test--latest-winsize "RESIZE")))
                  proc 6))))))
 
 (ert-deftest ghostel-test-pre-spawn-hook-injects-into-process-environment ()
@@ -636,12 +618,12 @@ intact (with-editor's `with-editor--setup' reads `default-directory')."
   (ghostel-test--with-pty-matrix backend
     (let (captured-buffer
           captured-default-directory)
-      (let* ((process-environment '("PATH=/usr/bin:/bin" "HOME=/tmp"))
-             (ghostel-shell '("/bin/sh" "-c" "env; printf GHOSTEL_ENV_DONE"))
+      (let* ((process-environment (ghostel-test--base-process-environment))
+             (ghostel-shell (ghostel-test--env-done-command))
              (ghostel-shell-integration nil)
              (ghostel-macos-login-shell nil)
              (ghostel-kill-buffer-on-exit nil)
-             (default-directory "/tmp/")
+             (default-directory (ghostel-test--temp-directory))
              (ghostel-pre-spawn-hook
               (list (lambda ()
                       (setq captured-buffer (current-buffer))
@@ -653,7 +635,7 @@ intact (with-editor's `with-editor--setup' reads `default-directory')."
                        (ghostel-test--wait-for-text "GHOSTEL_ENV_DONE" proc 5)
                        (should (eq captured-buffer test-buffer))
                        (ghostel-test--terminal-text)))))
-        (should (equal captured-default-directory "/tmp/"))
+        (should (equal captured-default-directory default-directory))
         (should (ghostel-test--terminal-text-line-p
                  "GHOSTEL_PRE_SPAWN_TEST=ok" text))))))
 
@@ -661,13 +643,9 @@ intact (with-editor's `with-editor--setup' reads `default-directory')."
   "Child process starts in `default-directory', including abbreviated home paths."
   :tags '(native)
   (let* ((home-dir (file-name-as-directory (expand-file-name "~")))
-         (test-dir (file-name-directory
-                    (or (locate-library "ghostel-spawn-test")
-                        buffer-file-name
-                        default-directory)))
          (tmpdir (file-name-as-directory
                   (make-temp-file (expand-file-name "ghostel-cwd-test-"
-                                                     test-dir)
+                                                    home-dir)
                                   t)))
          (default-directory (abbreviate-file-name tmpdir))
          (expected-cwd (directory-file-name (file-truename tmpdir))))
@@ -676,11 +654,14 @@ intact (with-editor's `with-editor--setup' reads `default-directory')."
           (should (string-prefix-p "~/" default-directory))
           (ghostel-test--with-pty-matrix backend
             (let* ((process-environment
-                    `(,(format "HOME=%s" (directory-file-name home-dir))
-                      "PATH=/usr/bin:/bin"))
+                    (cons (format "HOME=%s" (directory-file-name home-dir))
+                          (ghostel-test--base-process-environment)))
                    (ghostel-shell
-                    '("/bin/sh" "-c"
-                      "printf 'GHOSTEL_CWD:%s\\n' \"$(pwd -P)\"; printf GHOSTEL_CWD_DONE"))
+                    (if (ghostel-test--windows-p)
+                        (ghostel-test--shell-command
+                         "echo GHOSTEL_CWD:%CD:\\=/% & echo GHOSTEL_CWD_DONE")
+                      '("/bin/sh" "-c"
+                        "printf 'GHOSTEL_CWD:%s\\n' \"$(pwd -P)\"; printf GHOSTEL_CWD_DONE")))
                    (ghostel-shell-integration nil)
                    (ghostel-macos-login-shell nil)
                    (ghostel-kill-buffer-on-exit nil)

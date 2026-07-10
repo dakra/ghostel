@@ -166,11 +166,14 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
 
 (ert-deftest ghostel-test-project-buffers-default-directory ()
   "Scope `default-directory' matches buffers under the project root."
-  (let ((root "/tmp/myproj/"))
+  (let* ((root (make-temp-file "ghostel-myproj" t))
+         (root (file-name-as-directory root))
+         (outside-root (file-name-as-directory
+                        (make-temp-file "ghostel-other" t))))
     (ghostel-buffers-test--with-bufs
-        ((inside "*ghostel-in*" "/tmp/myproj/src/")
-         (outside "*ghostel-out*" "/tmp/other/")
-         (also-in "*ghostel-also*" "/tmp/myproj/"))
+        ((inside "*ghostel-in*" (expand-file-name "src/" root))
+         (outside "*ghostel-out*" outside-root)
+         (also-in "*ghostel-also*" root))
       (cl-letf (((symbol-function 'project-current)
                  (ghostel-buffers-test--proj-stub root))
                 ((symbol-function 'project-root) (lambda (p) (cdr p)))
@@ -185,11 +188,14 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
 
 (ert-deftest ghostel-test-project-buffers-identity ()
   "Scope `identity' matches buffers whose identity is the project-prefixed name."
-  (let ((root "/tmp/myproj/")
-        (ghostel-buffer-name "*ghostel*"))
+  (let* ((root (make-temp-file "ghostel-myproj" t))
+         (root (file-name-as-directory root))
+         (outside-root (file-name-as-directory
+                        (make-temp-file "ghostel-other" t)))
+         (ghostel-buffer-name "*ghostel*"))
     (ghostel-buffers-test--with-bufs
-        ((tagged "*ghostel-tagged*" "/tmp/other/" "*myproj-ghostel*")
-         (untagged "*ghostel-untag*" "/tmp/myproj/" nil))
+        ((tagged "*ghostel-tagged*" outside-root "*myproj-ghostel*")
+         (untagged "*ghostel-untag*" root nil))
       (cl-letf (((symbol-function 'project-current)
                  (ghostel-buffers-test--proj-stub root))
                 ((symbol-function 'project-root) (lambda (p) (cdr p)))
@@ -203,13 +209,16 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
 
 (ert-deftest ghostel-test-project-buffers-both ()
   "Scope `both' unions `default-directory' and identity matches; no duplicates."
-  (let ((root "/tmp/myproj/")
-        (ghostel-buffer-name "*ghostel*"))
+  (let* ((root (make-temp-file "ghostel-myproj" t))
+         (root (file-name-as-directory root))
+         (outside-root (file-name-as-directory
+                        (make-temp-file "ghostel-other" t)))
+         (ghostel-buffer-name "*ghostel*"))
     (ghostel-buffers-test--with-bufs
-        ((by-dir "*ghostel-d*" "/tmp/myproj/" nil)
-         (by-id "*ghostel-i*" "/tmp/other/" "*myproj-ghostel*")
-         (both "*ghostel-b*" "/tmp/myproj/sub/" "*myproj-ghostel*")
-         (neither "*ghostel-n*" "/tmp/other/" nil))
+        ((by-dir "*ghostel-d*" root nil)
+         (by-id "*ghostel-i*" outside-root "*myproj-ghostel*")
+         (both "*ghostel-b*" (expand-file-name "sub/" root) "*myproj-ghostel*")
+         (neither "*ghostel-n*" outside-root nil))
       (cl-letf (((symbol-function 'project-current)
                  (ghostel-buffers-test--proj-stub root))
                 ((symbol-function 'project-root) (lambda (p) (cdr p)))

@@ -11,16 +11,13 @@
 (require 'ghostel-test-helpers)
 
 (defmacro ghostel-test--with-cat-process (var &rest body)
-  "Spawn a long-lived `cat' process bound to VAR, run BODY, then clean up.
+  "Run BODY with a live dummy process bound to VAR.
 The process is killed and the temp buffer destroyed on exit so the
 query-before-killing tests don't leak processes between runs."
   (declare (indent 1))
   `(let* ((buf (generate-new-buffer " *ghostel-test-query-cat*"))
-          (,var (make-process :name "ghostel-test-cat"
-                              :buffer buf
-                              :command '("cat")
-                              :connection-type 'pipe
-                              :noquery nil)))
+          (,var (ghostel-test--dummy-process "ghostel-test-query" buf)))
+     (set-process-query-on-exit-flag ,var nil)
      (unwind-protect (progn ,@body)
        (when (process-live-p ,var)
          (delete-process ,var))
@@ -92,17 +89,17 @@ newest-first list aligns with the buffer-order regions."
 (ert-deftest ghostel-test-da-response ()
   "Test that the terminal responds to DA1 queries."
   :tags '(native)
-  (let ((python (executable-find "python3")))
-    (skip-unless python)
+  (let ((python (ghostel-test--python)))
     (ghostel-test--with-pty-matrix backend
-				   (ghostel-test--with-exec-buffer
-				    (buf proc python
-					 (list "-c"
-					       ghostel-test--pty-reply-probe-script
-					       "0.15"
-					       (ghostel-test--hex-encode-string "\e[c")))
-				    (should (equal "1b5b3f36323b323263"
-						   (ghostel-test--wait-for-pty-reply 0 proc 6)))))))
+								   (ghostel-test--with-exec-buffer
+									(buf proc python
+										 (list "-c"
+											   ghostel-test--pty-reply-probe-script
+											   (ghostel-test--fixture-directory)
+											   "0.15"
+											   (ghostel-test--hex-encode-string "\e[c")))
+									(should (equal "1b5b3f36323b323263"
+												   (ghostel-test--wait-for-pty-reply 0 proc 6)))))))
 
 (ert-deftest ghostel-test-fish-backspace ()
   "Test backspace works with fish shell."
@@ -729,6 +726,25 @@ stubbed nil and `ghostel--remote-shell-p' stubbed t."
                     ((symbol-function 'ghostel--remote-shell-p)
                      (lambda () t)))
             (should-not (ghostel--password-prompt-detected-p))))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-password-detect-remote-skips-pty-probe ()
+  "Remote password detection must not inspect a nonexistent local pty."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-pwd-remote-skip-pty*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (setq ghostel--term (ghostel--new 5 80 1000))
+          (setq ghostel--term-rows 5)
+          (ghostel--write-vt ghostel--term "Password: ")
+          (let ((inhibit-read-only t))
+            (ghostel--redraw ghostel--term t))
+          (cl-letf (((symbol-function 'ghostel--pty-password-input-p)
+                     (lambda (_term) (error "Local PTY probe should be skipped")))
+                    ((symbol-function 'ghostel--remote-shell-p)
+                     (lambda () t)))
+            (should (eq (ghostel--password-prompt-detected-p) 'regex))))
       (when (buffer-live-p buf) (kill-buffer buf)))))
 
 (ert-deftest ghostel-test-password-detect-skips-regex-on-local ()
