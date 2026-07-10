@@ -228,6 +228,7 @@ README for the full design and per-call escape hatch."
 
 (defcustom ghostel-tramp-shells
   '(("ssh" login-shell)
+    ("sshx" login-shell)
     ("scp" login-shell)
     ("docker" "/bin/sh"))
   "Shell to use for remote TRAMP connections, per method.
@@ -3120,22 +3121,19 @@ default."
   "Return non-nil if the foreground program looks like it's reading a password.
 Two arms:
 
-  - libghostty heuristic (`ghostel--pty-password-input-p'): the current
+  - Zig heuristic (`ghostel--pty-password-input-p'): the current
     PTY is in canonical mode with echo off.  Catches local sudo, ssh's
     own password prompt, gpg, etc.
 
   - cursor-row regex (`ghostel-password-prompt-regex', defaulting to
-    `comint-password-prompt-regexp').  Used only when the libghostty
-    heuristic returns nil AND `ghostel--remote-shell-p' indicates a
-    remote shell - the case where the local pty is in raw mode for ssh
-    forwarding and the remote pty's canonical+!echo isn't visible locally.
+    `comint-password-prompt-regexp').  Used when `ghostel--remote-shell-p'
+    indicates a remote shell, where the remote pty's canonical+!echo state
+    isn't visible through a local pty probe.
 
 Returns nil on miss, or a symbol naming the arm on hit (`zig' or`regex')."
-  (cond
-   ((ghostel--pty-password-input-p ghostel--term) 'zig)
-   ((and (ghostel--remote-shell-p)
-         (ghostel--password-regex-matches-cursor-row-p))
-    'regex)))
+  (if (ghostel--remote-shell-p)
+      (when (ghostel--password-regex-matches-cursor-row-p) 'regex)
+    (when (ghostel--pty-password-input-p ghostel--term) 'zig)))
 
 (defun ghostel--password-regex-matches-cursor-row-p ()
   "Return non-nil if the cursor row looks like a password prompt.

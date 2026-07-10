@@ -27,9 +27,14 @@ Check the [documentation](https://dakra.github.io/ghostel/#features) for a full 
 
 ## Quick Start
 
-**Requirements:** Emacs 28.1+ with dynamic module support, on macOS, Linux, or FreeBSD.
+**Requirements:** Emacs 28.1+ with dynamic module support, on macOS, Linux, FreeBSD, or native Windows.
 The native module is a prebuilt binary that **auto-downloads on first use**.
 No toolchain or build step required.
+
+Windows release binaries are built for common native Windows Emacs builds on
+x86_64 and aarch64. Releases include optional ConPTY support files from
+Microsoft's redistributable console runtime, which can improve latency and
+correctness compared with older inbox Windows ConPTY versions.
 
 Install from [MELPA](https://melpa.org/#/ghostel):
 

@@ -143,7 +143,7 @@ mark.
 #+cindex: requirements
 
 - Emacs 28.1+ with dynamic module support
-- macOS, Linux, or FreeBSD
+- macOS, Linux, FreeBSD, or native Windows
 
 The native module is *automatically downloaded* on first use.  Pre-built
 binaries are available for:
@@ -153,6 +153,8 @@ binaries are available for:
 - =x86_64-linux=
 - =aarch64-linux=
 - =x86_64-freebsd=
+- =x86_64-windows=
+- =aarch64-windows=
 
 If you prefer to build from source or need a different platform, you will also
 need [[https://ziglang.org/][Zig]] 0.15.2 - see [[#building-from-source][Building from source]].
@@ -221,6 +223,38 @@ your package manager rebuilds or reinstalls the tree while Emacs has the module
 loaded, point =ghostel-module-directory= at a stable location outside the
 package tree (for example =~/.config/emacs/ghostel/=).
 
+** Platform notes
+:properties:
+:custom_id: platform-notes
+:end:
+
+*** Windows
+:properties:
+:custom_id: windows-platform-notes
+:end:
+
+Ghostel supports native Windows Emacs builds with dynamic module support.  The
+pre-built release modules target the common =x86_64= and =aarch64= native Emacs
+architectures; the module DLL must match the architecture of Emacs, not merely
+the architecture of Windows itself.  Unusual custom Emacs builds, including
+static-CRT builds, are best-effort.
+
+Local terminals use Windows ConPTY.  Ghostel first looks for support files from
+Microsoft's redistributable console runtime next to the native module
+(=conpty.dll= and the matching =OpenConsole.exe= helpers).  When present, those
+files provide newer ConPTY behavior than older inbox Windows versions and can
+improve both interactivity and terminal-protocol correctness.  If they are not
+installed, Ghostel falls back to the inbox Windows ConPTY API.
+
+Downloading a pre-built Ghostel module also downloads the matching support files
+from the same Ghostel release.  When compiling the module locally, Ghostel tries
+to install the latest available support files; failure to install them is
+non-fatal because the inbox ConPTY fallback remains available.
+
+TRAMP remote terminals from Windows are limited to POSIX remotes.  They use
+TRAMP/ssh rather than local ConPTY, so the PTY lives on the remote host.  Dynamic
+window resizing for Windows-to-TRAMP terminals is not currently supported.
+
 * Building from source
 :properties:
 :custom_id: building-from-source
@@ -255,6 +289,9 @@ zig build --prefix . -Doptimize=ReleaseFast
 The module and =ghostel-module.version= sidecar are installed under Zig's
 install prefix.  Use =--prefix .= when building into a checkout that Ghostel
 should load directly, or pass another prefix matching =ghostel-module-directory=.
+On Windows, local builds normally use Zig's MinGW target (for example
+=-Dtarget=x86_64-windows-gnu=) so they match common native Emacs builds and do
+not require a Windows SDK.
 
 When installed from MELPA, =M-x ghostel-module-compile= builds the native module
 from source using =zig build --prefix <ghostel-module-directory>=; the Zig package
@@ -948,6 +985,7 @@ ghostel= spawns a shell on the remote host via TRAMP's process machinery.  The
 ;; Default configuration
 (setq ghostel-tramp-shells
       '(("ssh" login-shell)          ; auto-detect via getent
+        ("sshx" login-shell)
         ("scp" login-shell)
         ("docker" "/bin/sh")))       ; fixed shell for containers
 #+end_src
@@ -978,6 +1016,15 @@ existing TRAMP prefix (method, user, multi-hop) when available.  When no prefix
 exists, the method defaults to =tramp-default-method=; set
 =ghostel-tramp-default-method= to override it for ghostel specifically (e.g.
 ="scp"=, or ="rpc"= with [[https://github.com/ArthurHeymans/emacs-tramp-rpc][emacs-tramp-rpc]]).
+
+Remote terminals are supported for POSIX remotes reached through SSH-style TRAMP
+methods.  Windows remotes are not supported by this path: Ghostel's remote
+wrapper uses POSIX shell and tty facilities.
+
+Dynamic remote resize support depends on the local platform and TRAMP method.
+POSIX local Emacs builds can rely on the SSH client to propagate window-size
+changes to the remote PTY.  Windows-to-TRAMP remote terminals can run, but
+dynamic resize is currently unsupported.
 
 ** Remote shell integration
 :properties:
@@ -1894,7 +1941,7 @@ while ghostel and vterm trade a compile step for a C/Zig engine.
 | Shell integration auto-inject | ✅      | manual   | manual   |
 | Prompt navigation             | ✅      | ✅       | ✅       |
 | Elisp eval from shell         | ✅      | ✅       | ❌       |
-| TRAMP remote terminals        | ✅      | ✅       | ✅       |
+| TRAMP remote terminals        | POSIX   | ✅       | ✅       |
 | Eshell integration            | ✅      | ❌       | ✅       |
 | Bookmark support              | ✅      | ✅       | ❌       |
 |-------------------------------+---------+----------+----------|
@@ -1913,9 +1960,11 @@ while ghostel and vterm trade a compile step for a C/Zig engine.
 =manual= means supported but requiring manual setup (sourcing a script);
 =partial= means a subset (eat answers OSC 10/11 but not OSC 4 palette queries, and
 renders curly but not double/dotted/dashed underlines; vterm's input modes cover
-only its default and a copy mode).  Scrollback units differ by design - ghostel
-and eat bound it by bytes, vterm by lines.  Throughput is the plain-ASCII figure
-from [[#performance][Performance]] (Emacs 32.0.50, Apple M4 Max).
+only its default and a copy mode).  =POSIX= means TRAMP terminals target POSIX
+remotes; Windows-to-TRAMP remote terminals currently do not support dynamic
+resize.  Scrollback units differ by design - ghostel and eat bound it by bytes,
+vterm by lines.  Throughput is the plain-ASCII figure from [[#performance][Performance]]
+(Emacs 32.0.50, Apple M4 Max).
 
 ** Key differences
 
