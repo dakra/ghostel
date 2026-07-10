@@ -257,8 +257,11 @@ fn run(self: *Self) void {
         reapChild,
         .{ backend, self.event_writer },
     ) catch |err| {
-        log.err("Failed to spawn reaper thread; reaping synchronously: {any}", .{err});
-        reapChild(backend, self.event_writer);
+        log.err(
+            "ghostel: Failed to spawn reaper thread; leaking native backend: {any}",
+            .{err},
+        );
+        finishEventChannel(self.event_writer, 255);
         return;
     };
     reaper_thread.detach();
@@ -319,17 +322,19 @@ fn flushEvents(self: *Self) !void {
 
 fn reapChild(backend: Backend, event_writer: EventWriter) void {
     var be = backend;
+    finishEventChannel(event_writer, be.deinitAndWait());
+}
+
+fn finishEventChannel(event_writer: EventWriter, exit_code: u8) void {
     var writer = event_writer;
-    const exit_code = be.deinitAndWait();
 
     // A bare number is not a terminal callback; the Elisp event filter treats
     // it as the child's exit status and deletes the pipe process to run its
-    // sentinel. Closing the fd after the write releases Emacs' pipe once the
-    // native child is truly gone.
+    // sentinel. Closing the fd after the write releases Emacs' pipe.
     var exit_code_buf: [3]u8 = undefined;
     const str = std.fmt.bufPrint(&exit_code_buf, "{}", .{exit_code}) catch unreachable;
     writer.write(str) catch |err| {
-        log.warn("Failed to write native child exit event: {any}", .{err});
+        log.warn("ghostel: Failed to write native child exit event: {any}", .{err});
     };
     writer.close();
 }

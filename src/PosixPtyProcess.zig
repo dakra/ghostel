@@ -319,5 +319,8 @@ pub fn deinitAndWait(self: *Self) u8 {
     posix.close(self.wake_pipe[0]);
     posix.close(self.wake_pipe[1]);
     const result = posix.waitpid(self.pid, 0);
-    return @intCast(c.WEXITSTATUS(@as(c_int, @bitCast(result.status))));
+    const status: c_int = @bitCast(result.status);
+    if (c.WIFEXITED(status)) return @intCast(c.WEXITSTATUS(status));
+    if (c.WIFSIGNALED(status)) return @intCast(128 + c.WTERMSIG(status));
+    return 255;
 }
