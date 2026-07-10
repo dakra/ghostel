@@ -95,22 +95,59 @@ Returns nil if the platform is not recognized."
     (when tag
       (format "ghostel-module-%s%s" tag module-file-suffix))))
 
+(defun ghostel--release-asset-url (asset-name &optional version)
+  "Return the GitHub release download URL for ASSET-NAME.
+When VERSION is nil, use the latest release download URL."
+  (if version
+      (format "%s/download/v%s/%s"
+              ghostel-github-release-url version asset-name)
+    (format "%s/latest/download/%s"
+            ghostel-github-release-url asset-name)))
+
 (defun ghostel--module-download-url (&optional version)
   "Return the download URL for the current platform's pre-built module.
 When VERSION is nil, use the latest release download URL."
-  (let ((asset-name (ghostel--module-asset-name)))
-    (when asset-name
-      (if version
-          (format "%s/download/v%s/%s"
-                  ghostel-github-release-url version asset-name)
-        (format "%s/latest/download/%s"
-                ghostel-github-release-url asset-name)))))
+  (when-let* ((asset-name (ghostel--module-asset-name)))
+    (ghostel--release-asset-url asset-name version)))
+
+(defun ghostel--windows-support-assets ()
+  "Return side-by-side ConPTY release asset mappings for Windows, or nil.
+Each mapping is an (ASSET-NAME . RELATIVE-DESTINATION) pair."
+  (when (eq system-type 'windows-nt)
+    (when-let* ((tag (ghostel--module-platform-tag))
+                (arch (car (split-string tag "-"))))
+      (let ((hosts (pcase arch
+                     ("x86" '("x86" "x64" "arm64"))
+                     ("x86_64" '("x64" "arm64"))
+                     ("aarch64" '("arm64")))))
+        (when hosts
+          (cons (cons (format "ghostel-conpty-%s.dll" tag) "conpty.dll")
+                (mapcar (lambda (host)
+                          (cons (format "ghostel-openconsole-%s-%s.exe" tag host)
+                                (format "%s/OpenConsole.exe" host)))
+                        hosts)))))))
+
+(defun ghostel--install-support-assets (dir &optional version)
+  "Install Windows support release assets into DIR.
+VERSION nil means the latest release.  Warn but continue on failure,
+since Ghostel can use the system ConPTY."
+  (dolist (asset (ghostel--windows-support-assets))
+    (let* ((asset-name (car asset))
+           (url (ghostel--release-asset-url asset-name version))
+           (dest (expand-file-name (cdr asset) dir)))
+      (unless (string-prefix-p "https://" url)
+        (error "Refusing non-HTTPS download URL: %s" url))
+      (make-directory (file-name-directory dest) t)
+      (message "ghostel: downloading support asset from %s..." url)
+      (unless (ghostel--download-file url dest)
+        (message "ghostel: warning: failed to download support asset %s"
+                 asset-name)))))
 
 (defun ghostel--release-version-from-url (url)
   "Return the release version embedded in URL, or nil.
 GitHub's `/releases/latest/download/<asset>' redirect resolves to
 `/releases/download/v<X.Y.Z>/<asset>'; extract the X.Y.Z segment."
-  (when (and url
+  (when (and (stringp url)
              (string-match "/releases/download/v\\([0-9]+\\.[0-9]+\\.[0-9]+\\)/"
                            url))
     (match-string 1 url)))
@@ -144,9 +181,12 @@ Returns non-nil on success."
               ;; parse the URL the server redirected us to.  If parsing
               ;; fails we fall back to the minimum so the sidecar still
               ;; reflects a safe lower bound.
-              (let ((resolved (or requested-version
-                                  (ghostel--release-version-from-url final-url)
-                                  ghostel--minimum-module-version)))
+              (let* ((downloaded-version (ghostel--release-version-from-url final-url))
+                     (resolved (or requested-version
+                                   downloaded-version
+                                   ghostel--minimum-module-version)))
+                (ghostel--install-support-assets
+                 dir (or requested-version downloaded-version))
                 (ghostel--write-module-sidecar-version dir resolved))
               (message "ghostel: native module downloaded successfully")
               t))))
@@ -183,6 +223,7 @@ on success the produced module and its sidecar are moved into DEST-DIR."
                        built final
                        (expand-file-name "ghostel-module.version" build-dir)
                        (expand-file-name "ghostel-module.version" dest-dir))
+                      (ghostel--install-support-assets dest-dir)
                       (message "ghostel: native module compiled successfully"))))))
           (when (and build-dir (file-directory-p build-dir))
             (ignore-errors (delete-directory build-dir t))))
@@ -412,6 +453,7 @@ Leaving the prompt empty downloads the latest release."
                           (progn
                             (ghostel--install-module-pair
                              built final built-sidecar final-sidecar)
+                            (ghostel--install-support-assets dest-dir)
                             (message "ghostel: module installed at %s" final))
                         (error
                          (display-warning

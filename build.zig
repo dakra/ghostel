@@ -71,6 +71,12 @@ pub fn build(b: *std.Build) void {
     const copy_version_step = b.addInstallFile(version_file, "ghostel-module.version");
     b.getInstallStep().dependOn(&copy_version_step.step);
 
+    if (target_os == .windows) {
+        if (b.option([]const u8, "windows-conpty-package-dir", "Unpacked Microsoft.Windows.Console.ConPTY NuGet package directory")) |dir| {
+            installWindowsConptyRuntime(b, target.result.cpu.arch, dir);
+        }
+    }
+
     // ----------------------------------------------------------------
     // `zig build test` — pure-Zig unit tests.
     //
@@ -161,4 +167,41 @@ fn moduleOutputName(target_os: std.Target.Os.Tag) []const u8 {
         .windows => "ghostel-module.dll",
         else => "ghostel-module.so",
     };
+}
+
+fn installWindowsConptyRuntime(b: *std.Build, arch: std.Target.Cpu.Arch, package_dir: []const u8) void {
+    const runtime_arch = windowsConptyRuntimeArch(arch) orelse return;
+    const conpty_path = b.pathJoin(&.{ package_dir, "runtimes", b.fmt("win-{s}", .{runtime_arch}), "native", "conpty.dll" });
+    const copy_conpty = b.addInstallFile(.{ .cwd_relative = conpty_path }, "conpty.dll");
+    b.getInstallStep().dependOn(&copy_conpty.step);
+
+    switch (arch) {
+        .x86 => {
+            installWindowsOpenConsole(b, package_dir, "x86");
+            installWindowsOpenConsole(b, package_dir, "x64");
+            installWindowsOpenConsole(b, package_dir, "arm64");
+        },
+        .x86_64 => {
+            installWindowsOpenConsole(b, package_dir, "x64");
+            installWindowsOpenConsole(b, package_dir, "arm64");
+        },
+        .aarch64 => installWindowsOpenConsole(b, package_dir, "arm64"),
+        else => {},
+    }
+}
+
+fn windowsConptyRuntimeArch(arch: std.Target.Cpu.Arch) ?[]const u8 {
+    return switch (arch) {
+        .x86 => "x86",
+        .x86_64 => "x64",
+        .aarch64 => "arm64",
+        else => null,
+    };
+}
+
+fn installWindowsOpenConsole(b: *std.Build, package_dir: []const u8, host_arch: []const u8) void {
+    const source = b.pathJoin(&.{ package_dir, "build", "native", "runtimes", host_arch, "OpenConsole.exe" });
+    const dest = b.fmt("{s}/OpenConsole.exe", .{host_arch});
+    const copy = b.addInstallFile(.{ .cwd_relative = source }, dest);
+    b.getInstallStep().dependOn(&copy.step);
 }

@@ -54,13 +54,24 @@ jobs:
           version: 0.15.2
           cache-key: ${{ matrix.platform }}-zig-0.15.2
 
+      - name: Download ConPTY runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://www.nuget.org/api/v2/package/Microsoft.Windows.Console.ConPTY/1.24.260512001 -OutFile conpty.zip
+          Expand-Archive -LiteralPath conpty.zip -DestinationPath conpty-package -Force
+
       - name: Build native module
         shell: bash
         run: |
+          conpty_args=()
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            conpty_args=(-Dwindows-conpty-package-dir=conpty-package)
+          fi
           if [ -n "${{ matrix.target }}" ]; then
-            zig build --prefix . -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast -Dcpu=baseline
+            zig build --prefix . -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast -Dcpu=baseline "${conpty_args[@]}"
           else
-            zig build --prefix . -Doptimize=ReleaseFast -Dcpu=baseline
+            zig build --prefix . -Doptimize=ReleaseFast -Dcpu=baseline "${conpty_args[@]}"
           fi
 
       - name: Strip non-exported symbols (macOS)
@@ -72,12 +83,24 @@ jobs:
         run: |
           mv ghostel-module${{ matrix.suffix }} \
              ghostel-module-${{ matrix.platform }}${{ matrix.suffix }}
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            mv conpty.dll ghostel-conpty-${{ matrix.platform }}.dll
+            for host in x86 x64 arm64; do
+              if [ -f "$host/OpenConsole.exe" ]; then
+                mv "$host/OpenConsole.exe" \
+                   "ghostel-openconsole-${{ matrix.platform }}-$host.exe"
+              fi
+            done
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ghostel-module-${{ matrix.platform }}
-          path: ghostel-module-${{ matrix.platform }}${{ matrix.suffix }}
+          path: |
+            ghostel-module-${{ matrix.platform }}${{ matrix.suffix }}
+            ghostel-conpty-${{ matrix.platform }}.dll
+            ghostel-openconsole-${{ matrix.platform }}-*.exe
 
   release:
     needs: build

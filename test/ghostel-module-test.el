@@ -24,6 +24,32 @@
       (should (equal "https://example.invalid/releases/latest/download/ghostel-module-x86_64-linux.so"
                      (ghostel--module-download-url nil))))))
 
+(ert-deftest ghostel-test-install-support-assets-downloads-windows-assets ()
+  "Support asset installation downloads the Windows asset mapping."
+  (let* ((ghostel-github-release-url "https://example.invalid/releases")
+         (dir (make-temp-file "ghostel-support-" t))
+         (downloads nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--windows-support-assets)
+                   (lambda ()
+                     '(("support-a.dll" . "support-a.dll")
+                       ("support-b.exe" . "x64/support-b.exe"))))
+                  ((symbol-function 'ghostel--download-file)
+                   (lambda (url dest)
+                     (push (list url dest) downloads)
+                     url))
+                  ((symbol-function 'message) (lambda (&rest _))))
+          (ghostel--install-support-assets dir "0.9.0")
+          (should (equal
+                   (list
+                    (list "https://example.invalid/releases/download/v0.9.0/support-b.exe"
+                          (expand-file-name "x64/support-b.exe" dir))
+                    (list "https://example.invalid/releases/download/v0.9.0/support-a.dll"
+                          (expand-file-name "support-a.dll" dir)))
+                   downloads)))
+      (when (file-exists-p dir)
+        (delete-directory dir t)))))
+
 (ert-deftest ghostel-test-download-module-defaults-to-minimum-version ()
   "Automatic downloads pin to the minimum supported native module version."
   (let* ((ghostel--minimum-module-version "0.7.1")
