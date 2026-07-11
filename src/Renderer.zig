@@ -905,6 +905,9 @@ fn isRowDirty(self: *Self, pin: gt.Pin) bool {
     return false;
 }
 
+/// Renders rows from `start_pin` to end into the buffer at current point.
+/// Consumes row dirty flags but not page dirty flags. The latter is the
+/// responsibility of the caller.
 fn render(
     self: *Self,
     env: emacs.Env,
