@@ -325,13 +325,13 @@ fn reapChild(backend: Backend, event_writer: EventWriter) void {
     finishEventChannel(event_writer, be.deinitAndWait());
 }
 
-fn finishEventChannel(event_writer: EventWriter, exit_code: u8) void {
+fn finishEventChannel(event_writer: EventWriter, exit_code: u32) void {
     var writer = event_writer;
 
     // A bare number is not a terminal callback; the Elisp event filter treats
     // it as the child's exit status and deletes the pipe process to run its
     // sentinel. Closing the fd after the write releases Emacs' pipe.
-    var exit_code_buf: [3]u8 = undefined;
+    var exit_code_buf: [10]u8 = undefined;
     const str = std.fmt.bufPrint(&exit_code_buf, "{}", .{exit_code}) catch unreachable;
     writer.write(str) catch |err| {
         log.warn("ghostel: Failed to write native child exit event: {any}", .{err});
