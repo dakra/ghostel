@@ -314,7 +314,7 @@ pub fn replicaName(self: *Self) []const u8 {
     return self.pty.replicaName();
 }
 
-pub fn deinitAndWait(self: *Self) u8 {
+pub fn deinitAndWait(self: *Self) u32 {
     std.debug.assert(self.pid > 0);
     self.pty.deinit();
     posix.close(self.wake_pipe[0]);

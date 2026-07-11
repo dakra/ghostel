@@ -407,7 +407,7 @@ pub fn replicaName(_: *Self) []const u8 {
     return "";
 }
 
-pub fn deinitAndWait(self: *Self) u8 {
+pub fn deinitAndWait(self: *Self) u32 {
     self.closeConPtyHandles();
 
     var exit_code: c.DWORD = 0;
@@ -418,7 +418,7 @@ pub fn deinitAndWait(self: *Self) u8 {
         self.shell_process = c.INVALID_HANDLE_VALUE;
     }
 
-    return @truncate(exit_code);
+    return exit_code;
 }
 
 fn initApi() !void {
