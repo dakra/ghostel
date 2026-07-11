@@ -29,7 +29,7 @@ except ImportError as exc:  # pragma: no cover - exercised by the test runner en
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EMACS = os.environ.get("EMACS", "emacs")
 EMACSFLAGS = shlex.split(os.environ.get("EMACSFLAGS", ""))
-MAX_EXAMPLES = int(os.environ.get("GHOSTEL_HYPOTHESIS_EXAMPLES", "100"))
+MAX_EXAMPLES = int(os.environ.get("GHOSTEL_HYPOTHESIS_EXAMPLES", "1000"))
 CASE_TIMEOUT = float(os.environ.get("GHOSTEL_HYPOTHESIS_TIMEOUT", "30"))
 CASES_DIR = Path(
     os.environ.get("GHOSTEL_HYPOTHESIS_CASES_DIR", REPO_ROOT / "test/hypothesis/cases")
