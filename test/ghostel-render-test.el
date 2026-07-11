@@ -1348,6 +1348,35 @@ the sentinel."
               (should (ghostel-test--line-clean-p row)))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-full-viewport-scroll-rebuilds-page-dirty-rows ()
+  "Incremental redraw rebuilds rows moved by a full-viewport scroll."
+  :tags '(native)
+  (dolist (case '((alt-screen 1000 "\e[?1049h\e[H\e[2J")
+                 (primary 0 "")))
+    (pcase-let ((`(,screen ,scrollback ,setup) case))
+      (ert-info ((format "screen: %S" screen))
+        (let ((buf (generate-new-buffer " *ghostel-test-page-dirty-scroll*")))
+          (unwind-protect
+              (with-current-buffer buf
+                (let ((term (ghostel--new 5 40 scrollback))
+                      (inhibit-read-only t))
+                  (ghostel--write-vt term setup)
+                  (ghostel--write-vt
+                   term
+                   "row-0\r\nrow-1\r\nrow-2\r\nrow-3\r\nrow-4")
+                  (ghostel--redraw term t)
+                  (ghostel--write-vt term "\e[5;1H\r\nnew")
+                  (ghostel--redraw term)
+                  (should
+                   (equal "row-1\nrow-2\nrow-3\nrow-4\nnew\n"
+                          (buffer-substring-no-properties
+                           (point-min) (point-max))))
+                  (ghostel-test--mark-all-lines-clean)
+                  (ghostel--redraw term)
+                  (dotimes (row 5)
+                    (should (ghostel-test--line-clean-p row)))))
+            (kill-buffer buf)))))))
+
 (ert-deftest ghostel-test-incremental-redraw ()
   "Test that incremental redraw correctly updates dirty rows."
   :tags '(native)
