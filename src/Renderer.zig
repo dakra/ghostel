@@ -185,10 +185,16 @@ pub fn redraw(self: *Self, env: emacs.Env, force_full: bool) !void {
     try self.renderCursor(env);
 
     self.active_pin.* = screen.pages.getTopLeft(.active);
+    clearPageDirtyFlags(self.active_pin.node);
     self.rows_in_buffer = if (screen.no_scrollback)
         screen.pages.rows
     else
         screen.pages.total_rows;
+}
+
+fn clearPageDirtyFlags(from_node: *gt.PageList.List.Node) void {
+    var node: ?*gt.PageList.List.Node = from_node;
+    while (node) |n| : (node = n.next) n.data.dirty = false;
 }
 
 fn invalidate(self: *Self, env: emacs.Env) !void {
@@ -906,13 +912,12 @@ fn render(
 ) !void {
     const term = self.term;
 
-    var page = if (term.screens.active.no_scrollback)
+    var materialized_page = if (term.screens.active.no_scrollback)
         null
     else
         try self.getOrAddPage(start_pin.node.serial);
 
     var eob = false;
-    var dirty_page: ?*gt.Page = null;
     var current_span: ?struct {
         start_val: emacs.Value,
         node: *const gt.PageList.List.Node,
@@ -924,19 +929,14 @@ fn render(
         const row = row_pin.rowAndCell().row;
         eob = eob or env.isNotNil(env.f("eobp", .{}));
 
-        if (page) |p| {
+        if (materialized_page) |p| {
             if (p.serial != row_pin.node.serial) {
-                page = p.next() orelse try self.addPage(row_pin.node.serial);
-                std.debug.assert(page != null);
-                std.debug.assert(page.?.serial == row_pin.node.serial);
+                materialized_page = p.next() orelse try self.addPage(row_pin.node.serial);
+                std.debug.assert(materialized_page != null);
+                std.debug.assert(materialized_page.?.serial == row_pin.node.serial);
             }
         }
 
-        const terminal_page = &row_pin.node.data;
-        const page_completed = if (dirty_page) |dirty|
-            dirty != terminal_page
-        else
-            false;
         const clean = !eob and !self.isRowDirty(row_pin);
         if (current_span) |*span| {
             if (clean or span.node != row_pin.node) {
@@ -945,11 +945,6 @@ fn render(
                 current_span = null;
             }
         }
-        if (page_completed) {
-            dirty_page.?.dirty = false;
-            dirty_page = null;
-        }
-        if (terminal_page.dirty) dirty_page = terminal_page;
 
         const line_start_val = env.f("point", .{});
         if (!eob) _ = env.f("forward-line", .{1});
@@ -977,7 +972,7 @@ fn render(
                 current_span.?.adjusted_line_start += new_line_len;
             }
 
-            if (page) |p| {
+            if (materialized_page) |p| {
                 p.len -|= old_line_len;
                 p.len += new_line_len;
             }
@@ -990,7 +985,6 @@ fn render(
         _ = env.f("delete-region", .{ span.start_val, env.f("point", .{}) });
         try self.flushSpan(env);
     }
-    if (dirty_page) |dirty| dirty.dirty = false;
 }
 
 fn renderCursor(self: *Self, env: emacs.Env) !void {
