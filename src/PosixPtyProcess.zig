@@ -212,6 +212,7 @@ pub fn init(alloc: Allocator, initial_cols: u16, initial_rows: u16, params: back
     if (params.cwd) |cwd| posix.chdir(cwd) catch |err| {
         _ = posix.write(posix.STDERR_FILENO, "Failed to change working directory: ") catch 0;
         _ = posix.write(posix.STDERR_FILENO, @errorName(err)) catch 0;
+        std.c._exit(1);
     };
 
     const err = posix.execvpeZ(params.file, args, env);
