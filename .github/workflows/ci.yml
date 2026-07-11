@@ -76,7 +76,13 @@ jobs:
           version: 0.15.2
 
       - name: Run pure-Zig unit tests
-        run: zig build test
+        shell: bash
+        run: |
+          target_args=()
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            target_args=(-Dtarget=x86_64-windows-gnu)
+          fi
+          zig build test "${target_args[@]}"
 
   test:
     runs-on: ubuntu-latest
@@ -287,6 +293,7 @@ jobs:
   test-native-windows:
     needs: build-native
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -310,7 +317,8 @@ jobs:
         run: |
           touch ghostel-module.dll
           git clone --depth 1 https://github.com/emacs-compat/compat.git /tmp/compat
-          make -j$(getconf _NPROCESSORS_ONLN) \
+          make \
+            EMACS="timeout 60s emacs" \
             EMACSFLAGS="-L /tmp/compat" \
             test-native
 
