@@ -886,7 +886,7 @@ fn isSameRow(a: gt.Pin, b: gt.Pin) bool {
 }
 
 fn isRowDirty(self: *Self, pin: gt.Pin) bool {
-    if (pin.rowAndCell().row.dirty) return true;
+    if (pin.isDirty()) return true;
 
     const cursor: ?gt.Pin = self.term.screens.active.cursor.page_pin.*;
 
@@ -912,6 +912,7 @@ fn render(
         try self.getOrAddPage(start_pin.node.serial);
 
     var eob = false;
+    var dirty_page: ?*gt.Page = null;
     var current_span: ?struct {
         start_val: emacs.Value,
         node: *const gt.PageList.List.Node,
@@ -931,6 +932,11 @@ fn render(
             }
         }
 
+        const terminal_page = &row_pin.node.data;
+        const page_completed = if (dirty_page) |dirty|
+            dirty != terminal_page
+        else
+            false;
         const clean = !eob and !self.isRowDirty(row_pin);
         if (current_span) |*span| {
             if (clean or span.node != row_pin.node) {
@@ -939,6 +945,11 @@ fn render(
                 current_span = null;
             }
         }
+        if (page_completed) {
+            dirty_page.?.dirty = false;
+            dirty_page = null;
+        }
+        if (terminal_page.dirty) dirty_page = terminal_page;
 
         const line_start_val = env.f("point", .{});
         if (!eob) _ = env.f("forward-line", .{1});
@@ -979,6 +990,7 @@ fn render(
         _ = env.f("delete-region", .{ span.start_val, env.f("point", .{}) });
         try self.flushSpan(env);
     }
+    if (dirty_page) |dirty| dirty.dirty = false;
 }
 
 fn renderCursor(self: *Self, env: emacs.Env) !void {
