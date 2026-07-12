@@ -271,6 +271,49 @@ The mock erases and reinserts the same text so these tests exercise
       (evil-ghostel--around-redraw (symbol-function 'ghostel--redraw) nil))
      (should (= renderer-point (point))))))
 
+(defun evil-ghostel-test--streamed-output-redraw ()
+  "Run `evil-ghostel--around-redraw' with a mock render streaming output.
+The mock appends rows below, advances the cursor to the new prompt at
+`point-max', and leaves point untouched, like the renderer."
+  (cl-letf (((symbol-function 'ghostel--redraw)
+             (lambda (_term &optional _full)
+               (save-excursion
+                 (goto-char (point-max))
+                 (evil-ghostel-test--insert "\nout-1\nout-2\n$ "))
+               (setq ghostel--cursor-char-pos (point-max)
+                     ghostel--cursor-pos '(2 . 5))))
+            ((symbol-function 'ghostel--mode-enabled)
+             (lambda (_term _mode) nil)))
+    (evil-ghostel--around-redraw (symbol-function 'ghostel--redraw) 'fake)))
+
+(ert-deftest evil-ghostel-test-around-redraw-tracks-parked-normal-point ()
+  "Normal-state point parked at the cursor follows it across a redraw.
+Output that advances the cursor must not detach a point the user
+never moved (issue #228)."
+  (evil-ghostel-test--with-evil-buffer
+   (insert "one\ntwo\n$ ")
+   (setq-local ghostel--term 'fake
+               ghostel--cursor-char-pos (point-max)
+               ghostel--cursor-pos '(2 . 2))
+   (evil-normal-state)
+   (goto-char ghostel--cursor-char-pos)
+   (evil-ghostel-test--streamed-output-redraw)
+   (should (= ghostel--cursor-char-pos (point)))
+   (should (= 6 (line-number-at-pos)))))
+
+(ert-deftest evil-ghostel-test-around-redraw-keeps-roamed-normal-point ()
+  "Normal-state point off the cursor stays put across an output redraw
+\(issue #454)."
+  (evil-ghostel-test--with-evil-buffer
+   (insert "one\ntwo\n$ ")
+   (setq-local ghostel--term 'fake
+               ghostel--cursor-char-pos (point-max)
+               ghostel--cursor-pos '(2 . 2))
+   (evil-normal-state)
+   (goto-char (point-min))
+   (evil-ghostel-test--streamed-output-redraw)
+   (should (= (point-min) (point)))))
+
 (ert-deftest evil-ghostel-test-around-redraw-lets-point-follow-in-emacs ()
   "Point follows the TUI cursor in `emacs'/`insert' states."
   (evil-ghostel-test--with-evil-buffer
@@ -607,11 +650,10 @@ diffing — otherwise dy is wrong by the scrollback line count."
 ;; -----------------------------------------------------------------------
 
 (ert-deftest evil-ghostel-test-redraw-preserves-point-normal ()
-  "Redraws preserve point in evil normal state.
-Unlike vterm, the renderer does not snap point to the terminal cursor;
-in normal state point stays wherever the user navigated (the rewrite
-dropped the old prompt-following heuristic — only insert / emacs state
-sync point to the cursor)."
+  "Redraws preserve point in evil normal state once the user navigated.
+The renderer does not snap point to the terminal cursor; in normal
+state point stays wherever the user moved it.  Point follows the
+cursor only while parked exactly on it (and in insert / emacs state)."
   (evil-ghostel-test--with-buffer 5 40 "first\r\nsecond\r\nthird"
                                   (evil-normal-state)
                                   (save-window-excursion
@@ -626,6 +668,41 @@ sync point to the cursor)."
                                     (ghostel--redraw term t))
                                   (should (= 3 (current-column)))
                                     (should (= 1 (line-number-at-pos))))))
+
+(defun evil-ghostel-test--stream-overflow (term)
+  "Stream output through TERM that overflows a 5-row viewport, then redraw.
+The whole burst lands in a single redraw, like fast un-throttled output."
+  (ghostel--write-vt term "\r\n")
+  (dotimes (i 8)
+    (ghostel--write-vt term (format "out-%d\r\n" i)))
+  (ghostel--write-vt term "$ ")
+  (let ((inhibit-read-only t))
+    (ghostel--redraw term nil)))
+
+(ert-deftest evil-ghostel-test-redraw-tracks-cursor-when-parked ()
+  "Output that grows scrollback keeps a parked normal-state point on the cursor.
+Point must end up at the new cursor, not stranded above the new prompt
+in freshly materialized scrollback (issue #228).  The buffer stays
+displayed: the whole point is that a burst through a visible window
+must not disengage tracking."
+  (evil-ghostel-test--with-buffer 5 40 "$ "
+                                  (evil-normal-state)
+                                  (goto-char ghostel--cursor-char-pos)
+                                  (evil-ghostel-test--stream-overflow term)
+                                  (should (> (count-lines (point-min) (point-max)) 5))
+                                  (should (= ghostel--cursor-char-pos (point)))))
+
+(ert-deftest evil-ghostel-test-redraw-keeps-roamed-point-in-scrollback ()
+  "Output that grows scrollback leaves a roamed normal-state point on its text
+\(issue #454)."
+  (evil-ghostel-test--with-buffer 5 40 "alpha\r\nbeta\r\n$ "
+                                  (evil-normal-state)
+                                  (goto-char (point-min))
+                                  (move-to-column 3)
+                                  (let ((saved (point)))
+                                    (evil-ghostel-test--stream-overflow term)
+                                    (should (= saved (point)))
+                                    (should (looking-back "alp" (line-beginning-position))))))
 
 (ert-deftest evil-ghostel-test-redraw-moves-point-insert ()
   "Test that redraws move point to terminal cursor in insert state."

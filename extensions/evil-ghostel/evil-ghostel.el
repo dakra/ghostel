@@ -134,10 +134,16 @@ Comparable to `ghostel--cursor-pos''s row."
   (when ghostel--term-rows
     (- (line-number-at-pos (point) t) 1 (evil-ghostel--scrollback-lines))))
 
-;; Redraw: preserve Evil point/visual semantics.  ghostel repaints the
-;; viewport on each redraw without snapping point to the cursor; right
-;; for normal state.  Point follows the cursor only in insert/emacs state
-;; (where typed chars land there); visual markers are restored around it.
+(defun evil-ghostel--following-window-p ()
+  "Return non-nil when the buffer's window follows the live output.
+No window showing the buffer counts as following."
+  (let ((win (get-buffer-window (current-buffer) t)))
+    (or (null win) (ghostel--window-anchored-p win))))
+
+;; Redraw: preserve Evil point/visual semantics.  Point follows the
+;; cursor in insert/emacs state, and in normal/motion state while parked
+;; exactly at the cursor; once the user moves off it, point stays put.
+;; Visual markers are restored around the redraw.
 
 (defun evil-ghostel--around-redraw (orig-fn term &optional full)
   "Apply Evil point/visual handling around `ghostel--redraw'.
@@ -145,18 +151,29 @@ ORIG-FN is the advised function (TERM, FULL).  Skipped in alt-screen (1049)."
   (if (and evil-ghostel-mode
            (not (ghostel--mode-enabled term 1049)))
       (let* ((visual-p (eq evil-state 'visual))
+             ;; Sampled pre-render (window check included): only then does
+             ;; point == cursor mean the user has not navigated; the render
+             ;; advances the cursor and a burst un-anchors the window.
+             (tracked (and (memq evil-state '(normal motion))
+                           (eq ghostel--input-mode 'semi-char)
+                           ghostel--cursor-char-pos
+                           (= (point) ghostel--cursor-char-pos)
+                           (evil-ghostel--following-window-p)))
              (saved-vb (and visual-p (bound-and-true-p evil-visual-beginning)
                             (marker-position evil-visual-beginning)))
              (saved-ve (and visual-p (bound-and-true-p evil-visual-end)
                             (marker-position evil-visual-end))))
         (funcall orig-fn term full)
-        ;; Don't drag point to the cursor while the user reads scrollback;
-        ;; redisplay would yank the viewport back to the bottom each frame.
-        ;; (No window showing the buffer → treat as following.)
-        (when (and (memq evil-state '(insert emacs))
-                   (let ((win (get-buffer-window (current-buffer) t)))
-                     (or (null win) (ghostel--window-anchored-p win))))
-          (evil-ghostel--reset-cursor-point))
+        (cond
+         ;; Exact target; column geometry can diverge on wide glyphs.
+         (tracked
+          (when ghostel--cursor-char-pos
+            (goto-char ghostel--cursor-char-pos)))
+         ;; Don't drag point to the cursor while the user reads scrollback;
+         ;; redisplay would yank the viewport back to the bottom each frame.
+         ((and (memq evil-state '(insert emacs))
+               (evil-ghostel--following-window-p))
+          (evil-ghostel--reset-cursor-point)))
         (when visual-p
           (let ((pmax (point-max)))
             (when saved-vb

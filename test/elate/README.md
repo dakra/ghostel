@@ -24,6 +24,8 @@ the parallel bash/zsh/fish/python3 sessions from the evil-ghostel rewrite
 - `matrix/boundary-<shell>-ghostel.json` — the input-region boundary suite (autosuggestion,
   right prompt, syntax-highlight tail, multi-line) on bash/zsh/fish/nu; see the boundary-suite
   section below.
+- `matrix/tracking-ghostel.json` — normal-state point tracking across streamed output
+  (#228 / #454); see the point-tracking section below.
 
 ## Running (elate 0.11.0+)
 
@@ -105,6 +107,29 @@ automated: narrow-width output wraps too, so the shell-as-oracle assertion can't
 across the soft-wrap newline; that stays covered by ERT
 (`...end-of-line-excludes-autosuggestion`, `...replace-count-excludes-soft-wraps`).
 
+## Point-tracking suite (normal state vs streamed output)
+
+The operator matrix edits at a quiet prompt and never exercises redraw-time point
+placement, so it stayed green through the #228 tracking regression.
+`matrix/tracking-ghostel.json` covers that surface directly (shell-agnostic point
+handling, driven on zsh):
+
+```sh
+elate run --keep-going --format json test/elate/matrix/tracking-ghostel.json
+```
+
+- **parked-stream / parked-burst** — point parked at the live cursor in normal state
+  must follow it across a line-at-a-time stream and across a single-frame burst (the
+  burst un-anchors the window until point snaps, so it catches post-render guard skew).
+- **roamed-burst** — point moved off the cursor (`k k k`) must stay put (#454).
+- **re-engage** — after roaming, `i` re-parks point; tracking must engage again.
+- **esc-clamp** (xfail) — an ESC processed before the RET echo renders sits at the typed
+  text's EOL; evil's normal-state EOL adjust parks point at cursor-1 and exact-position
+  tracking disengages.  Cursor-line-scope tracking would absorb this.
+
+The tracked groups send ESC only after a short idle inside a `sleep 2` prefix so it
+lands on the rendered empty line rather than in the esc-clamp condition.
+
 ## Known xfails (flagged, not fixed — confirmed live on elate 0.11.0)
 
 - **`u` (undo) on `nu` and `python3`** — `evil-ghostel-undo` sends `C-_` (readline/zle
@@ -114,6 +139,9 @@ across the soft-wrap newline; that stays covered by ERT
 - **`~` (toggle-case) on all shells** — evil-ghostel doesn't remap `~`, so vanilla Evil
   runs against the read-only `*ghostel*` render buffer and the keystroke itself signals
   `Buffer is read-only` (the op errors outright, not just "reverts on redraw").
+- **`esc-clamp` in the tracking suite** — evil's EOL adjust at the quiet prompt parks
+  point one char off the cursor, disengaging exact-position tracking (see the
+  point-tracking section).
 
 Each is marked `expect: "fail"` so a regression elsewhere still shows red and a future
 fix shows **XPASS**. Everything else passed on bash/zsh/fish/nu (incl. `a X s S p`,

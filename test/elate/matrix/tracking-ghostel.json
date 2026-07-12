@@ -1,0 +1,73 @@
+{
+  "name": "tracking-ghostel",
+  "comment": "Normal-state point tracking across streamed output (#228 / #454). The operator matrix never exercises redraw-time point placement, so tracking regressions stay invisible to it. Point parked at the live cursor must follow it across a line-at-a-time stream AND a single-frame burst (the burst un-anchors the window until point snaps, catching post-render guard skew); a roamed point must stay put; tracking must re-engage after roaming. Commands are prefixed with `sleep 2` and ESC is sent after a short idle so it lands on the rendered empty line: an ESC processed before the RET echo renders sits at the typed text's EOL, and evil's normal-state EOL adjust pulls point off the cursor (see the xfail esc-clamp group, which pins that residual gap). Shell-agnostic point handling, driven on zsh.",
+  "session": {
+    "ui": "tty",
+    "size": "100x30",
+    "config": "minimal",
+    "eval": [
+      "(load \"/Users/daniel/.emacs.d/lib/ghostel/test/elate/lib/evil-ghostel-setup.el\")",
+      "(setq ghostel-shell \"/bin/zsh\")"
+    ]
+  },
+  "steps": [
+    {"eval": "(ghostel)"},
+    {"wait": "idle", "min_idle": 1.0, "timeout": 15.0},
+
+    {"group": "prompt", "comment": "short prompt"},
+    {"type": "PROMPT='> '; RPROMPT=''"},
+    {"keys": "RET"},
+    {"wait": "idle", "min_idle": 0.5, "timeout": 5.0},
+
+    {"group": "parked-stream", "comment": "ESC during the sleep, then a line-at-a-time stream: point rides the cursor to the new prompt"},
+    {"type": "sleep 2 && for i in {1..30}; do echo s-$i; sleep 0.05; done"},
+    {"keys": "RET"},
+    {"wait": "idle", "min_idle": 0.3, "timeout": 3.0},
+    {"keys": "<escape>"},
+    {"wait": "text", "pattern": "^s-30$", "timeout": 20.0},
+    {"wait": "idle", "min_idle": 0.8, "timeout": 10.0},
+    {"eval": "(unless (eq evil-state 'normal) (error \"STATE %s\" evil-state))"},
+    {"eval": "(unless (= (point) ghostel--cursor-char-pos) (error \"DETACHED point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))"},
+
+    {"group": "parked-burst", "comment": "whole burst lands in one redraw: the window guard must not latch tracking off"},
+    {"keys": "i"},
+    {"type": "sleep 2 && seq 1 200"},
+    {"keys": "RET"},
+    {"wait": "idle", "min_idle": 0.3, "timeout": 3.0},
+    {"keys": "<escape>"},
+    {"wait": "text", "pattern": "^200$", "timeout": 25.0},
+    {"wait": "idle", "min_idle": 0.8, "timeout": 10.0},
+    {"eval": "(unless (= (point) ghostel--cursor-char-pos) (error \"DETACHED point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))"},
+
+    {"group": "roamed-burst", "comment": "k k k during the sleep: point stays where the user moved, not dragged to the new prompt"},
+    {"keys": "i"},
+    {"type": "sleep 2 && seq 1 300"},
+    {"keys": "RET"},
+    {"wait": "idle", "min_idle": 0.3, "timeout": 3.0},
+    {"keys": "<escape> k k k"},
+    {"eval": "(setq eg-track--roam (point))"},
+    {"wait": "text", "pattern": "^300$", "timeout": 25.0},
+    {"wait": "idle", "min_idle": 0.8, "timeout": 10.0},
+    {"eval": "(unless (= eg-track--roam (point)) (error \"MOVED %d -> %d\" eg-track--roam (point)))"},
+    {"eval": "(when (= (point) ghostel--cursor-char-pos) (error \"DRAGGED to cursor %d\" (point)))"},
+
+    {"group": "re-engage", "comment": "insert re-parks point on the cursor; tracking must engage again after roaming"},
+    {"keys": "i"},
+    {"type": "sleep 2 && seq 1 400"},
+    {"keys": "RET"},
+    {"wait": "idle", "min_idle": 0.3, "timeout": 3.0},
+    {"keys": "<escape>"},
+    {"wait": "text", "pattern": "^400$", "timeout": 25.0},
+    {"wait": "idle", "min_idle": 0.8, "timeout": 10.0},
+    {"eval": "(unless (= (point) ghostel--cursor-char-pos) (error \"DETACHED point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))"},
+
+    {"group": "esc-clamp", "comment": "atomic RET+ESC: ESC processes before the echo renders, at the typed text's EOL; evil's EOL adjust pulls point one char off the cursor and exact-position tracking disengages"},
+    {"keys": "i"},
+    {"type": "sleep 2 && seq 1 500"},
+    {"keys": "RET <escape>"},
+    {"wait": "text", "pattern": "^500$", "timeout": 25.0},
+    {"wait": "idle", "min_idle": 0.8, "timeout": 10.0},
+    {"eval": "(unless (= (point) ghostel--cursor-char-pos) (error \"DETACHED point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))",
+     "expect": "fail", "reason": "normal-state EOL adjust at the quiet prompt parks point at cursor-1; cursor-line-scope tracking would absorb this"}
+  ]
+}
