@@ -1,6 +1,6 @@
 {
   "name": "tracking-ghostel",
-  "comment": "Normal-state point tracking across streamed output (#228 / #454). The operator matrix never exercises redraw-time point placement, so tracking regressions stay invisible to it. Point parked at the live cursor must follow it across a line-at-a-time stream AND a single-frame burst (the burst un-anchors the window until point snaps, catching post-render guard skew); a roamed point must stay put; tracking must re-engage after roaming. Commands are prefixed with `sleep 2` and ESC is sent after a short idle so it lands on the rendered empty line: an ESC processed before the RET echo renders sits at the typed text's EOL, and evil's normal-state EOL adjust pulls point off the cursor (see the xfail esc-clamp group, which pins that residual gap). Shell-agnostic point handling, driven on zsh.",
+  "comment": "Normal-state point tracking across streamed output (#228 / #454). The operator matrix never exercises redraw-time point placement, so tracking regressions stay invisible to it. Point parked at the live cursor must follow it across a line-at-a-time stream AND a single-frame burst (the burst un-anchors the window until point snaps, catching post-render guard skew); point elsewhere on the cursor's row follows row-wise keeping its column (row-roam, esc-clamp); a roamed point off the row must stay put; tracking must re-engage after roaming. Tracked groups prefix commands with `sleep 2` and send ESC after a short idle so it lands on the rendered empty line; esc-clamp sends RET+ESC atomically so ESC sits at the typed text's EOL where evil's EOL adjust pulls point one char off the cursor. Shell-agnostic point handling, driven on zsh.",
   "session": {
     "ui": "tty",
     "size": "100x30",
@@ -61,13 +61,24 @@
     {"wait": "idle", "min_idle": 0.8, "timeout": 10.0},
     {"eval": "(unless (= (point) ghostel--cursor-char-pos) (error \"DETACHED point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))"},
 
-    {"group": "esc-clamp", "comment": "atomic RET+ESC: ESC processes before the echo renders, at the typed text's EOL; evil's EOL adjust pulls point one char off the cursor and exact-position tracking disengages"},
+    {"group": "esc-clamp", "comment": "atomic RET+ESC: ESC processes before the echo renders and evil's EOL adjust parks point one char off the cursor, on its row; row-wise tracking carries it to the empty next line where the column caps to the cursor and exact tracking takes over"},
     {"keys": "i"},
     {"type": "sleep 2 && seq 1 500"},
     {"keys": "RET <escape>"},
     {"wait": "text", "pattern": "^500$", "timeout": 25.0},
     {"wait": "idle", "min_idle": 0.8, "timeout": 10.0},
-    {"eval": "(unless (= (point) ghostel--cursor-char-pos) (error \"DETACHED point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))",
-     "expect": "fail", "reason": "normal-state EOL adjust at the quiet prompt parks point at cursor-1; cursor-line-scope tracking would absorb this"}
+    {"eval": "(unless (= (point) ghostel--cursor-char-pos) (error \"DETACHED point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))"},
+
+    {"group": "row-roam", "comment": "0 at the prompt, then a background burst ending without newline: point rides the cursor's row at column 0, never snapped to the cursor"},
+    {"keys": "i"},
+    {"type": "{ sleep 2; seq 1 450; printf noeol; } &!"},
+    {"keys": "RET"},
+    {"wait": "idle", "min_idle": 0.3, "timeout": 3.0},
+    {"keys": "<escape> 0"},
+    {"wait": "text", "pattern": "noeol", "timeout": 25.0},
+    {"wait": "idle", "min_idle": 0.8, "timeout": 10.0},
+    {"eval": "(unless (= (line-beginning-position) (save-excursion (goto-char ghostel--cursor-char-pos) (line-beginning-position))) (error \"OFF-ROW point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))"},
+    {"eval": "(unless (= 0 (current-column)) (error \"COLUMN %d\" (current-column)))"},
+    {"eval": "(when (= (point) ghostel--cursor-char-pos) (error \"SNAPPED to cursor %d\" (point)))"}
   ]
 }

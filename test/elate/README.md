@@ -121,14 +121,16 @@ elate run --keep-going --format json test/elate/matrix/tracking-ghostel.json
 - **parked-stream / parked-burst** — point parked at the live cursor in normal state
   must follow it across a line-at-a-time stream and across a single-frame burst (the
   burst un-anchors the window until point snaps, so it catches post-render guard skew).
-- **roamed-burst** — point moved off the cursor (`k k k`) must stay put (#454).
+- **roamed-burst** — point moved off the cursor's row (`k k k`) must stay put (#454).
 - **re-engage** — after roaming, `i` re-parks point; tracking must engage again.
-- **esc-clamp** (xfail) — an ESC processed before the RET echo renders sits at the typed
-  text's EOL; evil's normal-state EOL adjust parks point at cursor-1 and exact-position
-  tracking disengages.  Cursor-line-scope tracking would absorb this.
+- **esc-clamp** — an ESC processed before the RET echo renders sits at the typed text's
+  EOL, where evil's normal-state EOL adjust parks point at cursor-1 on the cursor's row;
+  row-wise tracking must still carry point to the new prompt.
+- **row-roam** — `0` on the prompt row, then a background burst: point rides the
+  cursor's row at its own column, never snapped onto the cursor.
 
-The tracked groups send ESC only after a short idle inside a `sleep 2` prefix so it
-lands on the rendered empty line rather than in the esc-clamp condition.
+The parked groups send ESC only after a short idle inside a `sleep 2` prefix so it
+lands exactly on the cursor (the esc-clamp group covers the atomic RET+ESC timing).
 
 ## Known xfails (flagged, not fixed — confirmed live on elate 0.11.0)
 
@@ -139,9 +141,6 @@ lands on the rendered empty line rather than in the esc-clamp condition.
 - **`~` (toggle-case) on all shells** — evil-ghostel doesn't remap `~`, so vanilla Evil
   runs against the read-only `*ghostel*` render buffer and the keystroke itself signals
   `Buffer is read-only` (the op errors outright, not just "reverts on redraw").
-- **`esc-clamp` in the tracking suite** — evil's EOL adjust at the quiet prompt parks
-  point one char off the cursor, disengaging exact-position tracking (see the
-  point-tracking section).
 
 Each is marked `expect: "fail"` so a regression elsewhere still shows red and a future
 fix shows **XPASS**. Everything else passed on bash/zsh/fish/nu (incl. `a X s S p`,

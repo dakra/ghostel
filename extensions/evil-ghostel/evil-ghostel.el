@@ -141,9 +141,10 @@ No window showing the buffer counts as following."
     (or (null win) (ghostel--window-anchored-p win))))
 
 ;; Redraw: preserve Evil point/visual semantics.  Point follows the
-;; cursor in insert/emacs state, and in normal/motion state while parked
-;; exactly at the cursor; once the user moves off it, point stays put.
-;; Visual markers are restored around the redraw.
+;; cursor in insert/emacs state; in normal/motion state it follows
+;; exactly while parked at the cursor, and row-wise (keeping the user's
+;; column) while elsewhere on the cursor's row.  Off that row point
+;; stays put.  Visual markers are restored around the redraw.
 
 (defun evil-ghostel--around-redraw (orig-fn term &optional full)
   "Apply Evil point/visual handling around `ghostel--redraw'.
@@ -152,13 +153,19 @@ ORIG-FN is the advised function (TERM, FULL).  Skipped in alt-screen (1049)."
            (not (ghostel--mode-enabled term 1049)))
       (let* ((visual-p (eq evil-state 'visual))
              ;; Sampled pre-render (window check included): only then does
-             ;; point == cursor mean the user has not navigated; the render
-             ;; advances the cursor and a burst un-anchors the window.
-             (tracked (and (memq evil-state '(normal motion))
-                           (eq ghostel--input-mode 'semi-char)
-                           ghostel--cursor-char-pos
-                           (= (point) ghostel--cursor-char-pos)
-                           (evil-ghostel--following-window-p)))
+             ;; point on the cursor's row mean the user has not left the
+             ;; prompt; the render advances the cursor and a burst
+             ;; un-anchors the window.
+             (on-row (and (memq evil-state '(normal motion))
+                          (eq ghostel--input-mode 'semi-char)
+                          ghostel--cursor-char-pos
+                          (= (line-beginning-position)
+                             (save-excursion
+                               (goto-char ghostel--cursor-char-pos)
+                               (line-beginning-position)))
+                          (evil-ghostel--following-window-p)))
+             (tracked (and on-row (= (point) ghostel--cursor-char-pos)))
+             (saved-col (and on-row (not tracked) (current-column)))
              (saved-vb (and visual-p (bound-and-true-p evil-visual-beginning)
                             (marker-position evil-visual-beginning)))
              (saved-ve (and visual-p (bound-and-true-p evil-visual-end)
@@ -169,6 +176,11 @@ ORIG-FN is the advised function (TERM, FULL).  Skipped in alt-screen (1049)."
          (tracked
           (when ghostel--cursor-char-pos
             (goto-char ghostel--cursor-char-pos)))
+         ;; Roamed within the cursor's row: follow the row, keep the column.
+         (saved-col
+          (when ghostel--cursor-char-pos
+            (goto-char ghostel--cursor-char-pos)
+            (move-to-column saved-col)))
          ;; Don't drag point to the cursor while the user reads scrollback;
          ;; redisplay would yank the viewport back to the bottom each frame.
          ((and (memq evil-state '(insert emacs))

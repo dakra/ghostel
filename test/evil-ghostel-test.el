@@ -314,6 +314,26 @@ never moved (issue #228)."
    (evil-ghostel-test--streamed-output-redraw)
    (should (= (point-min) (point)))))
 
+(ert-deftest evil-ghostel-test-around-redraw-follows-cursor-row-keeps-column ()
+  "Normal-state point elsewhere on the cursor's row follows it row-wise.
+Point rides to the new cursor's row at its old column instead of
+snapping to the cursor or stranding in scrollback."
+  (evil-ghostel-test--with-evil-buffer
+   (insert "one\ntwo\n$ ")
+   (setq-local ghostel--term 'fake
+               ghostel--cursor-char-pos (point-max)
+               ghostel--cursor-pos '(2 . 2))
+   (evil-normal-state)
+   ;; Park at column 0 of the cursor's row (left of the cursor).
+   (goto-char ghostel--cursor-char-pos)
+   (move-to-column 0)
+   (evil-ghostel-test--streamed-output-redraw)
+   (should (= (line-beginning-position)
+              (save-excursion (goto-char ghostel--cursor-char-pos)
+                              (line-beginning-position))))
+   (should (= 0 (current-column)))
+   (should (/= (point) ghostel--cursor-char-pos))))
+
 (ert-deftest evil-ghostel-test-around-redraw-lets-point-follow-in-emacs ()
   "Point follows the TUI cursor in `emacs'/`insert' states."
   (evil-ghostel-test--with-evil-buffer
@@ -691,6 +711,22 @@ must not disengage tracking."
                                   (evil-ghostel-test--stream-overflow term)
                                   (should (> (count-lines (point-min) (point-max)) 5))
                                   (should (= ghostel--cursor-char-pos (point)))))
+
+(ert-deftest evil-ghostel-test-redraw-follows-cursor-row-in-scrollback ()
+  "Output that grows scrollback carries an on-row point to the new cursor row.
+Point parked on the cursor's row (but not at the cursor) keeps its
+column on the row where the cursor lands."
+  (evil-ghostel-test--with-buffer 5 40 "$ "
+                                  (evil-normal-state)
+                                  (goto-char ghostel--cursor-char-pos)
+                                  (move-to-column 0)
+                                  (evil-ghostel-test--stream-overflow term)
+                                  (should (= (line-beginning-position)
+                                             (save-excursion
+                                               (goto-char ghostel--cursor-char-pos)
+                                               (line-beginning-position))))
+                                  (should (= 0 (current-column)))
+                                  (should (/= (point) ghostel--cursor-char-pos))))
 
 (ert-deftest evil-ghostel-test-redraw-keeps-roamed-point-in-scrollback ()
   "Output that grows scrollback leaves a roamed normal-state point on its text
