@@ -295,6 +295,23 @@ same name must get separate buffers."
       (when (buffer-live-p buf)
         (kill-buffer buf)))))
 
+(ert-deftest ghostel-test-create-kills-buffer-on-quit ()
+  "`ghostel--create' kills the partially created buffer on quit.
+A keyboard quit can arrive during initialization, e.g. at a dir-locals
+prompt in `ghostel-mode'.  Uses `condition-case' directly since
+`should-error' only traps `error', not `quit'."
+  (cl-letf (((symbol-function 'ghostel--init-buffer)
+             (lambda (&rest _) (signal 'quit nil))))
+    (unwind-protect
+        (progn
+          (should (eq 'quit
+                      (condition-case err
+                          (progn (ghostel--create " *ghostel-test-quit*") nil)
+                        (quit (car err)))))
+          (should-not (get-buffer " *ghostel-test-quit*")))
+      (when-let* ((leftover (get-buffer " *ghostel-test-quit*")))
+        (kill-buffer leftover)))))
+
 (ert-deftest ghostel-test-returns-buffer ()
   "`ghostel' returns the (live) Ghostel buffer."
   (let ((created (generate-new-buffer "*ghostel-return-test*"))

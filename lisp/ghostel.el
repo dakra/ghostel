@@ -5197,7 +5197,8 @@ spawn after initialization."
 DISPLAY-ACTION, when non-nil, is passed to `pop-to-buffer' before
 terminal creation so size detection observes the window that will
 display the terminal.  Optional ROWS and COLS are passed through to
-`ghostel--init-buffer'."
+`ghostel--init-buffer'.  If initialization is interrupted by an error
+or quit, the partially created buffer is killed before re-signaling."
   (let ((buffer (generate-new-buffer name)))
     (condition-case err
         (progn
@@ -5209,7 +5210,7 @@ display the terminal.  Optional ROWS and COLS are passed through to
             (pop-to-buffer buffer display-action))
           (ghostel--init-buffer buffer rows cols)
           buffer)
-      (error
+      ((error quit)
        (when (buffer-live-p buffer)
          (kill-buffer buffer))
        (signal (car err) (cdr err))))))
