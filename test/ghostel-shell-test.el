@@ -119,8 +119,8 @@ newest-first list aligns with the buffer-order regions."
 				    ;; Send a real command before testing line editing.  The initial
 				    ;; output may be a terminal query or startup redraw; waiting for
 				    ;; command output proves fish's reader is accepting input.  Private
-				    ;; mode keeps history/autosuggestions from repainting `abc' after
-				    ;; it has been backspaced to `ab'.
+				    ;; mode keeps history/autosuggestions from repainting `wxyz' after
+				    ;; it has been backspaced to `wxy'.
 				    (ghostel--write-pty ghostel--term
 							"printf '%s%s\\n' GHOSTEL_FISH _READY\n")
 				    (ghostel-test--wait-until
@@ -129,25 +129,30 @@ newest-first list aligns with the buffer-order regions."
 						       (ghostel-test--rendered-terminal-text)))
 				     proc 10)
 
-				    ;; Type "abc" then backspace.
-				    (ghostel--write-pty ghostel--term "abc")
+				    ;; Type "wxyz" then backspace.  The typed text must
+				    ;; contain letters outside [0-9a-f]: fish's default
+				    ;; prompt shows the checkout's VCS state, and on a
+				    ;; detached HEAD (as in CI) that is the short commit
+				    ;; sha, so a hex-only marker can appear verbatim in
+				    ;; the prompt and never leave the screen.
+				    (ghostel--write-pty ghostel--term "wxyz")
 				    (ghostel-test--wait-until
 				     (lambda ()
-				       (string-match-p "abc" (ghostel-test--rendered-terminal-text)))
+				       (string-match-p "wxyz" (ghostel-test--rendered-terminal-text)))
 				     proc 5)
-				    (should (string-match-p "abc" (ghostel-test--rendered-terminal-text)))
+				    (should (string-match-p "wxyz" (ghostel-test--rendered-terminal-text)))
 
 				    ;; Send backspace (\x7f) and verify it works.
 				    (ghostel--write-pty ghostel--term "\x7f")
 				    (ghostel-test--wait-until
 				     (lambda ()
 				       (let ((state (ghostel-test--rendered-terminal-text)))
-					 (and (string-match-p "ab" state)
-					      (not (string-match-p "abc" state)))))
+					 (and (string-match-p "wxy" state)
+					      (not (string-match-p "wxyz" state)))))
 				     proc 5)
 				    (let ((state (ghostel-test--rendered-terminal-text)))
-				      (should (string-match-p "ab" state))
-				      (should-not (string-match-p "abc" state)))))))
+				      (should (string-match-p "wxy" state))
+				      (should-not (string-match-p "wxyz" state)))))))
 
 (ert-deftest ghostel-test-fish-auto-inject-loads-integration ()
   "Fish auto-inject shim chains to ghostel.fish and cleans XDG_DATA_DIRS."
