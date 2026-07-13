@@ -35,6 +35,60 @@ invisibly to the grid sizing math (discussion #534)."
             (should (null (get-char-property (point-min) 'line-height)))))
       (setq-default default-text-properties old))))
 
+(ert-deftest ghostel-test-mode-applies-line-spacing-custom ()
+  "`ghostel-line-spacing' seeds the buffer-local `line-spacing'."
+  (let ((ghostel-line-spacing 3))
+    (with-temp-buffer
+      (ghostel-mode)
+      (should (eql line-spacing 3)))))
+
+(ert-deftest ghostel-test-line-spacing-set-updates-live-buffers ()
+  "The `ghostel-line-spacing' setter updates live terminals only.
+Ghostel buffers get the new buffer-local `line-spacing' and displayed
+windows a forced size adjustment; other buffers are untouched."
+  (let ((setter (get 'ghostel-line-spacing 'custom-set))
+        (old (default-value 'ghostel-line-spacing))
+        (calls nil))
+    (with-temp-buffer
+      (ghostel-mode)
+      (let ((ghostel-buf (current-buffer)))
+        (with-temp-buffer
+          (let ((plain-buf (current-buffer)))
+            (set-window-buffer (selected-window) ghostel-buf)
+            (unwind-protect
+                (cl-letf (((symbol-function 'ghostel--adjust-size)
+                           (lambda (window force) (push (cons window force) calls))))
+                  (funcall setter 'ghostel-line-spacing 4)
+                  (should (eql (buffer-local-value 'line-spacing ghostel-buf) 4))
+                  (should-not (buffer-local-value 'line-spacing plain-buf))
+                  (should (equal calls
+                                 (list (cons (get-buffer-window ghostel-buf) t)))))
+              (funcall setter 'ghostel-line-spacing old))))))))
+
+(ert-deftest ghostel-test-cell-height-includes-line-spacing ()
+  "`ghostel--cell-height' adds the buffer's `line-spacing' in pixels.
+Integer spacing adds as-is, float spacing as a rounded fraction of
+`frame-char-height'; unsupported values and non-graphic displays add
+nothing."
+  (cl-letf (((symbol-function 'frame-char-height) (lambda (&optional _) 14))
+            ((symbol-function 'display-graphic-p) (lambda (&optional _) t)))
+    (with-temp-buffer
+      (setq-local line-spacing 3)
+      (should (eql (ghostel--cell-height) 17))
+      (setq-local line-spacing 0.1)
+      (should (eql (ghostel--cell-height) 15))
+      (setq-local line-spacing 0)
+      (should (eql (ghostel--cell-height) 14))
+      ;; Emacs 28/29 reject non-number values at `setq-local' time
+      ;; (C-level `numberp' check), so nil is the only portable way to
+      ;; exercise the fallback branch.
+      (setq-local line-spacing nil)
+      (should (eql (ghostel--cell-height) 14))
+      (setq-local line-spacing 3)
+      (cl-letf (((symbol-function 'display-graphic-p)
+                 (lambda (&optional _) nil)))
+        (should (eql (ghostel--cell-height) 14))))))
+
 (ert-deftest ghostel-test-emacs-mode-preserves-point ()
   "In Emacs mode, point stays put while the terminal keeps running.
 The delayed redraw path always preserves point in Emacs mode,

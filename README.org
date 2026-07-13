@@ -1285,16 +1285,17 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 
 ** Rendering and performance
 
-| Variable                          | Default | Description                                                                                                                          |
-|-----------------------------------+---------+--------------------------------------------------------------------------------------------------------------------------------------|
-| =ghostel-max-scrollback=            | 5 MB    | Max scrollback in bytes (materialized into the buffer; ~5,000 rows at 80 cols).                                                      |
-| =ghostel-timer-delay=               | =0.033=   | Base redraw delay in seconds (~30 fps).                                                                                              |
-| =ghostel-adaptive-fps=              | =t=       | Adaptive frame rate (shorter delay after idle, stop timer when idle).                                                                |
-| =ghostel-immediate-redraw-interval= | =0.05=    | Max seconds since last keystroke for immediate redraw.                                                                               |
-| =ghostel-inhibit-redraw-functions=  | =nil=     | Abnormal hook (each fn called with the buffer); if any returns non-nil the redraw is deferred.  Used by add-ons such as =ghostel-ime=. |
-| =ghostel-inhibit-anchor-functions=  | =nil=     | Abnormal hook (each fn called with WINDOW and FORCE); non-nil skips anchoring that window.  Used by add-ons such as =evil-ghostel=.    |
-| =ghostel-cell-pixel-scale=          | =auto=    | Physical:logical pixel ratio for cell-size reporting (=auto= derives from DPI).                                                        |
-| =ghostel-glyph-scale-floor=         | =0.0=     | Minimum scale for glyphs that don't fit the cell (=0.0= preserves grid alignment; =1.0= renders CJK at natural size).                    |
+| Variable                          | Default | Description                                                                                                                                                              |
+|-----------------------------------+---------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| =ghostel-max-scrollback=            | 5 MB    | Max scrollback in bytes (materialized into the buffer; ~5,000 rows at 80 cols).                                                                                          |
+| =ghostel-timer-delay=               | =0.033=   | Base redraw delay in seconds (~30 fps).                                                                                                                                  |
+| =ghostel-adaptive-fps=              | =t=       | Adaptive frame rate (shorter delay after idle, stop timer when idle).                                                                                                    |
+| =ghostel-immediate-redraw-interval= | =0.05=    | Max seconds since last keystroke for immediate redraw.                                                                                                                   |
+| =ghostel-inhibit-redraw-functions=  | =nil=     | Abnormal hook (each fn called with the buffer); if any returns non-nil the redraw is deferred.  Used by add-ons such as =ghostel-ime=.                                     |
+| =ghostel-inhibit-anchor-functions=  | =nil=     | Abnormal hook (each fn called with WINDOW and FORCE); non-nil skips anchoring that window.  Used by add-ons such as =evil-ghostel=.                                        |
+| =ghostel-cell-pixel-scale=          | =auto=    | Physical:logical pixel ratio for cell-size reporting (=auto= derives from DPI).                                                                                            |
+| =ghostel-glyph-scale-floor=         | =0.0=     | Minimum scale for glyphs that don't fit the cell (=0.0= preserves grid alignment; =1.0= renders CJK at natural size).                                                        |
+| =ghostel-line-spacing=              | =0=       | Extra vertical space below each row (int = pixels, float = fraction of line height).  Non-zero leaves gaps in box-drawing and block glyphs and between kitty image rows. |
 
 ** Images
 

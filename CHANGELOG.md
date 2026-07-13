@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- New `ghostel-line-spacing` customization pads terminal rows with extra
+  vertical space (integer pixels or a float fraction of the line height).
+  The terminal grid and reported cell pixel sizes follow the taller rows;
+  changing it live resizes open terminals. Note that Emacs draws no content
+  into the spacing strip, so non-zero values leave gaps in box-drawing
+  borders, block characters, and between kitty-graphics image rows.
+
 ## [0.43.0] — 2026-07-11
 
 ### Added

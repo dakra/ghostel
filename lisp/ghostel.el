@@ -310,6 +310,24 @@ natural size, potentially making rows slightly taller and cells slightly wider."
   :type '(float 0.0 1.0)
   :local t)
 
+(defcustom ghostel-line-spacing 0
+  "Additional vertical space below each terminal row.
+An integer is extra pixels; a float is a fraction of the default line height.
+Applied buffer-locally as `line-spacing'.  The cons form of `line-spacing' is
+not supported.  Non-zero values leave gaps in everything that tiles vertically:
+box-drawing borders, block characters and kitty graphics image rows."
+  :type '(choice (integer :tag "Extra pixels below each line")
+                 (float :tag "Fraction of default line height"))
+  :initialize #'custom-initialize-default
+  :set (lambda (sym val)
+         (set-default sym val)
+         (dolist (buf (buffer-list))
+           (with-current-buffer buf
+             (when (derived-mode-p 'ghostel-mode)
+               (setq-local line-spacing val)
+               (dolist (window (get-buffer-window-list buf nil t))
+                 (ghostel--adjust-size window t)))))))
+
 (defcustom ghostel-timer-delay 0.033
   "Delay in seconds before redrawing after output (roughly 30fps).
 When `ghostel-adaptive-fps' is non-nil, this serves as the base
@@ -4851,9 +4869,19 @@ reported (some multi-monitor setups), letting the caller fall back."
   "Return cell width to report to libghostty, in physical pixels."
   (round (* (frame-char-width) (ghostel--cell-pixel-scale))))
 
+(defun ghostel--cell-height ()
+  "Return the terminal cell height in logical pixels.
+`frame-char-height' plus the buffer's `line-spacing' in pixels."
+  (+ (frame-char-height)
+     (cond ((not (display-graphic-p)) 0)
+           ((integerp line-spacing) (max 0 line-spacing))
+           ((floatp line-spacing)
+            (max 0 (round (* line-spacing (frame-char-height)))))
+           (t 0))))
+
 (defun ghostel--reported-cell-height ()
   "Return cell height to report to libghostty, in physical pixels."
-  (round (* (frame-char-height) (ghostel--cell-pixel-scale))))
+  (round (* (ghostel--cell-height) (ghostel--cell-pixel-scale))))
 
 (defun ghostel--set-size-with-cell-dims (term rows cols)
   "Resize TERM to ROWS×COLS, including the reported cell pixel dimensions.
@@ -5017,7 +5045,7 @@ for both native and Emacs PTY paths."
   (setq-local hscroll-margin 0)
   (setq-local truncate-lines t)
   (setq-local scroll-conservatively 101)
-  (setq-local line-spacing 0)
+  (setq-local line-spacing ghostel-line-spacing)
   ;; Shield row geometry from a global `default-text-properties':
   ;; `line-spacing'/`line-height' properties supplied through its fallback
   ;; inflate rendered rows invisibly to the `window-screen-lines' sizing math.
