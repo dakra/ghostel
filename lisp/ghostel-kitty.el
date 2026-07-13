@@ -189,6 +189,7 @@ user shouldn't have to trigger one)."
                  (img (create-image data (if is-png 'png 'pbm) t
                                     :width (* g-cols cw)
                                     :height (* g-rows ch)
+                                    :scale 1
                                     :ascent 'center))
                  (skip (max 0 abs-row))
                  (start-row (max 0 (- abs-row)))
@@ -267,6 +268,7 @@ DATA is a unibyte string (PNG or PPM).  IS-PNG is non-nil for PNG."
             (setq img (create-image data (if is-png 'png 'pbm) t
                                     :width (* grid-cols cw)
                                     :height (* grid-rows ch)
+                                    :scale 1
                                     :ascent 'center))
             ;; Second pass: apply per-row slices on placeholder regions.
             ;; Walks line by line — `line-end-position' is O(1) with no
