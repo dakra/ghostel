@@ -244,11 +244,12 @@ wrapper from every other ghostel buffer."
 The mock erases and reinserts the same text so these tests exercise
 `evil-ghostel--around-redraw' independent of renderer marker handling."
   `(cl-letf (((symbol-function 'ghostel--redraw)
-              (lambda (_term &optional _full)
+              (lambda (_term &optional _full _force-sync)
                 (let ((text (buffer-string))
                       (inhibit-read-only t))
                   (erase-buffer)
-                  (insert text))))
+                  (insert text)
+                  t)))
              ((symbol-function 'ghostel--mode-enabled)
               (lambda (_term _mode) nil)))
      ,@body))
@@ -264,8 +265,9 @@ The mock erases and reinserts the same text so these tests exercise
                            (goto-char (point-min))
                            (search-forward "four"))))
      (cl-letf (((symbol-function 'ghostel--redraw)
-                (lambda (_term &optional _full)
-                  (goto-char renderer-point)))
+                (lambda (_term &optional _full _force-sync)
+                  (goto-char renderer-point)
+                  t))
                ((symbol-function 'ghostel--mode-enabled)
                 (lambda (_term _mode) nil)))
       (evil-ghostel--around-redraw (symbol-function 'ghostel--redraw) nil))
@@ -276,7 +278,7 @@ The mock erases and reinserts the same text so these tests exercise
 The mock appends rows below, advances the cursor to the new prompt at
 `point-max', and leaves point untouched, like the renderer."
   (cl-letf (((symbol-function 'ghostel--redraw)
-             (lambda (_term &optional _full)
+             (lambda (_term &optional _full _force-sync)
                (save-excursion
                  (goto-char (point-max))
                  (evil-ghostel-test--insert "\nout-1\nout-2\n$ "))
@@ -343,7 +345,7 @@ snapping to the cursor or stranding in scrollback."
                ghostel--cursor-pos '(0 . 2))
    (goto-char (point-min))
    (search-forward "five")
-   (cl-letf (((symbol-function 'ghostel--redraw) #'ignore)
+   (cl-letf (((symbol-function 'ghostel--redraw) (lambda (&rest _) t))
              ((symbol-function 'ghostel--mode-enabled)
               (lambda (_term _mode) nil)))
      (evil-ghostel--around-redraw (symbol-function 'ghostel--redraw) 'fake))
@@ -368,6 +370,19 @@ snapping to the cursor or stranding in scrollback."
        (should (= vb-target (marker-position evil-visual-beginning)))
        (should (= ve-target (marker-position evil-visual-end)))))))
 
+(ert-deftest evil-ghostel-test-around-redraw-propagates-native-refusal ()
+  "A deferred native redraw skips Evil post-processing and returns nil."
+  (evil-ghostel-test--with-evil-buffer
+   (let ((evil-state 'insert)
+         reset-called)
+     (cl-letf (((symbol-function 'ghostel--mode-enabled)
+                (lambda (_term _mode) nil))
+               ((symbol-function 'evil-ghostel--reset-cursor-point)
+                (lambda () (setq reset-called t))))
+       (should-not
+        (evil-ghostel--around-redraw (lambda (&rest _) nil) 'fake))
+       (should-not reset-called)))))
+
 (ert-deftest evil-ghostel-test-around-redraw-bypassed-in-alt-screen ()
   "Advice is a passthrough when the terminal is in alt-screen mode (1049).
 Fullscreen TUIs own the screen and drive their own redraw cycle; the
@@ -378,12 +393,13 @@ advice must not restore point or visual markers there."
    (goto-char (point-min))
    (search-forward "three")
    (cl-letf (((symbol-function 'ghostel--redraw)
-              (lambda (_term &optional _full)
+              (lambda (_term &optional _full _force-sync)
                 (let ((text (buffer-string))
                       (inhibit-read-only t))
                   (erase-buffer)
                   (insert text)
-                  (goto-char (point-min)))))
+                  (goto-char (point-min))
+                  t)))
              ((symbol-function 'ghostel--mode-enabled)
               (lambda (_term mode) (= mode 1049))))
      (evil-ghostel--around-redraw (symbol-function 'ghostel--redraw) nil))
@@ -425,14 +441,14 @@ it still snaps point to the cursor."
                 (goto-char (point-min))
                 (set-window-start win (point-min) t)
                 (should-not (ghostel--window-anchored-p win))
-                (evil-ghostel--around-redraw #'ignore 'fake)
+                (evil-ghostel--around-redraw (lambda (&rest _) t) 'fake)
                 (should (= (point) (point-min)))
                 ;; Following the bottom: point snaps to the live cursor.
                 (goto-char (point-max))
                 (ghostel--anchor-window win)
                 (should (ghostel--window-anchored-p win))
                 (goto-char (point-min))
-                (evil-ghostel--around-redraw #'ignore 'fake)
+                (evil-ghostel--around-redraw (lambda (&rest _) t) 'fake)
                 (should (/= (point) (point-min)))))))
       (when (buffer-live-p buf)
         (with-current-buffer buf (evil-ghostel-mode -1)))

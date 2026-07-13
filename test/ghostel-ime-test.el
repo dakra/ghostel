@@ -14,7 +14,8 @@
 (require 'ghostel-ime)
 
 (declare-function ghostel--redraw-now "ghostel" (buffer &optional force))
-(declare-function ghostel--redraw "ghostel" (term &optional full))
+(declare-function ghostel--redraw "ghostel"
+                  (term &optional full force-sync))
 (declare-function ghostel--terminal-input-mode-p "ghostel")
 (declare-function ghostel--send-string "ghostel" (string))
 

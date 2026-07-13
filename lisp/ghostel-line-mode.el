@@ -26,7 +26,8 @@
 (declare-function ghostel--mode-line-refresh "ghostel")
 (declare-function ghostel--mode-line-tag-make "ghostel")
 (declare-function ghostel--open-link "ghostel")
-(declare-function ghostel--redraw "ghostel-module" (term &optional full))
+(declare-function ghostel--redraw "ghostel-module"
+                  (term &optional full force-sync))
 (declare-function ghostel--regex-prompt-end "ghostel")
 (declare-function ghostel--send-encoded "ghostel")
 (declare-function ghostel--uri-at-pos "ghostel")
@@ -591,7 +592,7 @@ which discards any type-ahead and runs inside `ghostel--redraw-now'."
   (unless pause
     (when ghostel--term
       (let ((inhibit-read-only t))
-        (ghostel--redraw ghostel--term t)))))
+        (ghostel--redraw ghostel--term t t)))))
 
 (defun ghostel--line-mode-pause ()
   "Drop line mode to semi-char while a full-screen app holds the alt screen.

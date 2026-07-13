@@ -154,7 +154,8 @@ pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) !void
     };
 }
 
-pub fn redraw(self: *Self, env: emacs.Env, force_full: bool) !void {
+pub fn redraw(self: *Self, env: emacs.Env, force_full: bool, force_sync: bool) !bool {
+    if (!force_sync and self.term.modes.get(.synchronized_output)) return false;
     if (self.is_rendering) return error.ReentrantRedraw;
     self.is_rendering = true;
     defer self.is_rendering = false;
@@ -190,6 +191,7 @@ pub fn redraw(self: *Self, env: emacs.Env, force_full: bool) !void {
         screen.pages.rows
     else
         screen.pages.total_rows;
+    return true;
 }
 
 fn clearPageDirtyFlags(from_node: *gt.PageList.List.Node) void {

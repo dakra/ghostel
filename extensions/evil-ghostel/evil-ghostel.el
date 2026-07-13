@@ -146,9 +146,10 @@ No window showing the buffer counts as following."
 ;; column) while elsewhere on the cursor's row.  Off that row point
 ;; stays put.  Visual markers are restored around the redraw.
 
-(defun evil-ghostel--around-redraw (orig-fn term &optional full)
+(defun evil-ghostel--around-redraw (orig-fn term &optional full force-sync)
   "Apply Evil point/visual handling around `ghostel--redraw'.
-ORIG-FN is the advised function (TERM, FULL).  Skipped in alt-screen (1049)."
+ORIG-FN is the advised function (TERM, FULL, FORCE-SYNC).  Skipped in
+alt-screen (1049) and when the native renderer defers synchronized output."
   (if (and evil-ghostel-mode
            (not (ghostel--mode-enabled term 1049)))
       (let* ((visual-p (eq evil-state 'visual))
@@ -169,30 +170,32 @@ ORIG-FN is the advised function (TERM, FULL).  Skipped in alt-screen (1049)."
              (saved-vb (and visual-p (bound-and-true-p evil-visual-beginning)
                             (marker-position evil-visual-beginning)))
              (saved-ve (and visual-p (bound-and-true-p evil-visual-end)
-                            (marker-position evil-visual-end))))
-        (funcall orig-fn term full)
-        (cond
-         ;; Exact target; column geometry can diverge on wide glyphs.
-         (tracked
-          (when ghostel--cursor-char-pos
-            (goto-char ghostel--cursor-char-pos)))
-         ;; Roamed within the cursor's row: follow the row, keep the column.
-         (saved-col
-          (when ghostel--cursor-char-pos
-            (goto-char ghostel--cursor-char-pos)
-            (move-to-column saved-col)))
-         ;; Don't drag point to the cursor while the user reads scrollback;
-         ;; redisplay would yank the viewport back to the bottom each frame.
-         ((and (memq evil-state '(insert emacs))
-               (evil-ghostel--following-window-p))
-          (evil-ghostel--reset-cursor-point)))
-        (when visual-p
-          (let ((pmax (point-max)))
-            (when saved-vb
-              (set-marker evil-visual-beginning (min saved-vb pmax)))
-            (when saved-ve
-              (set-marker evil-visual-end (min saved-ve pmax))))))
-    (funcall orig-fn term full)))
+                            (marker-position evil-visual-end)))
+             (rendered (funcall orig-fn term full force-sync)))
+        (when rendered
+          (cond
+           ;; Exact target; column geometry can diverge on wide glyphs.
+           (tracked
+            (when ghostel--cursor-char-pos
+              (goto-char ghostel--cursor-char-pos)))
+           ;; Roamed within the cursor's row: follow the row, keep the column.
+           (saved-col
+            (when ghostel--cursor-char-pos
+              (goto-char ghostel--cursor-char-pos)
+              (move-to-column saved-col)))
+           ;; Don't drag point to the cursor while the user reads scrollback;
+           ;; redisplay would yank the viewport back to the bottom each frame.
+           ((and (memq evil-state '(insert emacs))
+                 (evil-ghostel--following-window-p))
+            (evil-ghostel--reset-cursor-point)))
+          (when visual-p
+            (let ((pmax (point-max)))
+              (when saved-vb
+                (set-marker evil-visual-beginning (min saved-vb pmax)))
+              (when saved-ve
+                (set-marker evil-visual-end (min saved-ve pmax))))))
+        rendered)
+    (funcall orig-fn term full force-sync)))
 
 (defun evil-ghostel--anchor-inhibit (_window force)
   "Veto ghostel's redraw anchor while point roams off the live cursor.

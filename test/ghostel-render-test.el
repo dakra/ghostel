@@ -1686,29 +1686,27 @@ closing it - the state of a buffer hidden while a TUI streams a frame."
                ,@body))
          (kill-buffer ,buffer)))))
 
-(ert-deftest ghostel-test-redraw-now-force-bypasses-open-sync-output ()
-  "FORCE makes `ghostel--redraw-now' repaint even while mode 2026 is open.
-Without FORCE the redraw is correctly suppressed during synchronized
-output; with FORCE it repaints now (the contract the #456 fix relies on)."
-  :tags '(native)
-  (ghostel-test--with-open-sync-output (buf term)
-    ;; Unforced redraw is suppressed mid synchronized output: still baseline.
-    (ghostel--redraw-now buf)
-    (should (string-match-p "BASELINE-CONTENT" (buffer-string)))
-    (should-not (string-match-p "UPDATED-CONTENT" (buffer-string)))
-    ;; Forced redraw bypasses the skip and repaints now.
-    (ghostel--redraw-now buf t)
-    (should (string-match-p "UPDATED-CONTENT" (buffer-string)))
-    (should-not (string-match-p "BASELINE-CONTENT" (buffer-string)))))
-
-(ert-deftest ghostel-test-window-buffer-change-repaints-stale-reappear ()
-  "Regression for #456: a buffer reappearing repaints past open mode 2026.
-A hidden ghostel buffer renders nothing, so its content is stale on
-reappear.  `ghostel--window-buffer-change' must force the repaint instead
-of leaving the stale content until the next non-2026 output."
+(ert-deftest ghostel-test-native-redraw-reports-sync-refusal ()
+  "Native redraw reports whether synchronized-output gating admitted it."
   :tags '(native)
   (ghostel-test--with-open-sync-output (_buf term)
-    (ghostel--window-buffer-change (selected-window))
+    (should-not (ghostel--redraw term))))
+
+(ert-deftest ghostel-test-sync-refusal-does-not-commit-pending-resize ()
+  "A refused redraw performs no renderer work, including resize commit."
+  :tags '(native)
+  (ghostel-test--with-open-sync-output (_buf term)
+    (ghostel--set-size term 6 40)
+    (should-not (ghostel--redraw term))
+    (should (= ghostel--term-rows 10))
+    (should (ghostel--redraw term nil t))
+    (should (= ghostel--term-rows 6))))
+
+(ert-deftest ghostel-test-redraw-now-force-bypasses-open-sync-output ()
+  "FORCE makes `ghostel--redraw-now' repaint while mode 2026 is open."
+  :tags '(native)
+  (ghostel-test--with-open-sync-output (buf _term)
+    (ghostel--redraw-now buf t)
     (should (string-match-p "UPDATED-CONTENT" (buffer-string)))
     (should-not (string-match-p "BASELINE-CONTENT" (buffer-string)))))
 
@@ -1870,56 +1868,46 @@ rendered by `ghostel--redraw-now'.  This is the exact real-world path."
           ;; naturally — no need to stub `get-buffer-window-list'.
           (let ((ghostel--term t)
                 (redraw-called nil))
-            (cl-letf (((symbol-function 'ghostel--mode-enabled)
-                       (lambda (&rest _) nil))
-                      ((symbol-function 'ghostel--redraw)
+            (cl-letf (((symbol-function 'ghostel--redraw)
                        (lambda (&rest _) (setq redraw-called t))))
               (ghostel--redraw-now buf)
-              (should-not redraw-called))))
+              (should-not redraw-called)
+              (should ghostel--pending-redraw))))
       (kill-buffer buf))))
 
-(ert-deftest ghostel-test-defers-redraw-while-hidden ()
-  "Buffer is not redrawn while hidden.
-When the buffer reappears, it is immediately redrawn."
+(ert-deftest ghostel-test-hidden-invalidation-redraws-on-pre-redisplay ()
+  "Hidden output remains pending without a timer and redraws on reveal."
   :tags '(native)
-  (let* ((win (selected-window))
-         (orig-buf (window-buffer win))
-         (buf (generate-new-buffer " *ghostel-test-hidden-defer*")))
+  (let* ((window (selected-window))
+         (previous-buffer (window-buffer window))
+         (buf (generate-new-buffer " *ghostel-test-hidden-timer*")))
     (unwind-protect
         (progn
-          (set-window-buffer win buf)
+          (set-window-buffer window buf)
           (with-current-buffer buf
             (ghostel-mode)
-            (let* ((term (ghostel--new 5 40 100))
-                   (ghostel--term term)
-                   (ghostel--term-rows 5)
-                   (inhibit-read-only t))
-              (ghostel--write-vt term "initial\r\n")
-              (ghostel--redraw term t)
-              (should (string-match-p "initial" (buffer-string)))
-
-              ;; Hide the buffer.
-              (set-window-buffer win orig-buf)
-
-              ;; Output arrives while hidden but does not appear; make
-              ;; run-with-timer fire synchronously so no sleep is needed.
-              (ghostel--write-vt term "while-hidden\r\n")
-              (cl-letf (((symbol-function 'run-with-timer)
-                         (lambda (_delay _repeat fn &rest args)
-                           (apply fn args) nil)))
-                (ghostel--invalidate))
-
-              ;; Redraw blocked: buffer still shows the old content.
-              (should-not (string-match-p "while-hidden" (buffer-string)))
-
-              ;; Reshow the buffer; the hook redraws immediately without
-              ;; waiting for the delayed invalidation timer.
-              (set-window-buffer win buf)
-              (run-hook-with-args 'window-buffer-change-functions win)
-
-              (should (string-match-p "while-hidden" (buffer-string))))))
-      (set-window-buffer win orig-buf)
-      (kill-buffer buf))))
+            (let ((ghostel--term (ghostel--new 5 40 100))
+                  (ghostel--term-rows 5)
+                  (inhibit-read-only t))
+              (set-window-buffer window previous-buffer)
+              (ghostel--write-vt ghostel--term "pending-before-timer\r\n")
+              (ghostel--invalidate)
+              (should ghostel--pending-redraw)
+              (should-not ghostel--redraw-timer)
+              (should-not (string-match-p "pending-before-timer"
+                                          (buffer-string)))
+              (set-window-buffer window buf)
+              (ghostel--pre-redisplay window)
+              (should-not ghostel--pending-redraw)
+              (should-not ghostel--redraw-timer)
+              (should (string-match-p "pending-before-timer"
+                                      (buffer-string))))))
+      (set-window-buffer window previous-buffer)
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          (when ghostel--redraw-timer
+            (cancel-timer ghostel--redraw-timer)))
+        (kill-buffer buf)))))
 
 (ert-deftest ghostel-test-pty-output-is-processed-when-buffer-is-hidden ()
   "Output is processed but not drawn while the buffer is hidden.

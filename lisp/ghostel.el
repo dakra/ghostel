@@ -907,7 +907,8 @@ to nil to disable the regex fallback entirely (OSC 133 only)."
 (declare-function ghostel--module-version "ghostel-module")
 (declare-function ghostel--mouse-event "ghostel-module")
 (declare-function ghostel--new "ghostel-module")
-(declare-function ghostel--redraw "ghostel-module" (term &optional full))
+(declare-function ghostel--redraw "ghostel-module"
+                  (term &optional full force-sync))
 (declare-function ghostel--set-bold-config "ghostel-module")
 (declare-function ghostel--set-default-colors "ghostel-module")
 (declare-function ghostel--set-palette "ghostel-module")
@@ -978,7 +979,7 @@ Matches Ghostty 1.2.0's `bold-color' configuration."
              (when (and (derived-mode-p 'ghostel-mode) ghostel--term)
                (ghostel--apply-bold-config ghostel--term)
                (let ((inhibit-read-only t))
-                 (ghostel--redraw ghostel--term t))
+                 (ghostel--redraw ghostel--term t t))
                (ghostel--apply-cursor-style))))))
 
 (defvar-local ghostel--cursor-pos nil
@@ -1031,6 +1032,9 @@ local code should not assume it is signalable unless the process is local.")
 
 (defvar-local ghostel--redraw-timer nil
   "Timer for delayed redraw.")
+
+(defvar-local ghostel--pending-redraw nil
+  "Non-nil when redraw is needed when buffer is displayed again.")
 
 (defvar-local ghostel--plain-link-detection-timer nil
   "Timer for delayed redraw-triggered plain-text link detection.")
@@ -3806,9 +3810,6 @@ EVENT is the state-change description passed by Emacs."
   (let ((buf (process-buffer process)))
     (when (buffer-live-p buf)
       (with-current-buffer buf
-        (when ghostel--redraw-timer
-          (cancel-timer ghostel--redraw-timer)
-          (setq ghostel--redraw-timer nil))
         (when ghostel--plain-link-detection-timer
           (cancel-timer ghostel--plain-link-detection-timer)
           (setq ghostel--plain-link-detection-timer nil
@@ -4552,35 +4553,39 @@ terminal windows."
 
 (defun ghostel--invalidate ()
   "Trigger a redraw for pending terminal output.
-Output arriving within `ghostel-immediate-redraw-interval' of the last
-keystroke is interactive echo and redrawn immediately to minimize
-typing latency.  Otherwise the redraw is deferred to a coalescing
-timer; with `ghostel-adaptive-fps' that timer uses a shorter delay for
-the first frame after idle for snappier response."
-  ;; Interactive echo: output arriving within
-  ;; `ghostel-immediate-redraw-interval' of the last keystroke.
-  (if (and ghostel--last-send-time
-           (< (float-time (time-subtract (current-time)
-                                         ghostel--last-send-time))
-              ghostel-immediate-redraw-interval))
-      (ghostel--redraw-now (current-buffer))
-    ;; Bulk output: schedule a later redraw.
-    (unless ghostel--redraw-timer
-      (let ((delay (if (and ghostel-adaptive-fps ghostel--last-output-time)
-                       (let ((idle-secs (float-time
-                                         (time-subtract (current-time)
-                                                        ghostel--last-output-time))))
-                         ;; If idle for more than 100ms, use a short delay
-                         ;; for snappy first-frame response.
-                         (if (> idle-secs 0.1)
-                             (min 0.016 ghostel-timer-delay)
-                           ghostel-timer-delay))
-                     ghostel-timer-delay)))
-        (setq ghostel--last-output-time (current-time))
-        (setq ghostel--redraw-timer
-              (run-with-timer delay nil
-                              #'ghostel--redraw-now
-                              (current-buffer)))))))
+Visible output arriving within `ghostel-immediate-redraw-interval' of the
+last keystroke is redrawn immediately; other visible output uses a coalescing
+timer.  Hidden output remains pending until the buffer is displayed."
+  (if (ghostel--get-render-window (current-buffer))
+      ;; Interactive echo: output arriving within
+      ;; `ghostel-immediate-redraw-interval' of the last keystroke.
+      (if (and ghostel--last-send-time
+               (< (float-time (time-subtract (current-time)
+                                             ghostel--last-send-time))
+                  ghostel-immediate-redraw-interval))
+          (ghostel--redraw-now (current-buffer))
+        ;; Bulk output: schedule a later redraw.
+        (unless ghostel--redraw-timer
+          (let ((delay (if (and ghostel-adaptive-fps ghostel--last-output-time)
+                           (let ((idle-secs
+                                  (float-time
+                                   (time-subtract
+                                    (current-time) ghostel--last-output-time))))
+                             ;; If idle for more than 100ms, use a short delay
+                             ;; for snappy first-frame response.
+                             (if (> idle-secs 0.1)
+                                 (min 0.016 ghostel-timer-delay)
+                               ghostel-timer-delay))
+                         ghostel-timer-delay)))
+            (setq ghostel--last-output-time (current-time))
+            (setq ghostel--redraw-timer
+                  (run-with-timer delay nil
+                                  #'ghostel--redraw-now
+                                  (current-buffer))))))
+    (when ghostel--redraw-timer
+      (cancel-timer ghostel--redraw-timer)
+      (setq ghostel--redraw-timer nil))
+    (setq ghostel--pending-redraw t)))
 
 (defun ghostel--viewport-start ()
   "Position of the first line of the terminal viewport, or nil if rows<=0."
@@ -4756,16 +4761,16 @@ for BUFFER; return nil to let the redraw proceed."
     t))
 
 (defun ghostel--redraw-now (buffer &optional force)
-  "Perform the actual redraw in BUFFER.
+  "Attempt to redraw BUFFER and retain the request until it succeeds.
 The renderer preserves buffer positions while applying terminal mutations;
 this function anchors windows that were following the live viewport.
 
 With FORCE non-nil, redraw even while synchronized output (mode 2026)
-is open.  Use it for repaints that must happen now regardless of frame
-batching, such as a buffer reappearing in a window; leave it nil for
-opportunistic output redraws that may safely wait for the frame to end."
+is open.  Normal redraws remain pending when the native renderer declines
+them during synchronized output or when BUFFER has no render window."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
+      (setq ghostel--pending-redraw t)
       (when force (setq ghostel--force-next-redraw t))
       (when ghostel--redraw-timer
         (cancel-timer ghostel--redraw-timer)
@@ -4773,57 +4778,48 @@ opportunistic output redraws that may safely wait for the frame to end."
       (when (and ghostel--term
                  (ghostel--terminal-live-p)
                  (not (ghostel--maybe-defer-redraw buffer)))
-        ;; Skip during synchronized output unless forced by scroll/resize.
-        (unless (and (not ghostel--force-next-redraw)
-                     (ghostel--mode-enabled ghostel--term 2026))
-          ;; Pause line mode if alt-screen just turned on — must run
-          ;; before the line-snapshot block so that snapshot sees the
-          ;; post-pause input mode and skips its own capture.
+        (when-let* ((render-win (ghostel--get-render-window buffer)))
+          ;; Pause line mode if alt-screen just turned on.  This must run
+          ;; before the snapshot so a pause can take ownership of its input.
           (ghostel--line-mode-pre-redraw)
-          (setq ghostel--force-next-redraw nil)
-          (when-let* ((render-win (ghostel--get-render-window buffer)))
-            (let* ((anchored (ghostel--anchored-windows buffer t))
-                   ;; In line mode the user's in-progress input lives
-                   ;; in the buffer past the prompt and is not in
-                   ;; libghostty's grid; the renderer would otherwise
-                   ;; clobber it.  Snapshot the input region (and clear
-                   ;; it from the buffer) before the redraw, then
-                   ;; restore it after.
-                   (line-snapshot (and (eq ghostel--input-mode 'line)
-                                       (ghostel--line-mode-snapshot)))
-                   (inhibit-read-only t)
-                   (inhibit-redisplay t)
-                   (inhibit-modification-hooks t)
-                   ;; Disable GC during redraw.
-                   (gc-cons-threshold most-positive-fixnum))
-              (with-selected-window render-win
-                ;; Line mode snapshots editable input out of the buffer;
-                ;; redraw fully so the prompt row is always rebuilt
-                ;; before restoring input at its fresh marker position.
-                (ghostel--redraw ghostel--term (eq ghostel--input-mode 'line)))
-              (ghostel--apply-cursor-style)
-
-              (dolist (win anchored) (ghostel--anchor-window win))
-
-              (let* ((line-restored
-                      (and line-snapshot
-                           (ghostel--line-mode-restore line-snapshot))))
-                ;; Restore failed (prompt scrolled off / shell
-                ;; integration dropped out): the input was already
-                ;; deleted from the buffer in snapshot — forward it raw
-                ;; so the user does not lose what they typed.
-                (when (and line-snapshot (not line-restored))
-                  (let ((input (plist-get line-snapshot :input)))
-                    (when (and input (> (length input) 0))
-                      (ghostel--write-pty ghostel--term input))
-                    (message "ghostel: line-mode prompt lost; input forwarded raw")))
-
-                (ghostel--schedule-link-detection (ghostel--viewport-start)
-                                                  (point-max)))
-              ;; Resume line mode if alt-screen just turned off, and
-              ;; update the alt-screen-prev cache for the next cycle.
-              (ghostel--line-mode-post-redraw))))
-        (ghostel--detect-password-prompt)))))
+          (let* ((anchored (ghostel--anchored-windows buffer t))
+                 ;; Line-mode input is not part of libghostty's grid.  Remove
+                 ;; it while native rendering runs, then restore it after
+                 ;; rendering.
+                 (line-snapshot (and (eq ghostel--input-mode 'line)
+                                     (ghostel--line-mode-snapshot)))
+                 (inhibit-read-only t)
+                 (inhibit-redisplay t)
+                 (inhibit-modification-hooks t)
+                 (gc-cons-threshold most-positive-fixnum)
+                 (rendered
+                  (with-selected-window render-win
+                    ;; FULL and FORCE-SYNC are separate native policies.
+                    (ghostel--redraw ghostel--term
+                                     (eq ghostel--input-mode 'line)
+                                     ghostel--force-next-redraw))))
+            (when rendered
+              (setq ghostel--pending-redraw nil
+                    ghostel--force-next-redraw nil))
+            (ghostel--apply-cursor-style)
+            (dolist (win anchored) (ghostel--anchor-window win))
+            (let ((line-restored
+                   (and line-snapshot
+                        (ghostel--line-mode-restore line-snapshot))))
+              ;; Restore failed because the prompt moved or disappeared;
+              ;; forward the saved input rather than silently losing it.
+              (when (and line-snapshot (not line-restored))
+                (let ((input (plist-get line-snapshot :input)))
+                  (when (and input (> (length input) 0))
+                    (ghostel--write-pty ghostel--term input))
+                  (message
+                   "ghostel: line-mode prompt lost; input forwarded raw")))
+              (ghostel--schedule-link-detection
+               (ghostel--viewport-start) (point-max)))
+            ;; Resume line mode if alt-screen just turned off, and update the
+            ;; alt-screen-prev cache for the next cycle.
+            (ghostel--line-mode-post-redraw)
+            (ghostel--detect-password-prompt)))))))
 
 (defun ghostel-force-redraw ()
   "Force an immediate terminal redraw, bypassing synchronized-output batching.
@@ -4970,16 +4966,16 @@ and the TTY display that needs it off keeps working in parallel)."
       (unless (equal auto-composition-mode tt)
         (setq-local auto-composition-mode tt)))))
 
+(defun ghostel--pre-redisplay (_window)
+  "Render pending terminal state before displaying this buffer."
+  (when ghostel--pending-redraw
+    (ghostel--redraw-now (current-buffer))))
+
 (defun ghostel--window-buffer-change (window)
-  "Anchor WINDOW and redraw it immediately when its buffer is displayed."
+  "Anchor WINDOW when its buffer is displayed."
   (when (and (window-live-p window)
              (eq (window-buffer window) (current-buffer)))
-    (ghostel--anchor-window window)
-    ;; While hidden the buffer renders nothing, so its content can be
-    ;; stale on reappear.  Force the repaint past any open synchronized
-    ;; output (mode 2026); otherwise the redraw is skipped and the stale
-    ;; content lingers until the next non-2026 output, which may never come.
-    (ghostel--redraw-now (current-buffer) t)))
+    (ghostel--anchor-window window)))
 
 (defun ghostel--minibuffer-exit ()
   "Schedule anchoring of all the currently anchored Ghostel windows.
@@ -5068,6 +5064,7 @@ for both native and Emacs PTY paths."
   (add-hook 'window-buffer-change-functions #'ghostel--focus-change)
   (add-hook 'window-buffer-change-functions #'ghostel--window-buffer-change nil t)
   (add-hook 'window-buffer-change-functions #'ghostel--sync-tty-composition nil t)
+  (add-hook 'pre-redisplay-functions #'ghostel--pre-redisplay nil t)
   (add-hook 'window-size-change-functions #'ghostel--adjust-size nil t)
   (add-hook 'minibuffer-exit-hook #'ghostel--minibuffer-exit)
   (add-hook 'minibuffer-exit-hook #'ghostel--minibuffer-exit-maybe-leave)
@@ -5161,6 +5158,7 @@ spawn after initialization."
           ghostel--command-running nil
           ghostel--event-buf nil
           ghostel--redraw-timer nil
+          ghostel--pending-redraw nil
           ghostel--plain-link-detection-timer nil
           ghostel--plain-link-detection-begin nil
           ghostel--plain-link-detection-end nil

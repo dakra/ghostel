@@ -537,9 +537,8 @@ E.g. `compilation-mode' error loci in `ghostel-compile-view-mode'."
                                timer-fn fn
                                timer-args args)
                          'ghostel-test-link-timer))
-                      ((symbol-function 'ghostel--mode-enabled)
-                       (lambda (&rest _) nil))
-                      ((symbol-function 'ghostel--redraw) #'ignore)
+                      ((symbol-function 'ghostel--redraw)
+                       (lambda (&rest _) t))
                       ((symbol-function 'ghostel--window-anchored-p) #'ignore)
                       ((symbol-function 'ghostel--viewport-start)
                        (lambda () nil)))
@@ -587,9 +586,8 @@ E.g. `compilation-mode' error loci in `ghostel-compile-view-mode'."
                                timer-fn fn
                                timer-args args)
                          'ghostel-test-link-timer))
-                      ((symbol-function 'ghostel--mode-enabled)
-                       (lambda (&rest _) nil))
-                      ((symbol-function 'ghostel--redraw) #'ignore)
+                      ((symbol-function 'ghostel--redraw)
+                       (lambda (&rest _) t))
                       ((symbol-function 'ghostel--window-anchored-p) #'ignore)
                       ((symbol-function 'ghostel--viewport-start)
                        (lambda () nil)))

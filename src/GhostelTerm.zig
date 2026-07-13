@@ -75,13 +75,14 @@ pub fn deinit(self: *Self) void {
     self.alloc.destroy(self);
 }
 
-pub fn redraw(self: *Self, force_full: bool) !void {
+pub fn redraw(self: *Self, force_full: bool, force_sync: bool) !bool {
     self.lockTerm();
     defer self.unlockTerm();
 
-    const env = emacs.current_env orelse return;
+    const env = emacs.current_env orelse return false;
     const pre_size = .{ self.terminal.cols, self.terminal.rows };
-    try self.renderer.redraw(env, force_full);
+    if (!try self.renderer.redraw(env, force_full, force_sync)) return false;
+
     _ = env.f("ghostel--kitty-clear", .{});
     try kitty_graphics.emitPlacements(env, self);
     const post_size = .{ self.terminal.cols, self.terminal.rows };
@@ -96,6 +97,7 @@ pub fn redraw(self: *Self, force_full: bool) !void {
             );
         }
     }
+    return true;
 }
 
 /// Set the color palette (256 entries).
@@ -535,18 +537,21 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
     },
     .{
         .name = "ghostel--redraw",
-        .arity = .{ 1, 2 },
+        .arity = .{ 1, 3 },
         .doc =
         \\Redraw the terminal into the current buffer.
         \\
-        \\(ghostel--redraw TERM &optional FULL)
+        \\(ghostel--redraw TERM &optional FULL FORCE-SYNC)
+        \\
+        \\Return non-nil when rendering completed.  Unless FORCE-SYNC is
+        \\non-nil, return nil without rendering during synchronized output.
         ,
         .impl = struct {
             pub fn call(env: emacs.Env, nargs: isize, args: [*c]emacs.Value) !emacs.Value {
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
                 const force_full = nargs > 1 and env.isNotNil(args[1]);
-                try term.redraw(force_full);
-                return env.nil();
+                const force_sync = nargs > 2 and env.isNotNil(args[2]);
+                return env.makeValue(try term.redraw(force_full, force_sync));
             }
         },
     },
