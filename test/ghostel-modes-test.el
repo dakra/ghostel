@@ -16,6 +16,40 @@
     (should (member 'ghostel-default
                     (cdr (assq 'default face-remapping-alist))))))
 
+(ert-deftest ghostel-test-major-mode-change-blocked-while-live ()
+  "Changing the major mode signals `user-error' while the terminal runs.
+The switch is aborted before `kill-all-local-variables' wipes the
+buffer-locals the native module and PTY depend on."
+  (let ((buf (generate-new-buffer " *ghostel-test-mode-guard*"))
+        (proc nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (setq proc (make-process :name "ghostel-test-mode-guard"
+                                   :command '("sleep" "30")
+                                   :buffer nil :noquery t))
+          (setq-local ghostel--process proc)
+          (should-error (fundamental-mode) :type 'user-error)
+          (should (eq major-mode 'ghostel-mode))
+          ;; Buffer-locals survived — the hook fired before any teardown.
+          (should (eq ghostel--process proc)))
+      (when (process-live-p proc)
+        (delete-process proc))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-major-mode-change-allowed-after-exit ()
+  "With no live process the major mode may change freely.
+`ghostel-compile' relies on this: it tears down the terminal, then
+switches the buffer into its view mode."
+  (let ((buf (generate-new-buffer " *ghostel-test-mode-guard-dead*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (should (null ghostel--process))
+          (fundamental-mode)
+          (should (eq major-mode 'fundamental-mode)))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-mode-shields-default-text-properties ()
   "A global `default-text-properties' does not reach ghostel buffers.
 Its `line-spacing'/`line-height' fallback would inflate rendered rows

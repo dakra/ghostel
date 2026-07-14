@@ -5015,6 +5015,14 @@ for both native and Emacs PTY paths."
 
 ;;; Major mode
 
+(defun ghostel--change-major-mode-guard ()
+  "Signal a `user-error' while the buffer's terminal process is live.
+A mode change runs `kill-all-local-variables', wiping the buffer-locals
+the native module and PTY depend on; once the process is dead the mode
+may change freely (`ghostel-compile' finalize relies on this)."
+  (when (process-live-p ghostel--process)
+    (user-error "Cannot change major mode in a live ghostel buffer")))
+
 (define-derived-mode ghostel-mode fundamental-mode "Ghostel"
   "Major mode for Ghostel terminal emulator."
   (hack-dir-local-variables)
@@ -5071,6 +5079,7 @@ for both native and Emacs PTY paths."
   (add-hook 'activate-mark-hook #'ghostel--mark-activated nil t)
   (add-hook 'isearch-mode-end-hook #'ghostel-maybe-leave-input nil t)
   (add-hook 'kill-buffer-query-functions #'ghostel--kill-buffer-query nil t)
+  (add-hook 'change-major-mode-hook #'ghostel--change-major-mode-guard nil t)
   ;; Show the hyperlink URI at point in eldoc.
   (add-hook 'eldoc-documentation-functions #'ghostel--eldoc-link nil t)
 
