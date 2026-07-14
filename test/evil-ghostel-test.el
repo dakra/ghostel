@@ -1788,16 +1788,31 @@ and with `ghostel--send-encoded' captured into the local list `sent'."
      (should-not (member '("escape" . "") sent))
      (should-not (eq evil-state 'insert)))))
 
-(ert-deftest evil-ghostel-test-escape-toggle-cycle ()
-  "Calling toggle without a prefix cycles auto → terminal → evil → auto."
+(ert-deftest evil-ghostel-test-escape-toggle-altscreen ()
+  "In alt-screen the toggle flips auto ↔ evil; explicit modes go to auto."
   (evil-ghostel-test--with-evil-buffer
    (setq evil-ghostel--escape-mode 'auto)
-   (evil-ghostel-toggle-send-escape)
-   (should (eq 'terminal evil-ghostel--escape-mode))
-   (evil-ghostel-toggle-send-escape)
-   (should (eq 'evil evil-ghostel--escape-mode))
-   (evil-ghostel-toggle-send-escape)
-   (should (eq 'auto evil-ghostel--escape-mode))))
+   (evil-ghostel-test--with-escape-stubs t
+     (evil-ghostel-toggle-send-escape)
+     (should (eq 'evil evil-ghostel--escape-mode))
+     (evil-ghostel-toggle-send-escape)
+     (should (eq 'auto evil-ghostel--escape-mode))
+     (setq evil-ghostel--escape-mode 'terminal)
+     (evil-ghostel-toggle-send-escape)
+     (should (eq 'auto evil-ghostel--escape-mode)))))
+
+(ert-deftest evil-ghostel-test-escape-toggle-no-altscreen ()
+  "Outside alt-screen the toggle flips auto ↔ terminal; evil goes to auto."
+  (evil-ghostel-test--with-evil-buffer
+   (setq evil-ghostel--escape-mode 'auto)
+   (evil-ghostel-test--with-escape-stubs nil
+     (evil-ghostel-toggle-send-escape)
+     (should (eq 'terminal evil-ghostel--escape-mode))
+     (evil-ghostel-toggle-send-escape)
+     (should (eq 'auto evil-ghostel--escape-mode))
+     (setq evil-ghostel--escape-mode 'evil)
+     (evil-ghostel-toggle-send-escape)
+     (should (eq 'auto evil-ghostel--escape-mode)))))
 
 (ert-deftest evil-ghostel-test-escape-toggle-prefix-set ()
   "Numeric prefix sets the mode directly: 1=auto, 2=terminal, 3=evil."
@@ -1840,6 +1855,70 @@ and with `ghostel--send-encoded' captured into the local list `sent'."
             (should (eq 'evil evil-ghostel--escape-mode))))
       (kill-buffer buf-a)
       (kill-buffer buf-b))))
+
+(defmacro evil-ghostel-test--with-captured-messages (var &rest body)
+  "Run BODY with `message' output collected into the local list VAR."
+  (declare (indent 1) (debug t))
+  `(let ((,var '()))
+     (cl-letf (((symbol-function 'message)
+                (lambda (fmt &rest args)
+                  (when fmt (push (apply #'format fmt args) ,var)))))
+       ,@body)))
+
+(ert-deftest evil-ghostel-test-escape-hint-shown-once ()
+  "The first auto-routed ESC shows the routing hint; later ones don't."
+  (evil-ghostel-test--with-evil-buffer
+   (setq evil-ghostel--escape-mode 'auto)
+   (let ((evil-ghostel--escape-hint-shown nil))
+     (evil-ghostel-test--with-escape-stubs t
+       (evil-ghostel-test--with-captured-messages messages
+         (evil-ghostel--escape)
+         (evil-ghostel--escape)
+         (should (= 2 (length sent)))
+         (should evil-ghostel--escape-hint-shown)
+         (should (= 1 (cl-count-if
+                       (lambda (m) (string-match-p "ESC sent to the" m))
+                       messages))))))))
+
+(ert-deftest evil-ghostel-test-escape-hint-only-in-auto-mode ()
+  "Explicit `terminal' routing and evil routing never show the hint."
+  (let ((evil-ghostel--escape-hint-shown nil))
+    (evil-ghostel-test--with-evil-buffer
+     (setq evil-ghostel--escape-mode 'terminal)
+     (evil-ghostel-test--with-escape-stubs t
+       (evil-ghostel--escape)))
+    (evil-ghostel-test--with-evil-buffer
+     (setq evil-ghostel--escape-mode 'auto)
+     (evil-insert-state)
+     (evil-ghostel-test--with-escape-stubs nil
+       (evil-ghostel--escape)))
+    (should-not evil-ghostel--escape-hint-shown)))
+
+(ert-deftest evil-ghostel-test-escape-toggle-message-shows-effect ()
+  "Setting `auto' messages where ESC currently goes."
+  (evil-ghostel-test--with-evil-buffer
+   (evil-ghostel-test--with-escape-stubs t
+     (evil-ghostel-test--with-captured-messages messages
+       (evil-ghostel-toggle-send-escape 1)
+       (should (string-match-p "auto (now → terminal)" (car messages)))))
+   (evil-ghostel-test--with-escape-stubs nil
+     (evil-ghostel-test--with-captured-messages messages
+       (evil-ghostel-toggle-send-escape 1)
+       (should (string-match-p "auto (now → evil)" (car messages)))))))
+
+(ert-deftest evil-ghostel-test-escape-toggle-keybinding ()
+  "C-c C-r is bound to the toggle in `evil-ghostel-mode-map'."
+  (should (eq #'evil-ghostel-toggle-send-escape
+              (lookup-key evil-ghostel-mode-map (kbd "C-c C-r")))))
+
+(ert-deftest evil-ghostel-test-escape-one-shot-keybinding ()
+  "C-c <escape> gives a one-shot switch to normal state.
+The binding must be on the <escape> function key, never the ESC
+character: `C-c ESC' as a char sequence would shadow the C-c M-...
+bindings on a tty."
+  (should (eq #'evil-force-normal-state
+              (lookup-key evil-ghostel-mode-map (kbd "C-c <escape>"))))
+  (should-not (lookup-key evil-ghostel-mode-map (kbd "C-c ESC"))))
 
 (ert-deftest evil-ghostel-test-escape-evil-fallback-when-lookup-nil ()
   "When `lookup-key' yields no command (user rebound ESC to a chord

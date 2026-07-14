@@ -123,6 +123,15 @@ If you're an evil user you can install the [evil-ghostel](https://melpa.org/#/ev
   :hook (ghostel-mode . evil-ghostel-mode))
 ```
 
+Note: in alt-screen apps — vim, less, fullscreen TUIs like Claude Code
+(`/tui fullscreen`) — ESC is by default sent to the app instead of switching
+to normal state, so you stay in insert state and a leader key like `SPC` goes
+to the terminal too (`M-x`, `C-x …`, `C-c …` still work). Toggle the routing
+with `C-c C-r` (`evil-ghostel-toggle-send-escape`), or hit `C-c ESC` for a
+one-shot switch to normal state; `evil-ghostel-escape` sets the default
+routing. See [Evil-mode](https://dakra.github.io/ghostel/#evil-mode)
+in the manual.
+
 ## Shell integration
 
 Directory tracking and prompt navigation are on by default for local bash, zsh, fish or nushell sessions.

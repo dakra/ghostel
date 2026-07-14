@@ -27,6 +27,14 @@
 ;; Outside semi-char input mode (`line' / `copy' / `emacs' / `char' modes,
 ;; or an alt-screen TUI) every command falls through to `evil-*'.
 ;;
+;; In alt-screen apps (vim, less, fullscreen TUIs like Claude Code)
+;; insert-state ESC is by default routed to the app instead of switching
+;; to normal state, so the app keeps its ESC key.  `C-c C-r'
+;; (`evil-ghostel-toggle-send-escape') toggles the routing per buffer;
+;; the `evil-ghostel-escape' option sets the default.  `C-c <escape>'
+;; switches to normal state once without changing the routing (GUI
+;; frames; on a tty it needs the kitty keyboard protocol via kkp.el).
+;;
 ;; Enable by adding to your init:
 ;;
 ;;   (use-package evil-ghostel
@@ -86,6 +94,10 @@ Each iteration waits up to 50 ms, bounding the total wait at ~500 ms."
 
 
 ;; Guard predicates
+
+(defun evil-ghostel--alt-screen-p ()
+  "Return non-nil when the terminal is in alt-screen mode (DECSET 1049)."
+  (and ghostel--term (ghostel--mode-enabled ghostel--term 1049)))
 
 (defun evil-ghostel--active-p ()
   "Return non-nil when evil-ghostel PTY routing should intercept.
@@ -808,8 +820,11 @@ rather than forward-delete in the shell."
 Initialized from `evil-ghostel-escape' when the minor mode turns on.
 Valid values: `auto', `terminal', `evil'.")
 
+(defvar evil-ghostel--escape-hint-shown nil
+  "Non-nil after the one-time hint about ESC routing has been shown.")
+
 (defconst evil-ghostel--escape-modes '(auto terminal evil)
-  "Cycle order for `evil-ghostel-toggle-send-escape'.")
+  "Prefix-argument order (1/2/3) for `evil-ghostel-toggle-send-escape'.")
 
 (defun evil-ghostel--escape ()
   "Dispatch insert-state ESC based on `evil-ghostel--escape-mode'.
@@ -821,36 +836,55 @@ keystroke is never dropped."
   (let* ((mode evil-ghostel--escape-mode)
          (to-terminal (or (eq mode 'terminal)
                           (and (eq mode 'auto)
-                               ghostel--term
-                               (ghostel--mode-enabled ghostel--term 1049)))))
+                               (evil-ghostel--alt-screen-p)))))
     (if to-terminal
         (progn
           (ghostel--on-user-input)
-          (ghostel--send-encoded "escape" ""))
+          (ghostel--send-encoded "escape" "")
+          (when (and (eq mode 'auto) (not evil-ghostel--escape-hint-shown))
+            (setq evil-ghostel--escape-hint-shown t)
+            (message (substitute-command-keys
+                      "ESC sent to the terminal app (alt-screen); \
+\\[evil-ghostel-toggle-send-escape] routes it to evil instead"))))
       (let ((cmd (lookup-key evil-insert-state-map (kbd "<escape>"))))
         (call-interactively (if (commandp cmd) cmd #'evil-force-normal-state))))))
 
 (defun evil-ghostel-toggle-send-escape (&optional arg)
-  "Cycle or set the ESC routing mode for the current buffer.
-Without ARG, cycle `auto' → `terminal' → `evil'.  With numeric prefix 1/2/3
-set `auto'/`terminal'/`evil'; other prefixes signal a `user-error'.  The
-mode is buffer-local; see `evil-ghostel-escape' for the default."
+  "Toggle or set the ESC routing mode for the current buffer.
+Without ARG, toggle: from `auto' switch to whichever mode differs from
+auto's current effect (`evil' while an alt-screen app runs, `terminal'
+otherwise); from an explicit mode switch back to `auto'.  With numeric
+prefix 1/2/3 set `auto'/`terminal'/`evil'; other prefixes signal a
+`user-error'.  The mode is buffer-local; see `evil-ghostel-escape' for
+the default."
   (interactive "P")
   (let ((target
-         (if arg
-             (let ((n (prefix-numeric-value arg)))
-               (or (nth (1- n) evil-ghostel--escape-modes)
-                   (user-error
-                    "Invalid prefix %d; use 1 (auto), 2 (terminal), or 3 (evil)"
-                    n)))
-           (let ((next (cdr (memq evil-ghostel--escape-mode
-                                  evil-ghostel--escape-modes))))
-             (or (car next) (car evil-ghostel--escape-modes))))))
+         (cond (arg
+                (let ((n (prefix-numeric-value arg)))
+                  (or (nth (1- n) evil-ghostel--escape-modes)
+                      (user-error
+                       "Invalid prefix %d; use 1 (auto), 2 (terminal), or 3 (evil)"
+                       n))))
+               ((eq evil-ghostel--escape-mode 'auto)
+                (if (evil-ghostel--alt-screen-p) 'evil 'terminal))
+               (t 'auto))))
     (setq evil-ghostel--escape-mode target)
-    (message "evil-ghostel ESC mode: %s" target)))
+    (if (eq target 'auto)
+        (message "evil-ghostel ESC mode: auto (now → %s)"
+                 (if (evil-ghostel--alt-screen-p) 'terminal 'evil))
+      (message "evil-ghostel ESC mode: %s" target))))
 
 (evil-define-key* 'insert evil-ghostel-mode-map
                   (kbd "<escape>") #'evil-ghostel--escape)
+
+(define-key evil-ghostel-mode-map (kbd "C-c C-r")
+            #'evil-ghostel-toggle-send-escape)
+
+;; The <escape> function-key event exists on GUI frames and on ttys with
+;; the kitty keyboard protocol (kkp.el); legacy ttys never generate it,
+;; so this binding cannot shadow the ESC-prefixed C-c M-... keys there.
+(define-key evil-ghostel-mode-map (kbd "C-c <escape>")
+            #'evil-force-normal-state)
 
 
 ;; Minor mode

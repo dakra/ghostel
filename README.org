@@ -1403,7 +1403,8 @@ subdirectory inside the ghostel monorepo:
 When =evil-ghostel-mode= is active:
 
 - Ghostel starts in *insert state* (terminal input works normally).
-- Pressing *ESC* enters normal state and snaps point to the terminal cursor.
+- Pressing *ESC* enters normal state and snaps point to the terminal cursor
+  (outside alt-screen; see [[#evil-escape-routing][ESC routing]] below).
 - Normal-mode navigation (=h=, =j=, =k=, =l=, =w=, =b=, =e=, =0=, =$=, ...) works as expected.
 - *Insert/append* (=i=, =a=, =I=, =A=) sync the terminal cursor to point before entering
   insert state.
@@ -1414,11 +1415,45 @@ When =evil-ghostel-mode= is active:
 - *Paste* (=p=, =P=) pastes from the kill ring via bracketed paste.
 - *Undo* (=u=) sends readline undo (=Ctrl+_=).
 - Cursor shape follows evil state (block for normal, bar for insert).
-- Alt-screen programs (vim, less, htop) are unaffected.
+- Alt-screen programs (vim, less, htop) are unaffected: ESC goes to the app
+  (see below).
 
-The initial state and the ESC behavior are configurable via
-=evil-ghostel-initial-state= (default =insert=) and =evil-ghostel-escape= (default
-=auto=).
+The initial state is configurable via =evil-ghostel-initial-state= (default
+=insert=).
+
+*** ESC routing
+:properties:
+:custom_id: evil-escape-routing
+:end:
+#+cindex: escape routing
+
+Where insert-state ESC goes is controlled by =evil-ghostel-escape=:
+
+- =auto= (default) :: to the terminal while an alt-screen app runs (DECSET
+  1049: vim, less, htop, fullscreen TUIs like Claude Code); otherwise evil's
+  binding switches to normal state.
+- =terminal= :: always to the terminal.
+- =evil= :: always run evil's binding.
+
+The =auto= default keeps ESC working inside vim and friends, but it also
+means that while a fullscreen TUI such as OpenCode (=/tui fullscreen=)
+runs, ESC does /not/ enter normal state — you stay in insert state, and a
+leader key like =SPC= goes to the terminal too.  Regular Emacs bindings
+(=M-x=, =C-x ...=, =C-c ...=) keep working.  The first time ESC is routed to
+an alt-screen app this way, a one-time hint in the echo area points at the
+toggle command.
+
+=C-c C-r= (=evil-ghostel-toggle-send-escape=) toggles the routing for the
+current buffer: from =auto= it switches to whichever mode differs from
+auto's current effect (=evil= while an alt-screen app runs, =terminal=
+otherwise), and from an explicit mode back to =auto=.  Numeric prefixes
+1/2/3 set =auto=/=terminal=/=evil= directly.
+
+=C-c ESC= (=evil-force-normal-state=) switches to normal state once without
+changing the routing — useful to scroll or copy while the TUI keeps ESC.
+The binding is on the =<escape>= function key, which exists on GUI frames
+and, on a tty, in terminals speaking the kitty keyboard protocol with
+[[https://github.com/benjaminor/kkp][kkp.el]] enabled; on a legacy tty use =M-x evil-force-normal-state=.
 
 ** Compilation mode
 :properties:
