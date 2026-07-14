@@ -65,7 +65,7 @@ live PTY.  Leaves the buffer in line mode with point at the input."
           (should (eq buffer-undo-list t))
           (let ((ghostel--term 'fake)
                 (ghostel--process 'fake-proc))
-            (cl-letf (((symbol-function 'ghostel--mode-enabled)
+            (cl-letf (((symbol-function 'ghostel--alt-screen-p)
                        (lambda (&rest _) nil))
                       ((symbol-function 'ghostel--redraw) #'ignore)
                       ((symbol-function 'ghostel--invalidate) #'ignore)

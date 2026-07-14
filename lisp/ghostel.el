@@ -1151,7 +1151,6 @@ is non-nil."
 (unless (memq 'ghostel--emulation-alist emulation-mode-map-alists)
   (push 'ghostel--emulation-alist emulation-mode-map-alists))
 
-
 
 ;;; Input mode predicates
 
@@ -1174,7 +1173,13 @@ across the rewrite."
   "Non-nil when the terminal is frozen (copy mode)."
   (eq ghostel--input-mode 'copy))
 
+(defun ghostel-alt-screen-p ()
+  "Return non-nil when the terminal is on its alternate screen.
+True while a fullscreen TUI (vim, less, htop, …) runs, regardless of
+which DEC mode (47, 1047, or 1049) it used to get there."
+  (and ghostel--term (ghostel--alt-screen-p ghostel--term)))
 
+
 ;;; Keymap
 
 (defun ghostel--define-terminal-keys (map &optional no-exceptions)

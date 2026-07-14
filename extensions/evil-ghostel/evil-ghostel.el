@@ -46,7 +46,7 @@
 (require 'evil)
 (require 'ghostel)
 
-(declare-function ghostel--mode-enabled "ghostel-module")
+(declare-function ghostel--alt-screen-p "ghostel-module")
 
 (defvar evil-ghostel-mode)
 
@@ -73,8 +73,8 @@ change immediately through `evil-set-initial-state'."
 (defcustom evil-ghostel-escape 'auto
   "Where insert-state ESC is routed in ghostel buffers.
 
-`auto'     - to the terminal in alt-screen mode (DECSET 1049: vim, less,
-             htop, …); otherwise evil's binding switches to normal state.
+`auto'     - to the terminal in alt-screen mode (vim, less, htop, …);
+             otherwise evil's binding switches to normal state.
 `terminal' - always send ESC to the terminal.
 `evil'     - always run evil's binding.
 
@@ -95,17 +95,13 @@ Each iteration waits up to 50 ms, bounding the total wait at ~500 ms."
 
 ;; Guard predicates
 
-(defun evil-ghostel--alt-screen-p ()
-  "Return non-nil when the terminal is in alt-screen mode (DECSET 1049)."
-  (and ghostel--term (ghostel--mode-enabled ghostel--term 1049)))
-
 (defun evil-ghostel--active-p ()
   "Return non-nil when evil-ghostel PTY routing should intercept.
 True in `semi-char' input mode and outside alt-screen — the only state in
 which `evil-ghostel-*' commands send PTY keys rather than running `evil-*'."
   (and evil-ghostel-mode
        ghostel--term
-       (not (ghostel--mode-enabled ghostel--term 1049))
+       (not (ghostel-alt-screen-p))
        (eq ghostel--input-mode 'semi-char)))
 
 (defun evil-ghostel--ctrl-passthrough-active-p ()
@@ -161,9 +157,9 @@ No window showing the buffer counts as following."
 (defun evil-ghostel--around-redraw (orig-fn term &optional full force-sync)
   "Apply Evil point/visual handling around `ghostel--redraw'.
 ORIG-FN is the advised function (TERM, FULL, FORCE-SYNC).  Skipped in
-alt-screen (1049) and when the native renderer defers synchronized output."
+alt-screen and when the native renderer defers synchronized output."
   (if (and evil-ghostel-mode
-           (not (ghostel--mode-enabled term 1049)))
+           (not (ghostel--alt-screen-p term)))
       (let* ((visual-p (eq evil-state 'visual))
              ;; Sampled pre-render (window check included): only then does
              ;; point on the cursor's row mean the user has not left the
@@ -226,7 +222,7 @@ evil state with point off the cursor, unless FORCE."
 ORIG-FN is the advised setter (STYLE, VISIBLE); deferred to in alt-screen."
   (if (and evil-ghostel-mode
            ghostel--term
-           (not (ghostel--mode-enabled ghostel--term 1049)))
+           (not (ghostel-alt-screen-p)))
       ;; Evil owns the cursor now; end any terminal-driven blink that a
       ;; full-screen app left running before we exited the alt-screen.
       (progn (ghostel--cursor-blink-stop)
@@ -836,7 +832,7 @@ keystroke is never dropped."
   (let* ((mode evil-ghostel--escape-mode)
          (to-terminal (or (eq mode 'terminal)
                           (and (eq mode 'auto)
-                               (evil-ghostel--alt-screen-p)))))
+                               (ghostel-alt-screen-p)))))
     (if to-terminal
         (progn
           (ghostel--on-user-input)
@@ -866,12 +862,12 @@ the default."
                        "Invalid prefix %d; use 1 (auto), 2 (terminal), or 3 (evil)"
                        n))))
                ((eq evil-ghostel--escape-mode 'auto)
-                (if (evil-ghostel--alt-screen-p) 'evil 'terminal))
+                (if (ghostel-alt-screen-p) 'evil 'terminal))
                (t 'auto))))
     (setq evil-ghostel--escape-mode target)
     (if (eq target 'auto)
         (message "evil-ghostel ESC mode: auto (now → %s)"
-                 (if (evil-ghostel--alt-screen-p) 'terminal 'evil))
+                 (if (ghostel-alt-screen-p) 'terminal 'evil))
       (message "evil-ghostel ESC mode: %s" target))))
 
 (evil-define-key* 'insert evil-ghostel-mode-map

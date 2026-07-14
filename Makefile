@@ -86,7 +86,10 @@ lisp/%.elc: lisp/%.el
 $(EVIL_DIR):
 	git clone --depth 1 https://github.com/emacs-evil/evil.git "$@"
 
-extensions/evil-ghostel/%.elc: extensions/evil-ghostel/%.el | $(EVIL_DIR)
+# Depend on the core .elc files: `require' prefers a stale core .elc over
+# the fresh .el, so a parallel build could otherwise compile the extension
+# before a core function it uses exists in the loaded bytecode.
+extensions/evil-ghostel/%.elc: extensions/evil-ghostel/%.el $(filter lisp/%.elc,$(ELC)) | $(EVIL_DIR)
 	$(EMACS) --batch $(EMACSFLAGS) -Q -L "$(EVIL_DIR)" -L lisp -L extensions/evil-ghostel \
 		--eval "(setq byte-compile-error-on-warn t)" -f batch-byte-compile $<
 

@@ -250,8 +250,8 @@ The mock erases and reinserts the same text so these tests exercise
                   (erase-buffer)
                   (insert text)
                   t)))
-             ((symbol-function 'ghostel--mode-enabled)
-              (lambda (_term _mode) nil)))
+             ((symbol-function 'ghostel--alt-screen-p)
+              (lambda (_term) nil)))
      ,@body))
 
 (ert-deftest evil-ghostel-test-around-redraw-does-not-restore-normal-point ()
@@ -268,8 +268,8 @@ The mock erases and reinserts the same text so these tests exercise
                 (lambda (_term &optional _full _force-sync)
                   (goto-char renderer-point)
                   t))
-               ((symbol-function 'ghostel--mode-enabled)
-                (lambda (_term _mode) nil)))
+               ((symbol-function 'ghostel--alt-screen-p)
+                (lambda (_term) nil)))
       (evil-ghostel--around-redraw (symbol-function 'ghostel--redraw) nil))
      (should (= renderer-point (point))))))
 
@@ -284,8 +284,8 @@ The mock appends rows below, advances the cursor to the new prompt at
                  (evil-ghostel-test--insert "\nout-1\nout-2\n$ "))
                (setq ghostel--cursor-char-pos (point-max)
                      ghostel--cursor-pos '(2 . 5))))
-            ((symbol-function 'ghostel--mode-enabled)
-             (lambda (_term _mode) nil)))
+            ((symbol-function 'ghostel--alt-screen-p)
+             (lambda (_term) nil)))
     (evil-ghostel--around-redraw (symbol-function 'ghostel--redraw) 'fake)))
 
 (ert-deftest evil-ghostel-test-around-redraw-tracks-parked-normal-point ()
@@ -346,8 +346,8 @@ snapping to the cursor or stranding in scrollback."
    (goto-char (point-min))
    (search-forward "five")
    (cl-letf (((symbol-function 'ghostel--redraw) (lambda (&rest _) t))
-             ((symbol-function 'ghostel--mode-enabled)
-              (lambda (_term _mode) nil)))
+             ((symbol-function 'ghostel--alt-screen-p)
+              (lambda (_term) nil)))
      (evil-ghostel--around-redraw (symbol-function 'ghostel--redraw) 'fake))
    (should (= 3 (line-number-at-pos)))
    (should (= 0 (current-column)))))
@@ -375,8 +375,8 @@ snapping to the cursor or stranding in scrollback."
   (evil-ghostel-test--with-evil-buffer
    (let ((evil-state 'insert)
          reset-called)
-     (cl-letf (((symbol-function 'ghostel--mode-enabled)
-                (lambda (_term _mode) nil))
+     (cl-letf (((symbol-function 'ghostel--alt-screen-p)
+                (lambda (_term) nil))
                ((symbol-function 'evil-ghostel--reset-cursor-point)
                 (lambda () (setq reset-called t))))
        (should-not
@@ -400,8 +400,8 @@ advice must not restore point or visual markers there."
                   (insert text)
                   (goto-char (point-min))
                   t)))
-             ((symbol-function 'ghostel--mode-enabled)
-              (lambda (_term mode) (= mode 1049))))
+             ((symbol-function 'ghostel--alt-screen-p)
+              (lambda (_term) t)))
      (evil-ghostel--around-redraw (symbol-function 'ghostel--redraw) nil))
    ;; Advice bypassed → the mock's point placement (point-min) wins.
    (should (= (point-min) (point)))))
@@ -430,7 +430,7 @@ it still snaps point to the cursor."
             (setq ghostel--cursor-char-pos (point))
             ;; Viewport-relative cursor: last row, column past the prompt.
             (setq ghostel--cursor-pos (cons (current-column) (1- ghostel--term-rows)))
-            (cl-letf (((symbol-function 'ghostel--mode-enabled)
+            (cl-letf (((symbol-function 'ghostel--alt-screen-p)
                        (lambda (&rest _) nil)))
               ;; Bind `evil-state' directly: entering insert via
               ;; `evil-insert-state' would fire entry hooks that touch the
@@ -467,7 +467,7 @@ insert state.  Inert (never vetoes) when not active, e.g. in alt-screen."
    (setq-local ghostel--cursor-char-pos (point))
    (let ((off (point-min)))
      ;; Active: semi-char input mode, not alt-screen.
-     (cl-letf (((symbol-function 'ghostel--mode-enabled)
+     (cl-letf (((symbol-function 'ghostel--alt-screen-p)
                 (lambda (&rest _) nil)))
        (let ((evil-state 'normal))
          ;; Normal state, point off the cursor: veto, unless FORCE.
@@ -483,7 +483,7 @@ insert state.  Inert (never vetoes) when not active, e.g. in alt-screen."
          (should-not (evil-ghostel--anchor-inhibit nil nil))))
      ;; Not active (alt-screen): ghostel owns the anchor, never vetoed even
      ;; while roaming off the cursor in a motion state.
-     (cl-letf (((symbol-function 'ghostel--mode-enabled)
+     (cl-letf (((symbol-function 'ghostel--alt-screen-p)
                 (lambda (&rest _) t)))
        (let ((evil-state 'normal))
          (goto-char off)
@@ -792,7 +792,7 @@ The command calls `evil-ghostel-goto-input-position' which moves the
 terminal cursor to point's buffer position."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(0 . 0)))
      (evil-normal-state)
      (let ((sync-called nil))
@@ -806,7 +806,7 @@ terminal cursor to point's buffer position."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (insert "hello")
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(5 . 0)))
      (evil-normal-state)
      (goto-char (point-min))
@@ -834,7 +834,7 @@ stays on `d'.  The guard skips the +1 step when point is at or past
      (insert "word")
      (insert (make-string 10 ?\s))
      (insert "rprompt"))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              ;; Isolate target-computation from PTY mechanics: simulate
              ;; goto-input-position's net effect on point.
              ((symbol-function 'evil-ghostel-goto-input-position)
@@ -862,7 +862,7 @@ through when the cell at the cursor is non-blank typed text."
    ;; (end of input) back to pos 2 (on `i').  Now they press `<esc>'
    ;; then `a' — the cursor is at pos 2, the same as point.
    (insert "hi")
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              ((symbol-function 'evil-ghostel-goto-input-position)
               (lambda (pos &rest _) (goto-char pos) t))
              ((symbol-function 'evil-ghostel--insert-state-entry) #'ignore)
@@ -884,7 +884,7 @@ still advance by one cell (vim semantics)."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (insert "hello world")
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              ((symbol-function 'evil-ghostel-goto-input-position)
               (lambda (pos &rest _) (goto-char pos) t))
              ((symbol-function 'evil-ghostel--insert-state-entry) #'ignore)
@@ -977,7 +977,7 @@ arrows are sent (which the old `sync-inhibit' path mistakenly did)."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (insert "line one\nline two\nline three")
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(10 . 2)))
      (evil-normal-state)
      (goto-char (point-min))
@@ -1064,7 +1064,7 @@ without a real native module."
            (setq ghostel--cursor-pos (cons (current-column) 0))
            (evil-local-mode 1)
            (evil-ghostel-mode 1)
-           (cl-letf (((symbol-function 'ghostel--mode-enabled)
+           (cl-letf (((symbol-function 'ghostel--alt-screen-p)
                       (lambda (&rest _) nil)))
              ,@body))
        (kill-buffer buf))))
@@ -1112,7 +1112,7 @@ on and the terminal mocked."
            (setq ghostel--term-rows 1)
            (evil-local-mode 1)
            (evil-ghostel-mode 1)
-           (cl-letf (((symbol-function 'ghostel--mode-enabled)
+           (cl-letf (((symbol-function 'ghostel--alt-screen-p)
                       (lambda (&rest _) nil)))
              ,@body))
        (kill-buffer buf))))
@@ -1257,7 +1257,7 @@ bounds total wait at ~max-iter × 50 ms."
    (setq-local ghostel--term t)
    (insert "hello world")
    (goto-char (point-min))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(0 . 0))
              ((symbol-function 'evil-ghostel-goto-input-position) #'ignore))
      (evil-normal-state)
@@ -1283,7 +1283,7 @@ shortcut is invoked."
      (insert "hello"))
    (setq-local ghostel--cursor-pos '(7 . 0))
    (setq-local ghostel--cursor-char-pos 8)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
      (evil-normal-state)
      (let ((keys-sent '()))
        (cl-letf (((symbol-function 'ghostel--send-encoded)
@@ -1308,7 +1308,7 @@ then enters insert state.  Same vterm-style shape as `dd'."
      (insert "hello"))
    (setq-local ghostel--cursor-pos '(7 . 0))
    (setq-local ghostel--cursor-char-pos 8)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
      (evil-normal-state)
      (let ((keys-sent '()))
        (cl-letf (((symbol-function 'ghostel--send-encoded)
@@ -1336,7 +1336,7 @@ line)."
    (setq-local ghostel--term t)
    (insert "line one\nline two\nline three")
    ;; Terminal cursor reported at end of line three (col 10, row 2)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(10 . 2)))
      (evil-normal-state)
      (goto-char (point-min))
@@ -1360,7 +1360,7 @@ line)."
    (setq-local ghostel--term t)
    (insert "hello")
    (goto-char (point-min))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(0 . 0))
              ((symbol-function 'evil-ghostel-goto-input-position) #'ignore)
              ((symbol-function 'ghostel--send-encoded) #'ignore))
@@ -1378,7 +1378,7 @@ line)."
    (setq-local ghostel--term t)
    (insert "hello world")
    (goto-char (point-min))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(0 . 0))
              ((symbol-function 'evil-ghostel-goto-input-position) #'ignore))
      (evil-normal-state)
@@ -1397,7 +1397,7 @@ line)."
    (setq-local ghostel--term t)
    (insert "hello world")
    (goto-char (point-min))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(0 . 0))
              ((symbol-function 'ghostel--send-encoded) #'ignore))
      (evil-normal-state)
@@ -1414,7 +1414,7 @@ line)."
    (setq-local ghostel--term t)
    (insert "hello")
    (goto-char (point-min))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(0 . 0))
              ((symbol-function 'evil-ghostel-goto-input-position) #'ignore))
      (evil-normal-state)
@@ -1440,7 +1440,7 @@ line)."
    (setq-local ghostel--term t)
    (insert "hello")
    (kill-new "world")
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(0 . 0))
              ((symbol-function 'evil-ghostel-goto-input-position) #'ignore))
      (evil-normal-state)
@@ -1478,7 +1478,7 @@ live-terminal detection."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (insert "hello world")
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(11 . 0)))
      (evil-insert-state)
      ;; Test a sample of keys from evil-ghostel--ctrl-passthrough-keys
@@ -1498,8 +1498,8 @@ instead of invoking Evil's insert-state editing commands."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (setq-local ghostel--input-mode 'semi-char)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled)
-              (lambda (_term mode) (= mode 1049))))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p)
+              (lambda (_term) t)))
      (should-not (evil-ghostel--active-p))
      (should (evil-ghostel--ctrl-passthrough-active-p))
      (let (sent)
@@ -1520,7 +1520,7 @@ Prevents up/down arrows being sent as history navigation."
    (setq-local ghostel--term t)
    (insert "line one\nline two\nline three")
    ;; Terminal cursor on row 2 (last line), col 5
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(5 . 2)))
      (evil-normal-state)
      ;; Move point to row 0 (first line) simulating `kk`
@@ -1546,7 +1546,7 @@ Prevents up/down arrows being sent as history navigation."
    (setq-local ghostel--term t)
    (insert "hello world")
    ;; Terminal cursor on row 0, col 0
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(0 . 0)))
      (evil-normal-state)
      ;; Move point to col 5 on the same row
@@ -1579,7 +1579,7 @@ become `ghostel--line-input-start' / `--line-input-end'."
     (insert ,input-text)
     (setq-local ghostel--line-input-start (copy-marker ,input-start nil))
     (setq-local ghostel--line-input-end (copy-marker ,input-end t))
-    (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+    (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
       ,@body)))
 
 (ert-deftest evil-ghostel-test-line-mode-active-p ()
@@ -1615,7 +1615,7 @@ Point and the terminal cursor are intentionally decoupled there."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (setq-local ghostel--input-mode 'copy)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(0 . 0)))
      (evil-normal-state)
      (let ((sync-called nil))
@@ -1665,7 +1665,7 @@ C-d (`ghostel-line-mode-delete-char-or-eof')."
           (map (make-sparse-keymap)))
      (define-key map (kbd "C-a") sentinel)
      (use-local-map map)
-     (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+     (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
        (evil-insert-state)
        (evil-ghostel--passthrough-ctrl "a")
        (should called)))))
@@ -1691,7 +1691,7 @@ C-d (`ghostel-line-mode-delete-char-or-eof')."
   "`evil-ghostel-undo' sends Ctrl+_ to the terminal."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(0 . 0)))
      (evil-normal-state)
      (let ((keys-sent '()))
@@ -1721,12 +1721,12 @@ C-d (`ghostel-line-mode-delete-char-or-eof')."
 ;; -----------------------------------------------------------------------
 
 (defmacro evil-ghostel-test--with-escape-stubs (alt-screen-p &rest body)
-  "Run BODY with `ghostel--mode-enabled' returning ALT-SCREEN-P for 1049
+  "Run BODY with `ghostel--alt-screen-p' returning ALT-SCREEN-P
 and with `ghostel--send-encoded' captured into the local list `sent'."
   (declare (indent 1) (debug t))
   `(let ((sent '()))
-     (cl-letf (((symbol-function 'ghostel--mode-enabled)
-                (lambda (_term mode) (and (= mode 1049) ,alt-screen-p)))
+     (cl-letf (((symbol-function 'ghostel--alt-screen-p)
+                (lambda (_term) ,alt-screen-p))
                ((symbol-function 'ghostel--anchor-window) #'ignore)
                ((symbol-function 'ghostel--send-encoded)
                 (lambda (key mods &rest _) (push (cons key mods) sent))))
@@ -1944,7 +1944,7 @@ Trailing whitespace in single-line ranges is real user content."
    (insert "word word word")
    (goto-char (point-min))
    (move-to-column 5)  ; start of word2
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(14 . 0)))
      (let ((bs-count 0))
        (cl-letf (((symbol-function 'ghostel--send-encoded)
@@ -1971,7 +1971,7 @@ padding/blanks past end-of-input."
      (insert "word word")
      (insert "\n\n\n\n"))  ; blank renderer rows below row 0
    (goto-char 8)  ; col 5 in input = start of last "word"
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(7 . 0))
              (ghostel--cursor-char-pos 8))
      (evil-normal-state)
@@ -2000,7 +2000,7 @@ mirror that drain behaviour."
    (move-to-column 6)
    (setq ghostel--cursor-pos '(17 . 0))
    (setq ghostel--cursor-char-pos (+ (point-min) 17))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              ((symbol-function 'evil-ghostel--sync-render)
               (lambda (&rest _) nil))) ; we already update pos inline
      (let ((keys-sent '()))
@@ -2052,7 +2052,7 @@ and silently undoing the user's `^' / `$' / `0' navigation."
    ;; Push 7 buffer lines so point's buffer line (line 7) is far from
    ;; the cursor's viewport row (0) when measured in raw line numbers.
    (insert "scroll-0\nscroll-1\nscroll-2\nscroll-3\nscroll-4\nscroll-5\nscroll-6\n$ ")
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              ;; Cursor on the cursor's row at viewport row 4 (last).
              (ghostel--cursor-pos '(2 . 4)))
      ;; Park point at col 0 of the cursor row (buffer line 7) — this is
@@ -2104,7 +2104,7 @@ sticks."
    (let ((inhibit-read-only t))
      (insert "long scrollback line\n")
      (insert (propertize "$ " 'ghostel-prompt t)))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(2 . 1))
              (ghostel--cursor-char-pos 24))
      (evil-normal-state)
@@ -2131,7 +2131,7 @@ prompt."
      (insert (propertize "$ " 'ghostel-prompt t))
      (insert "cmd")
      (insert "\n\n\n\n"))  ; blank renderer rows below row 0
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(5 . 0)))
      (evil-normal-state)
      (goto-char (point-min))
@@ -2160,7 +2160,7 @@ semi-char.  Replaces `evil-goto-line' so `G' lands on the live
 prompt instead of the (post-cursor) end of buffer."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
      (let ((reset-called nil))
        (cl-letf (((symbol-function 'evil-ghostel--reset-cursor-point)
                   (lambda () (setq reset-called t))))
@@ -2196,7 +2196,7 @@ cursor jumps to the right edge of the window."
      ;; "cmd" + render padding to column 20 (e.g. RPROMPT padding).
      (insert "cmd")
      (insert "                 "))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              ;; Live cursor at column 5 (just after "cmd").  Point is
              ;; one to the left of the cursor — vanilla fall-through.
              (ghostel--cursor-pos '(5 . 0))
@@ -2216,7 +2216,7 @@ cursor jumps to the right edge of the window."
   "`<delete>' in insert state sends the `delete' PTY key in semi-char."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
      (let ((keys-sent '()))
        (cl-letf (((symbol-function 'ghostel--send-encoded)
                   (lambda (key _mods &rest _) (push key keys-sent))))
@@ -2228,8 +2228,8 @@ cursor jumps to the right edge of the window."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    ;; Report alt-screen (1049) as active, every other mode as inactive.
-   (cl-letf (((symbol-function 'ghostel--mode-enabled)
-              (lambda (_term mode) (= mode 1049))))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p)
+              (lambda (_term) t)))
      (let ((keys-sent '()) (fell-back nil))
        (cl-letf (((symbol-function 'ghostel--send-encoded)
                   (lambda (key _mods &rest _) (push key keys-sent)))
@@ -2244,7 +2244,7 @@ cursor jumps to the right edge of the window."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (setq-local ghostel--input-mode 'line)
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
      (let ((keys-sent '()) (fell-back nil))
        (cl-letf (((symbol-function 'ghostel--send-encoded)
                   (lambda (key _mods &rest _) (push key keys-sent)))
@@ -2463,7 +2463,7 @@ does not push BEG up to the cursor and collapse the range."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (insert "word1 word2")
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(11 . 0))
              (ghostel--cursor-char-pos (point)))
      (let ((clamped (evil-ghostel--clamp 1 7)))
@@ -2477,7 +2477,7 @@ does not push BEG up to the cursor and collapse the range."
    (let ((inhibit-read-only t))
      (insert (propertize "$ " 'ghostel-prompt t))
      (insert "cmd   "))  ; trailing renderer padding
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(5 . 0))
              (ghostel--cursor-char-pos 6))
      (evil-normal-state)
@@ -2494,7 +2494,7 @@ does not push BEG up to the cursor and collapse the range."
      (insert (propertize "$ " 'ghostel-prompt t))
      (insert (propertize "echo" 'ghostel-input t 'face '(:foreground "#ffffff")))
      (insert (propertize " ls" 'ghostel-input t 'face '(:foreground "#4d4d4d"))))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(6 . 0))
              (ghostel--cursor-char-pos 7))  ; after "echo"
      (evil-normal-state)
@@ -2510,7 +2510,7 @@ does not push BEG up to the cursor and collapse the range."
    (insert "$ command")
    (let ((inhibit-read-only t))
      (put-text-property 1 3 'ghostel-prompt t))
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil)))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
      (evil-normal-state)
      (goto-char (point-max))
      (evil-ghostel-first-non-blank)
@@ -2529,7 +2529,7 @@ character, so it must not consume a backspace or a replacement char."
      (insert "C"))
    ;; Terminal cursor at the end of input (after "C"), as right after
    ;; typing; the input region spans the whole buffer.
-   (cl-letf (((symbol-function 'ghostel--mode-enabled) (lambda (&rest _) nil))
+   (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
              (ghostel--cursor-pos '(1 . 0))
              (ghostel--cursor-char-pos (point-max))
              ((symbol-function 'evil-ghostel-goto-input-position) #'ignore))

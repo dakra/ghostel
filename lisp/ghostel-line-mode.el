@@ -22,7 +22,6 @@
 (declare-function ghostel--ensure-ghostel-buffer "ghostel")
 (declare-function ghostel--invalidate "ghostel")
 (declare-function ghostel--leave-readonly-state "ghostel")
-(declare-function ghostel--mode-enabled "ghostel-module")
 (declare-function ghostel--mode-line-refresh "ghostel")
 (declare-function ghostel--mode-line-tag-make "ghostel")
 (declare-function ghostel--open-link "ghostel")
@@ -32,6 +31,7 @@
 (declare-function ghostel--send-encoded "ghostel")
 (declare-function ghostel--uri-at-pos "ghostel")
 (declare-function ghostel--write-pty "ghostel-module")
+(declare-function ghostel-alt-screen-p "ghostel")
 (declare-function ghostel-beginning-of-input-or-line "ghostel")
 (declare-function ghostel-input-start-point "ghostel")
 (declare-function bash-completion-capf-nonexclusive "bash-completion")
@@ -230,14 +230,6 @@ read-only scrollback portion, mirroring `ghostel-line-mode-self-insert'."
       (goto-char end)))
   (insert "\n"))
 
-(defun ghostel--line-mode-alt-screen-p ()
-  "Return non-nil if libghostty is on its alternate screen.
-Checks DEC private modes 1049 and 1047 (the modern alt-screen
-modes used by less, htop, vim, etc.)."
-  (and ghostel--term
-       (or (ghostel--mode-enabled ghostel--term 1049)
-           (ghostel--mode-enabled ghostel--term 1047))))
-
 (defun ghostel--line-mode-prompt-on-screen-p ()
   "Return non-nil when a real OSC 133 prompt char sits on the cursor's row.
 Only a `ghostel-prompt' property counts (no regex or cursor fallback),
@@ -428,7 +420,7 @@ in line mode (the interactive entry validates these)."
       (setq ghostel--char-mode-override-active nil)
       ;; A deliberate alt-screen entry must survive the next redraw's
       ;; auto-pause, and supersedes any armed sentinel.
-      (setq ghostel--line-mode-on-alt-screen (ghostel--line-mode-alt-screen-p))
+      (setq ghostel--line-mode-on-alt-screen (ghostel-alt-screen-p))
       (setq ghostel--line-mode-paused nil)
       (setq ghostel--input-mode 'line)
       (use-local-map ghostel-line-mode-map)
@@ -487,12 +479,12 @@ when the TUI exits.  A prefix arg FORCE forces immediate entry."
         (message "Line mode: RET sends the whole line; C-c C-j to exit")
       (user-error "Line mode could not locate the cursor or a prompt")))
    ;; Alt screen with a real prompt on the cursor row (inner shell) — enter.
-   ((and (ghostel--line-mode-alt-screen-p)
+   ((and (ghostel-alt-screen-p)
          (ghostel--line-mode-prompt-on-screen-p)
          (ghostel--line-mode-enter))
     (message "Line mode: RET sends the whole line; C-c C-j to exit"))
    ;; Alt screen, no detectable prompt (raw TUI) — arm instead.
-   ((ghostel--line-mode-alt-screen-p)
+   ((ghostel-alt-screen-p)
     (ghostel--line-mode-defer-entry))
    ;; Primary screen — normal entry.
    ((ghostel--line-mode-enter)
@@ -646,7 +638,7 @@ overwrites the buffer.  A deliberate alt-screen entry
 \(`ghostel--line-mode-on-alt-screen') is exempt; the flag clears
 once the alt screen goes away so a later TUI pauses normally."
   (when (eq ghostel--input-mode 'line)
-    (if (ghostel--line-mode-alt-screen-p)
+    (if (ghostel-alt-screen-p)
         (unless ghostel--line-mode-on-alt-screen
           (ghostel--line-mode-pause))
       ;; Back on the primary screen — re-arm the pause for the next TUI.
@@ -662,7 +654,7 @@ new prompt one or more redraws after libghostty leaves the alt
 screen.  Also drives the deferred startup entry when
 `ghostel-initial-input-mode' is `line'."
   (when (and ghostel--line-mode-paused
-             (not (ghostel--line-mode-alt-screen-p)))
+             (not (ghostel-alt-screen-p)))
     (ghostel--line-mode-try-resume))
   (ghostel--line-mode-maybe-enter-initial))
 

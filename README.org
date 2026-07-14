@@ -1430,7 +1430,7 @@ The initial state is configurable via =evil-ghostel-initial-state= (default
 Where insert-state ESC goes is controlled by =evil-ghostel-escape=:
 
 - =auto= (default) :: to the terminal while an alt-screen app runs (DECSET
-  1049: vim, less, htop, fullscreen TUIs like Claude Code); otherwise evil's
+  1049: vim, less, htop, fullscreen TUIs like OpenCode); otherwise evil's
   binding switches to normal state.
 - =terminal= :: always to the terminal.
 - =evil= :: always run evil's binding.
