@@ -2378,9 +2378,9 @@ Most keys are sent to the terminal; keys in
       ;; Snap the window to the live viewport so the user lands back at the
       ;; prompt after exiting copy/emacs/line.  FORCE so a deliberate switch
       ;; wins over any `ghostel-inhibit-anchor-functions' roaming veto.
+      (goto-char (point-max))
       (ghostel--anchor-window nil t)
       (setq ghostel--force-next-redraw t)
-      (goto-char (point-max))
       (ghostel--invalidate))))
 
 (defun ghostel-char-mode ()
@@ -2409,9 +2409,9 @@ Even keys listed in `ghostel-keymap-exceptions' (\\`C-c', \\`C-x',
     (ghostel--mode-line-refresh)
     (when ghostel--term
       ;; FORCE: a deliberate switch wins over any roaming veto.
+      (goto-char (point-max))
       (ghostel--anchor-window nil t)
       (setq ghostel--force-next-redraw t)
-      (goto-char (point-max))
       (ghostel--invalidate))
     (message "Char mode (%s to exit)"
              (substitute-command-keys
@@ -4637,17 +4637,29 @@ WINDOW follows the output when the lines from its `window-start' to
 `point-max' fit within its body, measured from BODY-PIXEL-HEIGHT (default
 `window-body-height' in pixels, excluding the mode-line and header-line to
 match the terminal grid), plus one line of tolerance for the partial top
-line the graphical anchor leaves via `window-vscroll'."
+line the graphical anchor leaves via `window-vscroll'.
+
+A cursor-clamped anchor (see `ghostel--anchor-window') can start above
+that geometric bound; WINDOW also counts as anchored while its
+`window-start' sits exactly on the live cursor's line."
   (with-current-buffer (window-buffer window)
-    (when-let* (((derived-mode-p 'ghostel-mode))
-                ((not (eq ghostel--input-mode 'emacs)))
-                (dlh (with-selected-window window (default-line-height)))
-                (body-pixel-height (or body-pixel-height
-                                       (window-body-height window t)))
-                (screen-lines (/ (float body-pixel-height) (float dlh)))
-                (ws (window-start window))
-                (ws-lines-to-end (count-lines ws (point-max))))
-      (<= ws-lines-to-end (1+ (floor screen-lines))))))
+    (when (and (derived-mode-p 'ghostel-mode)
+               (not (eq ghostel--input-mode 'emacs)))
+      (or (and ghostel--cursor-char-pos
+               (not (eq ghostel--input-mode 'line))
+               (eql (window-start window)
+                    (save-excursion
+                      (goto-char ghostel--cursor-char-pos)
+                      (line-beginning-position))))
+          (when-let* ((dlh (with-selected-window window
+                             (default-line-height)))
+                      (body-pixel-height (or body-pixel-height
+                                             (window-body-height window t)))
+                      (screen-lines (/ (float body-pixel-height)
+                                       (float dlh)))
+                      (ws (window-start window))
+                      (ws-lines-to-end (count-lines ws (point-max))))
+            (<= ws-lines-to-end (1+ (floor screen-lines))))))))
 
 (defun ghostel--anchored-windows (&optional buffer all-frames)
   "Return anchored Ghostel windows.
@@ -4708,6 +4720,12 @@ In text frames, use line-count geometry with no vscroll.
 Do nothing unless WINDOW displays a live Ghostel terminal.
 A `ghostel-inhibit-anchor-functions' hook can veto anchoring a window.
 
+The live cursor is never scrolled out of view: when bottom-aligning
+`point-max' would push the cursor's line above `window-start' (a shrunken
+window over a mostly-empty grid), the anchor starts at the cursor's line
+instead.  `ghostel--window-anchored-p' recognizes such a clamped window
+as still following the output.
+
 Copy mode is never anchored (the viewport is frozen).  Emacs mode is
 anchored only when FORCE is non-nil, reserved for deliberate anchors such
 as paste/yank that should scroll to the live cursor even in Emacs mode;
@@ -4729,24 +4747,38 @@ user's point, since its input region is user-owned."
                             'ghostel-inhibit-anchor-functions window force))))))
     (with-selected-window window
       (with-current-buffer buffer
-        (let ((target (point-max))
-              ;; Line mode's input region is user-owned; keep point instead of
-              ;; snapping it to the terminal cursor.
-              (orig (point)))
-          (if-let* ((anchor (and (display-graphic-p (window-frame window))
-                                 ghostel--pixel-anchor-supported-p
-                                 (ghostel--pixel-anchor window target))))
-              (progn
-                (set-window-start window (car anchor))
-                (ghostel--set-window-vscroll window (cdr anchor) t t))
-            (let ((lines (window-screen-lines)))
-              (goto-char target)
-              (forward-line (- (floor lines)))
-              (set-window-start window (point))
-              (ghostel--set-window-vscroll window 0 t t)))
+        (let* ((target (point-max))
+               ;; Line mode's input region is user-owned; keep point instead
+               ;; of snapping it to the terminal cursor.
+               (orig (point))
+               (cursor (and (not (eq ghostel--input-mode 'line))
+                            ghostel--cursor-char-pos))
+               (cursor-bol (and cursor
+                                (save-excursion
+                                  (goto-char cursor)
+                                  (line-beginning-position))))
+               (anchor (or (and (display-graphic-p (window-frame window))
+                                ghostel--pixel-anchor-supported-p
+                                (ghostel--pixel-anchor window target))
+                           (save-excursion
+                             (goto-char target)
+                             (forward-line
+                              (- (floor (window-screen-lines))))
+                             (cons (point) 0))))
+               (start (if (and cursor-bol (< cursor-bol (car anchor)))
+                          cursor-bol
+                        (car anchor)))
+               ;; A vscroll would partially clip the cursor's row whenever
+               ;; it is the top line; a clamped start sits on a line
+               ;; boundary anyway.
+               (vscroll (if (and cursor-bol (= cursor-bol start))
+                            0
+                          (cdr anchor))))
+          (set-window-start window start)
+          (ghostel--set-window-vscroll window vscroll t t)
           (set-window-point window (if (eq ghostel--input-mode 'line)
                                        orig
-                                     (or ghostel--cursor-char-pos target))))))))
+                                     (or cursor target))))))))
 
 (defun ghostel--maybe-defer-redraw (buffer)
   "Defer BUFFER's redraw if a `ghostel-inhibit-redraw-functions' hook asks.

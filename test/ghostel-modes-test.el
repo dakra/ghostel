@@ -1140,34 +1140,119 @@ so copy/Emacs mode entry runs without a live terminal or window."
                         (buffer-local-value 'isearch-mode-end-hook buf))))
       (kill-buffer buf))))
 
+(defmacro ghostel-test--with-anchor-window-buffer (&rest body)
+  "Run BODY in the selected window showing a fresh ghostel buffer.
+The buffer holds more rows than fit in the window, so a bottom-aligned
+anchor starts well below the first lines.  BODY runs with `buf' bound to
+the buffer, which is in the default semi-char mode."
+  (declare (indent 0) (debug t))
+  `(let ((buf (generate-new-buffer " *ghostel-test-anchor-window*"))
+         (previous-buffer (window-buffer (selected-window))))
+     (unwind-protect
+         (progn
+           (set-window-buffer (selected-window) buf)
+           (with-current-buffer buf
+             (ghostel-mode)
+             (let ((rows (max 1 (window-body-height))))
+               (ghostel-test--with-rendered-output
+                 (dotimes (i (+ rows 20))
+                   (insert (format "row-%02d\n" i)))))
+             ,@body))
+       (set-window-buffer (selected-window) previous-buffer)
+       (kill-buffer buf))))
+
 (ert-deftest ghostel-test-anchor-window-emacs-mode-force ()
   "`ghostel--anchor-window' anchors an Emacs-mode window only when FORCE is set.
 Auto-follow callers leave FORCE nil, so a buffer reading its scrollback in
 Emacs mode keeps its position.  Deliberate callers (paste/yank) pass FORCE to
 snap to the live cursor."
-  (let ((buf (generate-new-buffer " *ghostel-test-anchor-force*"))
-        (previous-buffer (window-buffer (selected-window))))
-    (unwind-protect
-        (progn
-          (set-window-buffer (selected-window) buf)
-          (with-current-buffer buf
-            (ghostel-mode)
-            (let ((rows (max 1 (window-body-height))))
-              (ghostel-test--with-rendered-output
-                (dotimes (i (+ rows 20))
-                  (insert (format "row-%02d\n" i)))))
-            (setq ghostel--input-mode 'emacs)
-            (setq ghostel--cursor-char-pos (point-max))
-            (goto-char (point-min))
-            (set-window-start (selected-window) (point-min) t)
-            ;; Without FORCE: Emacs mode keeps its reading position.
-            (ghostel--anchor-window (selected-window))
-            (should (= (window-start (selected-window)) (point-min)))
-            ;; With FORCE: a deliberate anchor scrolls to the live cursor.
-            (ghostel--anchor-window (selected-window) t)
-            (should (> (window-start (selected-window)) (point-min)))))
-      (set-window-buffer (selected-window) previous-buffer)
-      (kill-buffer buf))))
+  (ghostel-test--with-anchor-window-buffer
+    (setq ghostel--input-mode 'emacs)
+    (setq ghostel--cursor-char-pos (point-max))
+    (goto-char (point-min))
+    (set-window-start (selected-window) (point-min) t)
+    ;; Without FORCE: Emacs mode keeps its reading position.
+    (ghostel--anchor-window (selected-window))
+    (should (= (window-start (selected-window)) (point-min)))
+    ;; With FORCE: a deliberate anchor scrolls to the live cursor.
+    (ghostel--anchor-window (selected-window) t)
+    (should (> (window-start (selected-window)) (point-min)))))
+
+(defun ghostel-test--line-3-pos ()
+  "Return a position a few characters into the buffer's third line."
+  (save-excursion
+    (goto-char (point-min))
+    (forward-line 2)
+    (forward-char 3)
+    (point)))
+
+(ert-deftest ghostel-test-anchor-window-clamps-to-cursor ()
+  "An anchor never scrolls the live cursor above `window-start'.
+When bottom-aligning `point-max' would push the cursor's line out of
+view, the anchor starts at the cursor's line."
+  (ghostel-test--with-anchor-window-buffer
+    (let ((window (selected-window)))
+      (setq ghostel--cursor-char-pos (ghostel-test--line-3-pos))
+      (ghostel--anchor-window window)
+      (let ((bol (save-excursion
+                   (goto-char ghostel--cursor-char-pos)
+                   (line-beginning-position))))
+        (should (= (window-start window) bol))
+        (should (= (window-point window) ghostel--cursor-char-pos))))))
+
+(ert-deftest ghostel-test-anchor-window-clamp-noop-at-bottom ()
+  "With the cursor at `point-max' the clamp does not fire.
+The anchor bottom-aligns as for any full grid."
+  (ghostel-test--with-anchor-window-buffer
+    (let ((window (selected-window)))
+      (setq ghostel--cursor-char-pos (point-max))
+      (ghostel--anchor-window window)
+      ;; The exact start position is line-count geometry, which only the
+      ;; text-frame branch uses; graphical frames bottom-align by pixel.
+      (unless (display-graphic-p)
+        (let ((expected (save-excursion
+                          (goto-char (point-max))
+                          (forward-line (- (floor (window-screen-lines))))
+                          (point))))
+          (should (= (window-start window) expected))))
+      (should (= (window-point window) (point-max))))))
+
+(ert-deftest ghostel-test-anchor-window-nil-cursor ()
+  "A nil `ghostel--cursor-char-pos' falls back to `point-max'."
+  (ghostel-test--with-anchor-window-buffer
+    (let ((window (selected-window)))
+      (setq ghostel--cursor-char-pos nil)
+      (ghostel--anchor-window window)
+      (should (= (window-point window) (point-max))))))
+
+(ert-deftest ghostel-test-anchored-p-recognizes-clamped-anchor ()
+  "A clamped anchor still counts as anchored until the user scrolls away.
+A `window-start' on the live cursor's line satisfies
+`ghostel--window-anchored-p' even with a BODY-PIXEL-HEIGHT the geometric
+test would reject, and stops matching once `window-start' moves."
+  (ghostel-test--with-anchor-window-buffer
+    (let ((window (selected-window)))
+      (setq ghostel--cursor-char-pos (ghostel-test--line-3-pos))
+      (ghostel--anchor-window window)
+      (should (ghostel--window-anchored-p window))
+      (should (ghostel--window-anchored-p
+               window (with-selected-window window (default-line-height))))
+      (set-window-start window (point-min))
+      (should-not (ghostel--window-anchored-p window)))))
+
+(ert-deftest ghostel-test-auto-leave-noop-after-clamped-anchor ()
+  "A clamped anchor keeps point on the cursor, so auto-leave stays put.
+With the window too short for the grid, point still equals
+`ghostel--cursor-char-pos' after the anchor, and the minibuffer-exit
+check keeps semi-char mode."
+  (ghostel-test--with-anchor-window-buffer
+    (let ((window (selected-window))
+          (ghostel-point-leave-input-mode 'copy))
+      (setq ghostel--term 'fake)
+      (setq ghostel--cursor-char-pos (ghostel-test--line-3-pos))
+      (ghostel--anchor-window window)
+      (ghostel-maybe-leave-input)
+      (should (eq ghostel--input-mode 'semi-char)))))
 
 (ert-deftest ghostel-test-mode-commands-reject-non-ghostel-buffer ()
   "Input-mode commands signal `user-error' outside ghostel buffers.
