@@ -13,6 +13,11 @@ All notable changes to this project will be documented in this file.
   instead of keeping the terminal's. The variable is `permanent-local`, so the
   terminal's setting survived the mode switch and the joined rows were
   truncated at the window edge.
+- Emacs mode now follows live output while point sits on the terminal
+  cursor; moving point off the cursor (or activating the region) stops the
+  scrolling, and returning point to the cursor resumes it (`M->` in the
+  read-only modes lands on the terminal cursor when the cursor sits past the
+  last content, so in Emacs mode an end-of-buffer jump resumes the follow).
 
 ### Fixed
 - URLs and `file:line` references that the terminal wrapped across rows are now

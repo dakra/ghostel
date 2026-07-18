@@ -662,5 +662,151 @@ cursor and scroll to the bottom.  FORCE bypasses the veto."
       (set-window-buffer (selected-window) previous-buffer)
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-emacs-mode-follows-output-on-cursor ()
+  "Emacs mode keeps following live output while point rides the cursor.
+Two write/redraw rounds prove the follow loop self-sustains through the
+post-render anchor's point snap."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (ghostel-test-scroll--write-lines term "scroll" 80)
+    (ghostel--redraw term t)
+    (let ((win (selected-window)))
+      ;; Anchor in semi-char so window-point snaps to the live cursor,
+      ;; then enter Emacs mode with point still riding it.
+      (ghostel-test-scroll--anchor-window win)
+      (setq ghostel--input-mode 'emacs)
+      (dotimes (round 2)
+        (ghostel-test-scroll--write-lines
+         term (format "extra%d" round) 5)
+        (ghostel--redraw-now buf)
+        (should (ghostel-test-scroll--bottom-visible-p win))
+        (should (= (window-point win) ghostel--cursor-char-pos))))))
+
+(ert-deftest ghostel-test-emacs-mode-stops-following-off-cursor ()
+  "Emacs mode stops following once point leaves the live cursor."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (ghostel-test-scroll--write-lines term "scroll" 80)
+    (ghostel--redraw term t)
+    (let ((win (selected-window)))
+      (ghostel-test-scroll--anchor-window win)
+      (setq ghostel--input-mode 'emacs)
+      (let ((parked (save-excursion
+                      (goto-char ghostel--cursor-char-pos)
+                      (forward-line -3)
+                      (line-beginning-position))))
+        (set-window-point win parked)
+        (let ((start-before (window-start win)))
+          (ghostel-test-scroll--write-lines term "extra" 5)
+          (ghostel--redraw-now buf)
+          (should (= start-before (window-start win)))
+          (should (= parked (window-point win)))
+          (should-not (ghostel-test-scroll--bottom-visible-p win)))))))
+
+(ert-deftest ghostel-test-emacs-mode-resumes-following-at-end ()
+  "Emacs mode resumes following when point lands at or past the cursor.
+Jumping to `point-max' (or anywhere past the cursor) counts as riding
+the cursor, so an end-of-buffer jump resumes the follow."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (ghostel-test-scroll--write-lines term "scroll" 80)
+    (ghostel--redraw term t)
+    (let ((win (selected-window)))
+      (ghostel-test-scroll--anchor-window win)
+      (setq ghostel--input-mode 'emacs)
+      ;; Stop the follow by navigating off the cursor.
+      (ghostel-test-scroll--scroll-window-to-history win)
+      (ghostel-test-scroll--write-lines term "extra" 5)
+      (ghostel--redraw-now buf)
+      (should-not (ghostel-test-scroll--bottom-visible-p win))
+      ;; Jump to the end: the next redraw follows and snaps to the cursor.
+      (set-window-point win (point-max))
+      (ghostel--anchor-window win)
+      (ghostel-test-scroll--write-lines term "more" 5)
+      (ghostel--redraw-now buf)
+      (should (ghostel-test-scroll--bottom-visible-p win))
+      (should (= (window-point win) ghostel--cursor-char-pos)))))
+
+(ert-deftest ghostel-test-emacs-mode-follow-is-per-window ()
+  "In Emacs mode one window can follow while a peer reads scrollback."
+  :tags '(native)
+  (ghostel-test-scroll--with-anchored-and-history-windows
+   (buf term anchored history)
+   (setq ghostel--input-mode 'emacs)
+   (let ((history-start-before (window-start history))
+         (history-point-before (window-point history)))
+     (ghostel--write-vt term "extra\r\n")
+     (ghostel--redraw-now buf)
+     (should (ghostel-test-scroll--bottom-visible-p anchored))
+     (should (= (window-point anchored) ghostel--cursor-char-pos))
+     (should (= history-start-before (window-start history)))
+     (should (= history-point-before (window-point history)))
+     (should-not (ghostel-test-scroll--bottom-visible-p history)))))
+
+(ert-deftest ghostel-test-anchor-window-emacs-mode-following-arg ()
+  "FOLLOWING anchors an Emacs-mode window whose point sits at the old cursor.
+The redraw path decides \"was following\" before the native render
+advances `ghostel--cursor-char-pos' away from the preserved window-point;
+FOLLOWING carries that decision past the render.  Without FOLLOWING the
+self-check sees the stale point and declines."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (ghostel-test-scroll--write-lines term "scroll" 80)
+    (ghostel--redraw term t)
+    (let ((win (selected-window)))
+      (ghostel-test-scroll--anchor-window win)
+      (setq ghostel--input-mode 'emacs)
+      ;; Raw native render: cursor advances, window-point is preserved.
+      (ghostel-test-scroll--write-lines term "extra" 5)
+      (ghostel--redraw term t)
+      (should-not (= (window-point win) ghostel--cursor-char-pos))
+      (let ((start-before (window-start win)))
+        (ghostel--anchor-window win)
+        (should (= start-before (window-start win)))
+        (ghostel--anchor-window win nil t)
+        (should (ghostel-test-scroll--bottom-visible-p win))
+        (should (= (window-point win) ghostel--cursor-char-pos))))))
+
+(ert-deftest ghostel-test-window-on-cursor-p-riding-positions ()
+  "Point on the cursor or at `point-max' rides; between them does not.
+A region vetoes only the selected window's ride."
+  (let ((buf (generate-new-buffer " *ghostel-test-on-cursor*"))
+        (previous-buffer (window-buffer (selected-window)))
+        (orig-config (current-window-configuration)))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (set-window-buffer (selected-window) buf)
+          (with-current-buffer buf
+            (ghostel-mode)
+            (ghostel-test--with-rendered-output
+              (insert "out\n$ ls\n"))
+            ;; Readline cursor moved back over the typed tail "ls".
+            (setq ghostel--cursor-char-pos (- (point-max) 3))
+            (let ((win (selected-window)))
+              (set-window-point win ghostel--cursor-char-pos)
+              (should (ghostel--window-on-cursor-p win))
+              (set-window-point win (point-max))
+              (should (ghostel--window-on-cursor-p win))
+              ;; Between cursor and point-max: parked on content, no ride.
+              (set-window-point win (1- (point-max)))
+              (should-not (ghostel--window-on-cursor-p win))
+              ;; A region vetoes the selected window, not a peer window.
+              ;; Batch runs without `transient-mark-mode'; enable it so
+              ;; `region-active-p' can report the activated mark.
+              (let ((transient-mark-mode t)
+                    (w2 (split-window)))
+                (set-window-buffer w2 buf)
+                (set-window-point win ghostel--cursor-char-pos)
+                (set-window-point w2 ghostel--cursor-char-pos)
+                (push-mark (point-min) t t)
+                (should-not (ghostel--window-on-cursor-p win))
+                (should (ghostel--window-on-cursor-p w2))
+                (deactivate-mark)))))
+      (set-window-configuration orig-config)
+      (when (buffer-live-p previous-buffer)
+        (set-window-buffer (selected-window) previous-buffer))
+      (kill-buffer buf))))
+
 (provide 'ghostel-scroll-test)
 ;;; ghostel-scroll-test.el ends here
