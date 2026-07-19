@@ -4422,11 +4422,12 @@ writes a final exit status before closing it."
 (defun ghostel--kill-native-process-hook ()
   "Detach the native event pipe and request child termination.
 Run from `kill-buffer-hook' in native PTY buffers."
-  ;; Do not let `kill-buffer' delete the pipe early.  Keep the
-  ;; pipe alive until the native reaper reports that the child
-  ;; exited, matching Emacs process lifetime semantics.
-  (set-process-buffer ghostel--process nil)
-  (ghostel--kill-native-process ghostel--term))
+  (when (process-live-p ghostel--process)
+    ;; Do not let `kill-buffer' delete the pipe early.  Keep the
+    ;; pipe alive until the native reaper reports that the child
+    ;; exited, matching Emacs process lifetime semantics.
+    (set-process-buffer ghostel--process nil)
+    (ghostel--kill-native-process ghostel--term)))
 
 (defun ghostel--start-process ()
   "Start the configured shell with a PTY.
