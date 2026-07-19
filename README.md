@@ -156,7 +156,9 @@ In **char mode** (`C-c M-d`), *all* keys go to the terminal. `M-RET` to exit.
 **line mode** (`C-c C-l`) is similar to `M-x shell` in that Ghostel is like a
 normal Emacs buffer and *no* key gets sent to the terminal.
 Only after you finish typing a line and press enter, the whole line
-is sent at once.
+is sent at once. The window follows live output while point is at the
+prompt (or riding the end of a running command's output) and stays put
+once you move point into the scrollback.
 
 **emacs** (`C-c C-e`) and **copy mode** (`C-c C-t`) give you normal Emacs
 navigation over the read-only terminal buffer so you can look around and copy text.

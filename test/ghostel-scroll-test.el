@@ -769,7 +769,7 @@ self-check sees the stale point and declines."
 
 (ert-deftest ghostel-test-window-on-cursor-p-riding-positions ()
   "Point on the cursor or at `point-max' rides; between them does not.
-A region vetoes only the selected window's ride."
+A region vetoes the ride except in a peer window of the selected one."
   (let ((buf (generate-new-buffer " *ghostel-test-on-cursor*"))
         (previous-buffer (window-buffer (selected-window)))
         (orig-config (current-window-configuration)))
@@ -802,10 +802,103 @@ A region vetoes only the selected window's ride."
                 (push-mark (point-min) t t)
                 (should-not (ghostel--window-on-cursor-p win))
                 (should (ghostel--window-on-cursor-p w2))
+                ;; Selection left behind for another buffer: vetoed.
+                (set-window-buffer win previous-buffer)
+                (should-not (ghostel--window-on-cursor-p w2))
+                (set-window-buffer win buf)
                 (deactivate-mark)))))
       (set-window-configuration orig-config)
       (when (buffer-live-p previous-buffer)
         (set-window-buffer (selected-window) previous-buffer))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-line-mode-stops-following-in-scrollback ()
+  "Line mode follows while point rides the end, stops in scrollback, resumes."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (ghostel-test-scroll--write-lines term "scroll" 80)
+    (ghostel--redraw term t)
+    (let ((win (selected-window)))
+      (ghostel-test-scroll--anchor-window win)
+      (setq ghostel--input-mode 'line)
+      ;; Riding the streaming end (no input region): follows.
+      (set-window-point win (point-max))
+      (ghostel-test-scroll--write-lines term "extra" 5)
+      (ghostel--redraw-now buf)
+      (should (ghostel-test-scroll--bottom-visible-p win))
+      ;; Parked in the scrollback: redraws leave the window alone.
+      (ghostel-test-scroll--scroll-window-to-history win)
+      (let ((start-before (window-start win))
+            (point-before (window-point win)))
+        (ghostel-test-scroll--write-lines term "more" 5)
+        (ghostel--redraw-now buf)
+        (should (= start-before (window-start win)))
+        (should (= point-before (window-point win)))
+        (should-not (ghostel-test-scroll--bottom-visible-p win)))
+      ;; Back at the end: following resumes.
+      (set-window-point win (point-max))
+      (ghostel--anchor-window win)
+      (ghostel-test-scroll--write-lines term "tail" 5)
+      (ghostel--redraw-now buf)
+      (should (ghostel-test-scroll--bottom-visible-p win)))))
+
+(ert-deftest ghostel-test-line-mode-nonselected-window-follows ()
+  "A non-selected line-mode window keeps following across redraws.
+Its point carries no user intent, so the live-edge rule must not
+apply to it."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (ghostel-test-scroll--write-lines term "scroll" 80)
+    (ghostel--redraw term t)
+    (let ((win (selected-window))
+          (other (split-window)))
+      (unwind-protect
+          (progn
+            (ghostel-test-scroll--anchor-window win)
+            (setq ghostel--input-mode 'line)
+            ;; Point off the live edge, as a collapsed input region
+            ;; leaves it while a command streams.
+            (set-window-point win (window-start win))
+            (select-window other)
+            (dotimes (_ 3)
+              (ghostel-test-scroll--write-lines term "more" 5)
+              (ghostel--redraw-now buf)
+              (should (ghostel-test-scroll--bottom-visible-p win))))
+        (select-window win)
+        (delete-window other)))))
+
+(ert-deftest ghostel-test-line-mode-on-live-edge-positions ()
+  "The line-mode live edge is the input region, the cursor, or `point-max'."
+  (let ((buf (generate-new-buffer " *ghostel-test-live-edge*"))
+        (previous-buffer (window-buffer (selected-window))))
+    (unwind-protect
+        (progn
+          (set-window-buffer (selected-window) buf)
+          (with-current-buffer buf
+            (ghostel-mode)
+            (ghostel-test--with-rendered-output
+              (insert "out\n$ echo hi\n"))
+            (let* ((win (selected-window))
+                   (prompt-end (+ (point-min) 6))   ; after "out\n$ "
+                   (input-end (+ prompt-end 7)))    ; after "echo hi"
+              ;; Input region live: any position inside rides.
+              (setq ghostel--line-input-start (copy-marker prompt-end))
+              (setq ghostel--line-input-end (copy-marker input-end t))
+              (dolist (pos (list prompt-end (+ prompt-end 3) input-end))
+                (set-window-point win pos)
+                (should (ghostel--line-mode-on-live-edge-p win)))
+              (set-window-point win (point-min))
+              (should-not (ghostel--line-mode-on-live-edge-p win))
+              ;; No input region (command running): cursor or point-max.
+              (set-marker ghostel--line-input-start nil)
+              (setq ghostel--cursor-char-pos (1- (point-max)))
+              (set-window-point win ghostel--cursor-char-pos)
+              (should (ghostel--line-mode-on-live-edge-p win))
+              (set-window-point win (point-max))
+              (should (ghostel--line-mode-on-live-edge-p win))
+              (set-window-point win (point-min))
+              (should-not (ghostel--line-mode-on-live-edge-p win)))))
+      (set-window-buffer (selected-window) previous-buffer)
       (kill-buffer buf))))
 
 (provide 'ghostel-scroll-test)

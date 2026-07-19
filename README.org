@@ -570,6 +570,11 @@ new prompt-end afterwards, so async output or a fresh prompt arriving mid-edit
 does not clobber what you typed.  After =RET=, line mode stays active - the next
 prompt is found on the following redraw cycle and the input marker moves there.
 
+The window follows live output while point rides the live edge - the input
+region while composing, or the end of the output while a command runs.  Move
+point up into the scrollback and the view stays put; =M->=, clicking the
+prompt, or simply typing resumes the following.
+
 Line mode uses the terminal cursor as the input-area boundary, so REPLs without
 shell integration (=python3=, =irb=, =sqlite3=, ...) work too.  When OSC 133 prompt
 markers are present on the cursor's row, the prompt prefix is recognised and the

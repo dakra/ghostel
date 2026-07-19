@@ -4637,15 +4637,30 @@ Windows on the daemon's dummy initial frame are excluded."
 
 (defun ghostel--window-on-cursor-p (window)
   "Non-nil if WINDOW's point rides the live terminal cursor.
-WINDOW's buffer must be current.  Point exactly on the cursor or at
-`point-max' counts as riding, so an end-of-buffer jump resumes following.
-Content between the cursor and `point-max' (a prompt tail behind a moved-back
-readline cursor, TUI rows below the cursor) does not.  An active region counts
-as having navigated away, so a selection is never dragged by live output."
+WINDOW's buffer must be current.  Riding means point exactly on the
+cursor or at `point-max'; positions between the two do not count.  An
+active region vetoes the ride, except in a non-selected window showing
+the selected window's buffer."
   (and ghostel--cursor-char-pos
-       (not (and (eq window (selected-window)) (region-active-p)))
+       (not (and (region-active-p)
+                 (or (eq window (selected-window))
+                     (not (eq (window-buffer (selected-window))
+                              (current-buffer))))))
        (or (= (window-point window) ghostel--cursor-char-pos)
            (= (window-point window) (point-max)))))
+
+(defun ghostel--window-follows-p (window)
+  "Non-nil if WINDOW's point lets it follow live terminal output.
+WINDOW's buffer must be current.  Emacs mode follows on the live
+cursor, a line-mode window selected in its frame on the live edge
+\(other windows' point carries no user intent); all other modes always
+follow."
+  (pcase ghostel--input-mode
+    ('emacs (ghostel--window-on-cursor-p window))
+    ('line (or (not (eq window (frame-selected-window
+                                (window-frame window))))
+               (ghostel--line-mode-on-live-edge-p window)))
+    (_ t)))
 
 (defun ghostel--window-anchored-p (window &optional body-pixel-height)
   "Non-nil if WINDOW is scrolled to follow the live terminal output.
@@ -4658,14 +4673,11 @@ line the graphical anchor leaves via `window-vscroll'.
 A cursor-clamped anchor (see `ghostel--anchor-window') can start above
 that geometric bound; WINDOW also counts as anchored while its
 `window-start' sits exactly on the live cursor's line.
-In Emacs mode, WINDOW additionally follows only while its point rides
-the live terminal cursor (see `ghostel--window-on-cursor-p'); once the
-user navigates away the window stays where they put it."
+WINDOW additionally follows only while `ghostel--window-follows-p'
+holds."
   (with-current-buffer (window-buffer window)
     (when (and (derived-mode-p 'ghostel-mode)
-               ;; Emacs mode follows only while point rides the live cursor.
-               (or (not (eq ghostel--input-mode 'emacs))
-                   (ghostel--window-on-cursor-p window)))
+               (ghostel--window-follows-p window))
       (or (and ghostel--cursor-char-pos
                (not (eq ghostel--input-mode 'line))
                (eql (window-start window)
@@ -4747,23 +4759,19 @@ window over a mostly-empty grid), the anchor starts at the cursor's line
 instead.  `ghostel--window-anchored-p' recognizes such a clamped window
 as still following the output.
 
-Copy mode is never anchored (the viewport is frozen).  Emacs mode is
-anchored while WINDOW's point rides the live cursor, when
-FOLLOWING is non-nil (a caller that established that before a render
-moved the cursor), or when FORCE is non-nil, reserved for deliberate
-anchors such as paste/yank that should scroll to the live cursor even in
-Emacs mode; a buffer reading its scrollback in Emacs mode keeps its
-position.  Semi-char/char always anchor and snap point to the live
-cursor; line mode anchors the viewport but keeps the user's point, since
-its input region is user-owned."
+Copy mode is never anchored (the viewport is frozen).  Otherwise
+WINDOW anchors while `ghostel--window-follows-p' holds, or when
+FOLLOWING (the caller established the follow before the render moved
+the cursor) or FORCE (deliberate anchors such as paste/yank) is
+non-nil.  Semi-char/char/Emacs snap point to the live cursor; line
+mode keeps the user's point."
   (when-let* ((window (or window (selected-window)))
               (buffer (window-buffer window))
               ((with-current-buffer buffer
                  (and (derived-mode-p 'ghostel-mode)
-                      (if (eq ghostel--input-mode 'emacs)
-                          (or force following
-                              (ghostel--window-on-cursor-p window))
-                        (ghostel--terminal-live-p))
+                      (ghostel--terminal-live-p)
+                      (or force following
+                          (ghostel--window-follows-p window))
                       ;; Per-window veto: a consumer (e.g. evil-ghostel) can
                       ;; keep point roaming off the live cursor while the
                       ;; buffer stays in a follow-capable input mode.
@@ -4870,9 +4878,9 @@ them during synchronized output or when BUFFER has no render window."
               (when (and line-snapshot (not line-restored))
                 (let ((input (plist-get line-snapshot :input)))
                   (when (and input (> (length input) 0))
-                    (ghostel--write-pty ghostel--term input))
-                  (message
-                   "ghostel: line-mode prompt lost; input forwarded raw")))
+                    (ghostel--write-pty ghostel--term input)
+                    (message
+                     "ghostel: line-mode prompt lost; input forwarded raw"))))
               (ghostel--schedule-link-detection
                (ghostel--viewport-start) (point-max)))
             ;; Resume line mode if alt-screen just turned off, and update the
