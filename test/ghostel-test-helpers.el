@@ -70,7 +70,8 @@ through the production `ghostel--create' path."
 (defmacro ghostel-test--with-rendered-output (&rest body)
   "Run BODY while mutating fake renderer-owned buffer text."
   (declare (indent 0) (debug t))
-  `(let ((inhibit-read-only t))
+  `(let ((inhibit-read-only t)
+         (inhibit-modification-hooks t))
      ,@body))
 
 (defun ghostel-test--insert-rendered (&rest args)

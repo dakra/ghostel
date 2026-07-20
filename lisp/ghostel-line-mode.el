@@ -28,6 +28,7 @@
 (declare-function ghostel--redraw "ghostel-module"
                   (term &optional full force-sync))
 (declare-function ghostel--regex-prompt-end "ghostel")
+(declare-function ghostel--sync-inhibit-read-only "ghostel")
 (declare-function ghostel--send-encoded "ghostel")
 (declare-function ghostel--uri-at-pos "ghostel")
 (declare-function ghostel--write-pty "ghostel-module")
@@ -273,7 +274,10 @@ content (a status bar drawn below the prompt, a multi-line UI from
 the shell, etc.) intact."
   (when (string-match-p "\\`[[:space:]]*\\'"
                         (buffer-substring-no-properties start (point-max)))
-    (let ((inhibit-read-only t))
+    ;; May run while input mode is still semi-char; hide this deletion
+    ;; from the insert-forwarding hooks.
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
       (delete-region start (point-max)))))
 
 (defun ghostel--line-mode-snapshot ()
@@ -423,6 +427,7 @@ in line mode (the interactive entry validates these)."
       (setq ghostel--line-mode-on-alt-screen (ghostel-alt-screen-p))
       (setq ghostel--line-mode-paused nil)
       (setq ghostel--input-mode 'line)
+      (ghostel--sync-inhibit-read-only)
       (use-local-map ghostel-line-mode-map)
       (setq ghostel--mode-line-tag (ghostel--mode-line-tag-make 'line ":Line"))
       (ghostel--mode-line-refresh)
@@ -594,6 +599,7 @@ re-enters line mode at the new prompt."
   (ghostel--line-mode-teardown 'pause)
   (setq ghostel--char-mode-override-active nil)
   (setq ghostel--input-mode 'semi-char)
+  (ghostel--sync-inhibit-read-only)
   (use-local-map ghostel-semi-char-mode-map)
   (setq ghostel--mode-line-tag nil)
   (ghostel--mode-line-refresh)

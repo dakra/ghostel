@@ -162,11 +162,15 @@ Quail-style composition is in flight.  A typical setup is:
         (add-hook 'input-method-deactivate-hook #'ghostel-ime--uninstall nil t)
         (add-hook 'ghostel-inhibit-redraw-functions
                   #'ghostel-ime-lisp-composing-p nil t)
+        (add-hook 'ghostel-inhibit-input-forwarding-functions
+                  #'ghostel-ime-lisp-composing-p nil t)
         (add-hook 'post-command-hook #'ghostel-ime--reassert 90 t)
         (ghostel-ime--install))
     (remove-hook 'input-method-activate-hook #'ghostel-ime--install t)
     (remove-hook 'input-method-deactivate-hook #'ghostel-ime--uninstall t)
     (remove-hook 'ghostel-inhibit-redraw-functions
+                 #'ghostel-ime-lisp-composing-p t)
+    (remove-hook 'ghostel-inhibit-input-forwarding-functions
                  #'ghostel-ime-lisp-composing-p t)
     (remove-hook 'post-command-hook #'ghostel-ime--reassert t)
     (ghostel-ime--uninstall)))

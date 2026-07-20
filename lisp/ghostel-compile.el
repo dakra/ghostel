@@ -69,6 +69,8 @@
 
 (declare-function ghostel--set-size "ghostel-module")
 (declare-function ghostel--write-vt "ghostel-module")
+(declare-function ghostel--sync-inhibit-read-only "ghostel")
+(defvar ghostel--inhibit-insert-forwarding)
 
 
 ;;; Customization
@@ -539,7 +541,8 @@ local machine happens to have)."
     ;; it — that's how users interact with long-running programs
     ;; (`htop', `less', test prompts, ...) during the compile.
     (with-current-buffer buffer
-      (setq ghostel--process proc))
+      (setq ghostel--process proc)
+      (ghostel--sync-inhibit-read-only))
     (set-process-coding-system proc 'binary 'binary)
     (set-process-window-size proc height width)
     (when compilation-always-kill
@@ -639,7 +642,9 @@ the rendered buffer remains read-only in both cases."
       ;; \\='ghostel-mode\\=') keep working; only input handling changes.
       (unless interactive
         (use-local-map ghostel-compile-view-mode-map)
-        (setq buffer-read-only t))
+        (setq buffer-read-only t)
+        ;; Compilation-style buffers keep the plain read-only barrier.
+        (setq ghostel--inhibit-insert-forwarding t))
       ;; Enable the live toggle (`C-c C-j' / `C-c C-e') in compile
       ;; buffers, regardless of which run mode they're in.  The
       ;; minor-mode keymap takes precedence over the major-mode map
@@ -905,6 +910,8 @@ Bound to \\[ghostel-compile-switch-to-interactive] in
     (setq ghostel-compile--interactive t)
     (use-local-map ghostel-semi-char-mode-map)
     (setq buffer-read-only t)
+    (setq ghostel--inhibit-insert-forwarding nil)
+    (ghostel--sync-inhibit-read-only)
     ;; Place point at the VT cursor so the user's first keystroke
     ;; lands at the prompt, not at wherever they happened to be
     ;; navigating in the read-only buffer.
@@ -934,6 +941,8 @@ Bound to \\[ghostel-compile-switch-to-compilation-style] in
     (setq ghostel-compile--interactive nil)
     (use-local-map ghostel-compile-view-mode-map)
     (setq buffer-read-only t)
+    (setq ghostel--inhibit-insert-forwarding t)
+    (ghostel--sync-inhibit-read-only)
     (ghostel-compile--set-mode-line-running)
     (when ghostel-compile-debug
       (message "ghostel-compile: switched to compilation-style"))))
