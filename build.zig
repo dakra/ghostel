@@ -36,7 +36,7 @@ pub fn build(b: *std.Build) void {
         .strip = if (is_release) true else null,
         .omit_frame_pointer = if (is_release) true else null,
     });
-    mod.addSystemIncludePath(emacs_module_dir);
+    mod.addIncludePath(emacs_module_dir);
     mod.addImport(
         "ghostty-vt",
         ghostty_dep.module("ghostty-vt"),
@@ -124,7 +124,7 @@ fn resolveEmacsModuleDir(b: *std.Build) std.Build.LazyPath {
         return .{ .cwd_relative = include_dir };
     }
 
-    return .{ .cwd_relative = vendored_emacs_module_dir };
+    return b.path(vendored_emacs_module_dir);
 }
 
 fn resolveEmacsIncludeDirFromBin(
