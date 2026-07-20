@@ -1265,6 +1265,7 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 | =ghostel-exit-functions=           | =nil=                                           | Hook run with =(BUFFER EVENT)= when the terminal process exits.                                                 |
 | =ghostel-command-start-functions=  | =(ghostel--query-before-killing-on-cmd-start)=  | Hook run with =(BUFFER)= on OSC 133 C (command start).                                                          |
 | =ghostel-command-finish-functions= | =(ghostel--query-before-killing-on-cmd-finish)= | Hook run with =(BUFFER EXIT-STATUS)= on OSC 133 D (command finish).                                             |
+| =ghostel-output-functions=         | =nil=                                           | Hook run with =(BUFFER)= after rendered terminal output changed the buffer text.  No shell integration needed.  |
 | =ghostel-bookmark-check-dir=       | =t=                                             | Restore the working directory when jumping to a ghostel [[#bookmarks][bookmark]] (=cd= into a reused buffer that moved).      |
 
 ** Native module
@@ -1595,13 +1596,22 @@ Ghostel-specific customisation:
 
 *** Hooks for your own integrations
 
-Outside of a compile buffer, two hooks let you react to /any/ shell command in
-/any/ ghostel buffer:
+Outside of a compile buffer, these hooks let you react to shell commands and
+terminal output in /any/ ghostel buffer:
 
 - =ghostel-command-start-functions= - called with =(BUFFER)= when the shell emits
   OSC 133 =C= (a command starts running).
 - =ghostel-command-finish-functions= - called with =(BUFFER EXIT-STATUS)= when the
   shell emits OSC 133 =D= (a command finishes).
+- =ghostel-output-functions= - called with =(BUFFER)= after rendered terminal
+  output changed the buffer text.  Unlike the OSC 133 hooks this needs no
+  shell integration, so it also covers REPLs and TUI programs that emit no
+  semantic prompt markers.  Calls are coalesced per render batch; snapshot
+  =ghostel-cursor-point= before sending input to scan just the output produced
+  after it.  Add handlers buffer-locally: a buffer with handlers is rendered
+  even while not displayed in any window, so a global handler keeps every
+  hidden terminal rendering.  Handlers run from the render path - defer
+  anything that sends input back to the terminal, e.g. via =run-at-time=.
 
 Errors raised by individual hook functions are caught and logged so one bad
 consumer cannot break the rest.

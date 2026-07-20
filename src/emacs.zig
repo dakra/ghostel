@@ -457,6 +457,7 @@ const interned_symbols = [_][:0]const u8{
     "clrhash",
     "composition-get-gstring",
     "cons",
+    "current-buffer",
     "dash",
     "default",
     "default-directory",
@@ -505,6 +506,7 @@ const interned_symbols = [_][:0]const u8{
     "ghostel--osc52-handle",
     "ghostel--process",
     "ghostel--query-font-cache",
+    "ghostel--render-adjust-skipped",
     "ghostel--rendered-font",
     "ghostel--set-title",
     "ghostel--term-cols",
@@ -564,6 +566,7 @@ const interned_symbols = [_][:0]const u8{
     "symbol-value",
     "t",
     "wave",
+    "window-buffer",
     "window-point",
     "window-start",
 };

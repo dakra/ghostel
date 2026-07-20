@@ -20,6 +20,7 @@
 
 (declare-function ghostel--cursor-blink-stop "ghostel")
 (declare-function ghostel--ensure-ghostel-buffer "ghostel")
+(declare-function ghostel--get-render-window "ghostel")
 (declare-function ghostel--invalidate "ghostel")
 (declare-function ghostel--leave-readonly-state "ghostel")
 (declare-function ghostel--mode-line-refresh "ghostel")
@@ -28,6 +29,7 @@
 (declare-function ghostel--redraw "ghostel-module"
                   (term &optional full force-sync))
 (declare-function ghostel--regex-prompt-end "ghostel")
+(declare-function ghostel--run-hook-safely "ghostel")
 (declare-function ghostel--send-encoded "ghostel")
 (declare-function ghostel--uri-at-pos "ghostel")
 (declare-function ghostel--write-pty "ghostel-module")
@@ -583,8 +585,21 @@ which discards any type-ahead and runs inside `ghostel--redraw-now'."
     (setq ghostel--line-mode-saved-cursor-type nil))
   (unless pause
     (when ghostel--term
-      (let ((inhibit-read-only t))
-        (ghostel--redraw ghostel--term t t)))))
+      (let ((tick (buffer-chars-modified-tick)))
+        ;; Select a window showing the buffer so the renderer's font
+        ;; probing and glyph adjustment stay active.
+        (let ((inhibit-read-only t)
+              (win (ghostel--get-render-window (current-buffer))))
+          (if win
+              (with-selected-window win
+                (ghostel--redraw ghostel--term t t))
+            (ghostel--redraw ghostel--term t t)))
+        ;; This full redraw can materialize output that arrived while the
+        ;; coalescing timer was still pending; notify the output hook so
+        ;; that text is not silently absorbed.
+        (when (/= tick (buffer-chars-modified-tick))
+          (ghostel--run-hook-safely 'ghostel-output-functions
+                                    (current-buffer)))))))
 
 (defun ghostel--line-mode-pause ()
   "Drop line mode to semi-char while a full-screen app holds the alt screen.

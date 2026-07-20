@@ -208,7 +208,22 @@ fn invalidate(self: *Self, env: emacs.Env) !void {
     }
 }
 
+/// Selected window when it displays the current buffer, else null.
+/// Hidden-buffer renders (for `ghostel-output-functions') run with an
+/// unrelated window selected; font probing and glyph adjustment need a
+/// window showing the buffer and must be skipped there.
+fn selectedWindowShowingBuffer(env: emacs.Env) ?emacs.Value {
+    const window = env.f("selected-window", .{});
+    if (env.isNil(window)) return null;
+    const shows = env.eq(
+        env.f("window-buffer", .{window}),
+        env.f("current-buffer", .{}),
+    );
+    return if (shows) window else null;
+}
+
 fn updateFontInfo(self: *Self, env: emacs.Env) !void {
+    if (selectedWindowShowingBuffer(env) == null) return;
     const new_font = getDefaultFont(env);
     const current_font = env.symbolValue("ghostel--rendered-font");
 
@@ -648,8 +663,12 @@ fn adjustGlyphs(
 ) !void {
     if (self.span.adjust_cells.items.len == 0) return;
     if (self.font_info == null) return;
-    const window = env.f("selected-window", .{});
-    if (env.isNil(window)) return;
+    const window = selectedWindowShowingBuffer(env) orelse {
+        // Rows keep rendering without width adjustment; flag the skip so
+        // the next redraw with a real window can be a full one.
+        _ = env.set("ghostel--render-adjust-skipped", env.t());
+        return;
+    };
 
     for (self.span.adjust_cells.items) |*cell| {
         try self.adjustGlyph(env, window, span_start, cell);
