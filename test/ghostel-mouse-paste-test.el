@@ -1946,5 +1946,42 @@ the command, with point staying at the region end."
         (should deactivate-mark)
         (should (= (point) end))))))
 
+(defun ghostel-test--has-raw-bytes (s)
+  "Return non-nil if S contains a char that isn't valid Unicode."
+  (cl-some (lambda (c) (> c #x10ffff)) (append s nil)))
+
+(ert-deftest ghostel-test-decode-paste-bytes-passthrough ()
+  "Clean text is returned unchanged, keeping proper multibyte chars."
+  (should (equal "plain ascii" (ghostel--decode-paste-bytes "plain ascii")))
+  (should (equal "em — dash → arrow 日本 🎉"
+                 (ghostel--decode-paste-bytes "em — dash → arrow 日本 🎉"))))
+
+(ert-deftest ghostel-test-decode-paste-bytes-repairs-eight-bit ()
+  "Undecoded UTF-8 bytes are re-decoded to proper characters.
+Covers both multibyte and unibyte carriers of the raw bytes."
+  (let ((mb (string-to-multibyte (concat "run" (unibyte-string #xe2 #x80 #x94) "x")))
+        (ub (concat "run" (unibyte-string #xe2 #x80 #x94) "x")))
+    (should (equal "run—x" (ghostel--decode-paste-bytes mb)))
+    (should (equal "run—x" (ghostel--decode-paste-bytes ub)))
+    (should-not (ghostel-test--has-raw-bytes (ghostel--decode-paste-bytes mb)))))
+
+(ert-deftest ghostel-test-decode-paste-bytes-replaces-invalid ()
+  "Bytes that aren't valid UTF-8 become U+FFFD so paste never errors."
+  (let* ((raw (string-to-multibyte (concat "a" (unibyte-string #xff) "b")))
+         (out (ghostel--decode-paste-bytes raw)))
+    (should (equal (concat "a" (string #xfffd) "b") out))
+    (should-not (ghostel-test--has-raw-bytes out))))
+
+(ert-deftest ghostel-test-paste-text-sanitizes ()
+  "`ghostel--paste-text' hands the encoder only valid Unicode."
+  (let (captured
+        (ghostel--term (vector 'fake-term)))
+    (cl-letf (((symbol-function 'ghostel--encode-paste)
+               (lambda (_term data) (setq captured data) t)))
+      (ghostel--paste-text
+       (string-to-multibyte (concat "x" (unibyte-string #xe2 #x80 #x94) "y"))))
+    (should (equal "x—y" captured))
+    (should-not (ghostel-test--has-raw-bytes captured))))
+
 (provide 'ghostel-mouse-paste-test)
 ;;; ghostel-mouse-paste-test.el ends here

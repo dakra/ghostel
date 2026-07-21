@@ -1763,10 +1763,23 @@ overlay clears the way \\`keyboard-quit' would in other buffers."
 (defvar-local ghostel--yank-index 0
   "Current kill ring index for `ghostel-yank-pop'.")
 
+(defun ghostel--decode-paste-bytes (text)
+  "Return TEXT as valid Unicode for `ghostel--encode-paste'.
+Re-decode raw byte runs as UTF-8 and replace anything still outside
+the Unicode range with U+FFFD."
+  (if (string-match-p "[^\x0-\x10ffff]" text)
+      (let ((repaired (decode-coding-string
+                       (if (multibyte-string-p text)
+                           (encode-coding-string text 'utf-8)
+                         text)
+                       'utf-8)))
+        (replace-regexp-in-string "[^\x0-\x10ffff]" (string #xFFFD) repaired))
+    text))
+
 (defun ghostel--paste-text (text)
   "Send TEXT to the terminal using the terminal paste encoder."
   (when text
-    (ghostel--encode-paste ghostel--term text)))
+    (ghostel--encode-paste ghostel--term (ghostel--decode-paste-bytes text))))
 
 (defun ghostel-paste ()
   "Paste text from the Emacs kill ring into the terminal.
