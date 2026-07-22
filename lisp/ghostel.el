@@ -4412,22 +4412,20 @@ writes a final exit status before closing it."
 (defun ghostel--kill-native-processes-on-exit ()
   "Force native children to exit before Emacs disables process sentinels."
   (dolist (process (process-list))
-    (let ((pid (and (process-live-p process)
-                    (process-get process 'ghostel--native-pid))))
-      (when pid
-        (ignore-errors (signal-process pid 9))))))
+    (when-let* ((pid (process-get process 'ghostel--native-pid)))
+      (ignore-errors (signal-process pid 9)))))
 
 (add-hook 'kill-emacs-hook #'ghostel--kill-native-processes-on-exit)
 
 (defun ghostel--kill-native-process-hook ()
   "Detach the native event pipe and request child termination.
 Run from `kill-buffer-hook' in native PTY buffers."
-  (when (process-live-p ghostel--process)
-    ;; Do not let `kill-buffer' delete the pipe early.  Keep the
-    ;; pipe alive until the native reaper reports that the child
-    ;; exited, matching Emacs process lifetime semantics.
-    (set-process-buffer ghostel--process nil)
-    (ghostel--kill-native-process ghostel--term)))
+  ;; Do not let `kill-buffer' delete the pipe early.  Keep the
+  ;; pipe alive until the native reaper reports that the child
+  ;; exited, matching Emacs process lifetime semantics.
+  (when ghostel--process
+    (set-process-buffer ghostel--process nil))
+  (ghostel--kill-native-process ghostel--term))
 
 (defun ghostel--start-process ()
   "Start the configured shell with a PTY.

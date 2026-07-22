@@ -87,14 +87,14 @@ pub fn redraw(self: *Self, force_full: bool, force_sync: bool) !bool {
     try kitty_graphics.emitPlacements(env, self);
     const post_size = .{ self.terminal.cols, self.terminal.rows };
 
-    if (self.isProcessLive() and !std.meta.eql(pre_size, post_size)) {
+    if (!std.meta.eql(pre_size, post_size)) {
         if (self.process) |proc| {
             try proc.resizePty(post_size[0], post_size[1]);
         } else {
-            _ = env.f(
-                "set-process-window-size",
-                .{ env.symbolValue("ghostel--process"), post_size[1], post_size[0] },
-            );
+            const process = env.symbolValue("ghostel--process");
+            if (env.isNotNil(process)) {
+                _ = env.f("set-process-window-size", .{ process, post_size[1], post_size[0] });
+            }
         }
     }
     return true;
@@ -145,26 +145,24 @@ pub fn vtWrite(self: *Self, data: []const u8) void {
 }
 
 pub fn ptyWrite(self: *Self, data: []const u8) !void {
-    if (!self.isProcessLive()) return;
-
     const env = emacs.current_env orelse return error.MissingEmacsEnv;
     if (self.process) |proc| {
         try proc.ptyWrite(env, data);
     } else {
-        _ = env.f(
-            "process-send-string",
-            .{ env.symbolValue("ghostel--process"), data },
+        _ = env.funcall(
+            @field(emacs.sym, "process-send-string"),
+            &env.makeValues(.{ env.symbolValue("ghostel--process"), data }),
         );
+        const exit = env.nonLocalExitGet();
+        if (exit.status == .signal) {
+            env.nonLocalExitClear();
+            if (env.eq(exit.symbol, emacs.sym.quit)) env.nonLocalExitSignal(exit.symbol, exit.data);
+        }
     }
 }
 
-pub fn ptyWriteFromTerminal(_: *Self, data: []const u8) void {
-    if (emacs.current_env) |env| {
-        _ = env.f(
-            "process-send-string",
-            .{ env.symbolValue("ghostel--process"), data },
-        );
-    }
+pub fn ptyWriteFromTerminal(self: *Self, data: []const u8) void {
+    self.ptyWrite(data) catch {};
 }
 
 pub fn effect(_: *Self, comptime func: []const u8, args: anytype) void {
@@ -308,26 +306,13 @@ pub fn killNativeProcess(self: *Self) void {
     }
 }
 
-pub fn isProcessLive(self: *Self) bool {
-    if (self.process) |process| {
-        return process.isBackendAlive();
-    } else if (emacs.current_env) |env| {
-        return env.isNotNil(env.f("process-live-p", .{env.symbolValue("ghostel--process")}));
-    }
-
-    return false;
-}
-
 pub fn isPasswordMode(self: *Self) !bool {
-    if (!self.isProcessLive()) return false;
-
     if (self.process) |process| {
         return pty_utils.isPasswordMode(process.replicaName());
     } else if (emacs.current_env) |env| {
-        const tty_name_val = env.f(
-            "process-tty-name",
-            .{env.symbolValue("ghostel--process")},
-        );
+        const process = env.symbolValue("ghostel--process");
+        if (env.isNil(process)) return false;
+        const tty_name_val = env.f("process-tty-name", .{process});
         if (env.isNil(tty_name_val)) return false;
         const tty_name = try env.extractStringAlloc(
             self.alloc,
@@ -877,7 +862,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         \\Return t when TERM's foreground PTY appears to be reading a password.
         \\
         \\This checks the active PTY's terminal attributes and returns nil when
-        \\there is no live process or the PTY is not in canonical no-echo mode.
+        \\there is no process or the PTY is not in canonical no-echo mode.
         \\
         \\(ghostel--pty-password-input-p TERM)
         ,

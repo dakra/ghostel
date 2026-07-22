@@ -149,6 +149,19 @@ is nil, SIGHUP is ignored."
         (should (string-match-p "GHOSTEL_FINAL_OUTPUT"
                                 (ghostel-test--terminal-text)))))))
 
+(ert-deftest ghostel-test-exec-input-after-exit-is-noop ()
+  "PTY input does not signal after either backend's child exits."
+  :tags '(native)
+  (pcase-let ((`(,program . ,args)
+               (ghostel-test--shell-command "exit 0")))
+    (ghostel-test--with-pty-matrix backend
+      (ghostel-test--with-exec-buffer (_buf proc program args)
+        (ghostel-test--wait-until
+         (lambda () (not (process-live-p proc))) nil 5)
+        (should (ghostel--write-pty ghostel--term "late input"))
+        (ghostel--set-size ghostel--term 9 81)
+        (should (ghostel-test--redraw ghostel--term))))))
+
 (ert-deftest ghostel-test-exec-kill-buffer-sends-sighup ()
   "Killing a `ghostel-exec' buffer sends SIGHUP to the child."
   :tags '(native posix)

@@ -114,7 +114,7 @@ pub fn ptyWrite(self: *Self, env: emacs.Env, data: []const u8) !void {
                 offset += n;
                 try env.checkQuit();
             },
-            .interrupted => return error.ProcessExited,
+            .interrupted => return,
         }
     }
 }
@@ -153,7 +153,7 @@ fn ptyWriteBackend(
     return if (self.backend) |*backend|
         backend.write(data, cancellation)
     else
-        error.ProcessExited;
+        .interrupted;
 }
 
 fn checkEmacsQuit(context: *const anyopaque) !void {
@@ -166,13 +166,6 @@ pub fn resizePty(self: *Self, cols: u16, rows: u16) !void {
     defer self.backend_handoff_mutex.unlock();
 
     if (self.backend) |*backend| try backend.resize(cols, rows);
-}
-
-pub fn isBackendAlive(self: *Self) bool {
-    self.backend_handoff_mutex.lock();
-    defer self.backend_handoff_mutex.unlock();
-
-    return self.backend != null;
 }
 
 pub fn effect(self: *Self, comptime func: []const u8, args: anytype) void {

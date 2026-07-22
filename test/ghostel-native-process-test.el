@@ -66,12 +66,10 @@ any dynamic bindings needed by the test."
           (delete-process pipe))))))
 
 (ert-deftest ghostel-test-native-process-exit-hook-kills-children ()
-  "Emacs exit signals every live native child with SIGKILL."
+  "Emacs exit attempts to kill every recorded native child."
   (let (signals)
     (cl-letf (((symbol-function 'process-list)
                (lambda () '(pipe-a unrelated pipe-b dead-pipe)))
-              ((symbol-function 'process-live-p)
-               (lambda (process) (not (eq process 'dead-pipe))))
               ((symbol-function 'process-get)
                (lambda (process property)
                  (and (eq property 'ghostel--native-pid)
@@ -83,7 +81,24 @@ any dynamic bindings needed by the test."
                (lambda (pid signal)
                  (push (list pid signal) signals))))
       (ghostel--kill-native-processes-on-exit)
-      (should (equal (nreverse signals) '((101 9) (202 9)))))))
+      (should (equal (nreverse signals) '((101 9) (202 9) (303 9)))))))
+
+(ert-deftest ghostel-test-native-kill-buffer-hook-cleans-up-dead-process ()
+  "Native `kill-buffer' cleanup runs after the event process exits."
+  (let ((buffer (generate-new-buffer " *ghostel-test-native-cleanup*"))
+        cleaned)
+    (unwind-protect
+        (with-current-buffer buffer
+          (let ((pipe (ghostel-test--dummy-process "ghostel-dead-pipe" buffer))
+                (ghostel--term 'term))
+            (delete-process pipe)
+            (setq ghostel--process pipe)
+            (cl-letf (((symbol-function 'ghostel--kill-native-process)
+                       (lambda (term) (setq cleaned term))))
+              (ghostel--kill-native-process-hook))
+            (should (eq cleaned 'term))
+            (should-not (process-buffer pipe))))
+      (kill-buffer buffer))))
 
 (ert-deftest ghostel-test-events-filter-multiple-events-per-chunk ()
   "Native process event filter evaluates multiple events in one chunk."

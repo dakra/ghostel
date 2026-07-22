@@ -31,6 +31,25 @@
       (should (string-match-p "hello world" state))  ; row0 has full first line
       (should (string-match-p "line2" state)))))      ; row1 has line2
 
+(ert-deftest ghostel-test-write-pty-without-process-is-noop ()
+  "PTY input is a no-op when there is no process."
+  :tags '(native)
+  (let ((term (ghostel--new 25 80 1000))
+        (ghostel--process nil))
+    (should (ghostel--write-pty term "input"))))
+
+(ert-deftest ghostel-test-write-pty-preserves-quit ()
+  "PTY input preserves keyboard quit from the Emacs process."
+  :tags '(native)
+  (let ((term (ghostel--new 25 80 1000))
+        (ghostel--process 'fake-process))
+    (cl-letf (((symbol-function 'process-send-string)
+               (lambda (_process _string) (signal 'quit nil))))
+      (should (eq 'quit
+                  (condition-case nil
+                      (ghostel--write-pty term "input")
+                    (quit 'quit)))))))
+
 (ert-deftest ghostel-test-write-input-preserves-bare-lf-on-primary ()
   "On the primary screen, a bare LF preserves the column.
 The emulator never synthesizes a CR: cooked-mode \\n is turned into

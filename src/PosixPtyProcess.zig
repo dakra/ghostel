@@ -78,8 +78,9 @@ const Pty = struct {
 
     pub fn resize(self: *@This(), cols: u16, rows: u16) !void {
         const size = c.winsize{ .ws_col = cols, .ws_row = rows, .ws_xpixel = 0, .ws_ypixel = 0 };
-        if (posix.errno(c.ioctl(self.primary_fd, c.TIOCSWINSZ, &size)) != .SUCCESS) {
-            return error.PtyResizeFailed;
+        switch (posix.errno(c.ioctl(self.primary_fd, c.TIOCSWINSZ, &size))) {
+            .SUCCESS, .IO, .NXIO => {},
+            else => return error.PtyResizeFailed,
         }
     }
 
@@ -240,6 +241,11 @@ pub fn write(
     const chunk = data[0..@min(data.len, WRITE_CHUNK_SIZE)];
     while (true) {
         const written = posix.write(self.pty.primary_fd, chunk) catch |err| switch (err) {
+            error.BrokenPipe,
+            error.InputOutput,
+            error.ProcessNotFound,
+            error.NoDevice,
+            => return .interrupted,
             error.WouldBlock => {
                 var pollfds = [_]posix.pollfd{
                     .{
