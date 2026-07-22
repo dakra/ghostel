@@ -519,6 +519,43 @@ each fragment, not just whole elements."
         (should a-pos)
         (should-not (string-match-p "\e\\]133;C" (substring output a-pos)))))))
 
+(ert-deftest ghostel-test-bash-no-osc133c-before-first-prompt ()
+  "Startup commands after ghostel.bash loads must not emit 133;C.
+
+DEBUG fires for every top-level command once the trap is installed; a
+startup C has no matching D (the first prompt skips it), leaving
+`ghostel--command-running' stuck at an idle first prompt.  C must
+still fire normally after the first prompt."
+  :tags '(native)
+  (skip-unless (executable-find "bash"))
+  (let* ((root (or (ghostel--resource-root)
+                   (file-name-directory (locate-library "ghostel"))))
+         (shell-bash (expand-file-name "etc/shell/ghostel.bash" root)))
+    (skip-unless (file-exists-p shell-bash))
+    (let* ((probe
+            (concat
+             (format "source %s;" shell-bash)
+             " PS1='$ '; PS2='> ';"
+             ;; Simulates `.bashrc' content after the source line.
+             " : startup-top-level-cmd;"
+             " __ghostel_wrapped_prompt_command;"
+             ;; First command after the first prompt: C must fire.
+             " : simulated-user-cmd;"
+             " __ghostel_wrapped_prompt_command"))
+           (process-environment
+            (append '("INSIDE_EMACS=ghostel") process-environment))
+           (output (with-temp-buffer
+                     (call-process "bash" nil (current-buffer) nil
+                                   "--noprofile" "--norc" "-c" probe)
+                     (buffer-string)))
+           (a-pos (string-match "\e\\]133;A" output)))
+      (should a-pos)
+      ;; Nothing before the first prompt emits C.
+      (should-not (string-match-p "\e\\]133;C" (substring output 0 a-pos)))
+      ;; The post-prompt command still emits C, and D closes the cycle.
+      (should (string-match-p "\e\\]133;C" (substring output a-pos)))
+      (should (string-match-p "\e\\]133;D;0" (substring output a-pos))))))
+
 (ert-deftest ghostel-test-zsh-osc7-wins-race-vs-precmd ()
   "Zsh `__ghostel_osc7' must run last among precmd_functions emitters.
 

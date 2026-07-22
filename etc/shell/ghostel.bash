@@ -75,9 +75,11 @@ __ghostel_prompt_start() {
 # Emit "command output start" (C) via the DEBUG trap, and restore the
 # unmarked PS1/PS2 so the user's command (and any other DEBUG-trap
 # observers) doesn't see our markers.
-# Guards: skip when running inside PROMPT_COMMAND itself, and skip
-# PROMPT_COMMAND content executing at top level — hooks appended to
-# the bash-5.1+ PROMPT_COMMAND array after this file loaded (e.g.
+# Guards: skip until the first prompt — startup commands (this file's
+# tail, the rest of `.bashrc') fire DEBUG too, and their C would have
+# no matching D.  Skip when running inside PROMPT_COMMAND itself, and
+# skip PROMPT_COMMAND content executing at top level — hooks appended
+# to the bash-5.1+ PROMPT_COMMAND array after this file loaded (e.g.
 # systemd's osc-context profile.d script) run as separate top-level
 # commands and must not unwrap PS1 or emit 133;C.  DEBUG fires once
 # per simple command, so a compound element (`history -a; history -n')
@@ -86,6 +88,7 @@ __ghostel_prompt_start() {
 # user-typed command byte-identical to a fragment is skipped too.
 __ghostel_in_prompt_command=0
 __ghostel_preexec() {
+    [[ -z "${__ghostel_prompt_shown:-}" ]] && return
     [[ "$__ghostel_in_prompt_command" = 1 ]] && return
     local __ghostel_frags __ghostel_f IFS=$';\n'
     read -rd '' -a __ghostel_frags <<< "${PROMPT_COMMAND[*]:-}"
