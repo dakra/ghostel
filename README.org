@@ -435,9 +435,10 @@ etc. themselves.  =M-RET= (or =C-M-m=) is the sole escape hatch.
 Entered with =C-c C-e=.  *The terminal keeps running*, the buffer is read-only,
 and standard Emacs bindings fall through to the global map.  =isearch-forward=,
 =occur=, =M-x=, =C-SPC= + =M-w=, arrow keys, wheel scroll - all work unmodified.  The
-terminal keeps producing output and the buffer keeps growing, but your point
-stays where you navigated it (the delayed-redraw path preserves point in Emacs
-mode).
+terminal keeps producing output and the buffer keeps growing.  While point sits
+on the live terminal cursor the window follows the new output; the moment you
+navigate away (or start a selection) the following stops and point stays where
+you put it, resuming once point returns to the cursor (=M->= jumps back to it).
 
 *Typed keys do not reach the shell* - Emacs mode is a "look but don't touch"
 view.  Self-insert, =RET=, =TAB=, =DEL= fall through to the read-only buffer and
@@ -498,8 +499,9 @@ output cannot clobber the selection - the target is picked by
 - =copy= - enter copy mode.  Redraws pause; the selection is stable regardless of
   where it sits.
 - =emacs= - enter Emacs mode.  The terminal keeps streaming and the buffer becomes
-  read-only; selections wholly in scrollback survive, selections over rows the
-  live program rewrites can still be lost.
+  read-only; the window never follows live output while the region is active.
+  Selections wholly in scrollback survive, selections over rows the live
+  program rewrites can still be lost.
 - =nil= - stay in semi-char.  Same selection-survival guarantees as =emacs=, but
   =M-w= is forwarded to the shell so it cannot copy the region - pick this only if
   you copy via primary selection or the GUI menu.
@@ -567,6 +569,11 @@ path captures the in-progress input before each redraw and re-inserts it at the
 new prompt-end afterwards, so async output or a fresh prompt arriving mid-edit
 does not clobber what you typed.  After =RET=, line mode stays active - the next
 prompt is found on the following redraw cycle and the input marker moves there.
+
+The window follows live output while point rides the live edge - the input
+region while composing, or the end of the output while a command runs.  Move
+point up into the scrollback and the view stays put; =M->=, clicking the
+prompt, or simply typing resumes the following.
 
 Line mode uses the terminal cursor as the input-area boundary, so REPLs without
 shell integration (=python3=, =irb=, =sqlite3=, ...) work too.  When OSC 133 prompt

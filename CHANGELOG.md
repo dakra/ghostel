@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- Emacs mode now follows live output while point sits on the terminal
+  cursor; moving point off the cursor (or activating the region) stops the
+  scrolling, and returning point to the cursor resumes it (`M->` in the
+  read-only modes lands on the terminal cursor when the cursor sits past
+  the last content, so in Emacs mode an end-of-buffer jump resumes the
+  follow).
+- Line mode now stops following live output the moment point leaves the
+  live edge (the input region, or the end of output while a command runs)
+  instead of drifting until the reading position hits the top of the
+  window; `M->`, clicking the prompt, or typing resumes the follow.
+  This applies to the selected window; other windows showing the
+  terminal keep following as before.
+  While reading scrollback with pending typed input, async output no
+  longer teleports point back to the input line.
+
 ## [0.44.0] — 2026-07-13
 
 ### Added

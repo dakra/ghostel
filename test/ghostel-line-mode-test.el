@@ -1521,6 +1521,39 @@ ambiguous)."
                 (should (get-text-property (point-min) 'read-only))))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-line-mode-restore-keeps-outside-point ()
+  "`ghostel--line-mode-restore' leaves an away-point alone.
+With pending input and point parked outside the input region (reading
+scrollback), the re-insert must not drag point to the input line."
+  (let ((buf (generate-new-buffer " *ghostel-test-line-restore-away*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (ghostel-test--insert-rendered (propertize "$ " 'ghostel-prompt t))
+          (let ((ghostel--term 'fake)
+                (ghostel--process 'fake-proc))
+            (cl-letf (((symbol-function 'ghostel--mode-enabled)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'ghostel--redraw) #'ignore)
+                      ((symbol-function 'ghostel--invalidate) #'ignore))
+              (ghostel-line-mode)
+              (insert "command")
+              ;; Point in the scrollback: the snapshot records no offset.
+              (goto-char (point-min))
+              (let ((snap (ghostel--line-mode-snapshot)))
+                (should-not (plist-get snap :point-offset))
+                (ghostel-test--with-rendered-output
+                  (erase-buffer)
+                  (insert "background line\n")
+                  (ghostel-test--insert-rendered
+                   (propertize "$ " 'ghostel-prompt t)))
+                (goto-char (point-min))
+                (let ((parked (point)))
+                  (should (ghostel--line-mode-restore snap))
+                  (should (equal (ghostel--line-mode-input-text) "command"))
+                  (should (= (point) parked)))))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-line-mode-restore-no-prompt-returns-nil ()
   "`ghostel--line-mode-restore' returns nil when the prompt cannot be found."
   (with-temp-buffer

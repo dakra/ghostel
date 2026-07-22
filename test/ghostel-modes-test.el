@@ -125,7 +125,7 @@ nothing."
 
 (ert-deftest ghostel-test-emacs-mode-preserves-point ()
   "In Emacs mode, point stays put while the terminal keeps running.
-The delayed redraw path always preserves point in Emacs mode,
+The delayed redraw path preserves point once it has moved off the live cursor,
 unlike semi-char mode where it tracks the terminal cursor."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (buf term 5 80 1000)
@@ -506,6 +506,40 @@ unlike semi-char mode where it tracks the terminal cursor."
             (goto-char (point-min))
             (ghostel-readonly-end-of-buffer)
             (should (looking-back "20" (line-beginning-position)))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-readonly-end-of-buffer-lands-on-cursor ()
+  "`ghostel-readonly-end-of-buffer' lands on a cursor past the last content.
+The whitespace skip alone would stop short of a cursor sitting after
+trailing whitespace (a prompt's trailing space, the empty row below
+streaming output) — in Emacs mode that would leave the follow suspended.
+A cursor above the last content (frozen TUI) or outside a narrowed
+buffer does not pull point off the content end."
+  (let ((buf (generate-new-buffer " *ghostel-test-readonly-nav*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (ghostel-test--with-rendered-output
+            (insert "output\n$ \n"))
+          ;; Cursor after the prompt's trailing space.
+          (setq ghostel--cursor-char-pos (1- (point-max)))
+          (goto-char (point-min))
+          (ghostel-readonly-end-of-buffer)
+          (should (= (point) ghostel--cursor-char-pos))
+          ;; Cursor above the last content: land on the content end.
+          (setq ghostel--cursor-char-pos (point-min))
+          (ghostel-readonly-end-of-buffer)
+          (should (looking-back "\\$" (line-beginning-position)))
+          ;; Cursor beyond a narrowed buffer: land on the narrowed content
+          ;; end instead of clamping onto trailing whitespace.
+          (setq ghostel--cursor-char-pos (1- (point-max)))
+          (save-restriction
+            (narrow-to-region (point-min)
+                              (save-excursion
+                                (goto-char (point-min))
+                                (line-beginning-position 2)))
+            (ghostel-readonly-end-of-buffer)
+            (should (looking-back "output" (line-beginning-position)))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-input-mode-default-is-semi-char ()
@@ -1161,11 +1195,11 @@ the buffer, which is in the default semi-char mode."
        (set-window-buffer (selected-window) previous-buffer)
        (kill-buffer buf))))
 
-(ert-deftest ghostel-test-anchor-window-emacs-mode-force ()
-  "`ghostel--anchor-window' anchors an Emacs-mode window only when FORCE is set.
-Auto-follow callers leave FORCE nil, so a buffer reading its scrollback in
-Emacs mode keeps its position.  Deliberate callers (paste/yank) pass FORCE to
-snap to the live cursor."
+(ert-deftest ghostel-test-anchor-window-emacs-mode-follow-and-force ()
+  "`ghostel--anchor-window' in Emacs mode needs FORCE, or point on the cursor.
+A buffer reading its scrollback in Emacs mode keeps its position.
+Deliberate callers (paste/yank) pass FORCE to snap to the live cursor,
+and a window whose point sits on the live cursor follows without FORCE."
   (ghostel-test--with-anchor-window-buffer
     (setq ghostel--input-mode 'emacs)
     (setq ghostel--cursor-char-pos (point-max))
@@ -1176,6 +1210,11 @@ snap to the live cursor."
     (should (= (window-start (selected-window)) (point-min)))
     ;; With FORCE: a deliberate anchor scrolls to the live cursor.
     (ghostel--anchor-window (selected-window) t)
+    (should (> (window-start (selected-window)) (point-min)))
+    ;; Point on the live cursor: follows without FORCE.
+    (goto-char ghostel--cursor-char-pos)
+    (set-window-start (selected-window) (point-min) t)
+    (ghostel--anchor-window (selected-window))
     (should (> (window-start (selected-window)) (point-min)))))
 
 (defun ghostel-test--line-3-pos ()
