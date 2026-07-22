@@ -13,6 +13,7 @@ const input = @import("input.zig");
 const kitty_graphics = @import("kitty_graphics.zig");
 const utils = @import("utils.zig");
 const parseHexColor = utils.parseHexColor;
+const platform = @import("platform.zig");
 const NativeProcess = @import("NativeProcess.zig");
 const ChannelFd = NativeProcess.ChannelFd;
 const ProcessParams = NativeProcess.ProcessParams;
@@ -355,9 +356,6 @@ fn terminalFinalize(ptr: ?*anyopaque) callconv(.c) void {
 }
 
 fn getProcessEnvironment(alloc: Allocator, env: emacs.Env) !std.process.EnvMap {
-    var buf: ?[]u8 = null;
-    defer if (buf) |b| alloc.free(b);
-
     var env_map = std.process.EnvMap.init(alloc);
     errdefer env_map.deinit();
 
@@ -365,7 +363,8 @@ fn getProcessEnvironment(alloc: Allocator, env: emacs.Env) !std.process.EnvMap {
     var penv = env.f("reverse", .{env.symbolValue("process-environment")});
     while (!env.isNil(penv)) : (penv = env.f("cdr", .{penv})) {
         const item = env.f("car", .{penv});
-        const str = try env.extractStringAlloc(alloc, item, &buf);
+        const str = try platform.extractProcessStringAlloc(alloc, env, item);
+        defer alloc.free(str);
         const key, const value = if (std.mem.indexOfScalar(u8, str, '=')) |pos|
             .{ str[0..pos], str[(pos + 1)..str.len] }
         else
@@ -381,7 +380,9 @@ fn getProcessEnvironment(alloc: Allocator, env: emacs.Env) !std.process.EnvMap {
     if (!display_explicit and env.isNotNil(env.f("display-graphic-p", .{}))) {
         const display = env.f("getenv", .{env.makeString("DISPLAY")});
         if (env.isNotNil(display)) {
-            try env_map.put("DISPLAY", try env.extractStringAlloc(alloc, display, &buf));
+            const value = try platform.extractProcessStringAlloc(alloc, env, display);
+            defer alloc.free(value);
+            try env_map.put("DISPLAY", value);
         }
     }
 
@@ -822,22 +823,23 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     for (cmd.items) |item| module_alloc.free(item);
                     cmd.deinit(module_alloc);
                 }
-                var buf: ?[]u8 = null;
-                defer if (buf) |b| module_alloc.free(b);
                 while (env.isNotNil(cmd_list)) : (cmd_list = env.f("cdr", .{cmd_list})) {
                     const arg = env.f("car", .{cmd_list});
-                    try cmd.append(
+                    const arg_string = try platform.extractProcessStringAlloc(
                         module_alloc,
-                        try module_alloc.dupeZ(u8, try env.extractStringAlloc(module_alloc, arg, &buf)),
+                        env,
+                        arg,
                     );
+                    errdefer module_alloc.free(arg_string);
+                    try cmd.append(module_alloc, arg_string);
                 }
                 var process_env = try getProcessEnvironment(module_alloc, env);
                 defer process_env.deinit();
-                const cwd = try module_alloc.dupeZ(u8, try env.extractStringAlloc(
+                const cwd = try platform.extractProcessStringAlloc(
                     module_alloc,
+                    env,
                     env.f("expand-file-name", .{env.symbolValue("default-directory")}),
-                    &buf,
-                ));
+                );
                 defer module_alloc.free(cwd);
                 const pid = try term.spawnNativeProcess(
                     cmd.items,
