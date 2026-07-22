@@ -95,21 +95,20 @@ Each iteration waits up to 50 ms, bounding the total wait at ~500 ms."
 
 ;; Guard predicates
 
-(defun evil-ghostel--active-p ()
-  "Return non-nil when evil-ghostel PTY routing should intercept.
-True in `semi-char' input mode and outside alt-screen — the only state in
-which `evil-ghostel-*' commands send PTY keys rather than running `evil-*'."
-  (and evil-ghostel-mode
-       ghostel--term
-       (not (ghostel-alt-screen-p))
-       (eq ghostel--input-mode 'semi-char)))
+(defun evil-ghostel--prompt-active-p ()
+  "Return non-nil when evil-ghostel drives the shell's line editor.
+`evil-ghostel--terminal-live-p' on the main screen (not an alt-screen TUI):
+the state in which `evil-ghostel-*' commands route keys to the PTY instead of
+running `evil-*'."
+  (and (evil-ghostel--terminal-live-p)
+       (not (ghostel-alt-screen-p))))
 
-(defun evil-ghostel--ctrl-passthrough-active-p ()
-  "Return non-nil when insert-state Ctrl keys should reach the terminal.
-Active even in alt-screen, unlike `evil-ghostel--active-p', so a TUI's
-readline-style Ctrl keys are not eaten by evil."
+(defun evil-ghostel--terminal-live-p ()
+  "Return non-nil while a live semi-char terminal can receive keys.
+Gates raw passthrough keys (Ctrl, Delete) a TUI still wants."
   (and evil-ghostel-mode
        ghostel--term
+       ghostel--process (process-live-p ghostel--process)
        (eq ghostel--input-mode 'semi-char)))
 
 (defun evil-ghostel--line-mode-active-p ()
@@ -210,7 +209,7 @@ alt-screen and when the native renderer defers synchronized output."
 A `ghostel-inhibit-anchor-functions' entry: returns non-nil in a motion-capable
 evil state with point off the cursor, unless FORCE."
   (and (not force)
-       (evil-ghostel--active-p)
+       (evil-ghostel--prompt-active-p)
        (memq evil-state '(normal visual operator motion))
        ghostel--cursor-char-pos
        (/= (point) ghostel--cursor-char-pos)))
@@ -237,7 +236,7 @@ ORIG-FN is the advised setter (STYLE, VISIBLE); deferred to in alt-screen."
 On a different row, snap point back to the cursor instead — up/down arrows
 would be read as shell history navigation."
   (when (and (derived-mode-p 'ghostel-mode)
-             (evil-ghostel--active-p))
+             (evil-ghostel--prompt-active-p))
     (let ((trow (cdr ghostel--cursor-pos))
           (erow (or (evil-ghostel--point-viewport-row) 0)))
       (if (= erow trow)
@@ -410,7 +409,7 @@ STRING through bracketed paste.  Only meaningful in `semi-char' mode."
 (evil-define-motion evil-ghostel-first-non-blank ()
   "Move to the first input character after the prompt."
   :type exclusive
-  (if (or (evil-ghostel--active-p)
+  (if (or (evil-ghostel--prompt-active-p)
           (evil-ghostel--line-mode-active-p))
       (ghostel-beginning-of-input-or-line)
     (evil-first-non-blank)))
@@ -421,7 +420,7 @@ Like `evil-end-of-line' but stops before a trailing autosuggestion,
 right-aligned prompt, or padding (ghostel paints the whole row, so vanilla
 $ would walk into non-typed cells).  Off the cursor row, unchanged."
   :type inclusive
-  (let ((input-end (and (evil-ghostel--active-p)
+  (let ((input-end (and (evil-ghostel--prompt-active-p)
                         (ghostel-point-on-cursor-row-p)
                         (evil-ghostel--input-end))))
     (evil-end-of-line count)
@@ -433,7 +432,7 @@ $ would walk into non-typed cells).  Off the cursor row, unchanged."
 (evil-define-motion evil-ghostel-next-line (count)
   "Move COUNT lines down, but not past the terminal cursor's row."
   :type line
-  (if (not (evil-ghostel--active-p))
+  (if (not (evil-ghostel--prompt-active-p))
       (evil-next-line count)
     (let ((cursor-line (and ghostel--cursor-pos
                             (save-excursion
@@ -455,7 +454,7 @@ $ would walk into non-typed cells).  Off the cursor row, unchanged."
   ;; expand/contract from reverting the jumped point.
   :type line
   :jump t
-  (if (evil-ghostel--active-p)
+  (if (evil-ghostel--prompt-active-p)
       (evil-ghostel--reset-cursor-point)
     (evil-goto-line count)))
 
@@ -466,7 +465,7 @@ $ would walk into non-typed cells).  Off the cursor row, unchanged."
   "Enter insert state at point, driving the shell cursor to match."
   (interactive)
   (cond
-   ((not (evil-ghostel--active-p))
+   ((not (evil-ghostel--prompt-active-p))
     (call-interactively #'evil-insert))
    ((not (ghostel-point-on-cursor-row-p))
     (when-let* ((target (ghostel-input-start-point)))
@@ -482,7 +481,7 @@ $ would walk into non-typed cells).  Off the cursor row, unchanged."
   "Move to the start of input on the current line, then enter insert."
   (interactive)
   (cond
-   ((evil-ghostel--active-p)
+   ((evil-ghostel--prompt-active-p)
     (when-let* ((target (ghostel-input-start-point)))
       (evil-ghostel-goto-input-position target))
     (evil-insert-state 1))
@@ -495,7 +494,7 @@ $ would walk into non-typed cells).  Off the cursor row, unchanged."
   "Append after point, driving the shell cursor to match."
   (interactive)
   (cond
-   ((not (evil-ghostel--active-p))
+   ((not (evil-ghostel--prompt-active-p))
     (call-interactively #'evil-append))
    ((not (ghostel-point-on-cursor-row-p))
     (when-let* ((target (ghostel-input-start-point)))
@@ -518,7 +517,7 @@ $ would walk into non-typed cells).  Off the cursor row, unchanged."
   "Move to the end of input on the current line, then enter insert."
   (interactive)
   (cond
-   ((evil-ghostel--active-p)
+   ((evil-ghostel--prompt-active-p)
     (when-let* ((target (evil-ghostel--input-end)))
       (evil-ghostel-goto-input-position target))
     (evil-insert-state 1))
@@ -536,7 +535,7 @@ $ would walk into non-typed cells).  Off the cursor row, unchanged."
 Ranges are limited to the current input, including per-row handling for
 block deletes.  Covers d, dd, x, and X."
   (interactive "<R><x><y>")
-  (if (not (evil-ghostel--active-p))
+  (if (not (evil-ghostel--prompt-active-p))
       (evil-delete beg end type register yank-handler)
     (let* ((clamped (evil-ghostel--clamp beg end))
            (beg (car clamped))
@@ -561,7 +560,7 @@ Covers D."
   :motion nil
   :keep-visual t
   (interactive "<R><x><y>")
-  (if (not (evil-ghostel--active-p))
+  (if (not (evil-ghostel--prompt-active-p))
       (evil-delete-line beg end type register yank-handler)
     (let* ((beg (or beg (point)))
            (end (or end beg))
@@ -603,7 +602,7 @@ PTY-routed in semi-char, else `evil-change'.  `evil-ghostel-insert'
 drives the cursor itself, so empty ranges need no extra sync.
 Covers c, cc, s."
   (interactive "<R><x><y>")
-  (if (not (evil-ghostel--active-p))
+  (if (not (evil-ghostel--prompt-active-p))
       (evil-change beg end type register yank-handler delete-func)
     (evil-ghostel-delete beg end type register yank-handler)
     (evil-ghostel-insert)))
@@ -615,7 +614,7 @@ Covers c, cc, s."
 Covers C."
   :motion evil-end-of-line-or-visual-line
   (interactive "<R><x><y>")
-  (if (not (evil-ghostel--active-p))
+  (if (not (evil-ghostel--prompt-active-p))
       (evil-change-line beg end type register yank-handler)
     (evil-ghostel-delete-line beg end type register yank-handler)
     (evil-ghostel-insert)))
@@ -653,7 +652,7 @@ clamped range and pastes the replacement so the count matches."
                      (evil-refresh-cursor)
                      (list (evil-read-key)))
                  (evil-refresh-cursor)))
-  (if (not (evil-ghostel--active-p))
+  (if (not (evil-ghostel--prompt-active-p))
       (evil-replace beg end type char)
     (when char
       (let* ((clamped (evil-ghostel--clamp beg end))
@@ -686,7 +685,7 @@ unless at end-of-input, where a right arrow would accept a suggestion."
   "Paste after the cursor via bracketed paste COUNT times from REGISTER.
 YANK-HANDLER is used by Evil outside live terminal input.  Covers p."
   (interactive "P")
-  (if (evil-ghostel--active-p)
+  (if (evil-ghostel--prompt-active-p)
       (evil-ghostel--do-paste count register t)
     (evil-paste-after count register yank-handler)))
 
@@ -694,7 +693,7 @@ YANK-HANDLER is used by Evil outside live terminal input.  Covers p."
   "Paste before the cursor via bracketed paste COUNT times from REGISTER.
 YANK-HANDLER is used by Evil outside live terminal input.  Covers P."
   (interactive "P")
-  (if (evil-ghostel--active-p)
+  (if (evil-ghostel--prompt-active-p)
       (evil-ghostel--do-paste count register nil)
     (evil-paste-before count register yank-handler)))
 
@@ -704,7 +703,7 @@ YANK-HANDLER is used by Evil outside live terminal input.  Covers P."
 (defun evil-ghostel-undo (count)
   "Send Ctrl-_ (readline undo) COUNT times.  Covers u."
   (interactive "p")
-  (if (not (evil-ghostel--active-p))
+  (if (not (evil-ghostel--prompt-active-p))
       (evil-undo count)
     (dotimes (_ (or count 1))
       (ghostel--send-encoded "_" "ctrl"))))
@@ -712,7 +711,7 @@ YANK-HANDLER is used by Evil outside live terminal input.  Covers P."
 (defun evil-ghostel-redo (count)
   "Run Evil redo COUNT times when not editing live terminal input."
   (interactive "p")
-  (if (not (evil-ghostel--active-p))
+  (if (not (evil-ghostel--prompt-active-p))
       (evil-redo count)
     (message "Redo not supported in terminal")))
 
@@ -745,7 +744,7 @@ PTY passthrough is inactive.  KEYS is a key vector."
   "Send Ctrl+KEY to the terminal PTY, else fall back to evil's binding.
 Off semi-char the local map wins first, so line mode's own \\`C-a' →
 `ghostel-beginning-of-input-or-line' beats evil's default."
-  (if (evil-ghostel--ctrl-passthrough-active-p)
+  (if (evil-ghostel--terminal-live-p)
       (ghostel--send-encoded key "ctrl")
     (evil-ghostel--fallback-key (kbd (concat "C-" key)))))
 
@@ -764,7 +763,7 @@ Off semi-char the local map wins first, so line mode's own \\`C-a' →
 Evil binds the delete key to `delete-char', which would edit buffer text
 rather than forward-delete in the shell."
   (interactive)
-  (if (evil-ghostel--ctrl-passthrough-active-p)
+  (if (evil-ghostel--terminal-live-p)
       (ghostel--send-encoded "delete" "")
     (evil-ghostel--fallback-key (kbd "<delete>"))))
 

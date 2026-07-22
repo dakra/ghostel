@@ -23,6 +23,12 @@
   (let ((inhibit-read-only t))
     (apply #'insert args)))
 
+(defun evil-ghostel-test--live-process ()
+  "Return a live process to bind to `ghostel--process'.
+The guard predicates call `process-live-p', so a sentinel will not do; a pipe
+process is live without spawning anything.  Callers must `delete-process' it."
+  (make-pipe-process :name "evil-ghostel-test" :buffer nil :noquery t))
+
 (defmacro evil-ghostel-test--with-buffer (rows cols text &rest body)
   "Create a ghostel buffer with ROWS x COLS, feed TEXT, render, then run BODY.
 The buffer has evil-mode and evil-ghostel-mode active.
@@ -34,10 +40,12 @@ Requires the native module; without it the test is skipped
      (skip-unless (fboundp 'ghostel--new))
      (let* ((ghostel-max-scrollback 100)
             (buf (ghostel--create " *evil-ghostel-test*" nil ,rows ,cols))
-            (term (buffer-local-value 'ghostel--term buf)))
+            (term (buffer-local-value 'ghostel--term buf))
+            (proc (evil-ghostel-test--live-process)))
        (unwind-protect
 		   (with-selected-window (display-buffer buf)
 			 (with-current-buffer buf
+               (setq-local ghostel--process proc)
                (ghostel--write-vt term ,text)
                (evil-local-mode 1)
                (evil-ghostel-mode 1)
@@ -45,7 +53,8 @@ Requires the native module; without it the test is skipped
 				 (ghostel--redraw term t))
                (cl-macrolet ((insert (&rest args)
                                `(evil-ghostel-test--insert ,@args)))
-				 ,@body)))
+                 ,@body)))
+         (delete-process proc)
          (when (buffer-live-p buf)
            (kill-buffer buf))))))
 
@@ -61,11 +70,14 @@ Uses mocks for native functions."
      ;; `insert's — the scrollback-offset computation then collapses to
      ;; zero and matches pre-scrollback-fix behaviour.
      (setq-local ghostel--term-rows 100)
+     (setq-local ghostel--process (evil-ghostel-test--live-process))
      (evil-local-mode 1)
      (evil-ghostel-mode 1)
-     (cl-macrolet ((insert (&rest args)
-                     `(evil-ghostel-test--insert ,@args)))
-       ,@body)))
+     (unwind-protect
+         (cl-macrolet ((insert (&rest args)
+                         `(evil-ghostel-test--insert ,@args)))
+           ,@body)
+       (delete-process ghostel--process))))
 
 ;; -----------------------------------------------------------------------
 ;; Test: mode activation
@@ -457,7 +469,7 @@ it still snaps point to the cursor."
 
 (ert-deftest evil-ghostel-test-anchor-inhibit-predicate ()
   "`evil-ghostel--anchor-inhibit' vetoes only when roaming off the cursor.
-Fires only where evil-ghostel drives PTY input (`evil-ghostel--active-p':
+Fires only where evil-ghostel drives PTY input (`evil-ghostel--prompt-active-p':
 semi-char, outside alt-screen).  There: non-nil in a motion-capable state with
 point off the live cursor and no FORCE; nil on the cursor, under FORCE, or in
 insert state.  Inert (never vetoes) when not active, e.g. in alt-screen."
@@ -575,7 +587,7 @@ TYPE is `line' or `char'.  Reproduces #485 without `execute-kbd-macro'."
   "Regression for #485: `VG' extends the line-visual selection to the cursor.
 Pre-fix this reverted point to the start line; a linewise motion keeps it."
   (evil-ghostel-test--with-buffer 8 40 "r1\r\nr2\r\nr3\r\nr4\r\nr5\r\nr6"
-    (should (evil-ghostel--active-p))
+    (should (evil-ghostel--prompt-active-p))
     (let ((cursor-line (save-excursion
                          (evil-ghostel--reset-cursor-point)
                          (line-number-at-pos))))
@@ -606,7 +618,7 @@ This case always worked; keep it working while fixing the line-visual one."
 `evil-goto-line': honor a count, else go to the last line."
   (evil-ghostel-test--with-buffer 8 40 "r1\r\nr2\r\nr3\r\nr4\r\nr5\r\nr6"
     (setq-local ghostel--input-mode 'line)
-    (should-not (evil-ghostel--active-p))
+    (should-not (evil-ghostel--prompt-active-p))
     ;; With a count: jump to that line.
     (goto-char (point-min))
     (evil-ghostel-goto-cursor 3)
@@ -816,6 +828,46 @@ terminal cursor to point's buffer position."
                   (lambda (&rest _) (setq sync-called t))))
          (evil-ghostel-append))
        (should sync-called)))))
+
+(ert-deftest evil-ghostel-test-dead-process-falls-back-to-plain-evil ()
+  "After the child exits, evil-ghostel stops driving the terminal (issue #555).
+`evil-ghostel--terminal-live-p' and `evil-ghostel--prompt-active-p' turn off once
+the process is gone, so insert/append/ctrl keys run plain evil instead of
+encoding to the closed PTY."
+  (with-temp-buffer
+    (ghostel-mode)
+    (evil-local-mode 1)
+    (evil-ghostel-mode 1)
+    (setq-local ghostel--term t
+                ghostel--term-rows 100
+                ghostel--input-mode 'semi-char)
+    (let ((proc (evil-ghostel-test--live-process)))
+      (setq-local ghostel--process proc)
+      (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
+        ;; Live process: PTY routing is active.
+        (should (evil-ghostel--terminal-live-p))
+        (should (evil-ghostel--prompt-active-p))
+        ;; Child exits; the buffer lingers for scrollback.
+        (delete-process proc)
+        (should-not (evil-ghostel--terminal-live-p))
+        (should-not (evil-ghostel--prompt-active-p))
+        (let ((pty nil) (fell-back nil))
+          (cl-letf (((symbol-function 'ghostel--send-encoded)
+                     (lambda (&rest _) (setq pty t)))
+                    ((symbol-function 'evil-ghostel-goto-input-position)
+                     (lambda (&rest _) (setq pty t)))
+                    ((symbol-function 'evil-insert)
+                     (lambda (&rest _) (interactive) (setq fell-back t)))
+                    ((symbol-function 'evil-append)
+                     (lambda (&rest _) (interactive) (setq fell-back t)))
+                    ((symbol-function 'evil-ghostel--fallback-key)
+                     (lambda (&rest _) (setq fell-back t))))
+            (evil-ghostel-insert)
+            (evil-ghostel-append)
+            (evil-ghostel--passthrough-ctrl "a")
+            (evil-ghostel--passthrough-delete))
+          (should fell-back)
+          (should-not pty))))))
 
 (ert-deftest evil-ghostel-test-append-at-cursor-does-not-advance ()
   "Regression: `evil-ghostel-append' at the terminal cursor does not forward-char.
@@ -1051,7 +1103,8 @@ commands.  Mocks the terminal handle and viewport so the
 input-region helpers can derive prompt boundaries and viewport rows
 without a real native module."
   (declare (indent 2))
-  `(let ((buf (generate-new-buffer " *evil-ghostel-test-input*")))
+  `(let ((buf (generate-new-buffer " *evil-ghostel-test-input*"))
+         (proc (evil-ghostel-test--live-process)))
      (unwind-protect
          (with-current-buffer buf
            (ghostel-mode)
@@ -1060,6 +1113,7 @@ without a real native module."
              (insert ,input))
            (setq ghostel--term 'fake)
            (setq ghostel--term-rows 1)
+           (setq ghostel--process proc)
            (setq ghostel--cursor-char-pos (point))
            (setq ghostel--cursor-pos (cons (current-column) 0))
            (evil-local-mode 1)
@@ -1067,6 +1121,7 @@ without a real native module."
            (cl-letf (((symbol-function 'ghostel--alt-screen-p)
                       (lambda (&rest _) nil)))
              ,@body))
+       (delete-process proc)
        (kill-buffer buf))))
 
 (ert-deftest evil-ghostel-test-goto-input-position-sends-arrows-unit ()
@@ -1098,7 +1153,8 @@ with `ghostel--cursor-char-pos' at the TYPED/TRAIL boundary so TRAIL occupies
 cells to the right of the cursor.  Runs BODY with evil + `evil-ghostel-mode'
 on and the terminal mocked."
   (declare (indent 3))
-  `(let ((buf (generate-new-buffer " *evil-ghostel-test-cursor*")))
+  `(let ((buf (generate-new-buffer " *evil-ghostel-test-cursor*"))
+         (proc (evil-ghostel-test--live-process)))
      (unwind-protect
          (with-current-buffer buf
            (ghostel-mode)
@@ -1110,11 +1166,13 @@ on and the terminal mocked."
              (insert (propertize ,trail 'ghostel-input t)))
            (setq ghostel--term 'fake)
            (setq ghostel--term-rows 1)
+           (setq ghostel--process proc)
            (evil-local-mode 1)
            (evil-ghostel-mode 1)
            (cl-letf (((symbol-function 'ghostel--alt-screen-p)
                       (lambda (&rest _) nil)))
              ,@body))
+       (delete-process proc)
        (kill-buffer buf))))
 
 ;; The color-based suggestion detection (`suggestion-p'/`greyed-out-p') is not
@@ -1460,7 +1518,7 @@ live-terminal detection."
   (evil-ghostel-test--with-evil-buffer
    (setq buffer-read-only t)
    (let (pasted)
-     (cl-letf (((symbol-function 'evil-ghostel--active-p) (lambda () t))
+     (cl-letf (((symbol-function 'evil-ghostel--prompt-active-p) (lambda () t))
                ((symbol-function 'evil-ghostel--do-paste)
                 (lambda (&rest _) (setq pasted t))))
        (call-interactively #'evil-ghostel-paste-after)
@@ -1492,7 +1550,7 @@ live-terminal detection."
 
 (ert-deftest evil-ghostel-test-ctrl-passthrough-sends-in-alt-screen ()
   "Insert-state Ctrl passthrough remains active in alt-screen TUIs.
-`evil-ghostel--active-p' excludes alt-screen so normal-mode editing
+`evil-ghostel--prompt-active-p' excludes alt-screen so normal-mode editing
 falls through there, but C-u/C-w/etc. must still go to the terminal
 instead of invoking Evil's insert-state editing commands."
   (evil-ghostel-test--with-evil-buffer
@@ -1500,8 +1558,8 @@ instead of invoking Evil's insert-state editing commands."
    (setq-local ghostel--input-mode 'semi-char)
    (cl-letf (((symbol-function 'ghostel--alt-screen-p)
               (lambda (_term) t)))
-     (should-not (evil-ghostel--active-p))
-     (should (evil-ghostel--ctrl-passthrough-active-p))
+     (should-not (evil-ghostel--prompt-active-p))
+     (should (evil-ghostel--terminal-live-p))
      (let (sent)
        (cl-letf (((symbol-function 'ghostel--send-encoded)
                   (lambda (key mods &rest _)
@@ -1586,7 +1644,7 @@ become `ghostel--line-input-start' / `--line-input-end'."
   "`evil-ghostel--line-mode-active-p' is true with markers in line mode."
   (evil-ghostel-test--with-line-mode "$ echo hello" 3 13
     (should (evil-ghostel--line-mode-active-p))
-    (should-not (evil-ghostel--active-p))))
+    (should-not (evil-ghostel--prompt-active-p))))
 
 (ert-deftest evil-ghostel-test-line-mode-active-p-needs-markers ()
   "Predicate returns nil in line mode if the input markers are unset."
@@ -2142,7 +2200,7 @@ prompt."
 (ert-deftest evil-ghostel-test-next-line-falls-through-outside-semi-char ()
   "Outside semi-char `evil-ghostel-next-line' delegates to vanilla."
   (evil-ghostel-test--with-evil-buffer
-   ;; ghostel--term nil → evil-ghostel--active-p returns nil.
+   ;; ghostel--term nil → evil-ghostel--prompt-active-p returns nil.
    (let ((inhibit-read-only t))
      (insert "a\nb\nc\nd\ne\n"))
    (evil-normal-state)
