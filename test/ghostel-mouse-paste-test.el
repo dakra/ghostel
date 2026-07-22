@@ -1706,16 +1706,22 @@ Emacs's regular `yank' so paste lands in the input region."
       (should (equal (car pasted) "second")))))
 
 (ert-deftest ghostel-test-yank-pop-no-preceding-yank ()
-  "`yank-pop' without preceding yank should use `completing-read'."
+  "`yank-pop' without preceding yank browses via `read-from-kill-ring'.
+`read-from-kill-ring' pins `kill-ring' order against completion-UI
+re-sorting; an empty selection must not paste."
   (let* ((pasted nil)
+         (selection "alpha")
          (kill-ring '("alpha" "beta"))
          (last-command 'ghostel--self-insert))
     (cl-letf (((symbol-function 'ghostel--paste-text)
                (lambda (text) (push text pasted)))
-              ((symbol-function 'completing-read)
-               (lambda (_prompt coll &rest _) (car coll))))
+              ((symbol-function 'read-from-kill-ring)
+               (lambda (_prompt) selection)))
       (ghostel-yank-pop)
-      (should (equal (car pasted) "alpha")))))
+      (should (equal pasted '("alpha")))
+      (setq selection "")
+      (ghostel-yank-pop)
+      (should (equal pasted '("alpha"))))))
 
 (ert-deftest ghostel-test-xterm-paste-forwards-to-paste-text ()
   "`ghostel-xterm-paste' forwards the event payload via `ghostel--paste-text'."

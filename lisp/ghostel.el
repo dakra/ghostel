@@ -1802,7 +1802,7 @@ Use `ghostel-yank-pop' afterwards to cycle through older kills."
   "Replace the just-yanked text with the next kill ring entry.
 After `ghostel-yank' or `ghostel-yank-pop', cycles through the
 kill ring by erasing the previous paste and inserting the next entry.
-Otherwise, opens a `completing-read' browser over `kill-ring' and
+Otherwise, browses `kill-ring' with `read-from-kill-ring' and
 pastes the selected entry into the terminal."
   (interactive)
   (if (memq last-command '(ghostel-yank ghostel-yank-pop))
@@ -1817,10 +1817,10 @@ pastes the selected entry into the terminal."
         (ghostel--paste-text (current-kill ghostel--yank-index t))
         (setq this-command 'ghostel-yank-pop))
     ;; No preceding yank: browse kill ring and paste selection
-    (when-let* ((text (completing-read "Paste from kill ring: "
-                                       kill-ring nil t)))
-      (ghostel--on-user-input)
-      (ghostel--paste-text text))))
+    (let ((text (read-from-kill-ring "Paste from kill ring: ")))
+      (unless (string-empty-p text)
+        (ghostel--on-user-input)
+        (ghostel--paste-text text)))))
 
 (defun ghostel-xterm-paste (event)
   "Forward an xterm-paste EVENT to the terminal via bracketed paste.
