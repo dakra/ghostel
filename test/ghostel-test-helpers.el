@@ -241,7 +241,7 @@ to the lifecycle process returned by `ghostel-exec'; see
   "Cached Python 3 executable used by integration tests.")
 
 (defun ghostel-test--python ()
-  "Return a Python 3 executable, or skip the current test."
+  "Return a Python 3 executable, or fail the current test."
   (when (eq ghostel-test--python-executable :unknown)
     (setq ghostel-test--python-executable
           (cl-find-if
@@ -253,7 +253,7 @@ to the lifecycle process returned by `ghostel-exec'; see
            (list (executable-find "python3")
                  (executable-find "python")))))
   (or ghostel-test--python-executable
-      (ert-skip "Python 3 is unavailable")))
+      (ert-fail "Python 3 is unavailable")))
 
 (defun ghostel-test--fixture-directory ()
   "Return the absolute path of the test fixture directory."
@@ -477,7 +477,7 @@ runs are unaffected."
   "Return the ERT selector for pure Elisp tests on the current platform."
   (if (ghostel-test--windows-p)
       '(and (not (tag native)) (not (tag posix)))
-    '(not (tag native))))
+    '(and (not (tag native)) (not (tag windows)))))
 
 (defun ghostel-test-run-elisp ()
   "Run only pure Elisp tests for this platform."
@@ -487,7 +487,7 @@ runs are unaffected."
   "Return the ERT selector for native tests on the current platform."
   (if (ghostel-test--windows-p)
       '(and (tag native) (not (tag posix)))
-    '(tag native)))
+    '(and (tag native) (not (tag windows)))))
 
 (defun ghostel-test-run-native ()
   "Run only tests that require the native module for this platform."
@@ -497,7 +497,7 @@ runs are unaffected."
   "Return the ERT selector for all tests on the current platform."
   (if (ghostel-test--windows-p)
       '(and "^ghostel-test-" (not (tag posix)))
-    "^ghostel-test-"))
+    '(and "^ghostel-test-" (not (tag windows)))))
 
 (defun ghostel-test-run ()
   "Run all ghostel tests for this platform."

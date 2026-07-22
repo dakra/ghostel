@@ -523,6 +523,7 @@ const interned_symbols = [_][:0]const u8{
     "message",
     "min-width",
     "mouse-face",
+    "multibyte-string-p",
     "nil",
     "nth",
     "numberp",

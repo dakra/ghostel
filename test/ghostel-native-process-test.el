@@ -36,14 +36,14 @@ returning the number of redraw invalidations requested."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(defun ghostel-test-native-process--env-output (env-command &optional spawn-wrapper)
-  "Spawn ENV-COMMAND through the native primitive and return its output.
-ENV-COMMAND is a command argv list.  SPAWN-WRAPPER, when non-nil, is
-called with the zero-argument spawn function and should call it under
-any dynamic bindings needed by the test."
+(defun ghostel-test-native-process--command-output (command &optional spawn-wrapper)
+  "Spawn COMMAND through the native primitive and return its output.
+COMMAND is an argv list.  SPAWN-WRAPPER, when non-nil, is called with
+and should call the zero-argument spawn function under any dynamic
+bindings needed by the test."
   (ghostel-test--with-terminal-buffer (buf _term 200 32767 2000000)
     (let ((pipe (make-pipe-process
-                 :name "ghostel-native-env-test"
+                 :name "ghostel-native-command-test"
                  :buffer (current-buffer)
                  :filter #'ghostel--events-filter
                  :noquery t))
@@ -52,7 +52,7 @@ any dynamic bindings needed by the test."
           (progn
             (let ((spawn (lambda ()
                            (setq pid (ghostel--spawn-native-process
-                                      ghostel--term env-command pipe)))))
+                                      ghostel--term command pipe)))))
               (if spawn-wrapper
                   (funcall spawn-wrapper spawn)
                 (funcall spawn)))
@@ -153,6 +153,61 @@ must not leave `ghostel--event-buf' in a poisoned state."
                     ghostel-test-native-process--events))
      (should (null ghostel--event-buf)))))
 
+(ert-deftest ghostel-test-native-process-decodes-windows-unibyte-inputs ()
+  "Native spawn decodes Windows unibyte process inputs with the ANSI code page."
+  :tags '(native windows)
+  (skip-unless (ghostel-test--windows-p))
+  (let* ((python (ghostel-test--python))
+         (acp-coding-system
+          (or (coding-system-from-name (format "cp%d" w32-ansi-code-page))
+              (ert-fail (format "No coding system for Windows code page %d"
+                                w32-ansi-code-page))))
+         (unicode-value
+          (or (cl-find-if
+               (lambda (candidate)
+                 (let ((bytes (encode-coding-string candidate acp-coding-system)))
+                   (and (not (multibyte-string-p bytes))
+                        (seq-some (lambda (char) (> char 127)) bytes)
+                        (equal candidate
+                               (decode-coding-string bytes acp-coding-system)))))
+               '("â" "Ž" "Ж" "Ω" "İ" "א" "ا" "ก" "あ" "中" "한" "€"))
+              (ert-fail (format "No non-ASCII fixture for Windows code page %d"
+                                w32-ansi-code-page))))
+         (unibyte-value
+          (encode-coding-string unicode-value acp-coding-system))
+         (unicode-directory
+          (file-name-as-directory
+           (make-temp-file
+            (expand-file-name (format "ghostel-%s-" unicode-value)
+                              temporary-file-directory)
+            t)))
+         (unibyte-directory
+          (encode-coding-string unicode-directory acp-coding-system))
+         (environment-entry (concat "GHOSTEL_ACP_TEST=" unibyte-value))
+         (script
+          (concat
+           "import os, sys\n"
+           "ok = (sys.argv[1] == sys.argv[2] and "
+           "os.environ.get('GHOSTEL_ACP_TEST') == sys.argv[2] and "
+           "os.path.normcase(os.getcwd()) == os.path.normcase(sys.argv[3]))\n"
+           "print('GHOSTEL_ACP_OK' if ok else 'GHOSTEL_ACP_BAD')\n")))
+    (unwind-protect
+        (progn
+          (let* ((process-environment
+                  (cons environment-entry
+                        (ghostel-test--base-process-environment)))
+                 (default-directory (ghostel-test--temp-directory))
+                 (text
+                  (ghostel-test-native-process--command-output
+                   (list python "-c" script unibyte-value unicode-value
+                         (directory-file-name unicode-directory))
+                   (lambda (spawn)
+                     (cl-letf (((symbol-function 'expand-file-name)
+                                (lambda (&rest _) unibyte-directory)))
+                       (funcall spawn))))))
+            (should (ghostel-test--terminal-text-line-p "GHOSTEL_ACP_OK" text))))
+      (delete-directory unicode-directory t))))
+
 (ert-deftest ghostel-test-native-process-adds-display-for-graphical-frame ()
   "Native env builder mirrors Emacs' DISPLAY fallback for graphical frames."
   :tags '(native)
@@ -161,7 +216,7 @@ must not leave `ghostel--event-buf' in a poisoned state."
     (let* ((process-environment (append '("DISPLAY_FOO=1")
                                         (ghostel-test--base-process-environment)))
            (default-directory (ghostel-test--temp-directory))
-           (text (ghostel-test-native-process--env-output
+           (text (ghostel-test-native-process--command-output
                   env-command
                   (lambda (spawn)
                     (cl-letf (((symbol-function 'display-graphic-p)
@@ -180,7 +235,7 @@ must not leave `ghostel--event-buf' in a poisoned state."
     (skip-unless (car env-command))
     (let* ((process-environment (ghostel-test--base-process-environment))
            (default-directory (ghostel-test--temp-directory))
-           (text (ghostel-test-native-process--env-output
+           (text (ghostel-test-native-process--command-output
                   env-command
                   (lambda (spawn)
                     (cl-letf (((symbol-function 'display-graphic-p)
@@ -202,7 +257,7 @@ must not leave `ghostel--event-buf' in a poisoned state."
                                           "GHOSTEL_ENV_TEST_DUP=later")
                                         (ghostel-test--base-process-environment)))
            (default-directory (ghostel-test--temp-directory))
-           (text (ghostel-test-native-process--env-output env-command)))
+           (text (ghostel-test-native-process--command-output env-command)))
       (should-not (ghostel-test--terminal-text-line-prefix-p
                    "GHOSTEL_ENV_TEST_UNSET=" text))
       (should (ghostel-test--terminal-text-line-p
@@ -218,7 +273,7 @@ must not leave `ghostel--event-buf' in a poisoned state."
     (let* ((process-environment (cons "DISPLAY"
                                       (ghostel-test--base-process-environment)))
            (default-directory (ghostel-test--temp-directory))
-           (text (ghostel-test-native-process--env-output
+           (text (ghostel-test-native-process--command-output
                   env-command
                   (lambda (spawn)
                     (cl-letf (((symbol-function 'display-graphic-p)
