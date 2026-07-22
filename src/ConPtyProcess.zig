@@ -351,7 +351,7 @@ pub fn write(
 
     switch (c.GetLastError()) {
         c.ERROR_IO_PENDING => {},
-        c.ERROR_BROKEN_PIPE, c.ERROR_INVALID_HANDLE => return error.ProcessExited,
+        c.ERROR_BROKEN_PIPE, c.ERROR_INVALID_HANDLE => return .interrupted,
         else => return error.IoFailed,
     }
     errdefer _ = completeOverlapped(self.pty_input, &overlapped, true) catch {};
@@ -384,13 +384,13 @@ pub fn write(
         return switch (complete_result) {
             .bytes => |n| if (n > 0) .{ .written = n } else error.IoFailed,
             .aborted => if (interrupted) .interrupted else error.IoFailed,
-            else => error.IoFailed,
+            .closed => .interrupted,
         };
     }
 }
 
 pub fn resize(self: *Self, cols: u16, rows: u16) !void {
-    const hpc = self.hpc orelse return error.PtyResizeFailed;
+    const hpc = self.hpc orelse return;
     const size = c.COORD{
         .X = @intCast(cols),
         .Y = @intCast(rows),

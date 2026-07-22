@@ -276,6 +276,19 @@ pub const Env = struct {
         self.raw.non_local_exit_clear.?(self.raw);
     }
 
+    pub fn nonLocalExitGet(self: Env) struct {
+        status: FuncallExit,
+        symbol: Value,
+        data: Value,
+    } {
+        var symbol: Value = undefined;
+        var data: Value = undefined;
+        const status: FuncallExit = @enumFromInt(
+            self.raw.non_local_exit_get.?(self.raw, &symbol, &data),
+        );
+        return .{ .status = status, .symbol = symbol, .data = data };
+    }
+
     pub fn nonLocalExitSignal(self: Env, symbol: Value, data: Value) void {
         self.raw.non_local_exit_signal.?(self.raw, symbol, data);
     }
@@ -531,7 +544,6 @@ const interned_symbols = [_][:0]const u8{
     "point-max",
     "pos-bol",
     "process-environment",
-    "process-live-p",
     "process-send-string",
     "process-tty-name",
     "propertize",

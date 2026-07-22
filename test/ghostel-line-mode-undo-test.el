@@ -142,7 +142,8 @@ correctly against the input's new position."
     ;; prompt is painted.  The renderer rewrites the whole viewport
     ;; (line mode forces full redraws).
     (ghostel--write-vt term "some output\r\n\e]133;A\e\\$ \e]133;B\e\\")
-    (ghostel--redraw-now buf)
+    (let ((ghostel-detect-password-prompts nil))
+      (ghostel--redraw-now buf))
     ;; The input survived snapshot/restore.
     (should (equal (ghostel--line-mode-input-text) "foo"))
     ;; Renderer rewrites did not pollute undo.

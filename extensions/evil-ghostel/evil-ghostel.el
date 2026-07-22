@@ -344,7 +344,7 @@ word) can't over-delete past the live input.  END is never below BEG."
   "Drain pending PTY output so cursor state reflects the latest echo.
 Loops `accept-process-output' (capped by
 `evil-ghostel-sync-render-max-iterations'), then flushes any deferred redraw."
-  (when (and ghostel--process (process-live-p ghostel--process))
+  (when ghostel--process
     (let ((iter 0))
       (while (and (< iter evil-ghostel-sync-render-max-iterations)
                   (accept-process-output ghostel--process 0.05 nil t))

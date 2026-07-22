@@ -1234,8 +1234,7 @@ wrong arrow delta."
            (ghostel--redraw-timer fake-timer)
            (ghostel--process 'fake-proc))
       (unwind-protect
-          (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
-                    ((symbol-function 'accept-process-output)
+          (cl-letf (((symbol-function 'accept-process-output)
                      (lambda (&rest _) nil))
                     ;; Stubbed redraw stands in for the real
                     ;; `ghostel--redraw-now', which cancels the timer.
@@ -1256,8 +1255,7 @@ current."
     (let ((redraw-calls 0)
           (ghostel--redraw-timer nil)
           (ghostel--process 'fake-proc))
-      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
-                ((symbol-function 'accept-process-output)
+      (cl-letf (((symbol-function 'accept-process-output)
                  (lambda (&rest _) nil))
                 ((symbol-function 'ghostel--redraw-now)
                  (lambda (_buf) (cl-incf redraw-calls))))
@@ -1274,8 +1272,7 @@ bounds total wait at ~max-iter × 50 ms."
           (evil-ghostel-sync-render-max-iterations 5)
           (ghostel--redraw-timer nil)
           (ghostel--process 'fake-proc))
-      (cl-letf (((symbol-function 'process-live-p) (lambda (_) t))
-                ((symbol-function 'accept-process-output)
+      (cl-letf (((symbol-function 'accept-process-output)
                  (lambda (&rest _) (cl-incf accept-calls) t))
                 ((symbol-function 'ghostel--redraw-now) #'ignore))
         (evil-ghostel--sync-render)
