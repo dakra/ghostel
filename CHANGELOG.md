@@ -4,6 +4,54 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.45.0] — 2026-07-23
+
+### Added
+- Added the public `ghostel-alt-screen-p` API for detecting alternate screens
+  entered through DEC modes 47, 1047, or 1049.
+- evil-ghostel now shows a one-time hint when `ESC` is routed to an
+  alternate-screen application, with `C-c C-r` to toggle routing and
+  `C-c <escape>` to enter Evil normal state without changing it.
+  Closes [#539](https://github.com/dakra/ghostel/issues/539).
+
+### Changed
+- Building the native module now requires exactly Zig 0.15.2 and reports an
+  explicit error for unsupported versions.
+- `ghostel-yank-pop` now uses `read-from-kill-ring`, preserving newest-first
+  order and refreshing interprogram clipboard contents.
+- Live Ghostel buffers now reject major-mode changes that would destroy their
+  terminal state; buffers whose process has exited remain changeable.
+
+### Fixed
+- Bash integration now supports scalar and array-valued `PROMPT_COMMAND`,
+  including hooks installed by systemd. Fixes
+  [#540](https://github.com/dakra/ghostel/issues/540).
+- Bash integration now works under `set -u`, tolerates a user-defined `type`
+  function, and avoids emitting command-start markers during shell startup.
+  Fixes [#557](https://github.com/dakra/ghostel/issues/557).
+- `ghostel-other` now creates a fresh terminal when invoked from the only
+  existing Ghostel buffer instead of reselecting that buffer.
+- Window anchoring no longer scrolls the live cursor out of view when another
+  window shrinks the terminal, preventing unintended entry into copy mode.
+- Alternate screens entered through DEC modes 47 or 1047 are now detected by
+  line mode and evil-ghostel, not only those using mode 1049.
+- Native module builds on musl now consistently use Ghostel's vendored
+  `emacs-module.h`, including when invoked outside the project root. Fixes
+  [#551](https://github.com/dakra/ghostel/issues/551).
+- Pasting kills containing undecoded or invalid byte sequences now repairs
+  UTF-8 and substitutes invalid characters instead of signaling an error.
+- Operations racing with terminal exit, including input, resize, cleanup, and
+  evil-ghostel key routing, now safely become no-ops or fall back to normal
+  Evil behavior. Related to
+  [#555](https://github.com/dakra/ghostel/issues/555).
+- Windows native process spawning now decodes unibyte arguments, environment
+  variables, and working directories using the system ANSI code page while
+  preserving UTF-8 multibyte strings.
+
+### Internal
+- Extension byte compilation now depends on the core byte-compiled files,
+  preventing parallel builds from compiling extensions against stale APIs.
+
 ## [0.44.0] — 2026-07-13
 
 ### Added
