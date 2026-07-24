@@ -1,4 +1,4 @@
-#	Reconstructed via infocmp from file: /Applications/Ghostty.app/Contents/Resources/terminfo/78/xterm-ghostty
+#	Reconstructed via infocmp from file: /Users/emilsahlen/.emacs.d/elpa/ghostel/etc/terminfo/78/xterm-ghostty
 xterm-ghostty|ghostty|Ghostty,
 	am, bce, ccc, hs, km, mc5i, mir, msgr, npc, xenl, AX, Su, Tc, XT, fullkbd,
 	colors#256, cols#80, it#8, lines#24, pairs#32767,
@@ -52,8 +52,7 @@ xterm-ghostty|ghostty|Ghostty,
 	u8=\E[?%[;0123456789]c, u9=\E[c, vpa=\E[%i%p1%dd,
 	BD=\E[?2004l, BE=\E[?2004h, Clmg=\E[s,
 	Cmg=\E[%i%p1%d;%p2%ds, Dsmg=\E[?69l, E3=\E[3J,
-	Enmg=\E[?69h, PE=\E[201~,
-	PS=\E[200~, RV=\E[>c, Se=\E[2 q,
+	Enmg=\E[?69h, PE=\E[201~, PS=\E[200~, RV=\E[>c, Se=\E[2 q,
 	Setulc=\E[58\:2\:\:%p1%{65536}%/%d\:%p1%{256}%/%{255}%&%d\:%p1%{255}%&%d%;m,
 	Smulx=\E[4\:%p1%dm, Ss=\E[%p1%d q,
 	Sync=\E[?2026%?%p1%{1}%-%tl%eh%;,

@@ -2,11 +2,13 @@ const std = @import("std");
 const builtin = @import("builtin");
 const module_version = @import("src/version.zig").version;
 
+var io: std.Io.Threaded = .init_single_threaded;
+
 // Keep in sync with build.zig.zon (minimum_zig_version) and the CI workflows.
-const required_zig = std.SemanticVersion{ .major = 0, .minor = 15, .patch = 2 };
+const required_zig = std.SemanticVersion{ .major = 0, .minor = 16, .patch = 0 };
 comptime {
     if (builtin.zig_version.order(required_zig) != .eq)
-        @compileError("ghostel requires exactly Zig 0.15.2, found " ++ builtin.zig_version_string);
+        @compileError("ghostel requires exactly Zig 0.16.0, found " ++ builtin.zig_version_string);
 }
 
 const vendored_emacs_module_dir = "vendor";
@@ -21,12 +23,55 @@ pub fn build(b: *std.Build) void {
     ) orelse optimize;
     const is_release = optimize != .Debug;
     const target_os = target.result.os.tag;
-    const emacs_module_dir = resolveEmacsModuleDir(b);
+
     const ghostty_dep = b.dependency("ghostty", .{
         .target = target,
         .optimize = ghostty_optimize,
         .@"emit-lib-vt" = true,
     });
+
+    const ghostty_vt = ghostty_dep.module("ghostty-vt");
+
+    const emacs_module_dir = resolveEmacsModuleDir(b);
+    const translate_emacs = b.addTranslateC(.{
+        .root_source_file = b.path("src/emacs.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    translate_emacs.addIncludePath(emacs_module_dir);
+    const emacs_c = translate_emacs.createModule();
+
+    const platform_c: std.Build.Module.Import = switch (target_os) {
+        .windows => platform: {
+            const translate_windows = b.addTranslateC(.{
+                .root_source_file = b.path("src/win32.h"),
+                .target = target,
+                .optimize = optimize,
+            });
+            break :platform .{
+                .name = "windows_c",
+                .module = translate_windows.createModule(),
+            };
+        },
+        else => platform: {
+            const translate_posix = b.addTranslateC(.{
+                .root_source_file = b.path("src/posix.h"),
+                .target = target,
+                .optimize = optimize,
+            });
+            break :platform .{
+                .name = "posix_c",
+                .module = translate_posix.createModule(),
+            };
+        },
+    };
+
+    const translate_stb = b.addTranslateC(.{
+        .root_source_file = b.path("vendor/stb/stb_image.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const stb_image_c = translate_stb.createModule();
 
     const mod = b.createModule(.{
         .root_source_file = b.path("src/module.zig"),
@@ -35,12 +80,13 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .strip = if (is_release) true else null,
         .omit_frame_pointer = if (is_release) true else null,
+        .imports = &.{
+            .{ .name = "ghostty-vt", .module = ghostty_vt },
+            .{ .name = "emacs_c", .module = emacs_c },
+            platform_c,
+            .{ .name = "stb_image_c", .module = stb_image_c },
+        },
     });
-    mod.addIncludePath(emacs_module_dir);
-    mod.addImport(
-        "ghostty-vt",
-        ghostty_dep.module("ghostty-vt"),
-    );
 
     // stb_image for PNG decoding (kitty graphics)
     mod.addIncludePath(b.path("vendor/stb"));
@@ -62,7 +108,7 @@ pub fn build(b: *std.Build) void {
         }
     }
     if (target_os == .windows) {
-        lib.linkSystemLibrary("kernel32");
+        lib.root_module.linkSystemLibrary("kernel32", .{});
     }
 
     const copy_step = b.addInstallFile(
@@ -98,24 +144,25 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .imports = &.{
+            .{ .name = "ghostty-vt", .module = ghostty_vt },
+            platform_c,
+            .{ .name = "stb_image_c", .module = stb_image_c },
+        },
     });
     tests_mod.addIncludePath(b.path("vendor/stb"));
     tests_mod.addCSourceFile(.{ .file = b.path("src/stb_image.c") });
-    tests_mod.addImport(
-        "ghostty-vt",
-        ghostty_dep.module("ghostty-vt"),
-    );
     const tests = b.addTest(.{ .root_module = tests_mod });
     test_step.dependOn(&b.addRunArtifact(tests).step);
 }
 
 fn resolveEmacsModuleDir(b: *std.Build) std.Build.LazyPath {
-    if (b.graph.env_map.get("EMACS_INCLUDE_DIR")) |dir| {
+    if (b.graph.environ_map.get("EMACS_INCLUDE_DIR")) |dir| {
         ensureEmacsModuleHeaderExists(b.allocator, "EMACS_INCLUDE_DIR", dir);
         return .{ .cwd_relative = dir };
     }
 
-    if (b.graph.env_map.get("EMACS_BIN_DIR")) |bin_dir| {
+    if (b.graph.environ_map.get("EMACS_BIN_DIR")) |bin_dir| {
         const include_dir = resolveEmacsIncludeDirFromBin(b.allocator, bin_dir) orelse
             std.debug.panic(
                 "EMACS_BIN_DIR={s} does not resolve to a directory containing emacs-module.h",
@@ -165,7 +212,7 @@ fn dirHasEmacsModuleHeader(allocator: std.mem.Allocator, dir: []const u8) bool {
         @panic("out of memory while resolving emacs-module.h");
     defer allocator.free(header_path);
 
-    std.fs.cwd().access(header_path, .{}) catch return false;
+    std.Io.Dir.cwd().access(io.io(), header_path, .{}) catch return false;
     return true;
 }
 

@@ -23,6 +23,8 @@ const c = emacs.c;
 var debug_alloc: std.heap.DebugAllocator(.{}) = .init;
 var alloc: Allocator = std.heap.c_allocator;
 
+var io: std.Io.Threaded = .init_single_threaded;
+
 /// Module version — see src/version.zig.  Keep in sync with ghostel.el
 /// and build.zig.zon.
 const version = @import("version.zig").version;
@@ -52,7 +54,7 @@ export fn emacs_module_init(runtime: *c.struct_emacs_runtime) callconv(.c) c_int
     env.registerFunctions(&emacs_functions);
 
     ComintFilter.initModule(alloc, env);
-    GhostelTerm.initModule(alloc, env);
+    GhostelTerm.initModule(alloc, io.io(), env) catch return 1;
 
     gt.sys.decode_png = &png.decode;
 

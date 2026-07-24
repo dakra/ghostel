@@ -3,9 +3,7 @@ const Allocator = std.mem.Allocator;
 
 const backend_types = @import("backend_types.zig");
 
-const c = @cImport({
-    @cInclude("windows.h");
-});
+const c = @import("windows_c");
 
 const Self = @This();
 
@@ -180,7 +178,7 @@ pub const EventWriter = struct {
     }
 };
 
-pub fn init(alloc: Allocator, initial_cols: u16, initial_rows: u16, params: backend_types.ProcessParams) !Self {
+pub fn init(alloc: Allocator, io: std.Io, initial_cols: u16, initial_rows: u16, params: backend_types.ProcessParams) !Self {
     try initApi();
 
     var self: Self = .{ .alloc = alloc };
@@ -195,7 +193,7 @@ pub fn init(alloc: Allocator, initial_cols: u16, initial_rows: u16, params: back
     self.input_write_event = c.CreateEventW(null, c.TRUE, c.FALSE, null);
     if (self.input_write_event == null) return error.CreateEventFailed;
 
-    try createConPty(&self, initial_rows, initial_cols);
+    try createConPty(&self, io, initial_rows, initial_cols);
     try spawnChild(&self, params);
 
     return self;
@@ -244,7 +242,7 @@ fn readOutput(
         &bytes_read,
         &overlapped,
     ) != 0) {
-        stream.nextSlice(buf[0..bytes_read]);
+        try stream.nextSlice(buf[0..bytes_read]);
         return .ok;
     }
 
@@ -263,7 +261,7 @@ fn readOutput(
         &overlapped,
         wait_result == .interrupted,
     );
-    if (complete_result == .bytes) stream.nextSlice(buf[0..complete_result.bytes]);
+    if (complete_result == .bytes) try stream.nextSlice(buf[0..complete_result.bytes]);
 
     if (wait_result == .interrupted or complete_result != .bytes) return .finished;
     return .ok;
@@ -360,7 +358,13 @@ pub fn write(
         self.input_write_event,
         self.interrupt_event,
     };
-    const timeout = if (cancellation) |token| token.poll_interval_ms else c.INFINITE;
+    const timeout: c.DWORD = if (cancellation) |token|
+        @intCast(@min(
+            token.poll_interval.toMilliseconds(),
+            @as(u32, c.INFINITE - 1),
+        ))
+    else
+        c.INFINITE;
     while (true) {
         const wait_result = c.WaitForMultipleObjects(
             handles.len,
@@ -492,7 +496,7 @@ fn currentModuleDir(module_path_buf: *[32768]u8) ?[]const u8 {
     return std.fs.path.dirname(module_path);
 }
 
-fn createConPty(self: *Self, rows: u16, cols: u16) !void {
+fn createConPty(self: *Self, io: std.Io, rows: u16, cols: u16) !void {
     var in_read: c.HANDLE = c.INVALID_HANDLE_VALUE;
     var in_write: c.HANDLE = c.INVALID_HANDLE_VALUE;
     var out_read: c.HANDLE = c.INVALID_HANDLE_VALUE;
@@ -505,8 +509,10 @@ fn createConPty(self: *Self, rows: u16, cols: u16) !void {
         if (out_write != c.INVALID_HANDLE_VALUE) _ = c.CloseHandle(out_write);
     }
 
-    try createOverlappedPipe(&in_read, &in_write, .write);
-    try createOverlappedPipe(&out_read, &out_write, .read);
+    const random_source: std.Random.IoSource = .{ .io = io };
+    const random = random_source.interface();
+    try createOverlappedPipe(random, &in_read, &in_write, .write);
+    try createOverlappedPipe(random, &out_read, &out_write, .read);
 
     const size = c.COORD{
         .X = @intCast(cols),
@@ -582,6 +588,7 @@ fn clearInterruptEvent(self: *Self) void {
 }
 
 fn createOverlappedPipe(
+    random: std.Random,
     read_handle: *c.HANDLE,
     write_handle: *c.HANDLE,
     overlapped_end: OverlappedPipeEnd,
@@ -591,7 +598,7 @@ fn createOverlappedPipe(
     const pipe_path = std.fmt.bufPrintZ(
         &pipe_path_buf,
         "\\\\.\\pipe\\ghostel-conpty-{d}-{x}",
-        .{ c.GetCurrentProcessId(), std.crypto.random.int(u64) },
+        .{ c.GetCurrentProcessId(), random.int(u64) },
     ) catch unreachable;
 
     const pipe_path_w_len = std.unicode.utf8ToUtf16Le(
@@ -646,7 +653,7 @@ fn spawnChild(self: *Self, params: backend_types.ProcessParams) !void {
         try std.unicode.wtf8ToWtf16LeAllocZ(arena, cwd_path)
     else
         null;
-    const env_block = try buildEnvironmentBlock(arena, params.env);
+    const env_block = try params.env.createWindowsBlock(arena, .{});
 
     var attr_list_size: usize = 0;
     _ = c.InitializeProcThreadAttributeList(null, 1, 0, &attr_list_size);
@@ -689,7 +696,7 @@ fn spawnChild(self: *Self, params: backend_types.ProcessParams) !void {
         null,
         c.FALSE,
         flags,
-        @ptrCast(env_block.ptr),
+        @ptrCast(@constCast(env_block.slice.ptr)),
         if (cwd) |cwd_w| cwd_w.ptr else null,
         &si.StartupInfo,
         &pi,
@@ -760,45 +767,6 @@ fn argvToCommandLineWindows(
     return try std.unicode.wtf8ToWtf16LeAllocZ(allocator, buf.items);
 }
 
-const EnvEntry = struct {
-    key: []const u8,
-    value: []const u8,
-};
-
-fn envEntryLessThan(_: void, lhs: EnvEntry, rhs: EnvEntry) bool {
-    return std.ascii.lessThanIgnoreCase(lhs.key, rhs.key);
-}
-
-fn buildEnvironmentBlock(arena: Allocator, env_map: *const std.process.EnvMap) ![]u16 {
-    var builder = std.ArrayList(u16).empty;
-    errdefer builder.deinit(arena);
-
-    const entries = try arena.alloc(EnvEntry, @intCast(env_map.count()));
-    defer arena.free(entries);
-    var it = env_map.iterator();
-    var i: usize = 0;
-    while (it.next()) |pair| : (i += 1) {
-        entries[i] = .{ .key = pair.key_ptr.*, .value = pair.value_ptr.* };
-    }
-    std.mem.sort(EnvEntry, entries, {}, envEntryLessThan);
-
-    for (entries) |entry| {
-        try appendWtf8AsWtf16(&builder, arena, entry.key);
-        try builder.append(arena, '=');
-        try appendWtf8AsWtf16(&builder, arena, entry.value);
-        try builder.append(arena, 0);
-    }
-    try builder.append(arena, 0);
-    return try builder.toOwnedSlice(arena);
-}
-
-fn appendWtf8AsWtf16(builder: *std.ArrayList(u16), arena: Allocator, value: []const u8) !void {
-    const len = try std.unicode.calcWtf16LeLen(value);
-    const dest = try builder.addManyAsSlice(arena, len);
-    const written = try std.unicode.wtf8ToWtf16Le(dest, value);
-    std.debug.assert(written == len);
-}
-
 test "notify CRT provider follows the CRT that owns Emacs dup" {
     try std.testing.expectEqual(
         EventWriter.NotifyCrtProvider.msvcrt,
@@ -839,45 +807,4 @@ test "argvToCommandLineWindows quotes argv0" {
         "\"c:\\Windows\\System32\\cmd.exe\" /d /c \"echo hi\"",
     );
     try std.testing.expectEqualSlices(u16, expected, command_line);
-}
-
-test "buildEnvironmentBlock writes nul-separated UTF-16 entries" {
-    var env = std.process.EnvMap.init(std.testing.allocator);
-    defer env.deinit();
-    try env.put("FOO", "bar");
-
-    const block = try buildEnvironmentBlock(std.testing.allocator, &env);
-    defer std.testing.allocator.free(block);
-
-    try std.testing.expectEqualSlices(u16, &[_]u16{
-        'F', 'O', 'O', '=', 'b', 'a', 'r', 0,
-        0,
-    }, block);
-}
-
-test "buildEnvironmentBlock sorts entries by environment name" {
-    var env = std.process.EnvMap.init(std.testing.allocator);
-    defer env.deinit();
-    try env.put("ZED", "last");
-    try env.put("ALPHA", "first");
-    try env.put("Path", "middle");
-
-    const block = try buildEnvironmentBlock(std.testing.allocator, &env);
-    defer std.testing.allocator.free(block);
-
-    try std.testing.expectEqualSlices(u16, &[_]u16{
-        'A', 'L', 'P', 'H', 'A', '=', 'f', 'i', 'r', 's', 't', 0,
-        'P', 'a', 't', 'h', '=', 'm', 'i', 'd', 'd', 'l', 'e', 0,
-        'Z', 'E', 'D', '=', 'l', 'a', 's', 't', 0,   0,
-    }, block);
-}
-
-test "EnvMap keeps environment names unique on Windows" {
-    var env = std.process.EnvMap.init(std.testing.allocator);
-    defer env.deinit();
-    try env.put("Path", "first");
-    try env.put("PATH", "second");
-
-    try std.testing.expectEqual(@as(std.process.EnvMap.Size, 1), env.count());
-    try std.testing.expectEqualStrings("second", env.get("path").?);
 }

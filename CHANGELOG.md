@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- Building the native module now requires exactly Zig 0.16.0.
+
 ## [0.45.0] — 2026-07-23
 
 ### Added

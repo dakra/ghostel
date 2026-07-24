@@ -5,13 +5,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
-
-pub const c = @cImport({
-    // Ensure struct timespec is fully defined on Linux (glibc gates it
-    // behind _POSIX_C_SOURCE).  Harmless on macOS/BSDs.
-    @cDefine("_POSIX_C_SOURCE", "199309L");
-    @cInclude("emacs-module.h");
-});
+pub const c = @import("emacs_c");
 
 pub const Value = c.emacs_value;
 pub const RawEnv = ?*c.emacs_env;
@@ -35,7 +29,7 @@ const DebugUserPtr = struct {
 /// Tracks all live userptrs in debug builds so the kill-emacs-hook can
 /// explicitly free them before atexit fires. This allows us to check for
 /// memory leaks on exit.
-var debug_userptrs: std.ArrayList(DebugUserPtr) = .{};
+var debug_userptrs: std.ArrayList(DebugUserPtr) = .empty;
 
 pub const FunctionEntry = struct {
     name: [:0]const u8,
@@ -325,7 +319,7 @@ pub const Env = struct {
     }
 
     /// Register a named Elisp function backed by a C function.
-    pub fn registerFunction(self: Env, entry: *const FunctionEntry) void {
+    pub fn registerFunction(self: Env, comptime entry: *const FunctionEntry) void {
         const wrapped_fn = struct {
             fn call(
                 raw_env: RawEnv,
@@ -357,7 +351,7 @@ pub const Env = struct {
     }
 
     /// Register a named Elisp function backed by a C function.
-    pub fn registerFunctions(self: Env, entries: []const FunctionEntry) void {
+    pub fn registerFunctions(self: Env, comptime entries: []const FunctionEntry) void {
         inline for (entries) |*entry| self.registerFunction(entry);
     }
 
@@ -404,11 +398,11 @@ pub const Env = struct {
             if (stack_trace) |trace| {
                 var buffer: [4096]u8 = undefined;
                 var writer = std.Io.Writer.fixed(&buffer);
-                const debug_info = std.debug.getSelfDebugInfo() catch |err| {
-                    self.logError("Unable to get debug info: %s", .{@errorName(err)});
-                    return;
+                const terminal: std.Io.Terminal = .{
+                    .writer = &writer,
+                    .mode = .no_color,
                 };
-                std.debug.writeStackTrace(trace.*, &writer, debug_info, .no_color) catch |err| {
+                std.debug.writeErrorReturnTrace(trace, terminal) catch |err| {
                     self.logError("Unable to print stack trace: %s", .{@errorName(err)});
                     return;
                 };
@@ -563,28 +557,27 @@ const interned_symbols = [_][:0]const u8{
     "space",
     "symbol-value",
     "t",
+    "temporary-file-directory",
     "wave",
     "window-point",
     "window-start",
 };
 
 fn SymbolCache(comptime symbols: []const [:0]const u8) type {
-    var cache_fields: [symbols.len]std.builtin.Type.StructField = undefined;
+    var names: [symbols.len][]const u8 = undefined;
+    var types: [symbols.len]type = undefined;
+    var attrs: [symbols.len]std.builtin.Type.StructField.Attributes = undefined;
+
     for (symbols, 0..) |symbol, i| {
-        cache_fields[i] = .{
-            .name = symbol,
-            .type = Value,
+        names[i] = symbol;
+        types[i] = Value;
+        attrs[i] = .{
+            .@"comptime" = false,
+            .@"align" = @alignOf(Value),
             .default_value_ptr = null,
-            .is_comptime = false,
-            .alignment = @alignOf(Value),
         };
     }
-    return @Type(.{ .@"struct" = .{
-        .layout = .auto,
-        .fields = &cache_fields,
-        .decls = &[_]std.builtin.Type.Declaration{},
-        .is_tuple = false,
-    } });
+    return @Struct(.auto, null, &names, &types, &attrs);
 }
 
 pub var sym: SymbolCache(&interned_symbols) = undefined;

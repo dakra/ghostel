@@ -155,7 +155,7 @@ binaries are available for:
 - =aarch64-windows=
 
 If you prefer to build from source or need a different platform, you will also
-need *exactly* [[https://ziglang.org/][Zig]] 0.15.2 - older or newer Zig versions will not build.  See
+need *exactly* [[https://ziglang.org/][Zig]] 0.16.0 - older or newer Zig versions will not build.  See
 [[#building-from-source][Building from source]].
 
 * Installation
@@ -265,7 +265,7 @@ Building is only needed if you do not want the pre-built binaries.  Ghostel
 vendors a generated =vendor/emacs-module.h=, so normal builds do not require
 local Emacs headers.
 
-Building requires *exactly* [[https://ziglang.org/][Zig]] 0.15.2 - older or newer Zig versions will not build.
+Building requires *exactly* [[https://ziglang.org/][Zig]] 0.16.0 - older or newer Zig versions will not build.
 Check your installed version with =zig version=.
 
 #+begin_src sh
