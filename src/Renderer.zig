@@ -196,7 +196,7 @@ pub fn redraw(self: *Self, env: emacs.Env, force_full: bool, force_sync: bool) !
 
 fn clearPageDirtyFlags(from_node: *gt.PageList.List.Node) void {
     var node: ?*gt.PageList.List.Node = from_node;
-    while (node) |n| : (node = n.next) n.data.dirty = false;
+    while (node) |n| : (node = n.next) n.page().dirty = false;
 }
 
 fn invalidate(self: *Self, env: emacs.Env) !void {
@@ -312,7 +312,7 @@ fn applyProps(
     env: emacs.Env,
     start: usize,
     end: usize,
-    node: *const gt.PageList.List.Node,
+    node: *gt.PageList.List.Node,
     prop_key: *const CellPropKey,
 ) !void {
     if (start >= end) return;
@@ -330,7 +330,7 @@ fn applyProps(
         });
     }
 
-    const hyperlink = resolveHyperlink(&node.data, prop_key.hyperlink_id);
+    const hyperlink = resolveHyperlink(node.page(), prop_key.hyperlink_id);
     if (hyperlink) |link| {
         _ = env.f("put-text-property", .{
             start_val,
@@ -392,13 +392,13 @@ fn applyProps(
 fn getFace(
     self: *Self,
     env: emacs.Env,
-    node: *const gt.PageList.List.Node,
+    node: *gt.PageList.List.Node,
     key: *const CellPropKey,
 ) !?emacs.Value {
     return if (key.style_id != 0)
         try style_face.buildFacePlist(
             env,
-            node.data.styles.get(node.data.memory, key.style_id),
+            node.page().styles.get(node.page().memory, key.style_id),
             &self.term.colors.palette.current,
             self.bold_config,
         )
@@ -427,7 +427,7 @@ const CellPropKey = struct {
     fn create(page: *const gt.Page, cell: *const gt.page.Cell) ?CellPropKey {
         const hyperlink_id = if (cell.hyperlink) page.lookupHyperlink(cell) else null;
         const bg_color: gt.Style.Color = switch (cell.content_tag) {
-            .bg_color_palette => .{ .palette = cell.content.color_palette },
+            .bg_color_palette => .{ .palette = cell.content.color_palette.data },
             .bg_color_rgb => .{ .rgb = .{
                 .r = cell.content.color_rgb.r,
                 .g = cell.content.color_rgb.g,
@@ -511,7 +511,7 @@ pub const SpanContent = struct {
     cursor_char_pos: ?usize = null,
 
     /// The node this span comes from
-    node: ?*const gt.PageList.List.Node = null,
+    node: ?*gt.PageList.List.Node = null,
 
     pub fn addRow(
         self: *SpanContent,
@@ -537,7 +537,7 @@ pub const SpanContent = struct {
         else
             null;
 
-        const page = &row_pin.node.data;
+        const page = row_pin.node.page();
         const row = row_pin.rowAndCell().row;
         var current_prop_key: ?CellPropKey = null;
         var first_cell = true;
@@ -549,7 +549,7 @@ pub const SpanContent = struct {
 
             // We use a "key" that holds a minimum set of values that are cheap to
             // compare to detect style run breaks.
-            const prop_key = CellPropKey.create(&row_pin.node.data, cell);
+            const prop_key = CellPropKey.create(page, cell);
             if (first_cell or !std.meta.eql(prop_key, current_prop_key)) {
                 try self.runs.append(self.alloc, .{
                     .start_char = self.char_len,
@@ -1018,11 +1018,16 @@ fn commitResize(self: *Self, env: emacs.Env) !void {
         // Pin our saved positions during resize
         self.saved_markers.pin(self.term.screens.active, env);
 
-        try self.term.resize(self.alloc, rz.cols, rz.rows);
-        self.term.width_px = std.math.mul(u32, rz.cols, rz.cell_w) catch
-            std.math.maxInt(u32);
-        self.term.height_px = std.math.mul(u32, rz.rows, rz.cell_h) catch
-            std.math.maxInt(u32);
+        try self.term.resize(self.alloc, .{
+            .cols = rz.cols,
+            .rows = rz.rows,
+            .cell_size_px = .{
+                .width = std.math.mul(u32, rz.cols, rz.cell_w) catch
+                    std.math.maxInt(u32),
+                .height = std.math.mul(u32, rz.rows, rz.cell_h) catch
+                    std.math.maxInt(u32),
+            },
+        });
         self.pending_resize = null;
 
         env.set("ghostel--term-rows", self.term.rows);

@@ -15,11 +15,10 @@ pub fn cellCharCount(page: *gt.Page, cell: *gt.Cell) usize {
 }
 
 pub fn rowCharOffset(pin: gt.Pin) usize {
-    const page = &pin.node.data;
     var char_count: usize = 0;
     var cells = pin.cells(.left);
     cells.len -= 1;
-    for (cells) |*cell| char_count += cellCharCount(page, cell);
+    for (cells) |*cell| char_count += cellCharCount(pin.node.page(), cell);
     return char_count;
 }
 
@@ -28,7 +27,7 @@ pub fn advanceByCharOffset(pin: gt.Pin, offset: usize) ?gt.Pin {
     var it = pin.cellIterator(.right_down, null);
     while (it.next()) |p| {
         if (char_count >= offset) return p;
-        char_count += cellCharCount(&p.node.data, p.rowAndCell().cell);
+        char_count += cellCharCount(p.node.page(), p.rowAndCell().cell);
     }
 
     return null;

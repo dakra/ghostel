@@ -5,9 +5,7 @@
 /// libghostty `decode_png` callback contract.
 const std = @import("std");
 const gt = @import("ghostty-vt");
-const stb = @cImport({
-    @cInclude("stb_image.h");
-});
+const stb = @import("stb_image_c");
 
 pub const DecodeError = error{
     EmptyData,

@@ -7,6 +7,7 @@
 /// not change the device's state and is safe to run frequently.
 const std = @import("std");
 const builtin = @import("builtin");
+const sys = std.posix.system;
 
 /// Returns true if the tty at PATH is in canonical mode with echo
 /// disabled — the heuristic libghostty uses to decide that the
@@ -22,16 +23,19 @@ const builtin = @import("builtin");
 /// DCD.  Neither flag affects what `tcgetattr` reads.  `RDONLY` is
 /// sufficient — we never write to the slave; reducing the mode means
 /// a stray write through this fd can't garble the child's input.
-pub fn isPasswordMode(path: []const u8) bool {
+pub fn isPasswordMode(path: [*:0]const u8) bool {
     if (builtin.os.tag == .windows) return false;
 
-    const fd = std.posix.open(path, .{
+    const fd = sys.open(path, .{
         .ACCMODE = .RDONLY,
         .NOCTTY = true,
         .NONBLOCK = true,
-    }, 0) catch return false;
-    defer std.posix.close(fd);
+    });
+    if (sys.errno(fd) != .SUCCESS) return false;
+    defer _ = sys.close(fd);
 
-    const tio = std.posix.tcgetattr(fd) catch return false;
+    var tio: sys.termios = undefined;
+    const result = sys.tcgetattr(fd, &tio);
+    if (sys.errno(result) != .SUCCESS) return false;
     return tio.lflag.ICANON and !tio.lflag.ECHO;
 }

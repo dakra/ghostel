@@ -8,6 +8,7 @@ const backend_types = @import("backend_types.zig");
 const emacs = @import("emacs.zig");
 const GhostelHandler = @import("handler.zig").GhostelHandler;
 const FixedArrayList = @import("fixed_array_list.zig").FixedArrayList;
+const RecursiveMutex = @import("RecursiveMutex.zig");
 
 const Backend = switch (builtin.os.tag) {
     .windows => @import("ConPtyProcess.zig"),
@@ -18,23 +19,25 @@ const EventWriter = Backend.EventWriter;
 const Self = @This();
 
 const log = std.log.scoped(.NativeProcessHandler);
-const CANCELLATION_POLL_INTERVAL_MS = 20;
+const cancellation_poll_interval: std.Io.Duration = .fromMilliseconds(20);
 
 pub const ChannelFd = EventWriter.Fd;
 pub const ProcessParams = backend_types.ProcessParams;
 
-backend_handoff_mutex: std.Thread.Mutex = .{},
-write_mutex: std.Thread.Mutex = .{},
+alloc: Allocator,
+io: std.Io,
+
+backend_handoff_mutex: std.Io.Mutex = .init,
+write_mutex: std.Io.Mutex = .init,
 backend: ?Backend,
 event_writer: EventWriter,
-alloc: Allocator,
 pid: i64,
-replica_name: []u8,
+replica_name: [:0]u8,
 // Buffer event notifications so large terminal updates can be reported with
 // few writes to Emacs.
 event_buf: FixedArrayList(u8, 16 * 1024) = .{},
 
-term_mutex: std.Thread.Mutex.Recursive = .init,
+term_mutex: RecursiveMutex = .{},
 term: *gt.Terminal,
 stream: gt.Stream(GhostelHandler(*Self)),
 
@@ -44,9 +47,9 @@ thread: std.Thread,
 const LockedStream = struct {
     process: *Self,
 
-    pub fn nextSlice(self: *LockedStream, data: []const u8) void {
-        self.process.term_mutex.lock();
-        defer self.process.term_mutex.unlock();
+    pub fn nextSlice(self: *LockedStream, data: []const u8) !void {
+        try self.process.term_mutex.lock(self.process.io);
+        defer self.process.term_mutex.unlock(self.process.io);
         self.process.stream.nextSlice(data);
     }
 };
@@ -54,13 +57,14 @@ const LockedStream = struct {
 pub fn init(
     self: *Self,
     alloc: Allocator,
+    io: std.Io,
     initial_cols: u16,
     initial_rows: u16,
     params: ProcessParams,
     term: *gt.Terminal,
     event_fd: ChannelFd,
 ) !void {
-    var backend = try Backend.init(alloc, initial_cols, initial_rows, params);
+    var backend = try Backend.init(alloc, io, initial_cols, initial_rows, params);
     errdefer _ = backend.deinitAndWait();
 
     var event_writer = try EventWriter.init(event_fd);
@@ -69,13 +73,14 @@ pub fn init(
     var stream: @TypeOf(self.stream) = .initAlloc(alloc, .init(self, term));
     errdefer stream.deinit();
 
-    const replica_name = try alloc.dupe(u8, backend.replicaName());
+    const replica_name = try alloc.dupeZ(u8, backend.replicaName());
     errdefer alloc.free(replica_name);
 
     self.* = .{
+        .alloc = alloc,
+        .io = io,
         .backend = backend,
         .event_writer = event_writer,
-        .alloc = alloc,
         .pid = backend.pidValue(),
         .replica_name = replica_name,
         .term = term,
@@ -85,26 +90,26 @@ pub fn init(
     self.thread = try std.Thread.spawn(.{}, Self.run, .{self});
 }
 
-pub fn lockTerm(self: *Self) void {
-    self.term_mutex.lock();
+pub fn lockTerm(self: *Self) !void {
+    try self.term_mutex.lock(self.io);
 }
 
 pub fn unlockTerm(self: *Self) void {
-    self.term_mutex.unlock();
+    self.term_mutex.unlock(self.io);
 }
 
 pub fn ptyWrite(self: *Self, env: emacs.Env, data: []const u8) !void {
     while (!self.write_mutex.tryLock()) {
         try env.checkQuit();
-        std.Thread.sleep(CANCELLATION_POLL_INTERVAL_MS * std.time.ns_per_ms);
+        try std.Io.sleep(self.io, cancellation_poll_interval, std.Io.Clock.awake);
     }
-    defer self.write_mutex.unlock();
+    defer self.write_mutex.unlock(self.io);
 
     var cancellation_env = env;
     const cancellation = backend_types.CancellationToken{
         .context = &cancellation_env,
         .check_fn = checkEmacsQuit,
-        .poll_interval_ms = CANCELLATION_POLL_INTERVAL_MS,
+        .poll_interval = cancellation_poll_interval,
     };
 
     var offset: usize = 0;
@@ -125,8 +130,8 @@ pub fn ptyWriteFromTerminal(self: *Self, data: []const u8) void {
     // a blocked write through the backend's existing interrupt mechanism.
     const backend = if (self.backend) |*backend| backend else return;
 
-    self.write_mutex.lock();
-    defer self.write_mutex.unlock();
+    self.write_mutex.lock(self.io) catch return;
+    defer self.write_mutex.unlock(self.io);
 
     var offset: usize = 0;
     while (offset < data.len) {
@@ -147,8 +152,8 @@ fn ptyWriteBackend(
     data: []const u8,
     cancellation: ?backend_types.CancellationToken,
 ) !backend_types.WriteResult {
-    self.backend_handoff_mutex.lock();
-    defer self.backend_handoff_mutex.unlock();
+    try self.backend_handoff_mutex.lock(self.io);
+    defer self.backend_handoff_mutex.unlock(self.io);
 
     return if (self.backend) |*backend|
         backend.write(data, cancellation)
@@ -162,8 +167,8 @@ fn checkEmacsQuit(context: *const anyopaque) !void {
 }
 
 pub fn resizePty(self: *Self, cols: u16, rows: u16) !void {
-    self.backend_handoff_mutex.lock();
-    defer self.backend_handoff_mutex.unlock();
+    try self.backend_handoff_mutex.lock(self.io);
+    defer self.backend_handoff_mutex.unlock(self.io);
 
     if (self.backend) |*backend| try backend.resize(cols, rows);
 }
@@ -174,8 +179,8 @@ pub fn effect(self: *Self, comptime func: []const u8, args: anytype) void {
     };
 }
 
-pub fn replicaName(self: *Self) []const u8 {
-    return self.replica_name;
+pub fn replicaName(self: *Self) [*:0]const u8 {
+    return self.replica_name.ptr;
 }
 
 pub fn pidValue(self: *Self) i64 {
@@ -280,8 +285,8 @@ fn loopOnce(self: *Self) !bool {
 }
 
 fn retireBackend(self: *Self) ?Backend {
-    self.backend_handoff_mutex.lock();
-    defer self.backend_handoff_mutex.unlock();
+    self.backend_handoff_mutex.lockUncancelable(self.io);
+    defer self.backend_handoff_mutex.unlock(self.io);
 
     const backend = self.backend orelse return null;
     self.backend = null;
@@ -336,8 +341,8 @@ pub fn deinit(self: *Self) void {
     @atomicStore(bool, &self.quit, true, .monotonic);
 
     {
-        self.backend_handoff_mutex.lock();
-        defer self.backend_handoff_mutex.unlock();
+        self.backend_handoff_mutex.lockUncancelable(self.io);
+        defer self.backend_handoff_mutex.unlock(self.io);
         if (self.backend) |*backend| backend.requestStop(self.thread);
     }
 

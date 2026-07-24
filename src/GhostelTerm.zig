@@ -23,6 +23,7 @@ const pty_utils = @import("pty_utils.zig");
 const Self = @This();
 
 alloc: Allocator,
+io: std.Io,
 terminal: gt.Terminal,
 stream: gt.Stream(GhostelHandler(*Self)),
 string_buffer: ?[]u8 = null,
@@ -30,25 +31,24 @@ renderer: Renderer,
 process: ?*NativeProcess = null,
 
 /// Create a new terminal with the given dimensions and scrollback.
-pub fn init(alloc: Allocator, env: emacs.Env, cols: u16, rows: u16, max_scrollback: usize) !*Self {
-    if (cols == 0 or rows == 0) return error.InvalidSize;
+pub fn init(
+    alloc: Allocator,
+    io: std.Io,
+    env: emacs.Env,
+    opts_arg: gt.Terminal.Options,
+) !*Self {
+    if (opts_arg.cols == 0 or opts_arg.rows == 0) return error.InvalidSize;
 
-    const opts = gt.Terminal.Options{
-        .cols = cols,
-        .rows = rows,
-        .max_scrollback = max_scrollback,
-        // Enable grapheme clustering since that is how Emacs will render it anyway
-        .default_modes = .{
-            .grapheme_cluster = true,
-        },
-    };
+    var opts = opts_arg;
+    opts.default_modes = .{ .grapheme_cluster = true };
 
     const term = try alloc.create(Self);
     errdefer alloc.destroy(term);
 
     term.* = Self{
         .alloc = alloc,
-        .terminal = try .init(alloc, opts),
+        .io = io,
+        .terminal = try .init(io, alloc, opts),
         .renderer = undefined,
         .stream = undefined,
     };
@@ -77,7 +77,7 @@ pub fn deinit(self: *Self) void {
 }
 
 pub fn redraw(self: *Self, force_full: bool, force_sync: bool) !bool {
-    self.lockTerm();
+    try self.lockTerm();
     defer self.unlockTerm();
 
     const env = emacs.current_env orelse return false;
@@ -107,40 +107,8 @@ pub fn setColorPalette(self: *Self, palette: gt.color.Palette) void {
     self.terminal.flags.dirty.palette = true;
 }
 
-/// Enable kitty graphics protocol with the given storage limit (bytes).
-///
-/// `medium_file`/`medium_temp_file`/`medium_shared_mem` open additional
-/// image-loading paths beyond the default direct (base64-encoded inline)
-/// medium.  These extra mediums let a remote program instruct ghostel
-/// to read arbitrary local files or shared-memory regions, so leave
-/// them disabled unless the caller explicitly opts in.
-///
-/// Passing `&storage_limit_u64` and `&yes` (stack locals) is safe:
-/// libghostty's terminal_set dereferences the pointer and copies the
-/// value into the screen's image_limits before returning — it never
-/// retains the caller's pointer.  The header declares the storage
-/// limit as `uint64_t*`, so the local is widened to `u64` even when
-/// `usize` happens to be 64 bits on the host (the explicit cast keeps
-/// the ABI contract stable across 32-bit targets).
-pub fn enableKittyGraphics(
-    self: *Self,
-    storage_limit: usize,
-    medium_file: bool,
-    medium_temp_file: bool,
-    medium_shared_mem: bool,
-) !void {
-    var it = self.terminal.screens.all.iterator();
-    while (it.next()) |entry| {
-        const screen = entry.value.*;
-        try screen.kitty_images.setLimit(screen.alloc, screen, storage_limit);
-        screen.kitty_images.image_limits.file = medium_file;
-        screen.kitty_images.image_limits.temporary_file = medium_temp_file;
-        screen.kitty_images.image_limits.shared_memory = medium_shared_mem;
-    }
-}
-
-pub fn vtWrite(self: *Self, data: []const u8) void {
-    self.lockTerm();
+pub fn vtWrite(self: *Self, data: []const u8) !void {
+    try self.lockTerm();
     self.stream.nextSlice(data);
     self.unlockTerm();
 }
@@ -189,7 +157,7 @@ pub fn encode(
     }
 
     // Encode
-    var writer = std.io.Writer.fixed(buf);
+    var writer = std.Io.Writer.fixed(buf);
     try gt.input.encodeKey(&writer, event, options);
     const encoded = writer.buffered();
 
@@ -224,7 +192,7 @@ pub fn encodeMouse(
 
     // Encode
     var buf: [128]u8 = undefined;
-    var writer = std.io.Writer.fixed(&buf);
+    var writer = std.Io.Writer.fixed(&buf);
     try gt.input.encodeMouse(&writer, event, options);
     const encoded = writer.buffered();
 
@@ -236,7 +204,7 @@ pub fn encodeMouse(
 pub fn encodeFocus(self: *Self, gained: bool) !bool {
     const event = if (gained) gt.input.FocusEvent.gained else gt.input.FocusEvent.lost;
     var buf: [8]u8 = undefined;
-    var writer = std.io.Writer.fixed(&buf);
+    var writer = std.Io.Writer.fixed(&buf);
     gt.input.encodeFocus(&writer, event) catch return false;
     const encoded = writer.buffered();
     if (encoded.len == 0) return false;
@@ -263,13 +231,13 @@ pub fn encodePaste(self: *Self, data: []u8) !bool {
 /// to ensure that the we fully render the very latest state in case any rows
 /// get promoted to scrollback due to vertical shrinking of the viewport.
 pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u16, cell_h: u16) !void {
-    self.lockTerm();
+    try self.lockTerm();
     defer self.unlockTerm();
     try self.renderer.resize(cols, rows, cell_w, cell_h);
 }
 
-pub fn lockTerm(self: *Self) void {
-    if (self.process) |process| process.lockTerm();
+pub fn lockTerm(self: *Self) !void {
+    if (self.process) |process| try process.lockTerm();
 }
 
 pub fn unlockTerm(self: *Self) void {
@@ -279,7 +247,7 @@ pub fn unlockTerm(self: *Self) void {
 pub fn spawnNativeProcess(
     self: *Self,
     command: [][:0]const u8,
-    env: *const std.process.EnvMap,
+    env: *const std.process.Environ.Map,
     cwd: [:0]const u8,
     event_fd: ChannelFd,
 ) !ProcessPid {
@@ -289,6 +257,7 @@ pub fn spawnNativeProcess(
     errdefer self.alloc.destroy(process);
     try process.init(
         self.alloc,
+        self.io,
         self.terminal.cols,
         self.terminal.rows,
         ProcessParams{ .file = command[0], .args = command, .env = env, .cwd = cwd },
@@ -327,10 +296,15 @@ pub fn isPasswordMode(self: *Self) !bool {
 }
 
 var module_alloc: Allocator = undefined;
+var module_io: std.Io = undefined;
+var temp_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+var temp_dir: []const u8 = undefined;
 
-pub fn initModule(allocator: Allocator, env: emacs.Env) void {
+pub fn initModule(allocator: Allocator, io: std.Io, env: emacs.Env) !void {
     module_alloc = allocator;
+    module_io = io;
     env.registerFunctions(&emacs_functions);
+    temp_dir = try env.extractString(env.f("temporary-file-directory", .{}), &temp_dir_buf);
 }
 
 fn terminalFinalize(ptr: ?*anyopaque) callconv(.c) void {
@@ -340,8 +314,8 @@ fn terminalFinalize(ptr: ?*anyopaque) callconv(.c) void {
     }
 }
 
-fn getProcessEnvironment(alloc: Allocator, env: emacs.Env) !std.process.EnvMap {
-    var env_map = std.process.EnvMap.init(alloc);
+fn getProcessEnvironment(alloc: Allocator, env: emacs.Env) !std.process.Environ.Map {
+    var env_map: std.process.Environ.Map = .init(alloc);
     errdefer env_map.deinit();
 
     var display_explicit = false;
@@ -358,7 +332,7 @@ fn getProcessEnvironment(alloc: Allocator, env: emacs.Env) !std.process.EnvMap {
         if (value) |v| {
             try env_map.put(key, v);
         } else {
-            env_map.remove(key);
+            _ = env_map.swapRemove(key);
         }
     }
 
@@ -398,27 +372,6 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         ,
         .impl = struct {
             pub fn call(env: emacs.Env, nargs: isize, args: [*c]emacs.Value) !emacs.Value {
-                // Reject out-of-range row/col counts rather than wrapping/panicking.
-                const rows = std.math.cast(u16, env.cast(i64, args[0])) orelse {
-                    return error.OutOfRange;
-                };
-                const cols = std.math.cast(u16, env.cast(i64, args[1])) orelse {
-                    return error.OutOfRange;
-                };
-                const max_scrollback: usize = if (nargs > 2 and env.isNotNil(args[2]))
-                    (std.math.cast(usize, env.cast(i64, args[2])) orelse {
-                        return error.OutOfRange;
-                    })
-                else
-                    5 * 1024 * 1024; // ~5 MB, roughly 5k rows on an 80-column terminal
-                // Default 320 MiB; explicit 0 disables kitty graphics entirely
-                // (skips the storage allocation in libghostty's screen state).
-                const kitty_storage_limit: usize = if (nargs > 3 and env.isNotNil(args[3]))
-                    (std.math.cast(usize, env.cast(i64, args[3])) orelse {
-                        return error.OutOfRange;
-                    })
-                else
-                    320 * 1024 * 1024;
                 // Bit 0 = file medium, bit 1 = temp_file, bit 2 = shared_mem.
                 // Default 0 — only the direct medium (base64 inline) is enabled.
                 // The other mediums let a remote program instruct ghostel to read
@@ -427,22 +380,49 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     (std.math.cast(u32, env.cast(i64, args[4])) orelse 0)
                 else
                     0;
-                const term = try init(module_alloc, env, cols, rows, max_scrollback);
+
+                const opts: gt.Terminal.Options = .{
+                    .rows = std.math.cast(u16, env.cast(i64, args[0])) orelse {
+                        return error.OutOfRange;
+                    },
+
+                    .cols = std.math.cast(u16, env.cast(i64, args[1])) orelse {
+                        return error.OutOfRange;
+                    },
+
+                    .max_scrollback = if (nargs > 2 and env.isNotNil(args[2]))
+                        (std.math.cast(usize, env.cast(i64, args[2])) orelse {
+                            return error.OutOfRange;
+                        })
+                    else
+                        5 * 1024 * 1024,
+
+                    .kitty_image_storage_limit = if (nargs > 3 and env.isNotNil(args[3]))
+                        (std.math.cast(usize, env.cast(i64, args[3])) orelse {
+                            return error.OutOfRange;
+                        })
+                    else
+                        320 * 1024 * 1024,
+
+                    .kitty_image_loading_limits = .{
+                        .file = (kitty_mediums & 0x1) != 0,
+                        .temporary_file = if ((kitty_mediums & 0x2) != 0)
+                            .{ .enabled = .{ .directory = temp_dir } }
+                        else
+                            .disabled,
+
+                        .shared_memory = (kitty_mediums & 0x4) != 0,
+                    },
+                };
+
+                const term = try init(module_alloc, module_io, env, opts);
                 errdefer term.deinit();
                 // Seed protocol defaults for OSC 10/11.  The renderer does
                 // not paint these as cell faces; default text inherits the
                 // buffer's `ghostel-default' remap instead.
                 term.terminal.colors.foreground.default = .{ .r = 204, .g = 204, .b = 204 };
                 term.terminal.colors.background.default = .{ .r = 0, .g = 0, .b = 0 };
-                // Enable kitty graphics protocol if storage limit > 0.
-                if (kitty_storage_limit > 0) {
-                    try term.enableKittyGraphics(
-                        kitty_storage_limit,
-                        (kitty_mediums & 0x1) != 0,
-                        (kitty_mediums & 0x2) != 0,
-                        (kitty_mediums & 0x4) != 0,
-                    );
-                }
+
                 return env.makeUserPtr(terminalFinalize, term);
             }
         },
@@ -459,7 +439,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
                 const raw = try env.extractStringAlloc(module_alloc, args[1], &term.string_buffer);
-                term.vtWrite(raw);
+                try term.vtWrite(raw);
                 return env.nil();
             }
         },
@@ -649,7 +629,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 var str_buf: [2048]u8 = undefined;
                 const colors_str = try env.extractString(args[1], &str_buf);
                 if (colors_str.len < 16 * 7) return error.InvalidPaletteLength;
-                term.lockTerm();
+                try term.lockTerm();
                 defer term.unlockTerm();
                 var palette = term.terminal.colors.palette.current;
                 var idx: usize = 0;
@@ -681,7 +661,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 var bg_buf: [16]u8 = undefined;
                 const fg_str = try env.extractString(args[1], &fg_buf);
                 const bg_str = try env.extractString(args[2], &bg_buf);
-                term.lockTerm();
+                try term.lockTerm();
                 defer term.unlockTerm();
                 term.terminal.colors.foreground.default = try gt.color.RGB.parse(fg_str);
                 term.terminal.colors.background.default = try gt.color.RGB.parse(bg_str);
@@ -731,10 +711,10 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 const mode_int = std.math.cast(u16, raw_int) orelse {
                     return error.InvalidModeValue;
                 };
-                const mode = std.meta.intToEnum(gt.modes.Mode, mode_int) catch {
+                const mode: gt.modes.Mode = gt.modes.modeFromInt(mode_int, false) orelse {
                     return error.InvalidModeValue;
                 };
-                term.lockTerm();
+                try term.lockTerm();
                 defer term.unlockTerm();
                 return if (term.terminal.modes.get(mode)) env.t() else env.nil();
             }
@@ -751,7 +731,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .impl = struct {
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
-                term.lockTerm();
+                try term.lockTerm();
                 defer term.unlockTerm();
                 return if (term.terminal.screens.active_key == .alternate) env.t() else env.nil();
             }
@@ -773,10 +753,10 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     .unwrap = true,
                     .trim = true,
                 };
-                term.lockTerm();
+                try term.lockTerm();
                 defer term.unlockTerm();
                 var formatter = gt.formatter.TerminalFormatter.init(&term.terminal, options);
-                var writer = std.io.Writer.Allocating.init(module_alloc);
+                var writer = std.Io.Writer.Allocating.init(module_alloc);
                 defer writer.deinit();
                 try formatter.format(&writer.writer);
                 const written = writer.written();
