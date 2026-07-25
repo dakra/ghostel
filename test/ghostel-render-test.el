@@ -944,7 +944,7 @@ scrolling libghostty's viewport."
           (ghostel-clear)
           ;; Simulate what delayed-redraw does after `ghostel-clear' invalidates.
           (let ((inhibit-read-only t))
-            (ghostel--redraw ghostel--term t))
+            (ghostel-test--redraw ghostel--term t))
           ;; Scrollback rows live in the buffer above the cleared
           ;; viewport — search for any clear-test output to confirm.
           (let ((content (buffer-substring-no-properties (point-min) (point-max))))
@@ -963,14 +963,14 @@ scrolling libghostty's viewport."
             ;; Fill screen + scrollback with 10 lines
             (dotimes (i 10)
               (ghostel--write-vt ghostel--term (format "line %d\r\n" i)))
-            (ghostel--redraw ghostel--term t)
+            (ghostel-test--redraw ghostel--term t)
             ;; Verify lines materialized in the buffer
             (let ((content (buffer-substring-no-properties (point-min) (point-max))))
               (should (string-match-p "line 0" content))
               (should (string-match-p "line 9" content)))
             ;; Clear scrollback (sends CSI 3J to libghostty)
             (ghostel-clear-scrollback)
-            (ghostel--redraw ghostel--term t)
+            (ghostel-test--redraw ghostel--term t)
             ;; Screen and scrollback should be empty
             (let ((content (buffer-substring-no-properties (point-min) (point-max))))
               (should-not (string-match-p "line [0-9]" content)))))
@@ -1745,7 +1745,7 @@ app redraws all rows at new width via the filter pipeline."
                   (dotimes (i 6)
                     (ghostel--write-vt ghostel--term
                                        (format "\e[%d;1H%-80s" (1+ i) (format "WIDE-R%02d" i))))
-                  (ghostel--redraw ghostel--term t)
+                  (ghostel-test--redraw ghostel--term t)
                   (let ((c (buffer-substring-no-properties (point-min) (point-max))))
                     (should (string-match-p "WIDE-R00" c))
                     ;; Row 1 is at most `cols' chars wide after the
@@ -1811,14 +1811,14 @@ rendered by `ghostel--redraw-now'.  This is the exact real-world path."
                   (dotimes (i 10)
                     (ghostel--write-vt ghostel--term
                                        (format "\e[%d;1H%-40s" (1+ i) (format "OLD-%02d" i))))
-                  (ghostel--redraw ghostel--term t)
+                  (ghostel-test--redraw ghostel--term t)
                   (should (string-match-p "OLD-00"
                                           (buffer-substring-no-properties (point-min) (point-max))))
 
                   ;; Resize (as our resize function does).
                   (ghostel--set-size ghostel--term 6 40)
                   (set-process-window-size proc 6 40)
-                  (ghostel--redraw ghostel--term t)
+                  (ghostel-test--redraw ghostel--term t)
                   (setq ghostel--force-next-redraw t)
 
                   ;; Simulate app's SIGWINCH response arriving through the filter.

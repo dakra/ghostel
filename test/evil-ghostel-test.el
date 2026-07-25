@@ -20,7 +20,8 @@
 
 (defun evil-ghostel-test--insert (&rest args)
   "Insert ARGS as renderer-owned test setup text."
-  (let ((inhibit-read-only t))
+  (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t))
     (apply #'insert args)))
 
 (defun evil-ghostel-test--live-process ()
@@ -49,7 +50,8 @@ Requires the native module; without it the test is skipped
                (ghostel--write-vt term ,text)
                (evil-local-mode 1)
                (evil-ghostel-mode 1)
-               (let ((inhibit-read-only t))
+               (let ((inhibit-read-only t)
+                     (inhibit-modification-hooks t))
 				 (ghostel--redraw term t))
                (cl-macrolet ((insert (&rest args)
                                `(evil-ghostel-test--insert ,@args)))
@@ -258,7 +260,8 @@ The mock erases and reinserts the same text so these tests exercise
   `(cl-letf (((symbol-function 'ghostel--redraw)
               (lambda (_term &optional _full _force-sync)
                 (let ((text (buffer-string))
-                      (inhibit-read-only t))
+                      (inhibit-read-only t)
+                      (inhibit-modification-hooks t))
                   (erase-buffer)
                   (insert text)
                   t)))
@@ -407,7 +410,8 @@ advice must not restore point or visual markers there."
    (cl-letf (((symbol-function 'ghostel--redraw)
               (lambda (_term &optional _full _force-sync)
                 (let ((text (buffer-string))
-                      (inhibit-read-only t))
+                      (inhibit-read-only t)
+                      (inhibit-modification-hooks t))
                   (erase-buffer)
                   (insert text)
                   (goto-char (point-min))
@@ -542,7 +546,8 @@ point in the scrollback region instead of the visible viewport."
    (dotimes (i 12)
      (ghostel--write-vt term (format "row-%02d\r\n" i)))
    (ghostel--write-vt term "last-11")
-   (let ((inhibit-read-only t))
+   (let ((inhibit-read-only t)
+         (inhibit-modification-hooks t))
      (ghostel--redraw term t))
    ;; Walk point back into the scrollback region.
    (goto-char (point-min))
@@ -671,7 +676,8 @@ diffing — otherwise dy is wrong by the scrollback line count."
       (ghostel--write-vt term "tail")
       (evil-local-mode 1)
       (evil-ghostel-mode 1)
-      (let ((inhibit-read-only t))
+      (let ((inhibit-read-only t)
+            (inhibit-modification-hooks t))
         (ghostel--redraw term t))
       ;; Terminal cursor is on the last viewport row; target a
       ;; buffer position on the previous viewport row, same column.
@@ -712,7 +718,8 @@ cursor only while parked exactly on it (and in insert / emacs state)."
                                   (should (= 3 (current-column)))
                                   (should (= 1 (line-number-at-pos)))
                                   ;; Redraw — should NOT move point back to terminal cursor
-                                  (let ((inhibit-read-only t))
+                                  (let ((inhibit-read-only t)
+                                        (inhibit-modification-hooks t))
                                     (ghostel--redraw term t))
                                   (should (= 3 (current-column)))
                                     (should (= 1 (line-number-at-pos))))))
@@ -724,7 +731,8 @@ The whole burst lands in a single redraw, like fast un-throttled output."
   (dotimes (i 8)
     (ghostel--write-vt term (format "out-%d\r\n" i)))
   (ghostel--write-vt term "$ ")
-  (let ((inhibit-read-only t))
+  (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t))
     (ghostel--redraw term nil)))
 
 (ert-deftest evil-ghostel-test-redraw-tracks-cursor-when-parked ()
@@ -775,7 +783,8 @@ column on the row where the cursor lands."
                                   ;; Move point away from terminal cursor
                                   (goto-char (point-min))
                                   ;; Redraw — should snap point to terminal cursor (col 11)
-                                  (let ((inhibit-read-only t))
+                                  (let ((inhibit-read-only t)
+                                        (inhibit-modification-hooks t))
                                     (ghostel--redraw term t))
                                   (should (= 11 (current-column)))))
 
@@ -790,7 +799,8 @@ redrawing elsewhere."
                                   ;; Move point away from terminal cursor
                                   (goto-char (point-min))
                                   ;; Redraw — should snap point to terminal cursor (col 11)
-                                  (let ((inhibit-read-only t))
+                                  (let ((inhibit-read-only t)
+                                        (inhibit-modification-hooks t))
                                     (ghostel--redraw term t))
                                   (should (= 11 (current-column)))))
 
@@ -2142,7 +2152,8 @@ sticks."
                                   (should (= 0 (current-column)))
                                   (should (= 1 (line-number-at-pos)))
                                   ;; Redraw without growing scrollback (single-line update).
-                                  (let ((inhibit-read-only t))
+                                  (let ((inhibit-read-only t)
+                                        (inhibit-modification-hooks t))
                                     (ghostel--redraw term nil))
                                   ;; Point stays where the user navigated.
                                   (should (= 0 (current-column)))
@@ -2504,7 +2515,8 @@ end (else `D'/`C'/`$' under-act)."
 (ert-deftest evil-ghostel-test-clamp-trims-end-past-input ()
   "`evil-ghostel--clamp' lowers END to the end of typed input."
   (evil-ghostel-test--with-input-fixture "$ " "hello"
-    (let ((inhibit-read-only t))
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
       (save-excursion (insert "   ")))  ; renderer padding past the cursor
     (let ((clamped (evil-ghostel--clamp 3 (+ ghostel--cursor-char-pos 3))))
       (should (= 3 (car clamped)))
@@ -2563,7 +2575,8 @@ does not push BEG up to the cursor and collapse the range."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (insert "$ command")
-   (let ((inhibit-read-only t))
+   (let ((inhibit-read-only t)
+         (inhibit-modification-hooks t))
      (put-text-property 1 3 'ghostel-prompt t))
    (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
      (evil-normal-state)

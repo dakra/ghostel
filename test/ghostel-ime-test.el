@@ -67,6 +67,8 @@ The buffer must not be redrawn while a feature inhibits it."
       (should (eq input-method-function #'ghostel-ime--wrap-input-method))
       (should (memq #'ghostel-ime-lisp-composing-p
                     ghostel-inhibit-redraw-functions))
+      (should (memq #'ghostel-ime-lisp-composing-p
+                    ghostel-inhibit-input-forwarding-functions))
       (should (memq #'ghostel-ime--install input-method-activate-hook))
       (should (memq #'ghostel-ime--uninstall input-method-deactivate-hook))
       (should (memq #'ghostel-ime--reassert post-command-hook))
@@ -76,6 +78,8 @@ The buffer must not be redrawn while a feature inhibits it."
       (should (null ghostel-ime--original-input-method-function))
       (should-not (memq #'ghostel-ime-lisp-composing-p
                         ghostel-inhibit-redraw-functions))
+      (should-not (memq #'ghostel-ime-lisp-composing-p
+                        ghostel-inhibit-input-forwarding-functions))
       (should-not (memq #'ghostel-ime--reassert post-command-hook)))))
 
 (ert-deftest ghostel-test-ime-reasserts-wrapper-after-external-reset ()

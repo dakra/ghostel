@@ -23,22 +23,26 @@
 
 ;;; Commentary:
 
-;; Optional integration for Emacs Lisp input methods that commit text by
-;; inserting into the current buffer.  `hangul-input-method' is the common
+;; Optional integration for Emacs Lisp input methods that compose and commit
+;; text by editing the current buffer.  `hangul-input-method' is the common
 ;; example: it calls `self-insert-command' directly for the composed syllable,
 ;; bypassing ghostel's key remapping, so the commit lands in the buffer but is
-;; not sent to the PTY.
+;; not sent to the PTY.  Quail-based methods (Japanese, Chinese, ...) use the
+;; buffer for their in-flight preedit the same way, so enable this mode for
+;; any Emacs Lisp input method used in ghostel buffers.
 ;;
 ;; `ghostel-ime-mode' wraps the buffer-local `input-method-function'.  If the
 ;; input method inserts committed text into the ghostel buffer, the wrapper
 ;; captures that text, deletes the local insert, and forwards the UTF-8 bytes to
 ;; the PTY.  The shell then echoes the text through ghostel's normal redraw path.
 ;;
-;; During an in-flight Lisp IME composition, the mode also asks core ghostel to
-;; defer redraws via `ghostel-inhibit-redraw-functions'.  This keeps the native
-;; redrawer from rewriting the buffer while Quail-style overlays use it as
-;; scratch state.  GUI preedit overlays are left to ghostel.el's native preedit
-;; preservation path.
+;; During an in-flight Lisp IME composition, the mode also stands down insert
+;; forwarding via `ghostel-inhibit-input-forwarding-functions' and asks core
+;; ghostel to defer redraws via `ghostel-inhibit-redraw-functions'.  This keeps
+;; composition edits from being forwarded to the PTY as foreign inserts and the
+;; native redrawer from rewriting the buffer while Quail-style overlays use it
+;; as scratch state.  GUI preedit overlays are left to ghostel.el's native
+;; preedit preservation path.
 
 ;;; Code:
 
@@ -151,8 +155,10 @@ wrapper is back in place before the next key is read."
   "Toggle Emacs Lisp input-method integration in this ghostel buffer.
 
 When enabled, ghostel forwards committed text from Lisp input methods
-that insert directly into the buffer, and defers redraws while a
-Quail-style composition is in flight.  A typical setup is:
+that insert directly into the buffer, and defers redraws and insert
+forwarding while a composition is in flight.  Enable it for any Emacs
+Lisp input method (Hangul, Quail-based Japanese/Chinese, ...).  A
+typical setup is:
 
   (add-hook \='ghostel-mode-hook #\='ghostel-ime-mode)"
   :lighter nil
@@ -162,11 +168,15 @@ Quail-style composition is in flight.  A typical setup is:
         (add-hook 'input-method-deactivate-hook #'ghostel-ime--uninstall nil t)
         (add-hook 'ghostel-inhibit-redraw-functions
                   #'ghostel-ime-lisp-composing-p nil t)
+        (add-hook 'ghostel-inhibit-input-forwarding-functions
+                  #'ghostel-ime-lisp-composing-p nil t)
         (add-hook 'post-command-hook #'ghostel-ime--reassert 90 t)
         (ghostel-ime--install))
     (remove-hook 'input-method-activate-hook #'ghostel-ime--install t)
     (remove-hook 'input-method-deactivate-hook #'ghostel-ime--uninstall t)
     (remove-hook 'ghostel-inhibit-redraw-functions
+                 #'ghostel-ime-lisp-composing-p t)
+    (remove-hook 'ghostel-inhibit-input-forwarding-functions
                  #'ghostel-ime-lisp-composing-p t)
     (remove-hook 'post-command-hook #'ghostel-ime--reassert t)
     (ghostel-ime--uninstall)))

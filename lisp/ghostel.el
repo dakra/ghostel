@@ -344,6 +344,14 @@ buffer during transient states such as Emacs Lisp input-method
 composition."
   :type 'hook)
 
+(defcustom ghostel-inhibit-input-forwarding-functions nil
+  "Abnormal hook to veto forwarding a foreign buffer edit to the PTY.
+Each function is called with no arguments, the ghostel buffer
+current.  A non-nil return leaves the edit alone.  Add-on features
+use this to protect their own buffer insertions, e.g. `ghostel-ime'
+during an Emacs Lisp input-method composition."
+  :type 'hook)
+
 (defcustom ghostel-inhibit-anchor-functions nil
   "Abnormal hook to veto per-window anchoring after a redraw.
 Each function is called with (WINDOW FORCE), WINDOW's buffer current.
@@ -978,7 +986,8 @@ Matches Ghostty 1.2.0's `bold-color' configuration."
            (with-current-buffer buf
              (when (and (derived-mode-p 'ghostel-mode) ghostel--term)
                (ghostel--apply-bold-config ghostel--term)
-               (let ((inhibit-read-only t))
+               (let ((inhibit-read-only t)
+                     (inhibit-modification-hooks t))
                  (ghostel--redraw ghostel--term t t))
                (ghostel--apply-cursor-style))))))
 
@@ -1678,6 +1687,54 @@ Detect that case via `this-command-keys-vector' and re-inject meta."
                    mods ",")))
     (when key-name
       (ghostel--send-encoded key-name mod-str))))
+
+
+;;; Programmatic insert forwarding
+
+(defvar-local ghostel--inhibit-insert-forwarding nil
+  "Non-nil disables insert forwarding (e.g. compilation-style runs).")
+
+(defsubst ghostel--insert-forwarding-live-p ()
+  "Non-nil in a terminal-input mode with a live process and forwarding on."
+  (and (not ghostel--inhibit-insert-forwarding)
+       (ghostel--terminal-input-mode-p)
+       ghostel--term
+       (process-live-p ghostel--process)))
+
+(defun ghostel--forward-inserts-p ()
+  "Non-nil when foreign buffer edits should be intercepted."
+  (and (ghostel--insert-forwarding-live-p)
+       (not (run-hook-with-args-until-success
+             'ghostel-inhibit-input-forwarding-functions))))
+
+(defun ghostel--forward-inserts-after-change (beg end old-len)
+  "Forward a foreign insertion BEG..END to the PTY and remove it from the buffer.
+Text containing a line break is sent as a bracketed paste.  An edit that removed
+renderer-owned text (OLD-LEN non-zero) is instead repaired by a full redraw
+restoring the terminal contents, with point realigned to the VT cursor."
+  (when (ghostel--forward-inserts-p)
+    (if (> old-len 0)
+        (progn
+          (ghostel--redraw ghostel--term t t)
+          ;; The reverted edit must not move point either; realign it.
+          (when ghostel--cursor-char-pos
+            (goto-char ghostel--cursor-char-pos)))
+      (when (> end beg)
+        (let ((text (buffer-substring-no-properties beg end)))
+          (delete-region beg end)
+          (ghostel--on-user-input)
+          (if (string-match-p "[\n\r]" text)
+              (ghostel--paste-text text)
+            (ghostel--send-string (encode-coding-string text 'utf-8))))))))
+
+(defun ghostel--sync-inhibit-read-only ()
+  "Set buffer-local `inhibit-read-only' from the terminal state.
+Non-nil in terminal-input modes with a live process, so
+`(interactive \"*\")' commands run and the after-change hook
+forwards their insertions while `buffer-read-only' stays non-nil;
+nil restores the plain read-only barrier."
+  (setq-local inhibit-read-only
+              (and (ghostel--insert-forwarding-live-p) t)))
 
 
 ;;; Public input API
@@ -2389,6 +2446,7 @@ Most keys are sent to the terminal; keys in
       ('line  (ghostel--line-mode-teardown)))
     (setq ghostel--char-mode-override-active nil)
     (setq ghostel--input-mode 'semi-char)
+    (ghostel--sync-inhibit-read-only)
     (use-local-map ghostel-semi-char-mode-map)
     (setq ghostel--mode-line-tag nil)
     (ghostel--mode-line-refresh)
@@ -2417,6 +2475,7 @@ Even keys listed in `ghostel-keymap-exceptions' (\\`C-c', \\`C-x',
       ('emacs (ghostel--leave-readonly-state))
       ('line  (ghostel--line-mode-teardown)))
     (setq ghostel--input-mode 'char)
+    (ghostel--sync-inhibit-read-only)
     ;; Route char mode through `emulation-mode-map-alists' so it
     ;; overrides minor-mode keymaps (without this, a minor mode that
     ;; binds a prefix like \\`C-c' would steal those keys before
@@ -2484,6 +2543,7 @@ a non-read-only mode."
       (when ghostel--term
         (ghostel--invalidate)))
     (setq ghostel--input-mode mode)
+    (ghostel--sync-inhibit-read-only)
     (use-local-map (ghostel--readonly-keymap))
     (setq ghostel--mode-line-tag (ghostel--mode-line-tag-make mode label))
     (ghostel--mode-line-refresh)
@@ -3838,6 +3898,8 @@ EVENT is the state-change description passed by Emacs."
         (remove-hook 'pre-redisplay-functions #'ghostel--fake-cursor-update t)
         (ghostel--fake-cursor-clear)
         (run-hook-with-args 'ghostel-exit-functions buf event)
+        ;; Dead terminal: restore the plain read-only barrier.
+        (ghostel--sync-inhibit-read-only)
         (if ghostel-kill-buffer-on-exit
             (kill-buffer buf)
           (let ((inhibit-read-only t))
@@ -4354,7 +4416,9 @@ TRAMP can manage the remote shell."
                     (ghostel--spawn-via-emacs program program-args remote-p))))
     (when (processp process)
       (process-put process 'adjust-window-size-function #'ignore))
-    (setq ghostel--process process)))
+    (setq ghostel--process process)
+    (ghostel--sync-inhibit-read-only)
+    process))
 
 (defun ghostel--spawn-via-emacs (program program-args &optional remote-p)
   "Spawn PROGRAM with PROGRAM-ARGS through Emacs process machinery.
@@ -5093,6 +5157,12 @@ may change freely (`ghostel-compile' finalize relies on this)."
   ;; The terminal renderer owns the buffer contents.  User-editable
   ;; modes are exceptional and must opt in explicitly.
   (setq buffer-read-only t)
+  ;; Terminal-input modes forward foreign insertions to the PTY and
+  ;; repair foreign deletions; see `ghostel--sync-inhibit-read-only'.
+  ;; Depth 90 so other hook members still see an insertion before the
+  ;; forwarding removes it.
+  (add-hook 'after-change-functions
+            #'ghostel--forward-inserts-after-change 90 t)
   (setq-local scroll-margin 0)
   (setq-local auto-hscroll-mode nil)
   (setq-local hscroll-margin 0)

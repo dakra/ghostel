@@ -696,8 +696,7 @@ below it."
 									 ;; scrollback.
 									 (ghostel-test--wait-until
 									  (lambda ()
-									    (let ((inhibit-read-only t))
-									      (ghostel--redraw ghostel--term t))
+									    (ghostel-test--redraw ghostel--term t)
 									    (let ((pos ghostel--cursor-pos)
 										  (vp-start (ghostel--viewport-start)))
 									      (and pos vp-start
@@ -789,8 +788,7 @@ checks that the most recent prompt's `top-line' row carries the
 											    (ghostel-test--rendered-terminal-text)))
 									  proc 15)
 									 (sleep-for 0.2)
-									 (let ((inhibit-read-only t))
-									   (ghostel--redraw ghostel--term t))
+									 (ghostel-test--redraw ghostel--term t)
 									 ;; After the rearrange settles, the WRAP fires INLINE with
 									 ;; PROMPT expansion (cycle 2+) — so 133;A fires before the
 									 ;; prompt content is drawn.  libghostty sets `.prompt'

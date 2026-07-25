@@ -108,7 +108,8 @@ Replace comint's built-in `ansi-color-process-output` with Ghostel's VT parser.
   :hook (after-init . ghostel-comint-global-mode))
 ```
 
-If you use an Emacs Lisp input method (e.g. Korean Hangul), add Ghostel support:
+If you use an Emacs Lisp input method (Korean Hangul, Japanese, Chinese, or any
+other Quail-based method), add Ghostel support:
 ```emacs-lisp
 (use-package ghostel-ime
   :hook (ghostel-mode . ghostel-ime-mode))
