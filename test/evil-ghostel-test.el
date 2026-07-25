@@ -20,7 +20,8 @@
 
 (defun evil-ghostel-test--insert (&rest args)
   "Insert ARGS as renderer-owned test setup text."
-  (let ((inhibit-read-only t))
+  (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t))
     (apply #'insert args)))
 
 (defun evil-ghostel-test--live-process ()
@@ -49,7 +50,8 @@ Requires the native module; without it the test is skipped
                (ghostel--write-vt term ,text)
                (evil-local-mode 1)
                (evil-ghostel-mode 1)
-               (let ((inhibit-read-only t))
+               (let ((inhibit-read-only t)
+                     (inhibit-modification-hooks t))
 				 (ghostel--redraw term t))
                (cl-macrolet ((insert (&rest args)
                                `(evil-ghostel-test--insert ,@args)))
@@ -258,7 +260,8 @@ The mock erases and reinserts the same text so these tests exercise
   `(cl-letf (((symbol-function 'ghostel--redraw)
               (lambda (_term &optional _full _force-sync)
                 (let ((text (buffer-string))
-                      (inhibit-read-only t))
+                      (inhibit-read-only t)
+                      (inhibit-modification-hooks t))
                   (erase-buffer)
                   (insert text)
                   t)))
@@ -407,7 +410,8 @@ advice must not restore point or visual markers there."
    (cl-letf (((symbol-function 'ghostel--redraw)
               (lambda (_term &optional _full _force-sync)
                 (let ((text (buffer-string))
-                      (inhibit-read-only t))
+                      (inhibit-read-only t)
+                      (inhibit-modification-hooks t))
                   (erase-buffer)
                   (insert text)
                   (goto-char (point-min))
@@ -435,7 +439,8 @@ it still snaps point to the cursor."
             (let ((rows (max 1 (window-body-height))))
               (setq-local ghostel--term 'fake
                           ghostel--term-rows rows)
-              (let ((inhibit-read-only t))
+              (let ((inhibit-read-only t)
+                    (inhibit-modification-hooks t))
                 (dotimes (i (+ rows 20))
                   (insert (format "row-%02d\n" i)))
                 (insert "$ ")))
@@ -542,7 +547,8 @@ point in the scrollback region instead of the visible viewport."
    (dotimes (i 12)
      (ghostel--write-vt term (format "row-%02d\r\n" i)))
    (ghostel--write-vt term "last-11")
-   (let ((inhibit-read-only t))
+   (let ((inhibit-read-only t)
+         (inhibit-modification-hooks t))
      (ghostel--redraw term t))
    ;; Walk point back into the scrollback region.
    (goto-char (point-min))
@@ -671,7 +677,8 @@ diffing — otherwise dy is wrong by the scrollback line count."
       (ghostel--write-vt term "tail")
       (evil-local-mode 1)
       (evil-ghostel-mode 1)
-      (let ((inhibit-read-only t))
+      (let ((inhibit-read-only t)
+            (inhibit-modification-hooks t))
         (ghostel--redraw term t))
       ;; Terminal cursor is on the last viewport row; target a
       ;; buffer position on the previous viewport row, same column.
@@ -712,7 +719,8 @@ cursor only while parked exactly on it (and in insert / emacs state)."
                                   (should (= 3 (current-column)))
                                   (should (= 1 (line-number-at-pos)))
                                   ;; Redraw — should NOT move point back to terminal cursor
-                                  (let ((inhibit-read-only t))
+                                  (let ((inhibit-read-only t)
+                                        (inhibit-modification-hooks t))
                                     (ghostel--redraw term t))
                                   (should (= 3 (current-column)))
                                     (should (= 1 (line-number-at-pos))))))
@@ -724,7 +732,8 @@ The whole burst lands in a single redraw, like fast un-throttled output."
   (dotimes (i 8)
     (ghostel--write-vt term (format "out-%d\r\n" i)))
   (ghostel--write-vt term "$ ")
-  (let ((inhibit-read-only t))
+  (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t))
     (ghostel--redraw term nil)))
 
 (ert-deftest evil-ghostel-test-redraw-tracks-cursor-when-parked ()
@@ -775,7 +784,8 @@ column on the row where the cursor lands."
                                   ;; Move point away from terminal cursor
                                   (goto-char (point-min))
                                   ;; Redraw — should snap point to terminal cursor (col 11)
-                                  (let ((inhibit-read-only t))
+                                  (let ((inhibit-read-only t)
+                                        (inhibit-modification-hooks t))
                                     (ghostel--redraw term t))
                                   (should (= 11 (current-column)))))
 
@@ -790,7 +800,8 @@ redrawing elsewhere."
                                   ;; Move point away from terminal cursor
                                   (goto-char (point-min))
                                   ;; Redraw — should snap point to terminal cursor (col 11)
-                                  (let ((inhibit-read-only t))
+                                  (let ((inhibit-read-only t)
+                                        (inhibit-modification-hooks t))
                                     (ghostel--redraw term t))
                                   (should (= 11 (current-column)))))
 
@@ -882,7 +893,8 @@ stays on `d'.  The guard skips the +1 step when point is at or past
    ;; Simulate RPROMPT padding: typed "word" + 10 padding cells +
    ;; faux right-prompt content.  Terminal cursor sits at the end of
    ;; the typed input (pos 5), not at end of line.
-   (let ((inhibit-read-only t))
+   (let ((inhibit-read-only t)
+         (inhibit-modification-hooks t))
      (insert "word")
      (insert (make-string 10 ?\s))
      (insert "rprompt"))
@@ -1108,7 +1120,8 @@ without a real native module."
      (unwind-protect
          (with-current-buffer buf
            (ghostel-mode)
-           (let ((inhibit-read-only t))
+           (let ((inhibit-read-only t)
+                 (inhibit-modification-hooks t))
              (insert (propertize ,prompt 'ghostel-prompt t))
              (insert ,input))
            (setq ghostel--term 'fake)
@@ -1158,7 +1171,8 @@ on and the terminal mocked."
      (unwind-protect
          (with-current-buffer buf
            (ghostel-mode)
-           (let ((inhibit-read-only t))
+           (let ((inhibit-read-only t)
+                 (inhibit-modification-hooks t))
              (insert (propertize ,prompt 'ghostel-prompt t))
              (insert (propertize ,typed 'ghostel-input t))
              (setq ghostel--cursor-char-pos (point))
@@ -1333,7 +1347,8 @@ equals the typed input length (5 for `hello'); no readline C-e/C-u
 shortcut is invoked."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
-   (let ((inhibit-read-only t))
+   (let ((inhibit-read-only t)
+         (inhibit-modification-hooks t))
      (insert (propertize "$ " 'ghostel-prompt t))
      (insert "hello"))
    (setq-local ghostel--cursor-pos '(7 . 0))
@@ -1358,7 +1373,8 @@ shortcut is invoked."
 then enters insert state.  Same vterm-style shape as `dd'."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
-   (let ((inhibit-read-only t))
+   (let ((inhibit-read-only t)
+         (inhibit-modification-hooks t))
      (insert (propertize "$ " 'ghostel-prompt t))
      (insert "hello"))
    (setq-local ghostel--cursor-pos '(7 . 0))
@@ -2021,7 +2037,8 @@ padding/blanks past end-of-input."
    (setq-local ghostel--term t)
    ;; Simulate the post-bbcw state: prompt-prefixed input "word word"
    ;; with cursor mid-input and several blank renderer rows below.
-   (let ((inhibit-read-only t))
+   (let ((inhibit-read-only t)
+         (inhibit-modification-hooks t))
      (insert (propertize "% " 'ghostel-prompt t))
      (insert "word word")
      (insert "\n\n\n\n"))  ; blank renderer rows below row 0
@@ -2142,7 +2159,8 @@ sticks."
                                   (should (= 0 (current-column)))
                                   (should (= 1 (line-number-at-pos)))
                                   ;; Redraw without growing scrollback (single-line update).
-                                  (let ((inhibit-read-only t))
+                                  (let ((inhibit-read-only t)
+                                        (inhibit-modification-hooks t))
                                     (ghostel--redraw term nil))
                                   ;; Point stays where the user navigated.
                                   (should (= 0 (current-column)))
@@ -2156,7 +2174,8 @@ sticks."
   "Off the cursor row, `$' falls through to vanilla `evil-end-of-line'."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
-   (let ((inhibit-read-only t))
+   (let ((inhibit-read-only t)
+         (inhibit-modification-hooks t))
      (insert "long scrollback line\n")
      (insert (propertize "$ " 'ghostel-prompt t)))
    (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
@@ -2182,7 +2201,8 @@ prompt."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (setq-local ghostel--term-rows 5)
-   (let ((inhibit-read-only t))
+   (let ((inhibit-read-only t)
+         (inhibit-modification-hooks t))
      (insert (propertize "$ " 'ghostel-prompt t))
      (insert "cmd")
      (insert "\n\n\n\n"))  ; blank renderer rows below row 0
@@ -2198,7 +2218,8 @@ prompt."
   "Outside semi-char `evil-ghostel-next-line' delegates to vanilla."
   (evil-ghostel-test--with-evil-buffer
    ;; ghostel--term nil → evil-ghostel--prompt-active-p returns nil.
-   (let ((inhibit-read-only t))
+   (let ((inhibit-read-only t)
+         (inhibit-modification-hooks t))
      (insert "a\nb\nc\nd\ne\n"))
    (evil-normal-state)
    (goto-char (point-min))
@@ -2246,7 +2267,8 @@ renderer cells (RPROMPT, autosuggest, stale glyphs) and the visual
 cursor jumps to the right edge of the window."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
-   (let ((inhibit-read-only t))
+   (let ((inhibit-read-only t)
+         (inhibit-modification-hooks t))
      (insert (propertize "$ " 'ghostel-prompt t))
      ;; "cmd" + render padding to column 20 (e.g. RPROMPT padding).
      (insert "cmd")
@@ -2375,7 +2397,8 @@ Padding / hint cells past the input (no `ghostel-input') are ignored."
     (unwind-protect
         (with-current-buffer buf
           (ghostel-mode)
-          (let ((inhibit-read-only t))
+          (let ((inhibit-read-only t)
+                (inhibit-modification-hooks t))
             (insert (propertize "$ " 'ghostel-prompt t))
             (insert (propertize "hello" 'ghostel-input t))
             (insert "   hint"))
@@ -2391,7 +2414,8 @@ libghostty also tags input): the end of the FIRST region wins."
     (unwind-protect
         (with-current-buffer buf
           (ghostel-mode)
-          (let ((inhibit-read-only t))
+          (let ((inhibit-read-only t)
+                (inhibit-modification-hooks t))
             (insert (propertize "$ " 'ghostel-prompt t))
             (insert (propertize "foo bar" 'ghostel-input t))
             (insert (make-string 20 ?\s))
@@ -2409,7 +2433,8 @@ ends at the cursor, so `evil-ghostel--input-end' stops there."
     (unwind-protect
         (with-current-buffer buf
           (ghostel-mode)
-          (let ((inhibit-read-only t))
+          (let ((inhibit-read-only t)
+                (inhibit-modification-hooks t))
             (insert (propertize "$ " 'ghostel-prompt t))
             ;; Typed input: bright foreground.
             (insert (propertize "echo" 'ghostel-input t
@@ -2434,7 +2459,8 @@ uniform color distinct from the typed char."
     (unwind-protect
         (with-current-buffer buf
           (ghostel-mode)
-          (let ((inhibit-read-only t))
+          (let ((inhibit-read-only t)
+                (inhibit-modification-hooks t))
             (insert (propertize "$ " 'ghostel-prompt t))
             ;; Typed "ec": red, DARKER than the grey suggestion.
             (insert (propertize "ec" 'ghostel-input t 'face '(:foreground "#ee0000")))
@@ -2457,7 +2483,8 @@ recolored real input; the whole line remains editable."
     (unwind-protect
         (with-current-buffer buf
           (ghostel-mode)
-          (let ((inhibit-read-only t))
+          (let ((inhibit-read-only t)
+                (inhibit-modification-hooks t))
             (insert (propertize "$ " 'ghostel-prompt t))
             ;; Real input, recolored (red command, cyan arg); cursor at its start.
             (insert (propertize "hello" 'ghostel-input t 'face '(:foreground "#ee0000")))
@@ -2481,7 +2508,8 @@ end (else `D'/`C'/`$' under-act)."
     (unwind-protect
         (with-current-buffer buf
           (ghostel-mode)
-          (let ((inhibit-read-only t))
+          (let ((inhibit-read-only t)
+                (inhibit-modification-hooks t))
             (insert (propertize "$ " 'ghostel-prompt t))
             ;; Typed "echo " (white) then a cyan argument "bar".
             (insert (propertize "echo " 'ghostel-input t 'face '(:foreground "#ffffff")))
@@ -2504,7 +2532,8 @@ end (else `D'/`C'/`$' under-act)."
 (ert-deftest evil-ghostel-test-clamp-trims-end-past-input ()
   "`evil-ghostel--clamp' lowers END to the end of typed input."
   (evil-ghostel-test--with-input-fixture "$ " "hello"
-    (let ((inhibit-read-only t))
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
       (save-excursion (insert "   ")))  ; renderer padding past the cursor
     (let ((clamped (evil-ghostel--clamp 3 (+ ghostel--cursor-char-pos 3))))
       (should (= 3 (car clamped)))
@@ -2529,7 +2558,8 @@ does not push BEG up to the cursor and collapse the range."
   "`$' lands on the last typed char, not on trailing renderer padding."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
-   (let ((inhibit-read-only t))
+   (let ((inhibit-read-only t)
+         (inhibit-modification-hooks t))
      (insert (propertize "$ " 'ghostel-prompt t))
      (insert "cmd   "))  ; trailing renderer padding
    (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
@@ -2545,7 +2575,8 @@ does not push BEG up to the cursor and collapse the range."
   "`$' stops at the last typed char even with a faint suggestion after it."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
-   (let ((inhibit-read-only t))
+   (let ((inhibit-read-only t)
+         (inhibit-modification-hooks t))
      (insert (propertize "$ " 'ghostel-prompt t))
      (insert (propertize "echo" 'ghostel-input t 'face '(:foreground "#ffffff")))
      (insert (propertize " ls" 'ghostel-input t 'face '(:foreground "#4d4d4d"))))
@@ -2563,7 +2594,8 @@ does not push BEG up to the cursor and collapse the range."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (insert "$ command")
-   (let ((inhibit-read-only t))
+   (let ((inhibit-read-only t)
+         (inhibit-modification-hooks t))
      (put-text-property 1 3 'ghostel-prompt t))
    (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil)))
      (evil-normal-state)
@@ -2578,7 +2610,8 @@ character, so it must not consume a backspace or a replacement char."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    ;; "AB" + soft-wrap newline + "C" -> 3 real input chars.
-   (let ((inhibit-read-only t))
+   (let ((inhibit-read-only t)
+         (inhibit-modification-hooks t))
      (insert "AB")
      (insert (propertize "\n" 'ghostel-wrap t))
      (insert "C"))

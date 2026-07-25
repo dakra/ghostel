@@ -1707,29 +1707,103 @@ Detect that case via `this-command-keys-vector' and re-inject meta."
        (not (run-hook-with-args-until-success
              'ghostel-inhibit-input-forwarding-functions))))
 
+(defvar-local ghostel--pending-insert nil
+  "Cons of markers (BEG . END) bounding a not-yet-flushed foreign insertion.
+BEG has insertion-type nil and END insertion-type t, so the region
+extends over further insertions at either boundary or inside.")
+
+(defvar-local ghostel--pending-insert-timer nil
+  "Backup timer flushing a pending insertion recorded outside a command.")
+
 (defun ghostel--forward-inserts-before-change (beg end)
-  "Reject deletion of renderer-owned text between BEG and END."
-  (when (and (< beg end) (ghostel--forward-inserts-p))
+  "Reject deletion of renderer-owned text between BEG and END.
+Deletions entirely within the pending insertion are allowed; that
+text was never sent and its markers shrink with the deletion."
+  (when (and (< beg end) (ghostel--forward-inserts-p)
+             (not (and ghostel--pending-insert
+                       (>= beg (car ghostel--pending-insert))
+                       (<= end (cdr ghostel--pending-insert)))))
     ;; Signalling from a change hook makes Emacs wipe the buffer's change
     ;; hooks (insdel.c `reset_var_on_error'); re-arm once this command unwinds.
     (add-hook 'post-command-hook #'ghostel--rearm-change-hooks nil t)
     (signal 'text-read-only '("Terminal contents are renderer-owned"))))
 
 (defun ghostel--forward-inserts-after-change (beg end old-len)
-  "Forward a pure insertion BEG..END to the PTY and remove it from the buffer.
-Multi-line text is sent as a bracketed paste.  No-op unless OLD-LEN is zero."
+  "Record a pure insertion BEG..END for deferred forwarding to the PTY.
+No-op unless OLD-LEN is zero."
   (when (and (> end beg) (zerop old-len) (ghostel--forward-inserts-p))
-    (let ((text (buffer-substring-no-properties beg end)))
-      (delete-region beg end)
-      (ghostel--on-user-input)
-      (if (string-search "\n" text)
-          (ghostel--paste-text text)
-        (ghostel--send-string (encode-coding-string text 'utf-8))))))
+    (ghostel--pending-insert-record beg end)))
+
+(defun ghostel--pending-insert-record (beg end)
+  "Extend `ghostel--pending-insert' to cover the insertion BEG..END.
+A disjoint earlier pending region is flushed first.  The flush runs
+at the end of the command; the backup timer covers insertions made
+outside the command loop, where the buffer-local `post-command-hook'
+never fires."
+  (unless (and ghostel--pending-insert
+               (>= beg (car ghostel--pending-insert))
+               (<= end (cdr ghostel--pending-insert)))
+    ;; Markerize before a flush's delete-region shifts BEG/END.
+    (let ((new (cons (copy-marker beg) (copy-marker end t))))
+      (when ghostel--pending-insert
+        (ghostel--flush-pending-insert))
+      (setq ghostel--pending-insert new)
+      ;; Depth -50: read point before other post-command members
+      ;; (ghostel-ime at 90, evil's cursor adjustments) can move it.
+      (add-hook 'post-command-hook #'ghostel--flush-pending-insert -50 t)
+      ;; The delay must be positive: a ripe timer fires from
+      ;; `input-pending-p' inside any `sit-for' the inserting command
+      ;; runs (skeleton-insert does), reading point before the command
+      ;; placed it.
+      (setq ghostel--pending-insert-timer
+            (run-with-timer 0.1 nil #'ghostel--flush-pending-insert-timer
+                            (current-buffer))))))
+
+(defun ghostel--flush-pending-insert ()
+  "Forward the pending foreign insertion to the PTY and drop it from the buffer.
+The final point offset within the insertion is replayed as Left key
+presses so the terminal cursor lands where the inserting command left
+point.  Best-effort: it assumes the foreground program is a line
+editor moving one buffer character per Left, and multi-line text goes
+out as a bracketed paste without repositioning.  When the process is
+dead the text is silently dropped.  Idempotent."
+  (when ghostel--pending-insert
+    (let ((beg (car ghostel--pending-insert))
+          (end (cdr ghostel--pending-insert)))
+      (setq ghostel--pending-insert nil)
+      (remove-hook 'post-command-hook #'ghostel--flush-pending-insert t)
+      (when ghostel--pending-insert-timer
+        (cancel-timer ghostel--pending-insert-timer)
+        (setq ghostel--pending-insert-timer nil))
+      (when (< beg end)
+        ;; The delete must bypass our own change hooks and the read-only
+        ;; barrier, which is back in place after a mode flip or process
+        ;; death.
+        (let ((inhibit-modification-hooks t)
+              (inhibit-read-only t)
+              (text (buffer-substring-no-properties beg end))
+              (offset (if (<= beg (point) end) (- end (point)) 0)))
+          (delete-region beg end)
+          (when (process-live-p ghostel--process)
+            (ghostel--on-user-input)
+            (if (string-search "\n" text)
+                (ghostel--paste-text text)
+              (ghostel--send-string (encode-coding-string text 'utf-8))
+              (dotimes (_ offset)
+                (ghostel--send-encoded "left" ""))))))
+      (set-marker beg nil)
+      (set-marker end nil))))
+
+(defun ghostel--flush-pending-insert-timer (buffer)
+  "Flush BUFFER's pending insertion recorded outside a command."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (ghostel--flush-pending-insert))))
 
 (defun ghostel--attach-change-hooks ()
   "Install the insert-forwarding change hooks buffer-locally.
-The after-change hook runs at depth 90 so other members still see
-the insertion before it is removed."
+The after-change hook runs at depth 90 so other members see the
+insertion first."
   (add-hook 'before-change-functions
             #'ghostel--forward-inserts-before-change nil t)
   (add-hook 'after-change-functions
@@ -3912,6 +3986,8 @@ EVENT is the state-change description passed by Emacs."
         (remove-hook 'pre-redisplay-functions #'ghostel--fake-cursor-update t)
         (ghostel--fake-cursor-clear)
         (run-hook-with-args 'ghostel-exit-functions buf event)
+        ;; A pending foreign insertion is dropped, not sent posthumously.
+        (ghostel--flush-pending-insert)
         ;; Dead terminal: restore the plain read-only barrier.
         (ghostel--sync-inhibit-read-only)
         (if ghostel-kill-buffer-on-exit
@@ -4906,6 +4982,8 @@ them during synchronized output or when BUFFER has no render window."
                  (ghostel--terminal-live-p)
                  (not (ghostel--maybe-defer-redraw buffer)))
         (when-let* ((render-win (ghostel--get-render-window buffer)))
+          ;; Renderer mutations would clobber a pending foreign insertion.
+          (ghostel--flush-pending-insert)
           ;; Pause line mode if alt-screen just turned on.  This must run
           ;; before the snapshot so a pause can take ownership of its input.
           (ghostel--line-mode-pre-redraw)

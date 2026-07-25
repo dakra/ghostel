@@ -418,6 +418,16 @@ Most keys are sent to the terminal.  Keys in =ghostel-keymap-exceptions=
 | =C-c C-q=     | Send next key literally (escape hatch)       |
 | Mouse wheel | Scroll through scrollback                    |
 
+Commands that insert text at point (=insert-char=, =emoji-insert=, keys bound
+to =skeleton-pair-insert-maybe=, …) also work in semi-char and char mode: the
+insertion is forwarded to the terminal instead of landing in the read-only
+buffer.  The text is sent when the command finishes, and if the command left
+point inside the inserted text (as skeleton pairs do), the offset is replayed
+as Left keys so the terminal cursor matches.  This assumes the foreground
+program is a line editor (readline, zle, fish, …); multi-line text goes out as
+a bracketed paste without repositioning.  Deleting terminal contents still
+signals =text-read-only=.
+
 ** Char mode
 :properties:
 :custom_id: char-mode

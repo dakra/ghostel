@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Programmatic buffer insertions in semi-char and char mode (`insert-char`,
+  `emoji-insert`, keys bound to `skeleton-pair-insert-maybe`, …) are forwarded
+  to the terminal, and the final cursor position within the inserted text is
+  replayed as Left keys.
+  Closes [#561](https://github.com/dakra/ghostel/issues/561).
+
 ## [0.45.0] — 2026-07-23
 
 ### Added
