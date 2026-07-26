@@ -14,6 +14,12 @@ All notable changes to this project will be documented in this file.
   `copy`/`emacs`/`nil` settings on the trigger options behave as before.
   `ghostel-mode` is also marked mode-class `special` (like `term-mode`), so
   `view-read-only` can no longer pull `view-mode` into a terminal buffer.
+- Android/Termux support: releases now ship an `aarch64-android` module built
+  against bionic at API level 24, and the installer picks it for Emacs builds
+  with an `*-linux-android` configuration. Cross-compiling needs the Android
+  NDK, located through `ANDROID_NDK_HOME`, `ANDROID_HOME`, or
+  `ANDROID_SDK_ROOT`; on-device compilation in Termux needs only `pkg
+  install zig ndk-sysroot`.
 
 ### Changed
 - Live terminal-input modes (semi-char, char, interactive `ghostel-compile`)

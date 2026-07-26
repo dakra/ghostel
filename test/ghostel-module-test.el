@@ -1021,5 +1021,23 @@ both the .so/.dylib and ghostel-module.version next to it."
         (system-type 'windows-nt))
     (should (equal (ghostel--module-platform-tag) "aarch64-windows"))))
 
+(ert-deftest ghostel-test-platform-tag-detects-android ()
+  "Test that Termux/Android builds get an `android' tag, not `linux'."
+  ;; Emacs 30+ sets `system-type' to `android' for *-linux-android hosts.
+  (let ((system-configuration "aarch64-linux-android")
+        (system-type 'android))
+    (should (equal (ghostel--module-platform-tag) "aarch64-android")))
+  ;; Older Emacs versions report `gnu/linux' for the same host triple.
+  (let ((system-configuration "aarch64-linux-android")
+        (system-type 'gnu/linux))
+    (should (equal (ghostel--module-platform-tag) "aarch64-android")))
+  (let ((system-configuration "x86_64-linux-android")
+        (system-type 'android))
+    (should (equal (ghostel--module-platform-tag) "x86_64-android")))
+  ;; A glibc host must keep the `linux' tag.
+  (let ((system-configuration "aarch64-unknown-linux-gnu")
+        (system-type 'gnu/linux))
+    (should (equal (ghostel--module-platform-tag) "aarch64-linux"))))
+
 (provide 'ghostel-module-test)
 ;;; ghostel-module-test.el ends here

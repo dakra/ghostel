@@ -145,7 +145,7 @@ mark.
 #+cindex: requirements
 
 - Emacs 28.1+ with dynamic module support
-- macOS, Linux, FreeBSD, or native Windows
+- macOS, Linux, FreeBSD, Android/Termux, or native Windows
 
 The native module is *automatically downloaded* on first use.  Pre-built
 binaries are available for:
@@ -155,6 +155,7 @@ binaries are available for:
 - =x86_64-linux=
 - =aarch64-linux=
 - =x86_64-freebsd=
+- =aarch64-android= (Termux)
 - =x86_64-windows=
 - =aarch64-windows=
 
@@ -230,6 +231,34 @@ package tree (for example =~/.config/emacs/ghostel/=).
 :properties:
 :custom_id: platform-notes
 :end:
+
+*** Android (Termux)
+:properties:
+:custom_id: android-platform-notes
+:end:
+
+Termux's Emacs is built with dynamic module support, so Ghostel runs there.  The
+pre-built =aarch64-android= module links against bionic at API level 24 (Android
+7.0, Termux's minimum) and is *not* interchangeable with the glibc
+=aarch64-linux= module.
+
+Terminal spawns go through =/bin/sh=.  Inside a normal Termux session Termux's
+=exec= shim rewrites that to =$PREFIX/bin/sh=; without the shim it resolves to
+Android's own =sh= (Android 9+) or fails (Android 7 and 8).
+
+The kitty graphics shared-memory transmission medium is unavailable because
+bionic has no POSIX shared memory; file and direct transmission work.
+
+Compiling on-device works with Termux's packages: =pkg install zig
+ndk-sysroot=, then =M-x ghostel-module-compile= (or =zig build=).  Without an
+NDK installed, =build.zig= uses the bionic sysroot that the =ndk-sysroot=
+package provides under =$PREFIX= and builds ghostty's scalar (non-SIMD)
+code paths.  Cross-compiling from a desktop needs the Android NDK;
+=build.zig= finds it through =ANDROID_NDK_HOME=, =ANDROID_HOME=,
+=ANDROID_SDK_ROOT=, or the default SDK location.
+
+Android is built in CI but no test suite runs against it, so support is
+best-effort.
 
 *** Windows
 :properties:

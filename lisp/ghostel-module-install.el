@@ -83,6 +83,13 @@ Returns nil if the platform is not recognized."
                  (_ raw-arch)))
          (os (cond
               ((eq system-type 'darwin) "macos")
+              ;; Termux builds Emacs with an `*-linux-android' triple;
+              ;; `system-type' is `android' there, but older Emacs
+              ;; versions report `gnu/linux', so check both.  Bionic
+              ;; modules are not interchangeable with glibc ones.
+              ((or (eq system-type 'android)
+                   (string-match-p "android" system-configuration))
+               "android")
               ((eq system-type 'gnu/linux) "linux")
               ((eq system-type 'windows-nt) "windows")
               (t nil))))

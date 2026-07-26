@@ -43,9 +43,11 @@ with local changes applied:
    padding expressions that Zig's translate-c cannot parse, producing
    an opaque type.  Pre-define a plain struct that is ABI-compatible
    (tv_sec is time_t, tv_nsec is long, padded to 2 * sizeof(time_t))
-   and set the musl guard macro so <time.h> skips its version.  */
+   and set the musl guard macro so <time.h> skips its version.
+   Bionic is also non-glibc but parses cleanly and has no
+   <bits/alltypes.h>, so Android is excluded.  */
 #ifndef __DEFINED_struct_timespec
-#if defined(__linux__) && !defined(__GLIBC__)
+#if defined(__linux__) && !defined(__GLIBC__) && !defined(__ANDROID__)
 #define __NEED_time_t
 #include <bits/alltypes.h>
 #define __DEFINED_struct_timespec

@@ -172,6 +172,13 @@ jobs:
             platform: x86_64-freebsd
             suffix: .so
             target: x86_64-freebsd
+          # Termux (bionic).  The runner image ships an Android SDK, and
+          # build.zig locates its NDK through ANDROID_HOME.
+          # API 24 is Termux's minimum.
+          - os: ubuntu-latest
+            platform: aarch64-android
+            suffix: .so
+            target: aarch64-linux-android.24
           - os: windows-latest
             platform: x86_64-windows
             suffix: .dll
