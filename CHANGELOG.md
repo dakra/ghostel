@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- A finished `ghostel-compile` buffer joins the rows the terminal wrapped, so
+  `compilation-mode` error parsing, `next-error`, `ffap` and saving the buffer
+  see whole lines. A path straddling the wrap column used to be recorded as
+  the fragment after the break.
+- A finished `ghostel-compile` buffer follows the user's `truncate-lines`
+  instead of keeping the terminal's. The variable is `permanent-local`, so the
+  terminal's setting survived the mode switch and the joined rows were
+  truncated at the window edge.
+
+### Fixed
+- URLs and `file:line` references that the terminal wrapped across rows are now
+  detected as one link: every row carries the whole target, and link navigation
+  treats the rows as a single link. They also survive the reflow a window
+  resize causes. Fixes
+  [#566](https://github.com/dakra/ghostel/issues/566).
+- `ghostel-compile` no longer loses output from a command that finishes while
+  its buffer is displayed in no window, or while copy mode holds the terminal
+  frozen; a finished buffer is no longer repainted from the terminal grid on a
+  window resize (which discarded the footer).
+- A saved `ghostel-compile` log reopens in `ghostel-compile-view-mode`. Its
+  header named a mode that does not exist, so the file landed in
+  `fundamental-mode` without error navigation.
+
 ## [0.46.0] — 2026-07-27
 
 ### Added

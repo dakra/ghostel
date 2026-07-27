@@ -693,6 +693,10 @@ to leave the directory alone.
 - *File path detection* - patterns like =/path/to/file.el:42= become clickable,
   opening the file at the given line (toggle with =ghostel-enable-file-detection=;
   tune the path pattern with =ghostel-file-detection-path-regex=).
+- *Wrapped links* - a URL or path too long for the terminal is split across
+  rows, and each row is clickable for the whole target.  Hyperlink navigation
+  visits such a link once, and a window resize that reflows the terminal
+  leaves it intact.
 
 ** Clipboard
 :properties:
@@ -1496,7 +1500,7 @@ Commands:
 A run looks like a =M-x compile= buffer:
 
 #+begin_example
--*- mode: ghostel-compile -*-
+-*- mode: ghostel-compile-view -*-
 Compilation started at Wed Apr 15 08:30:11
 
 make -j4 test
@@ -1520,8 +1524,11 @@ anything that wants live keystrokes work.  The rendered buffer remains read-only
 
 When the command finishes, the live process and ghostel renderer are torn down
 and the buffer's major mode is switched to =ghostel-compile-view-mode= (derived
-from =compilation-mode=).  =mode-line-process= shows =:run= while the command runs
-and =:exit [N]= afterwards; an interactive run reads =:run/i= instead of =:run=.
+from =compilation-mode=).  Rows the terminal wrapped are joined back into single
+lines at that point, so error parsing, =next-error=, =ffap= and saving the buffer
+see whole paths even when one straddled the wrap column.  =mode-line-process=
+shows =:run= while the command runs and =:exit [N]= afterwards; an interactive
+run reads =:run/i= instead of =:run=.
 
 *** Live mode switching
 

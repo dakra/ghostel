@@ -152,7 +152,9 @@ include GC or hook overhead that production redraws suppress."
   "Generate ~SIZE bytes of output containing URLs and file:line refs.
 Simulates compiler output or build logs with linkifiable content."
   (let ((lines '("/usr/src/app/main.c:42: error: undeclared identifier\r\n"
-                 "  at Object.<anonymous> (/home/user/project/index.js:17:5)\r\n"
+                 ;; Not under `/home': macOS maps it through autofs, where a
+                 ;; `file-exists-p' miss costs ~8 ms and swamps the scan.
+                 "  at Object.<anonymous> (/opt/user/project/index.js:17:5)\r\n"
                  "See https://example.com/docs/errors/E0042 for details\r\n"
                  "PASS ./tests/test_utils.py:88 test_parse_url\r\n"
                  "warning: unused variable at ./src/render.zig:156:13\r\n"
@@ -168,6 +170,29 @@ Simulates compiler output or build logs with linkifiable content."
       (let ((line (nth (% (/ total 60) (length lines)) lines)))
         (push line parts)
         (setq total (+ total (length line)))))
+    (apply #'concat (nreverse parts))))
+
+(defun ghostel-bench--gen-wrapped-links (size)
+  "Generate ~SIZE bytes of log lines whose links straddle a soft-wrap break.
+Every line is wider than the 80-column bench terminal, so the renderer
+splits it across rows and the URL and file:line patterns run past the
+break.  A rotating indent shifts each line so the breaks land at many
+different offsets inside the links instead of always the same one."
+  (let ((lines '("INFO  resolver: fetching https://registry.example.com/api/v3/packages/@scope/build-toolkit/-/build-toolkit-4.11.2.tgz for the workspace root\r\n"
+                 "  at Module._compile (/Users/ci/builds/agent-7/workspace/project-frontend/node_modules/@scope/toolkit/dist/cjs/internal/resolver.js:1284:17)\r\n"
+                 "ERROR unable to verify signature, see https://docs.example.org/guides/troubleshooting/signature-verification-failures#step-3-trusted-keys now\r\n"
+                 "  compiling crate `render-core' at /Users/ci/builds/agent-7/workspace/project-backend/crates/render-core/src/pipeline/rasterizer.rs:912:28\r\n"
+                 "warn  deprecated endpoint https://api.example.net/v1/legacy/accounts/lookup?include=profile,settings,billing&format=json will be removed soon\r\n"
+                 "  File '/Users/ci/builds/agent-7/workspace/project-tools/vendor/python3.12/site-packages/example_pkg/internal/serializers/base.py', line 431\r\n"))
+        (parts nil)
+        (total 0)
+        (n 0))
+    (while (< total size)
+      (let ((line (concat (make-string (% n 11) ?\s)
+                          (nth (% n (length lines)) lines))))
+        (push line parts)
+        (setq total (+ total (length line))
+              n (1+ n))))
     (apply #'concat (nreverse parts))))
 
 (defun ghostel-bench--gen-mixed-emoji-cjk-ascii (size)
@@ -552,6 +577,31 @@ process filter, which both parses and renders in one call."
           (when ghostel-bench-include-term
             (ghostel-bench--measure
              "e2e/urls/term" ghostel-bench-data-size ghostel-bench-iterations
+             (lambda () (ghostel-bench--e2e-term data-file)))))
+      (delete-file data-file)))
+  ;; --- Links that straddle a soft-wrap break: the logical-line join path ---
+  (let ((data-file (ghostel-bench--write-data-file
+                    #'ghostel-bench--gen-wrapped-links)))
+    (unwind-protect
+        (progn
+          (message "  [links straddling a soft-wrap break]")
+          (ghostel-bench--measure
+           "e2e/wrapped/ghostel" ghostel-bench-data-size ghostel-bench-iterations
+           (lambda () (ghostel-bench--e2e-ghostel data-file t)))
+          (ghostel-bench--measure
+           "e2e/wrapped/ghostel-nodetect" ghostel-bench-data-size ghostel-bench-iterations
+           (lambda () (ghostel-bench--e2e-ghostel data-file nil)))
+          (when ghostel-bench-include-vterm
+            (ghostel-bench--measure
+             "e2e/wrapped/vterm" ghostel-bench-data-size ghostel-bench-iterations
+             (lambda () (ghostel-bench--e2e-vterm data-file))))
+          (when ghostel-bench-include-eat
+            (ghostel-bench--measure
+             "e2e/wrapped/eat" ghostel-bench-data-size ghostel-bench-iterations
+             (lambda () (ghostel-bench--e2e-eat data-file))))
+          (when ghostel-bench-include-term
+            (ghostel-bench--measure
+             "e2e/wrapped/term" ghostel-bench-data-size ghostel-bench-iterations
              (lambda () (ghostel-bench--e2e-term data-file)))))
       (delete-file data-file)))
   ;; --- Mixed emoji/CJK/ASCII: exercises wide-char and grapheme-cluster paths ---
@@ -1218,6 +1268,56 @@ real-world performance (see the end-to-end and backend benchmarks)."
          (format "engine/%s" name) raw-data 24 80
          ghostel-bench-iterations t)))))
 
+;; =========================================================================
+;; SECTION 5: Plain-text link detection (`ghostel--detect-urls')
+;; =========================================================================
+;;
+;; The `e2e/*' section coalesces detection into a single call over the last
+;; dirty region, so it cannot resolve this cost.  Here the scan is measured
+;; on its own, over a buffer the renderer materialized, which is what the
+;; idle timer sees after a burst of output.
+;; =========================================================================
+
+(defconst ghostel-bench--link-properties
+  '(help-echo nil mouse-face nil keymap nil
+              ghostel-link-id nil ghostel-link-text nil)
+  "Properties `ghostel--linkify' attaches, for `remove-text-properties'.")
+
+(defun ghostel-bench--detect-scan (name gen-fn)
+  "Measure `ghostel--detect-urls' over data from GEN-FN, recorded as NAME.
+Renders `ghostel-bench-data-size' bytes into a 24x80 terminal, then times
+repeated whole-buffer scans.  Each iteration first strips the properties
+the previous one attached, so every scan linkifies from scratch instead of
+recognizing its own work and skipping."
+  (ghostel-bench--with-bench-buffer
+    (let ((term (ghostel-bench--make-ghostel 24 80))
+          (ghostel-enable-url-detection t)
+          (ghostel-enable-file-detection t)
+          (inhibit-read-only t))
+      (ghostel--write-vt term (ghostel-bench--encode-for-backend
+                               (funcall gen-fn ghostel-bench-data-size)
+                               'ghostel))
+      (ghostel-bench--redraw term nil)
+      (ghostel-bench--measure
+       name (- (point-max) (point-min)) ghostel-bench-iterations
+       (lambda ()
+         (remove-text-properties (point-min) (point-max)
+                                 ghostel-bench--link-properties)
+         (ghostel--detect-urls))))))
+
+(defun ghostel-bench--run-detect-scenarios ()
+  "Run the plain-text link-detection benchmarks."
+  (require 'ghostel)
+  (message "\n--- Link Detection (`ghostel--detect-urls', whole rendered buffer) ---")
+  (message "  plain:   no link candidates at all — the pattern-scan floor")
+  (message "  urls:    URLs and file:line refs, none crossing a row break")
+  (message "  wrapped: every link straddles a soft-wrap break")
+  (message "  %-50s %5s  %8s  %10s  %8s" "SCENARIO" "ITERS" "TOTAL(s)" "ITER(ms)" "MB/s")
+  (message "  %s" (make-string 90 ?-))
+  (dolist (shape '("plain" "urls" "wrapped"))
+    (ghostel-bench--detect-scan (format "detect/%s" shape)
+                                (ghostel-bench--case-generator shape))))
+
 ;; ---------------------------------------------------------------------------
 ;; Header / summary
 ;; ---------------------------------------------------------------------------
@@ -1321,6 +1421,7 @@ real-world performance (see the end-to-end and backend benchmarks)."
   (ghostel-bench--run-tui-scenarios)
   (ghostel-bench--run-tui-partial-scenarios)
   (ghostel-bench--run-engine-scenarios)
+  (ghostel-bench--run-detect-scenarios)
   (ghostel-bench--print-summary))
 
 (defun ghostel-bench-run-quick ()
@@ -1370,11 +1471,19 @@ backend-include flags do not apply."
     "e2e/urls/vterm"
     "e2e/urls/eat"
     "e2e/urls/term"
+    "e2e/wrapped/ghostel"
+    "e2e/wrapped/ghostel-nodetect"
+    "e2e/wrapped/vterm"
+    "e2e/wrapped/eat"
+    "e2e/wrapped/term"
     "e2e/mixed/ghostel"
     "e2e/mixed/ghostel-nodetect"
     "e2e/mixed/vterm"
     "e2e/mixed/eat"
     "e2e/mixed/term"
+    "detect/plain"
+    "detect/urls"
+    "detect/wrapped"
     "typing/native"
     "typing/emacs")
   "Named benchmark cases accepted by `ghostel-bench-run-one'.")
@@ -1390,6 +1499,7 @@ backend-include flags do not apply."
   "Return the data generator for benchmark SHAPE."
   (or (cdr (assoc shape `(("plain" . ghostel-bench--gen-plain-ascii)
                           ("urls" . ghostel-bench--gen-urls-and-paths)
+                          ("wrapped" . ghostel-bench--gen-wrapped-links)
                           ("mixed" . ghostel-bench--gen-mixed-emoji-cjk-ascii))))
       (error "Unknown benchmark data shape: %s" shape)))
 
@@ -1550,6 +1660,10 @@ Use `ghostel-bench-list-cases' to list valid case names."
      (ghostel-bench--print-summary))
     (`("tui-partial" ,size)
      (ghostel-bench--run-one-tui-partial size)
+     (ghostel-bench--print-summary))
+    (`("detect" ,shape)
+     (require 'ghostel)
+     (ghostel-bench--detect-scan case (ghostel-bench--case-generator shape))
      (ghostel-bench--print-summary))
     (`("typing" ,backend)
      (ghostel-bench--run-one-typing backend))

@@ -650,6 +650,11 @@ fn adjustGlyphs(
     if (self.font_info == null) return;
     const window = env.f("selected-window", .{});
     if (env.isNil(window)) return;
+    // Metrics come from `font-at', which signals unless WINDOW displays the
+    // buffer being rendered.  A redraw of a buffer no window shows (the final
+    // flush when a `ghostel-compile' run ends hidden) has no such window, so
+    // leave the glyphs at their default size rather than fail the render.
+    if (!env.eq(env.f("window-buffer", .{window}), env.f("current-buffer", .{}))) return;
 
     for (self.span.adjust_cells.items) |*cell| {
         try self.adjustGlyph(env, window, span_start, cell);

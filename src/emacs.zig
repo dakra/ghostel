@@ -451,6 +451,7 @@ const interned_symbols = [_][:0]const u8{
     "clrhash",
     "composition-get-gstring",
     "cons",
+    "current-buffer",
     "dash",
     "default",
     "default-directory",
@@ -559,6 +560,7 @@ const interned_symbols = [_][:0]const u8{
     "t",
     "temporary-file-directory",
     "wave",
+    "window-buffer",
     "window-point",
     "window-start",
 };

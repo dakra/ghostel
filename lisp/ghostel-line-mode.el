@@ -345,7 +345,7 @@ status bar)."
                 (end-pos (marker-position ghostel--line-input-end)))
             (ghostel--line-mode-apply-readonly start-pos)
             ;; Mark the line-mode input region with `ghostel-input' so
-            ;; `ghostel--detect-urls-skip-p' skips it on the cursor's
+            ;; `ghostel--skip-match-p' skips it on the cursor's
             ;; line — without this, a path the user typed locally
             ;; (e.g. `cd src/main.rs') would get linkified and RET
             ;; would open the file instead of running

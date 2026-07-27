@@ -73,7 +73,7 @@ pre-rendered state by inserting the header directly into the buffer."
   (ghostel-test--with-compile-buffer buf
     (let ((inhibit-read-only t)
           (ghostel-compile-finished-major-mode nil))
-      (insert "-*- mode: ghostel-compile -*-\n"
+      (insert "-*- mode: ghostel-compile-view -*-\n"
               "Compilation started at fake-time\n\n"
               "make -j4 test\n")
       (setq ghostel-compile--command "make -j4 test"
@@ -275,7 +275,7 @@ another window.  RET/`compile-goto-error' is for opening."
     (let ((inhibit-read-only t))
       ;; Simulate the pre-rendered header, then errors below it —
       ;; matches the geometry the real flow leaves for `--finalize'.
-      (insert "-*- mode: ghostel-compile -*-\n"
+      (insert "-*- mode: ghostel-compile-view -*-\n"
               "Compilation started at fake-time\n\n"
               "make\n")
       (setq ghostel-compile--command "make"
@@ -344,6 +344,48 @@ scrolled below the window."
     (should buffer-read-only)                                   ; read-only
     (should (eq next-error-function #'compilation-next-error-function))
     (should (equal "true" ghostel-compile--command))))          ; state preserved
+
+(ert-deftest ghostel-test-compile-finalize-drops-terminal-truncate-lines ()
+  "The finished buffer follows the user's global `truncate-lines'.
+The terminal needs it t so Emacs adds no continuation lines of its own,
+and it is `permanent-local', so the mode switch alone would leave the
+joined rows truncated at the window edge."
+  (ghostel-test--with-compile-buffer buf
+    (setq ghostel-compile--command "true"
+          ghostel-compile--start-time (current-time)
+          ghostel-compile--scan-marker (copy-marker (point-max)))
+    (should truncate-lines)
+    (should (local-variable-p 'truncate-lines))
+    (ghostel-compile--finalize buf 0 (current-time))
+    (should-not (local-variable-p 'truncate-lines))
+    (should (eq truncate-lines (default-value 'truncate-lines)))))
+
+(ert-deftest ghostel-test-compile-saved-log-reopens-in-view-mode ()
+  "A saved log reopens in `ghostel-compile-view-mode' with its directory.
+Both come from the header's file-local spec, so the mode it names
+has to be one Emacs can actually find."
+  (let* ((dir (file-name-as-directory (make-temp-file "ghostel-log-dir" t)))
+         (file (expand-file-name "build.log" dir))
+         (header (let ((default-directory dir))
+                   (ghostel-compile--header-text "make -j4 test"
+                                                 (current-time))))
+         (buf nil))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert header "output\n"))
+          ;; A different `default-directory' than the header names, so the
+          ;; assertion below can only pass via the file-local spec.
+          (let ((default-directory temporary-file-directory))
+            (setq buf (find-file-noselect file)))
+          (with-current-buffer buf
+            (should (derived-mode-p 'ghostel-compile-view-mode))
+            (should (equal (file-truename dir)
+                           (file-truename default-directory)))))
+      (when (buffer-live-p buf)
+        (with-current-buffer buf (set-buffer-modified-p nil))
+        (kill-buffer buf))
+      (delete-directory dir t))))
 
 (ert-deftest ghostel-test-compile-view-mode-recompile-key-binding ()
   "`g' in `ghostel-compile-view-mode-map' is bound to `ghostel-recompile'."
@@ -1630,6 +1672,178 @@ ghostel's own `INSIDE_EMACS=...,compile' marker."
               (set-process-sentinel proc #'ignore)
               (delete-process proc))))))))
 
+
+;;; Soft-wrap joining
+
+(ert-deftest ghostel-test-compile-unwrap-soft-wraps ()
+  "`--unwrap-soft-wraps' removes only the terminal's own wrap newlines.
+Newlines the command printed stay, and the text properties on the
+joined rows survive so colouring and links are not cut in half."
+  (with-temp-buffer
+    (insert (propertize "/tmp/a" 'face 'bold))
+    (insert (propertize "\n" 'ghostel-wrap t))
+    (insert (propertize "bc.c:1: error" 'face 'bold))
+    (insert "\nsecond line\n")
+    (ghostel-compile--unwrap-soft-wraps)
+    (should (equal "/tmp/abc.c:1: error\nsecond line\n"
+                   (buffer-substring-no-properties (point-min) (point-max))))
+    (should-not (text-property-not-all (point-min) (point-max)
+                                       'ghostel-wrap nil))
+    ;; The join must not disturb properties carried by the rows.
+    (should (eq 'bold (get-text-property (point-min) 'face)))
+    (should (eq 'bold (get-text-property (+ (point-min) 8) 'face)))))
+
+(ert-deftest ghostel-test-compile-unwrap-soft-wraps-no-op ()
+  "Output without wrapped rows is left exactly as it was."
+  (with-temp-buffer
+    (insert "one\ntwo\nthree\n")
+    (ghostel-compile--unwrap-soft-wraps)
+    (should (equal "one\ntwo\nthree\n"
+                   (buffer-substring-no-properties (point-min) (point-max))))))
+
+(ert-deftest ghostel-test-compile-copy-mode-at-exit-keeps-output ()
+  "Output produced while copy mode froze the terminal survives the exit.
+Copy mode makes `ghostel--redraw-now' decline, so everything the
+command printed after the freeze lives only in the terminal grid
+that the teardown then destroys."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let* ((buf-name "*ghostel-test-compile-copy*")
+         (shell-file-name "/bin/sh")
+         ;; Assemble the markers from fragments so the echoed command
+         ;; line cannot satisfy the assertions on its own.
+         (script (concat "a=BEF; b=ORE; c=AFT; d=ER; "
+                         "printf '%s%s\\n' \"$a\" \"$b\"; sleep 1; "
+                         "printf '%s%s\\n' \"$c\" \"$d\""))
+         (inhibit-message t)
+         (save-some-buffers-default-predicate (lambda () nil)))
+    (when (get-buffer buf-name)
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer buf-name)))
+    (unwind-protect
+        (let ((buf (ghostel-compile--start script buf-name
+                                           default-directory)))
+          (with-current-buffer buf
+            (set-window-buffer (selected-window) buf)
+            (ghostel-test--wait-for
+             ghostel--process
+             (lambda () (save-excursion
+                          (goto-char (point-min))
+                          (search-forward "BEFORE" nil t)))
+             10)
+            (ghostel-copy-mode)
+            (should (eq ghostel--input-mode 'copy))
+            (ghostel-test--wait-for
+             ghostel--process
+             (lambda () ghostel-compile--finalized)
+             10)
+            (let ((text (buffer-substring-no-properties (point-min)
+                                                        (point-max))))
+              (should (string-match-p "BEFORE" text))
+              ;; Printed after the freeze — the case that used to be lost.
+              (should (string-match-p "AFTER" text))
+              (should (string-match-p "Compilation finished" text)))))
+      (when (get-buffer buf-name)
+        (let ((kill-buffer-query-functions nil))
+          (kill-buffer buf-name))))))
+
+(ert-deftest ghostel-test-compile-hidden-run-keeps-output ()
+  "A run whose buffer no window shows still records all its output.
+Without a window `ghostel--redraw-now' has no metrics reference and
+declines, so the last output lives only in the terminal grid that
+the teardown then destroys."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let* ((buf-name "*ghostel-test-compile-hidden*")
+         (shell-file-name "/bin/sh")
+         (script "printf 'first\\n'; printf 'second\\n'")
+         (inhibit-message t)
+         (save-some-buffers-default-predicate (lambda () nil))
+         ;; `allow-no-window' lets `display-buffer' leave the buffer hidden.
+         (display-buffer-alist
+          (list (cons (regexp-quote buf-name)
+                      (cons #'display-buffer-no-window
+                            '((allow-no-window . t)))))))
+    (when (get-buffer buf-name)
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer buf-name)))
+    (unwind-protect
+        (let ((buf (ghostel-compile--start script buf-name
+                                           default-directory)))
+          (with-current-buffer buf
+            (should-not (get-buffer-window-list buf nil t))
+            (ghostel-test--wait-for
+             ghostel--process
+             (lambda () ghostel-compile--finalized)
+             10)
+            (let ((text (buffer-substring-no-properties (point-min)
+                                                        (point-max))))
+              (should (string-match-p "first" text))
+              (should (string-match-p "second" text))
+              (should (string-match-p "Compilation finished" text)))))
+      (when (get-buffer buf-name)
+        (let ((kill-buffer-query-functions nil))
+          (kill-buffer buf-name))))))
+
+(ert-deftest ghostel-test-compile-wrapped-error-parses-end-to-end ()
+  "A wrapped error path resolves to the real file after finalize.
+Regression test for #566: the renderer splits a path longer than
+the terminal across rows, which used to make `compilation-mode'
+record the fragment after the break as the file name."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let* ((buf-name "*ghostel-test-compile-wrap*")
+         (shell-file-name "/bin/sh")
+         (root (make-temp-file "ghostel-wrap-" t))
+         ;; The path must be longer than the terminal, so the row break is
+         ;; guaranteed to fall inside it whatever width the test frame has.
+         (dir (expand-file-name (mapconcat #'identity
+                                           (make-list 8 "deeply-nested-dir")
+                                           "/")
+                                root))
+         (file (expand-file-name "some_test.c" dir))
+         (script (format "printf '%%s\\n' '%s:42:5: error: boom'" file))
+         (inhibit-message t)
+         (cols nil)
+         (save-some-buffers-default-predicate (lambda () nil)))
+    (make-directory dir t)
+    (with-temp-file file (insert "x\n"))
+    (when (get-buffer buf-name)
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer buf-name)))
+    (unwind-protect
+        (let ((buf (ghostel-compile--start script buf-name
+                                           default-directory)))
+          (with-current-buffer buf
+            (setq cols ghostel--term-cols)
+            (should (> (length file) cols))
+            (ghostel-test--wait-for
+             ghostel--process
+             (lambda () ghostel-compile--finalized)
+             10)
+            ;; Nothing may remain split: the error line and the header's
+            ;; echoed command are both longer than a test terminal.
+            (should-not (text-property-not-all (point-min) (point-max)
+                                               'ghostel-wrap nil))
+            (goto-char (point-min))
+            (should (re-search-forward (regexp-quote (concat file ":42:5:"))
+                                       nil t))
+            ;; The line is longer than the terminal, so the renderer must
+            ;; have split it — finding it whole proves the join ran.
+            (should (> (- (line-end-position) (line-beginning-position))
+                       cols))
+            ;; And `compilation-mode' resolves it to the real file.
+            (goto-char (point-min))
+            (compilation-next-error 1)
+            (let ((msg (get-text-property (point) 'compilation-message)))
+              (should msg)
+              (should (equal file
+                             (caar (compilation--loc->file-struct
+                                    (compilation--message->loc msg))))))))
+      (when (get-buffer buf-name)
+        (let ((kill-buffer-query-functions nil))
+          (kill-buffer buf-name)))
+      (delete-directory root t))))
 
 (provide 'ghostel-compile-test)
 ;;; ghostel-compile-test.el ends here

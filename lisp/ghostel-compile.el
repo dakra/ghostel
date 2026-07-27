@@ -67,6 +67,8 @@
 (require 'ghostel)
 (require 'compile)
 
+(declare-function ghostel--redraw "ghostel-module"
+                  (term &optional full force-sync))
 (declare-function ghostel--set-size "ghostel-module")
 (declare-function ghostel--write-vt "ghostel-module")
 (declare-function ghostel--sync-inhibit-read-only "ghostel")
@@ -201,6 +203,9 @@ the same keys work while the command is still executing."
   ;; Make sure point lands at the top after a successful recompile (and
   ;; that future input doesn't inherit ghostel's terminal-style behaviour).
   (setq-local window-point-insertion-type nil)
+  ;; `truncate-lines' is `permanent-local': the terminal's t would survive
+  ;; the mode switch and truncate the joined rows at the window edge.
+  (kill-local-variable 'truncate-lines)
   ;; The buffer text inherited from the ghostel run carries per-cell `face'
   ;; text-properties written by the native module.  `compilation-mode'
   ;; installs font-lock keywords for error highlighting, and the default
@@ -231,10 +236,10 @@ Matches the format used by `M-x compile'."
 
 (defun ghostel-compile--header-text (command start-time)
   "Return the header string for COMMAND started at START-TIME.
-Plain text, matching the `M-x compile' header format — including
-the `default-directory' file-local spec, so reloading the buffer
-restores its compilation directory."
-  (format "-*- mode: ghostel-compile; default-directory: %s -*-\n\
+Plain text, matching the `M-x compile' header format.  Its file-local
+spec makes a saved log reopen in `ghostel-compile-view-mode' with the
+compilation directory restored."
+  (format "-*- mode: ghostel-compile-view; default-directory: %s -*-\n\
 Compilation started at %s\n\n%s\n"
           (prin1-to-string (abbreviate-file-name default-directory))
           (substring (current-time-string start-time) 0 19)
@@ -295,27 +300,51 @@ into our buffer."
     (set-process-sentinel ghostel--process #'ignore)
     (set-process-filter ghostel--process #'ignore)
     (set-process-query-on-exit-flag ghostel--process nil)
-    (delete-process ghostel--process)
-    (setq ghostel--process nil))
+    (delete-process ghostel--process))
+  ;; Also drop an already-exited process: `ghostel--adjust-size' only checks
+  ;; that the variable is non-nil, so a dead object left here would repaint
+  ;; the finished buffer from the terminal grid on the next window resize.
+  (setq ghostel--process nil)
   (when (bound-and-true-p ghostel--redraw-timer)
     (cancel-timer ghostel--redraw-timer)
-    (setq ghostel--redraw-timer nil)))
+    (setq ghostel--redraw-timer nil))
+  ;; Detach the redisplay-driven renderer too.  A redraw the sentinel could
+  ;; not run (buffer not displayed at exit) stays pending on `ghostel--term',
+  ;; and would repaint the buffer the next time it is displayed.
+  (remove-hook 'pre-redisplay-functions #'ghostel--pre-redisplay t)
+  (setq ghostel--pending-redraw nil))
 
 (defun ghostel-compile--trim-trailing-blanks (start)
   "Delete trailing whitespace-only content in START..(point-max).
 The ghostel renderer commits the full terminal grid to the buffer,
-so a short command (`echo test') leaves ~24 rows of trailing
-spaces and newlines that would otherwise wedge the footer far
-below the real output.  Find the last non-whitespace position in
-the scan region and delete everything after it, leaving a single
-trailing newline so the footer's leading `\\n' produces a blank
-separator line — matching `M-x compile's output format."
+so a short command (`echo test') leaves ~24 rows of trailing spaces and newlines
+that would otherwise wedge the footer far below the real output.
+Delete everything after the last non-whitespace-position."
   (save-excursion
     (goto-char (point-max))
     (skip-chars-backward " \t\n" start)
     (when (not (eobp))
       (delete-region (point) (point-max))
       (insert "\n"))))
+
+(defun ghostel-compile--unwrap-soft-wraps ()
+  "Join rows the terminal soft-wrapped back into single buffer lines.
+The renderer commits one buffer line per terminal row, so output longer than the
+terminal is width-split by real newlines, which breaks `compilation-mode' error
+parsing, `ffap' and saving the buffer whenever a path straddles the wrap column.
+Only newlines carrying the `ghostel-wrap' property (rows the terminal wrapped)
+are removed; newlines the command itself emitted stay."
+  (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t))
+    (save-excursion
+      (save-restriction
+        (widen)
+        (let ((pos (point-min)))
+          (while (setq pos (text-property-not-all pos (point-max)
+                                                  'ghostel-wrap nil))
+            (if (eq (char-after pos) ?\n)
+                (delete-region pos (1+ pos))
+              (setq pos (1+ pos)))))))))
 
 (defun ghostel-compile--render-header-live (header)
   "Feed HEADER to the ghostel terminal and commit the render synchronously.
@@ -353,8 +382,9 @@ same as in any compilation buffer."
     (with-current-buffer buffer
       (unless ghostel-compile--finalized
         (setq ghostel-compile--finalized t)
-        (let* ((start (and ghostel-compile--scan-marker
-                           (marker-position ghostel-compile--scan-marker)))
+        (let* (;; A marker, not a position: `--unwrap-soft-wraps' deletes
+               ;; newlines in the header, above the scan point.
+               (start ghostel-compile--scan-marker)
                (start-time ghostel-compile--start-time)
                (command ghostel-compile--command)
                (directory ghostel-compile--directory)
@@ -368,6 +398,9 @@ same as in any compilation buffer."
           (when start
             (ghostel-compile--trim-trailing-blanks start))
           (ghostel-compile--teardown-terminal)
+          ;; Must follow the teardown: a live renderer would rewrite the
+          ;; joined rows on its next redraw.
+          (ghostel-compile--unwrap-soft-wraps)
           ;; Switch major mode now that the process is dead.  Preserve state
           ;; that `kill-all-local-variables' would otherwise wipe.  A
           ;; per-buffer override (set by the `compilation-start' advice
@@ -451,6 +484,25 @@ same as in any compilation buffer."
 
 ;;; Spawning
 
+(defun ghostel-compile--commit-pending-frame (buffer)
+  "Render BUFFER's terminal grid when `ghostel--redraw-now' declined to.
+It declines while copy mode holds the terminal frozen, while the
+program has a synchronized-output batch open, and when no window
+supplies render metrics.  The process has exited and the teardown
+destroys the grid, so commit it here or lose the output it holds."
+  (when ghostel--pending-redraw
+    (let* ((inhibit-read-only t)
+           (inhibit-modification-hooks t)
+           (window (ghostel--get-render-window buffer))
+           (full (eq ghostel--input-mode 'line))
+           ;; Selecting a window that shows some other buffer would render
+           ;; into it, so render unselected when this buffer has none.
+           (rendered (if window
+                         (with-selected-window window
+                           (ghostel--redraw ghostel--term full t))
+                       (ghostel--redraw ghostel--term full t))))
+      (when rendered (setq ghostel--pending-redraw nil)))))
+
 (defun ghostel-compile--sentinel (process _event)
   "Sentinel for the compile PROCESS: finalize the buffer on exit."
   (when (memq (process-status process) '(exit signal))
@@ -462,7 +514,7 @@ same as in any compilation buffer."
             (message "ghostel-compile: sentinel exit=%S status=%S"
                      exit (process-status process)))
           ;; Cancel any scheduled redraw and commit the current terminal state
-		  ;; to the buffer synchronously.  Without this, a short-lived
+          ;; to the buffer synchronously.  Without this, a short-lived
           ;; command (`echo`, `false`, `exit 7`) finishes before the
           ;; ~16 ms redraw timer fires and its output is lost when
           ;; `--teardown-terminal' destroys the renderer.
@@ -470,7 +522,8 @@ same as in any compilation buffer."
             (when ghostel--redraw-timer
               (cancel-timer ghostel--redraw-timer)
               (setq ghostel--redraw-timer nil))
-            (ghostel--redraw-now buffer))
+            (ghostel--redraw-now buffer)
+            (ghostel-compile--commit-pending-frame buffer))
           (setq compilation-in-progress
                 (delq process compilation-in-progress))
           (when (fboundp 'compilation--update-in-progress-mode-line)

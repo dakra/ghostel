@@ -2293,7 +2293,7 @@ scanner skips them."
 (ert-deftest ghostel-test-osc133-prompt-stops-at-input ()
   "`ghostel-prompt' must end where `ghostel-input' begins on the row.
 Without this, the historical prompt row carries `ghostel-prompt'
-across the typed command, and `ghostel--detect-urls-skip-p' refuses
+across the typed command, and `ghostel--skip-match-p' refuses
 to linkify paths in past commands — even though they are outside the
 active input range."
   :tags '(native)

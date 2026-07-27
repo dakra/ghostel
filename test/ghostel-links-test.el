@@ -934,5 +934,503 @@ attached."
       (kill-buffer buf))))
 
 
+;;; Soft-wrapped links
+
+(defun ghostel-test--wrap-split (text column)
+  "Insert TEXT into the current buffer, wrapped at COLUMN like the terminal.
+The break is a real newline carrying `ghostel-wrap', matching what
+the renderer commits for a row the terminal wrapped."
+  (insert (substring text 0 column))
+  (insert (propertize "\n" 'ghostel-wrap t))
+  (insert (substring text column)))
+
+(defun ghostel-test--link-runs ()
+  "Return a list of (TEXT URI ID) for every `help-echo' run in the buffer."
+  (save-excursion
+    (let ((pos (point-min))
+          runs)
+      (while (setq pos (text-property-not-all pos (point-max) 'help-echo nil))
+        (let ((end (or (next-single-property-change pos 'help-echo)
+                       (point-max))))
+          (push (list (buffer-substring-no-properties pos end)
+                      (get-text-property pos 'help-echo)
+                      (get-text-property pos 'ghostel-link-id))
+                runs)
+          (setq pos end)))
+      (nreverse runs))))
+
+(ert-deftest ghostel-test-detect-file-across-soft-wrap ()
+  "A path the terminal split across rows is detected as one link.
+Both rows carry the whole `fileref:' URI and a shared
+`ghostel-link-id', and the wrap newline itself stays unmarked."
+  (let* ((file (locate-library "ghostel"))
+         (default-directory (file-name-directory file)))
+    (with-temp-buffer
+      (insert "see ")
+      (ghostel-test--wrap-split (concat file ":42") 20)
+      (insert " end\n")
+      (ghostel--detect-urls)
+      (let ((runs (ghostel-test--link-runs)))
+        (should (= 2 (length runs)))                        ; one run per row
+        (should (equal (list (concat "fileref:" file ":42")
+                             (concat "fileref:" file ":42"))
+                       (mapcar #'cadr runs)))               ; whole URI on both
+        (should (equal (nth 2 (car runs)) (nth 2 (cadr runs)))) ; shared id
+        (should (nth 2 (car runs))))                        ; and it is set
+      ;; The row break must stay clickable-free, or copying the link would
+      ;; drag the newline in.
+      (let ((wrap (text-property-not-all (point-min) (point-max)
+                                         'ghostel-wrap nil)))
+        (should wrap)
+        (should-not (get-text-property wrap 'help-echo))))))
+
+(ert-deftest ghostel-test-detect-url-across-soft-wrap ()
+  "A URL split across rows is detected as one link."
+  (with-temp-buffer
+    (insert "go ")
+    (ghostel-test--wrap-split "https://example.com/very/long/path" 22)
+    (insert " end\n")
+    (let ((ghostel-enable-url-detection t))
+      (ghostel--detect-urls))
+    (let ((runs (ghostel-test--link-runs)))
+      (should (= 2 (length runs)))
+      (should (equal '("https://example.com/very/long/path"
+                       "https://example.com/very/long/path")
+                     (mapcar #'cadr runs)))
+      (should (equal (nth 2 (car runs)) (nth 2 (cadr runs)))))))
+
+(ert-deftest ghostel-test-detect-ignores-hard-newline ()
+  "A path broken by a real newline is not joined.
+Only `ghostel-wrap' newlines come from terminal wrapping; a
+newline the program printed separates two unrelated lines."
+  (let* ((file (locate-library "ghostel"))
+         (default-directory (file-name-directory file)))
+    (with-temp-buffer
+      (insert "see " (substring file 0 20) "\n" (substring file 20) ":42 end\n")
+      (ghostel--detect-urls)
+      (should-not (seq-find (lambda (run) (equal (cadr run)
+                                                 (concat "fileref:" file ":42")))
+                            (ghostel-test--link-runs))))))
+
+(ert-deftest ghostel-test-soft-wrapped-link-navigates-as-one ()
+  "Link navigation treats the rows of a wrapped link as a single link.
+`ghostel--find-next-link' skips the continuation row via the shared
+`ghostel-link-id', and separate occurrences keep separate ids so the
+second one is still reachable."
+  (let* ((file (locate-library "ghostel"))
+         (default-directory (file-name-directory file)))
+    (with-temp-buffer
+      (insert "one ")
+      (ghostel-test--wrap-split (concat file ":1") 20)
+      (insert " x\ntwo ")
+      (ghostel-test--wrap-split (concat file ":2") 20)
+      (insert " y\n")
+      (ghostel--detect-urls)
+      (let* ((first (ghostel--find-next-link (point-min)))
+             (second (and first (ghostel--find-next-link first))))
+        (should first)
+        (should second)
+        ;; Two links, not four: each pair of rows counts once.
+        (should-not (ghostel--find-next-link second))
+        (should-not (equal (get-text-property first 'ghostel-link-id)
+                           (get-text-property second 'ghostel-link-id)))))))
+
+(ert-deftest ghostel-test-detect-skips-wrapped-cursor-line ()
+  "The whole line being typed is skipped, not just the cursor's row.
+A long command line occupies several rows; the path sits on the
+first one while the cursor is still on the last, and none of it may
+be linkified while the user is editing it."
+  (let* ((file (locate-library "ghostel"))
+         (default-directory (file-name-directory file)))
+    (with-temp-buffer
+      ;; Path complete on row 1, cursor down on row 2.
+      (insert "echo " file ":42 ")
+      (insert (propertize "\n" 'ghostel-wrap t))
+      (insert "still typing")
+      (let ((ghostel--cursor-char-pos (point-max)))
+        (ghostel--detect-urls))
+      (should-not (text-property-not-all (point-min) (point-max)
+                                         'help-echo nil)))))
+
+(ert-deftest ghostel-test-detect-extends-region-to-logical-line ()
+  "Scanning from a continuation row still sees the whole link.
+The live scan starts at the viewport's first row, which can be the
+middle of a line the terminal wrapped."
+  (let* ((file (locate-library "ghostel"))
+         (default-directory (file-name-directory file)))
+    (with-temp-buffer
+      (insert "see ")
+      (ghostel-test--wrap-split (concat file ":42") 20)
+      (insert " end\n")
+      (goto-char (point-max))
+      (let ((row2 (save-excursion (goto-char (point-min))
+                                  (forward-line 1)
+                                  (point))))
+        ;; Region starts mid-link, as `ghostel--viewport-start' can.
+        (ghostel--detect-urls row2 (point-max))
+        (let ((runs (ghostel-test--link-runs)))
+          (should (= 2 (length runs)))
+          (should (equal (list (concat "fileref:" file ":42"))
+                         (seq-uniq (mapcar #'cadr runs)))))
+        ;; And symmetrically when the region ends mid-link.
+        (let ((inhibit-read-only t))
+          (remove-text-properties (point-min) (point-max)
+                                  '(help-echo nil mouse-face nil keymap nil
+                                              ghostel-link-id nil
+                                              ghostel-link-text nil)))
+        (ghostel--detect-urls (point-min) (1- row2))
+        (let ((runs (ghostel-test--link-runs)))
+          (should (= 2 (length runs)))
+          (should (equal (list (concat "fileref:" file ":42"))
+                         (seq-uniq (mapcar #'cadr runs)))))))))
+
+(ert-deftest ghostel-test-detect-file-across-three-rows ()
+  "A link spanning more than two rows is still one link.
+Every row carries the whole URI and they share one id, so the
+offset mapping is exercised with several chunks."
+  (let* ((file (locate-library "ghostel"))
+         (default-directory (file-name-directory file))
+         (target (concat file ":42"))
+         (third (/ (length target) 3)))
+    (with-temp-buffer
+      (insert "see " (substring target 0 third))
+      (insert (propertize "\n" 'ghostel-wrap t))
+      (insert (substring target third (* 2 third)))
+      (insert (propertize "\n" 'ghostel-wrap t))
+      (insert (substring target (* 2 third)) " end\n")
+      (ghostel--detect-urls)
+      (let ((runs (ghostel-test--link-runs)))
+        (should (= 3 (length runs)))
+        (should (seq-every-p (lambda (run)
+                               (equal (cadr run) (concat "fileref:" target)))
+                             runs))
+        (should (= 1 (length (seq-uniq (mapcar (lambda (run) (nth 2 run))
+                                               runs)))))))))
+
+(ert-deftest ghostel-test-detect-bounds-huge-joined-line ()
+  "Joining stops before a line grows into a regexp stack overflow.
+A megabyte of unbroken output — a minified blob, base64 — is one
+logical line; joining all of it would hand the URL pattern a match
+candidate hundreds of thousands of characters long."
+  (with-temp-buffer
+    (insert "https://example.com/")
+    (dotimes (_ 4000)
+      (insert (make-string 80 ?x))
+      (insert (propertize "\n" 'ghostel-wrap t)))
+    (let ((ghostel-enable-url-detection t))
+      ;; The failure mode is a signal, not a wrong result.
+      (should (progn (ghostel--detect-urls) t))
+      ;; Joining restarts at the row limit, so the rows past it are scanned
+      ;; on their own instead of being swallowed into one link.
+      (should-not (get-text-property (- (point-max) 2) 'help-echo)))))
+
+(defmacro ghostel-test--with-link-fixture (spec &rest body)
+  "Run BODY with DIR bound to a temp directory holding a one-line FILE.
+SPEC is (DIR FILE).  `default-directory' is the temp directory, so a
+detected path resolves there and nothing depends on where this
+checkout happens to live."
+  (declare (indent 1))
+  (pcase-let ((`(,dir ,file) spec))
+    `(let* ((,dir (file-name-as-directory (make-temp-file "ghostel-link-" t)))
+            (,file (expand-file-name "a.el" ,dir))
+            (default-directory ,dir))
+       (unwind-protect
+           (progn (with-temp-file ,file (insert "x\n"))
+                  ,@body)
+         (delete-directory ,dir t)))))
+
+(ert-deftest ghostel-test-detect-refreshes-partly-repainted-link ()
+  "A link whose target changed is re-evaluated, not left as it was.
+The renderer rewrites only the rows that changed, so the rows of a
+wrapped link that did not change would otherwise keep pointing at
+text they no longer hold — here the line number shrinks from 912 to
+9 when the continuation row loses its digits."
+  (ghostel-test--with-link-fixture (dir file)
+    (with-temp-buffer
+      (insert "see " file ":9")
+      (insert (propertize "\n" 'ghostel-wrap t))
+      (insert "12 rest\n")
+      (goto-char (point-max))
+      (ghostel--detect-urls)
+      (should (equal (concat "fileref:" file ":912")
+                     (get-text-property 5 'help-echo)))
+      (save-excursion
+        (goto-char (point-min))
+        (forward-line 1)
+        (delete-region (point) (line-end-position))
+        (insert " rest"))
+      (goto-char (point-max))
+      (ghostel--detect-urls)
+      (should (equal (concat "fileref:" file ":9")
+                     (get-text-property 5 'help-echo))))))
+
+(ert-deftest ghostel-test-detect-drops-stranded-link ()
+  "A link no match covers any more is removed, not left behind.
+Repainting the continuation row can leave the first row of a wrapped
+link pointing at a path that is no longer on screen."
+  (ghostel-test--with-link-fixture (dir file)
+    (with-temp-buffer
+      (insert "see " (substring file 0 (- (length file) 3)))
+      (insert (propertize "\n" 'ghostel-wrap t))
+      (insert (substring file (- (length file) 3)) ":9 rest\n")
+      (goto-char (point-max))
+      (ghostel--detect-urls)
+      (should (equal (concat "fileref:" file ":9")
+                     (get-text-property 5 'help-echo)))
+      (save-excursion
+        (goto-char (point-min))
+        (forward-line 1)
+        (delete-region (point) (line-end-position))
+        (insert "hello world"))
+      (goto-char (point-max))
+      (ghostel--detect-urls)
+      (should-not (get-text-property 5 'help-echo))
+      (should-not (get-text-property 5 'keymap))
+      (should-not (get-text-property 5 'mouse-face))
+      (should-not (get-text-property 5 'ghostel-link-id))
+      (should-not (get-text-property 5 'ghostel-link-text)))))
+
+(ert-deftest ghostel-test-detect-keeps-link-across-directory-change ()
+  "Output already linkified keeps its target when the shell changes directory.
+Directory tracking moves `default-directory' as the user `cd's, but a
+line printed earlier still refers to where it was printed — and a
+same-named file in the new directory must not silently take over."
+  (ghostel-test--with-link-fixture (dir _file)
+    (let ((from (expand-file-name "from/src/" dir))
+          (to (expand-file-name "to/src/" dir)))
+      (make-directory from t)
+      (make-directory to t)
+      (with-temp-file (expand-file-name "main.rs" from) (insert "x\n"))
+      (with-temp-file (expand-file-name "main.rs" to) (insert "y\n"))
+      (with-temp-buffer
+        (insert "error at src/main.rs:42 boom\n")
+        (goto-char (point-max))
+        (let ((default-directory (expand-file-name "from/" dir)))
+          (ghostel--detect-urls))
+        (let ((target (concat "fileref:" (expand-file-name "main.rs" from)
+                              ":42")))
+          (should (equal target (get-text-property 10 'help-echo)))
+          (let ((default-directory (expand-file-name "to/" dir)))
+            (ghostel--detect-urls))
+          (should (equal target (get-text-property 10 'help-echo))))))))
+
+(ert-deftest ghostel-test-detect-keeps-unscanned-links ()
+  "A scan with one pattern switched off leaves the other's links alone.
+Clearing links no match covers must not mistake `not scanned for'
+for `no longer there'."
+  (ghostel-test--with-link-fixture (dir file)
+    (with-temp-buffer
+      (insert "go https://example.com/x end\n")
+      (goto-char (point-max))
+      (ghostel--detect-urls)
+      (should (equal "https://example.com/x" (get-text-property 4 'help-echo)))
+      (let ((ghostel-enable-url-detection nil))
+        (ghostel--detect-urls))
+      (should (equal "https://example.com/x" (get-text-property 4 'help-echo))))
+    (with-temp-buffer
+      (insert "see " file ":9 end\n")
+      (goto-char (point-max))
+      (ghostel--detect-urls)
+      (should (equal (concat "fileref:" file ":9")
+                     (get-text-property 5 'help-echo)))
+      (let ((ghostel-enable-file-detection nil))
+        (ghostel--detect-urls))
+      (should (equal (concat "fileref:" file ":9")
+                     (get-text-property 5 'help-echo))))))
+
+(ert-deftest ghostel-test-detect-url-wins-over-path-inside-it ()
+  "A URL keeps its link even when its own text looks like a path.
+`http://tmp/x' contains `//tmp/x', which the file pattern matches and
+which may name a real file — the URL must not be replaced by it, and
+the file must not be stat'ed on every scan."
+  (ghostel-test--with-link-fixture (dir _file)
+    (let* ((url (concat "http:/" dir "a.el")))
+      ;; The URL's path half is exactly the fixture file, which exists.
+      (with-temp-buffer
+        (insert "get " url " done\n")
+        (goto-char (point-max))
+        (let ((stats 0))
+          (cl-letf* ((real (symbol-function 'file-exists-p))
+                     ((symbol-function 'file-exists-p)
+                      (lambda (f) (setq stats (1+ stats)) (funcall real f))))
+            (dotimes (_ 3) (ghostel--detect-urls)))
+          (should (equal url (get-text-property 5 'help-echo)))
+          ;; One run, not a URL prefix followed by a fileref.
+          (should (= 1 (length (ghostel-test--link-runs))))
+          (should (zerop stats)))
+        ;; Still protected once URL detection is switched off, so toggling
+        ;; the option cannot turn an existing URL link into a file link.
+        ;; Assert past `http:', where a file match would start.
+        (let ((ghostel-enable-url-detection nil))
+          (ghostel--detect-urls))
+        (should (equal url (get-text-property 12 'help-echo)))
+        (should (= 1 (length (ghostel-test--link-runs))))))))
+
+(ert-deftest ghostel-test-detect-url-owns-the-path-inside-it ()
+  "A URL keeps the file pass out of the `//host/path' half it contains.
+The path inside this URL names a file that exists, so only the URL's
+claim on the span stops it becoming a local-file link."
+  (ghostel-test--with-link-fixture (dir file)
+    (with-temp-buffer
+      (insert " https:/" file ":9 end\n")
+      (goto-char (point-max))
+      (ghostel--detect-urls)
+      (should-not (seq-find (lambda (run)
+                              (string-prefix-p "fileref:" (cadr run)))
+                            (ghostel-test--link-runs)))
+      (ignore dir))))
+
+(ert-deftest ghostel-test-detect-replaces-stale-url-link-in-one-scan ()
+  "A leftover URL link over what is now a path becomes the path link.
+One scan is enough: the file pass must not treat a URL link no URL
+match covers as a URL that still owns the text."
+  (ghostel-test--with-link-fixture (dir file)
+    (with-temp-buffer
+      (insert "x " file ":9 end\n")
+      (goto-char (point-max))
+      ;; Simulate the leftover an earlier scan would have attached.
+      (let ((beg 3)
+            (end (+ 3 (length file))))
+        (put-text-property beg end 'help-echo "http://old.example")
+        (put-text-property beg end 'ghostel-link-text "http://old.example")
+        (put-text-property beg end 'ghostel-link-id
+                           (cons 'ghostel-detected 99)))
+      (ghostel--detect-urls)
+      (should (equal (concat "fileref:" file ":9")
+                     (get-text-property 3 'help-echo)))
+      (ignore dir))))
+
+(ert-deftest ghostel-test-detect-keeps-osc8-links-when-sweeping ()
+  "Clearing stranded links never touches a link ghostel did not detect."
+  (with-temp-buffer
+    (insert "plain text here\n")
+    (put-text-property 1 6 'help-echo "https://osc8.example")
+    (put-text-property 1 6 'ghostel-link-id "A")
+    (goto-char (point-max))
+    (ghostel--detect-urls)
+    (should (equal "https://osc8.example" (get-text-property 1 'help-echo)))
+    (should (equal "A" (get-text-property 1 'ghostel-link-id)))))
+
+(ert-deftest ghostel-test-detect-keeps-link-across-repeated-scans ()
+  "Rescanning unchanged output leaves its links exactly as they are."
+  (ghostel-test--with-link-fixture (dir file)
+    (with-temp-buffer
+      (insert "see " file ":9 end\n")
+      (goto-char (point-max))
+      (ghostel--detect-urls)
+      (let ((id (get-text-property 5 'ghostel-link-id)))
+        (dotimes (_ 5) (ghostel--detect-urls))
+        (should (equal (concat "fileref:" file ":9")
+                       (get-text-property 5 'help-echo)))
+        ;; A fresh id every pass would mean the link is rewritten each time.
+        (should (equal id (get-text-property 5 'ghostel-link-id)))))))
+
+(ert-deftest ghostel-test-detect-leaves-foreign-link-alone ()
+  "An OSC 8 span overlapping a detected match keeps its own target.
+Checked wherever the span falls: over the start of the match, inside
+the first row, and on the continuation row."
+  (ghostel-test--with-link-fixture (dir file)
+    (dolist (spot '(start middle continuation))
+      (with-temp-buffer
+        (insert "see " (substring file 0 12))
+        (insert (propertize "\n" 'ghostel-wrap t))
+        (insert (substring file 12) ":9 end\n")
+        (let ((row2 (save-excursion (goto-char (point-min))
+                                    (forward-line 1)
+                                    (point))))
+          (pcase spot
+            ('start (put-text-property 5 12 'help-echo "https://osc8.example"))
+            ('middle (put-text-property 8 14 'help-echo "https://osc8.example"))
+            ('continuation (put-text-property row2 (+ row2 3)
+                                              'help-echo "https://osc8.example")))
+          (goto-char (point-max))
+          (ghostel--detect-urls)
+          ;; The foreign span is untouched and the match is left alone.
+          (should (equal "https://osc8.example"
+                         (get-text-property
+                          (pcase spot ('start 5) ('middle 8) ('continuation row2))
+                          'help-echo)))
+          (should-not (equal (concat "fileref:" file ":9")
+                             (get-text-property 5 'help-echo))))))))
+
+(ert-deftest ghostel-test-soft-wrapped-link-survives-unwrap ()
+  "Rows linkified live merge into one run once the rows are joined.
+`ghostel-compile' joins soft-wrapped rows when a run finishes; the
+link must not end up with a gap where the row break was."
+  (let* ((file (locate-library "ghostel"))
+         (default-directory (file-name-directory file)))
+    (with-temp-buffer
+      (insert "err ")
+      (ghostel-test--wrap-split (concat file ":42") 20)
+      (insert " boom\n")
+      (ghostel--detect-urls)
+      (should (= 2 (length (ghostel-test--link-runs))))
+      (ghostel-compile--unwrap-soft-wraps)
+      (let ((runs (ghostel-test--link-runs)))
+        (should (= 1 (length runs)))
+        (should (equal (concat file ":42") (car (car runs))))
+        ;; Clickable end to end, including where the break used to be.
+        (let ((start (text-property-not-all (point-min) (point-max)
+                                            'help-echo nil)))
+          (dotimes (i (length (concat file ":42")))
+            (should (get-text-property (+ start i) 'keymap))
+            (should (get-text-property (+ start i) 'mouse-face))))))))
+
+(ert-deftest ghostel-test-detect-file-across-soft-wrap-native ()
+  "The renderer's own wrap newlines make a long path detectable.
+Drives a narrow terminal so libghostty wraps the path itself,
+rather than relying on a hand-built `ghostel-wrap' newline."
+  :tags '(native)
+  ;; Half the line, so the path spans several rows however deep this
+  ;; checkout sits.
+  (let* ((file (locate-library "ghostel"))
+         (line (concat "see " file ":42 end"))
+         (cols (/ (length line) 2)))
+    (ghostel-test--with-terminal-buffer (_buf term 10 cols 1000)
+      (let* ((default-directory (file-name-directory file))
+             (inhibit-read-only t))
+        (ghostel--write-vt term (concat line "\r\n"))
+        (ghostel--redraw term t)
+        (ghostel--detect-urls)
+        (let ((runs (ghostel-test--link-runs)))
+          (should (> (length runs) 1))  ; the renderer split the path
+          (should (seq-every-p (lambda (run)
+                                 (equal (cadr run)
+                                        (concat "fileref:" file ":42")))
+                               runs))
+          (should (= 1 (length (seq-uniq (mapcar (lambda (run) (nth 2 run))
+                                                 runs))))))))))
+
+(ert-deftest ghostel-test-detect-file-survives-reflow-native ()
+  "A link keeps working after a resize reflows the terminal.
+Narrowing the terminal re-splits a path that fitted on one row,
+which used to drop the link entirely."
+  :tags '(native)
+  ;; Both widths follow the path: it has to fit on one row before the
+  ;; resize and need several after, wherever this checkout sits.
+  (let* ((file (locate-library "ghostel"))
+         (wide (+ (length file) 10))
+         (narrow (/ (length file) 2)))
+    (ghostel-test--with-terminal-buffer (_buf term 10 wide 1000)
+      (let* ((default-directory (file-name-directory file))
+             (uri (concat "fileref:" file ":42"))
+             (inhibit-read-only t))
+        (ghostel--write-vt term (concat file ":42\r\n"))
+        (ghostel--redraw term t)
+        (ghostel--detect-urls)
+        (should (= 1 (length (ghostel-test--link-runs)))) ; one row before
+        (should (equal (list uri)
+                       (seq-uniq (mapcar #'cadr (ghostel-test--link-runs)))))
+        ;; Reflow: the same output now needs several rows.
+        (ghostel--set-size term 10 narrow)
+        (ghostel--redraw term t)
+        (ghostel--detect-urls)
+        (let ((runs (ghostel-test--link-runs)))
+          (should (> (length runs) 1))
+          (should (equal (list uri) (seq-uniq (mapcar #'cadr runs))))
+          ;; The rows must still form one link, not several.
+          (should (= 1 (length (seq-uniq (mapcar (lambda (run) (nth 2 run))
+                                                 runs))))))))))
+
 (provide 'ghostel-links-test)
 ;;; ghostel-links-test.el ends here

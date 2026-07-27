@@ -1531,7 +1531,7 @@ ambiguous)."
 
 (ert-deftest ghostel-test-line-mode-restore-marks-ghostel-input ()
   "`ghostel--line-mode-restore' marks the input region with `ghostel-input'.
-This makes `ghostel--detect-urls-skip-p' skip the user's typed
+This makes `ghostel--skip-match-p' skip the user's typed
 input on the cursor's line so a path the user typed locally does
 not get linkified (which would steal RET from line-mode-send)."
   (let ((buf (generate-new-buffer " *ghostel-test-line-input-prop*")))
