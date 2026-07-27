@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.46.0] — 2026-07-27
+
+### Added
+- Programmatic insertion commands such as `insert-char` and `emoji-insert` now
+  forward inserted text to live terminals instead of failing against the
+  read-only buffer. Multi-line insertions use bracketed paste.
+
 ### Changed
 - Building the native module now requires exactly Zig 0.16.0.
 
