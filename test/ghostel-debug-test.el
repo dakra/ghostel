@@ -141,8 +141,8 @@ branch fires and emits the full TERM/COLORTERM line set."
 (ert-deftest ghostel-test-debug-info-environment-section-remote-labeling ()
   "Remote ghostel buffer → Environment section hides local-spawn vars.
 For a remote ghostel buffer the on-remote `/bin/sh -c' preamble owns
-TERM/TERMINFO/TERM_PROGRAM/COLORTERM (issue #224 fix), so showing the
-local `(ghostel--terminal-env)' as if it were the spawn env is
+TERM/TERMINFO/TERM_PROGRAM/COLORTERM, so showing the local
+`(ghostel--terminal-env)' as if it were the spawn env is
 misleading.  Verify the new label fires and TERM/COLORTERM lines are
 suppressed; INSIDE_EMACS still shows because it's pushed regardless."
   (let ((display-buffer-overriding-action '(display-buffer-no-window))
@@ -173,7 +173,8 @@ suppressed; INSIDE_EMACS still shows because it's pushed regardless."
 (ert-deftest ghostel-test-debug-info-tramp-section-on-remote ()
   "`ghostel-debug-info' adds a TRAMP section for remote ghostel buffers.
 TRAMP knobs that load-bear in `make-process' dispatch (and that
-silently misbehave for #224-class bugs) belong in the standard report."
+silently misbehave for remote-spawn TERM bugs) belong in the
+standard report."
   (let ((display-buffer-overriding-action '(display-buffer-no-window))
         (inhibit-message t))
     (unwind-protect
@@ -226,6 +227,109 @@ to capture spawn-time diagnostics on the next reproduction."
                 (should (string-match-p "^--- Spawn capture ---" content))
                 (should (string-match-p "no capture" content))
                 (should (string-match-p "ghostel-debug-ghostel" content))))))
+      (when (get-buffer "*ghostel-debug*")
+        (kill-buffer "*ghostel-debug*")))))
+
+(ert-deftest ghostel-test-debug-info-non-ghostel-buffer-sections ()
+  "Non-ghostel buffers get Buffer/Window sections, not a bare skip line.
+The report must say where it was captured (buffer name, mode chain,
+directory, read-only state) even without a live terminal; only the
+process/spawn/terminal sections are skipped."
+  (let ((display-buffer-overriding-action '(display-buffer-no-window))
+        (inhibit-message t)
+        (ghostel--terminfo-warned t))
+    (unwind-protect
+        (save-window-excursion
+          (with-temp-buffer
+            (ghostel-debug-info)
+            (with-current-buffer "*ghostel-debug*"
+              (let ((content (buffer-string)))
+                (should (string-match-p "^--- Buffer ---" content))
+                (should (string-match-p "Major mode:          fundamental-mode"
+                                        content))
+                (should (string-match-p "Read-only:" content))
+                (should (string-match-p "^--- Window ---" content))
+                (should (string-match-p "no live ghostel terminal" content))
+                (should-not (string-match-p "not in a ghostel buffer" content))
+                (should-not (string-match-p "^--- Process ---" content))
+                (should-not (string-match-p "^--- Terminal ---" content))))))
+      (when (get-buffer "*ghostel-debug*")
+        (kill-buffer "*ghostel-debug*")))))
+
+(ert-deftest ghostel-test-debug-info-compile-run-section ()
+  "`ghostel-debug-info' reports run facts in a finished compile buffer.
+The Compile run section must show command, launch mode, finish time
+with duration, exit status, and the parsed-error count; the generic
+Buffer/Window/Rendering sections must render for the (displayed)
+non-ghostel buffer."
+  (require 'ghostel-compile)
+  (let ((display-buffer-overriding-action '(display-buffer-no-window))
+        (inhibit-message t)
+        (ghostel--terminfo-warned t))
+    (unwind-protect
+        (save-window-excursion
+          (ghostel-test--with-compile-buffer buf
+            (let ((inhibit-read-only t))
+              (insert "header\n")
+              (setq ghostel-compile--command "make -j4 test"
+                    ghostel-compile--directory default-directory
+                    ghostel-compile--start-time (time-subtract (current-time) 3)
+                    ghostel-compile--scan-marker (copy-marker (point)))
+              (insert "/tmp/foo.c:10:5: error: bad thing\n"))
+            (ghostel-compile--finalize buf 2 (current-time))
+            (should (derived-mode-p 'ghostel-compile-view-mode))
+            (set-window-buffer (selected-window) buf)
+            (ghostel-debug-info)
+            (with-current-buffer "*ghostel-debug*"
+              (let ((content (buffer-string)))
+                (should (string-match-p "^--- Compile run ---" content))
+                (should (string-match-p "Command:             make -j4 test"
+                                        content))
+                (should (string-match-p "Launch mode:         compilation-style"
+                                        content))
+                (should (string-match-p "Finished:            .*duration "
+                                        content))
+                (should (string-match-p "Exit status:         2" content))
+                (should (string-match "Errors parsed:       \\([0-9]+\\) message"
+                                      content))
+                (should (> (string-to-number (match-string 1 content)) 0))
+                (should (string-match-p "^--- Compile routing ---" content))
+                (should (string-match-p "Global mode:" content))
+                (should (string-match-p
+                         "ghostel-compile-view-mode < compilation-mode"
+                         content))
+                (should (string-match-p "^--- Window ---" content))
+                (should (string-match-p "Window body:" content))
+                (should (string-match-p "^--- Rendering ---" content))
+                (should-not (string-match-p "not in a ghostel buffer"
+                                            content))))))
+      (when (get-buffer "*ghostel-debug*")
+        (kill-buffer "*ghostel-debug*")))))
+
+(ert-deftest ghostel-test-debug-info-compile-run-while-running ()
+  "A not-yet-finalized compile buffer reports a running status.
+No finish time or exit status exists yet; the section must say so
+instead of printing nils."
+  (require 'ghostel-compile)
+  (let ((display-buffer-overriding-action '(display-buffer-no-window))
+        (inhibit-message t)
+        (ghostel--terminfo-warned t))
+    (unwind-protect
+        (save-window-excursion
+          (ghostel-test--with-compile-buffer buf
+            (setq ghostel-compile--command "sleep 60"
+                  ghostel-compile--directory default-directory
+                  ghostel-compile--start-time (current-time))
+            (ghostel-debug-info)
+            (with-current-buffer "*ghostel-debug*"
+              (let ((content (buffer-string)))
+                (should (string-match-p "^--- Compile run ---" content))
+                (should (string-match-p "Command:             sleep 60" content))
+                (should (string-match-p
+                         "Status:              running (not finalized)"
+                         content))
+                (should-not (string-match-p "Finished:" content))
+                (should-not (string-match-p "Exit status:" content))))))
       (when (get-buffer "*ghostel-debug*")
         (kill-buffer "*ghostel-debug*")))))
 
@@ -284,10 +388,11 @@ sections all materialize."
                 (should (string-match-p "Program:             /bin/bash"
                                         content))
                 (should (string-match-p "Geometry:            80x24" content))
-                ;; The wrapper script — load-bearing for #224.
+                ;; The wrapper script - load-bearing for remote-spawn
+                ;; TERM diagnostics.
                 (should (string-match-p "Wrapper command sent" content))
                 (should (string-match-p "infocmp xterm-ghostty" content))
-                ;; The legacy-async divergence section — :executed-command
+                ;; The legacy-async divergence section - :executed-command
                 ;; differs from :command, so the renderer must surface it.
                 (should (string-match-p
                          "Local process command (`process-command'):"
@@ -354,7 +459,7 @@ dropped (so steady-state shell output doesn't accumulate unboundedly)."
                                      :filter-bytes)))
             (should (plist-get ghostel-debug--spawn-capture
                                :filter-truncated))
-            ;; Further chunks no-op against the cap — no new event,
+            ;; Further chunks no-op against the cap - no new event,
             ;; total bytes unchanged.
             (ghostel-debug--capture-filter proc "more")
             (should (= 2 (length (plist-get ghostel-debug--spawn-capture
@@ -404,7 +509,7 @@ byte delta."
                                 :extra-env nil
                                 :process-environment process-environment
                                 :command '("/bin/sh" "-c" "exec /bin/sh")
-                                ;; Local spawn — no TRAMP rewriting,
+                                ;; Local spawn - no TRAMP rewriting,
                                 ;; so the executed cmd matches.
                                 :executed-command
                                 '("/bin/sh" "-c" "exec /bin/sh")
@@ -457,7 +562,7 @@ so no actual shell is spawned."
                         (plist-put plist :command executed-command)))))
       (let* ((buf (generate-new-buffer " *ghostel-test-debug-ghostel*"))
              ;; Stub `ghostel' to call `ghostel--spawn-pty' synchronously
-             ;; in `buf' — mimics the path through `ghostel--start-process'
+             ;; in `buf' - mimics the path through `ghostel--start-process'
              ;; without dragging in module load, buffer init, etc.
              (calls 0))
         (cl-letf (((symbol-function #'ghostel--spawn-pty)
@@ -479,7 +584,7 @@ so no actual shell is spawned."
                 (ghostel-debug-ghostel)
                 ;; Both advices should have removed themselves (or been
                 ;; stripped by the unwind-protect cleanup if they never
-                ;; fired — either way they must not linger).
+                ;; fired - either way they must not linger).
                 (should-not (advice-member-p
                              #'ghostel-debug--capture-spawn-pty
                              'ghostel--spawn-pty))
@@ -494,7 +599,7 @@ so no actual shell is spawned."
                   (should (eq 24 (plist-get cap :rows)))
                   (should (equal "/bin/sh" (plist-get cap :program)))
                   ;; :command is the wrapper ghostel passed to make-process
-                  ;; — captured via cl-letf* on make-process *before* the
+                  ;; - captured via cl-letf* on make-process *before* the
                   ;; test stub substitutes :command.  So it must be the
                   ;; ghostel wrapper (("/bin/sh" "-c" "<...>")), not the
                   ;; substituted '("true").
@@ -543,10 +648,10 @@ delta in the phase timings section."
 
 (ert-deftest ghostel-test-debug-redraw-advices-tolerate-force ()
   "Debug redraw/latency advices accept and forward `ghostel--redraw-now's FORCE.
-Regression for #460: adding the optional FORCE argument made the :around
-log advice and the :after latency advice receive an extra argument.  Both
-must tolerate it without `wrong-number-of-arguments', and the :around must
-forward FORCE to the real redraw."
+Regression: adding the optional FORCE argument made the :around log
+advice and the :after latency advice receive an extra argument.  Both
+must tolerate it without `wrong-number-of-arguments', and the :around
+must forward FORCE to the real redraw."
   (let ((log-buf (generate-new-buffer " *ghostel-test-redraw-advice*"))
         (recorded nil))
     (unwind-protect
@@ -574,7 +679,7 @@ forward FORCE to the real redraw."
 
 
 (ert-deftest ghostel-test-vt-warnings-do-not-leak-to-stderr ()
-  "VT-parser warnings must not reach the module's stderr (#425).
+  "VT-parser warnings must not reach the module's stderr.
 In `emacs -nw' the module's stderr is the controlling tty, so a stray
 write (e.g. lazygit triggering \"unimplemented mode: 9001\") paints raw
 bytes onto the screen outside Emacs's redisplay and lingers near the
@@ -609,7 +714,7 @@ that feeds the offending sequence and asserts its stderr is clean."
 
 (ert-deftest ghostel-test-vt-log-still-routes-to-debug-buffer ()
   "With `vt-log' enabled, parser warnings still reach the debug buffer.
-Guards that silencing stderr (#425) didn't break the opt-in diagnosis
+Guards that silencing stderr didn't break the opt-in diagnosis
 path: `ghostel--enable-vt-log' must route libghostty logs to
 `ghostel-debug--log-buffer' via `ghostel--debug-log-vt'."
   :tags '(native)

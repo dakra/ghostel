@@ -49,8 +49,23 @@
 ;; guarded with `boundp'/`fboundp' at runtime; these `defvar's just
 ;; quiet the byte-compiler on Emacs 28/29 where TRAMP doesn't ship
 ;; them.  Bare `defvar' without a value is a forward declaration only
-;; — it doesn't override TRAMP's real definition when present.
+;; - it doesn't override TRAMP's real definition when present.
 (defvar tramp-direct-async-process)
+
+;; Forward declarations for `ghostel-compile' / `compile' symbols read
+;; by `ghostel-debug-info'.  All reads are gated on the feature being
+;; loaded (`featurep' / `local-variable-p'), so bare `defvar's suffice.
+(defvar ghostel-compile--command)
+(defvar ghostel-compile--directory)
+(defvar ghostel-compile--start-time)
+(defvar ghostel-compile--end-time)
+(defvar ghostel-compile--last-exit)
+(defvar ghostel-compile--interactive)
+(defvar ghostel-compile--finalized)
+(defvar compilation-arguments)
+(defvar compilation--parsed)
+(defvar compilation-in-progress)
+(declare-function ghostel-compile--format-duration "ghostel-compile")
 
 (defvar ghostel-debug--log-buffer nil
   "Buffer used for ghostel debug logging.")
@@ -59,33 +74,33 @@
   "Spawn-time diagnostics for this ghostel buffer, or nil.
 Populated by `ghostel-debug-ghostel'.  A plist with:
   :time, :default-directory, :remote-p
-  :start-process-time — when `ghostel--start-process' was entered
+  :start-process-time - when `ghostel--start-process' was entered
                         (just before any TRAMP shell-detection round-trip)
   :program, :program-args, :cols, :rows, :extra-env
-  :command          — the wrapper command ghostel passed to
+  :command          - the wrapper command ghostel passed to
                       `make-process' (the ((\"/bin/sh\" \"-c\" \"<wrapper>\"))
                       list).  Captured via `cl-letf*' on `make-process'
                       so it survives TRAMP's non-direct-async rewriting.
-  :executed-command — what `process-command' returns on the resulting
+  :executed-command - what `process-command' returns on the resulting
                       process.  Equals :command on local + direct-async
                       spawns; differs (e.g. `(\"/bin/sh\" \"-i\")') on
                       TRAMP's legacy async path, which dispatches the
                       real wrapper via the connection shell and uses
                       a local bridge process for stdio.
-  :process-environment — copy taken just before `make-process'
-  :filter-events    — list of (TIMESTAMP . CHUNK) PTY-output events,
+  :process-environment - copy taken just before `make-process'
+  :filter-events    - list of (TIMESTAMP . CHUNK) PTY-output events,
                       chronological, capped at `:filter-cap' total bytes
-  :filter-cap       — soft cap (total bytes) for :filter-events
-  :filter-bytes     — running total of bytes appended to :filter-events
-  :filter-truncated — non-nil once cap reached and chunks dropped
-  :send-keys        — list of (TIMESTAMP . STRING) sends, capped at `:send-cap'
-  :send-cap         — soft cap (count) for :send-keys
-  :send-truncated   — non-nil if more sends arrived after the cap
+  :filter-cap       - soft cap (total bytes) for :filter-events
+  :filter-bytes     - running total of bytes appended to :filter-events
+  :filter-truncated - non-nil once cap reached and chunks dropped
+  :send-keys        - list of (TIMESTAMP . STRING) sends, capped at `:send-cap'
+  :send-cap         - soft cap (count) for :send-keys
+  :send-truncated   - non-nil if more sends arrived after the cap
 Read by `ghostel-debug-info'.  Filter events and sends share a
 single chronological timeline in the report so `sent X, received
 no echo for Ns' is visible at a glance.  Phase timestamps
 \(`:start-process-time' → `:time' → first :filter-events entry)
-isolate where time goes per spawn — elisp prep vs TRAMP/ssh
+isolate where time goes per spawn - elisp prep vs TRAMP/ssh
 handshake vs remote shell startup.")
 
 (defvar-local ghostel-debug--pending-start-process-time nil
@@ -113,7 +128,7 @@ Each entry is a plist:
   :time          (current-time)
   :buffer        ghostel buffer (may have been killed)
   :buffer-name   string snapshot
-  :source        symbol — `zig', `regex-remote', `regex-unknown', or
+  :source        symbol - `zig', `regex-remote', `regex-unknown', or
                  nil if the underlying signal vanished by the time the
                  advice re-probed (still useful: indicates a transient)
   :cursor        (COL . ROW) at the moment of the fire, or nil
@@ -238,7 +253,7 @@ Logs filter calls, key sends, resize events, redraw decisions
                  #'ghostel-debug--log-password-edge)
   (when (fboundp 'ghostel--disable-vt-log)
     (ghostel--disable-vt-log))
-  ;; Logging is done — flip the buffer to read-only so the captured log
+  ;; Logging is done - flip the buffer to read-only so the captured log
   ;; can't be edited by accident.  `ghostel-debug-start' resets the mode
   ;; before erasing.
   (when (buffer-live-p ghostel-debug--log-buffer)
@@ -507,7 +522,7 @@ Ignores `ghostel--redraw-now's optional force argument."
             (insert (format "  pty=%.2fms render=%.2fms total=%.2fms\n"
                             (* 1000 pty) (* 1000 rnd) (* 1000 tot)))))
         (insert "\n")
-        ;; Measurement is done — flip to read-only.
+        ;; Measurement is done - flip to read-only.
         (special-mode)))
     (message "ghostel-debug: latency report ready in *ghostel-debug*")))
 
@@ -722,7 +737,7 @@ will render."
           (goto-char (point-min)))
         (special-mode))
       (display-buffer out)
-      (message "Wrote *ghostel-debug-glyph* — paste into the issue"))))
+      (message "Wrote *ghostel-debug-glyph* - paste into the issue"))))
 
 ;;; Environment diagnostics
 
@@ -732,6 +747,12 @@ will render."
 Collects Emacs version, system info, native module state, frame and
 window geometry, terminal state, process info, and any non-default
 ghostel settings into *ghostel-debug* for pasting into bug reports.
+
+Works in any buffer: buffer, window, and rendering sections are
+always reported for the invoking buffer; process/spawn/terminal
+sections need a live ghostel buffer.  In a `ghostel-compile' buffer
+\(running or finished) a Compile run section reports the command,
+timings, exit status, and error-parse state.
 
 In a ghostel buffer with a TRAMP `default-directory', also prints a
 TRAMP section (version, `tramp-terminal-type', direct-async path,
@@ -743,10 +764,11 @@ first PTY output bytes, first keystrokes).
 
 With prefix arg WITH-REMOTE-PROBES, runs live probes against the
 remote (`infocmp', terminfo path checks, `/bin/sh' identity, login
-shell) — adds latency and requires a healthy TRAMP connection, so
+shell) - adds latency and requires a healthy TRAMP connection, so
 omit it when the connection itself is the suspected fault."
   (interactive "P")
   (let ((out (get-buffer-create "*ghostel-debug*"))
+        (src-buf (current-buffer))
         (ghostel-buf (when (derived-mode-p 'ghostel-mode) (current-buffer))))
     (with-current-buffer out
       (let ((inhibit-read-only t))
@@ -825,11 +847,11 @@ omit it when the connection itself is the suspected fault."
                           (frame-parameter frame 'background-mode)))
           (insert (format "Enabled themes:      %s\n"
                           (or custom-enabled-themes "(none)"))))
-        ;; Environment — what ghostel hands the spawned shell.  For LOCAL
+        ;; Environment - what ghostel hands the spawned shell.  For LOCAL
         ;; spawns, vars from `ghostel--terminal-env' (TERM, COLORTERM,
         ;; optionally TERMINFO and TERM_PROGRAM) are pushed via
         ;; `process-environment'.  For REMOTE spawns, those four are NOT
-        ;; pushed — the on-remote `/bin/sh -c' preamble (visible in
+        ;; pushed - the on-remote `/bin/sh -c' preamble (visible in
         ;; Process → Command) sets them after probing the remote for
         ;; `xterm-ghostty' terminfo.  In both cases INSIDE_EMACS and
         ;; `ghostel-environment' user overrides are propagated.  LANG/LC_*
@@ -850,7 +872,7 @@ omit it when the connection itself is the suspected fault."
             (dolist (entry (sort (copy-sequence ghostel-environment) #'string<))
               (insert (format "  %s\n" entry)))
             (insert "(TERM/TERMINFO/TERM_PROGRAM/COLORTERM not pushed for remote\n")
-            (insert " spawns — set by the on-remote /bin/sh -c preamble; see\n")
+            (insert " spawns - set by the on-remote /bin/sh -c preamble; see\n")
             (insert " Process → Command, or run M-x ghostel-debug-ghostel and\n")
             (insert " inspect the captured wrapper script.)\n"))
            (t
@@ -865,26 +887,31 @@ omit it when the connection itself is the suspected fault."
           (dolist (var '("LANG" "LC_ALL" "LC_CTYPE"))
             (insert (format "  %s=%s\n" var (or (getenv var) ""))))
           (insert "(user dotfiles may modify these at runtime)\n"))
-        ;; Buffer / Process / Window / Terminal — only when in a ghostel buffer.
-        ;; Capture buffer-local state into locals first, then insert in `out';
-        ;; doing inserts inside `with-current-buffer ghostel-buf' would write
-        ;; them to the wrong buffer.
-        (if (not ghostel-buf)
-            (insert "\n(not in a ghostel buffer — buffer/process/window/terminal sections skipped)\n")
-          (let (buf-name maj-mode dir remote modes
-                proc cmd shell shell-integ tramp-integ detected
-                term term-rows term-cols force timer input-mode
-                buf-size buf-lines pt dec2026 alt-scr
-                dln-on dln-style spawn-capture)
-            (with-current-buffer ghostel-buf
-              (setq buf-name (buffer-name)
-                    maj-mode major-mode
-                    dir default-directory
-                    remote (file-remote-p default-directory)
-                    modes (cl-loop for m in minor-mode-list
-                                   when (and (boundp m) (symbol-value m))
-                                   collect (symbol-name m))
-                    proc ghostel--process
+        ;; Buffer / Window / Rendering are reported for whatever buffer
+        ;; the command was invoked in, ghostel or not.  Capture
+        ;; buffer-local state into locals first, then insert in `out';
+        ;; doing inserts inside `with-current-buffer src-buf' would
+        ;; write them to the wrong buffer.
+        (let (buf-name mode-chain dir remote read-only modes
+                       proc cmd shell shell-integ tramp-integ detected
+                       term term-rows term-cols force timer input-mode
+                       buf-size buf-lines pt dec2026 alt-scr
+                       dln-on dln-style spawn-capture)
+          (with-current-buffer src-buf
+            (setq buf-name (buffer-name)
+                  mode-chain (cl-loop for m = major-mode
+                                      then (get m 'derived-mode-parent)
+                                      while m collect m)
+                  dir default-directory
+                  remote (file-remote-p default-directory)
+                  read-only buffer-read-only
+                  modes (cl-loop for m in minor-mode-list
+                                 when (and (boundp m) (symbol-value m))
+                                 collect (symbol-name m))
+                  dln-on (bound-and-true-p display-line-numbers-mode)
+                  dln-style display-line-numbers)
+            (when ghostel-buf
+              (setq proc ghostel--process
                     cmd (and proc (process-live-p proc)
                              (mapconcat (lambda (s) (format "%s" s))
                                         (process-command proc) " "))
@@ -905,23 +932,36 @@ omit it when the connection itself is the suspected fault."
                     pt (point)
                     dec2026 (and term (ghostel--mode-enabled term 2026))
                     alt-scr (and term (ghostel--alt-screen-p term))
-                    dln-on (bound-and-true-p display-line-numbers-mode)
-                    dln-style display-line-numbers
-                    spawn-capture ghostel-debug--spawn-capture))
-            (let ((win (get-buffer-window ghostel-buf)))
-              ;; Buffer
-              (insert "\n--- Buffer ---\n")
-              (insert (format "Buffer name:         %s\n" buf-name))
-              (insert (format "Major mode:          %s\n" maj-mode))
-              (insert (format "Default directory:   %s\n" dir))
-              (insert (format "Remote:              %s\n" (or remote "no")))
-              (when remote
-                (insert (format "TRAMP method:        %s\n"
-                                (file-remote-p dir 'method))))
-              (insert (format "Active minor modes:  %s\n"
-                              (if modes
-                                  (mapconcat #'identity (sort modes #'string<) " ")
-                                "(none)")))
+                    spawn-capture ghostel-debug--spawn-capture)))
+          (let ((win (get-buffer-window src-buf)))
+            ;; Buffer
+            (insert "\n--- Buffer ---\n")
+            (insert (format "Buffer name:         %s\n" buf-name))
+            (insert (format "Major mode:          %s\n"
+                            (mapconcat #'symbol-name mode-chain " < ")))
+            (insert (format "Default directory:   %s\n" dir))
+            (insert (format "Remote:              %s\n" (or remote "no")))
+            (when remote
+              (insert (format "TRAMP method:        %s\n"
+                              (file-remote-p dir 'method))))
+            (insert (format "Read-only:           %s\n"
+                            (if read-only "yes" "no")))
+            (insert (format "Active minor modes:  %s\n"
+                            (if modes
+                                (mapconcat #'identity (sort modes #'string<) " ")
+                              "(none)")))
+            ;; Compile run - any buffer `ghostel-compile' launched into,
+            ;; live (still `ghostel-mode') or finished (switched to the
+            ;; configured view mode).
+            (when (local-variable-p 'ghostel-compile--command src-buf)
+              (insert "\n--- Compile run ---\n")
+              (ghostel-debug--insert-compile-run src-buf))
+            ;; Compile routing - global compile-through-ghostel state.
+            (when (featurep 'ghostel-compile)
+              (insert "\n--- Compile routing ---\n")
+              (ghostel-debug--insert-compile-routing))
+            (if (not ghostel-buf)
+                (insert "\n(no live ghostel terminal - process/spawn/terminal sections skipped)\n")
               ;; Process
               (insert "\n--- Process ---\n")
               (cond
@@ -941,50 +981,51 @@ omit it when the connection itself is the suspected fault."
               (insert (format "Shell integration:   %s\n" shell-integ))
               (when remote
                 (insert (format "TRAMP integration:   %s\n" tramp-integ)))
-              ;; TRAMP — only meaningful for remote ghostel buffers, but
-              ;; the load-bearing piece for ssh/tramp bugs (#224 et al.).
+              ;; TRAMP - only meaningful for remote ghostel buffers, but
+              ;; the load-bearing piece for ssh/tramp bugs.
               (when remote
                 (insert "\n--- TRAMP ---\n")
                 (ghostel-debug--insert-tramp-section dir))
-              ;; Spawn capture — populated by `ghostel-debug-ghostel'.
+              ;; Spawn capture - populated by `ghostel-debug-ghostel'.
               ;; Survives process death, so we can show what was sent
               ;; even after the spawned shell exits.
               (insert "\n--- Spawn capture ---\n")
               (if spawn-capture
                   (ghostel-debug--insert-spawn-capture spawn-capture)
-                (insert "(no capture — buffer was started via plain M-x ghostel.\n")
+                (insert "(no capture - buffer was started via plain M-x ghostel.\n")
                 (insert " Re-spawn under M-x ghostel-debug-ghostel to capture\n")
                 (insert " the wrapper script, process-environment, first PTY\n")
                 (insert " output bytes, and first keystrokes.)\n"))
-              ;; Live remote probes — only when remote and explicit.
+              ;; Live remote probes - only when remote and explicit.
               ;; These add network roundtrips and require a healthy
               ;; TRAMP connection, so they're opt-in via prefix arg.
               (when (and remote with-remote-probes)
                 (insert "\n--- Remote probes ---\n")
-                (ghostel-debug--insert-remote-probes ghostel-buf))
-              ;; Window
-              (insert "\n--- Window ---\n")
-              (if (window-live-p win)
-                  (progn
-                    (insert (format "Window body:         %dx%d (cols x rows)\n"
-                                    (window-body-width win) (window-body-height win)))
-                    (insert (format "Max chars per line:  %d\n"
-                                    (window-max-chars-per-line win)))
-                    (insert (format "Window start:        %d\n" (window-start win)))
-                    (insert (format "Window end:          %d\n" (window-end win t)))
-                    (let ((fr (window-fringes win)))
-                      (insert (format "Fringes:             left=%spx right=%spx outside-margins=%s\n"
-                                      (nth 0 fr) (nth 1 fr) (nth 2 fr))))
-                    (let ((mg (window-margins win)))
-                      (insert (format "Margins:             left=%s right=%s\n"
-                                      (or (car mg) 0) (or (cdr mg) 0))))
-                    (insert (format "Line numbers:        %s\n"
-                                    (if dln-on (format "%s" dln-style) "off")))
-                    (insert (format "Buffer windows:      %d\n"
-                                    (length (get-buffer-window-list
-                                             ghostel-buf nil t)))))
-                (insert "Window:              not displayed in current frame\n"))
-              ;; Terminal
+                (ghostel-debug--insert-remote-probes ghostel-buf)))
+            ;; Window
+            (insert "\n--- Window ---\n")
+            (if (window-live-p win)
+                (progn
+                  (insert (format "Window body:         %dx%d (cols x rows)\n"
+                                  (window-body-width win) (window-body-height win)))
+                  (insert (format "Max chars per line:  %d\n"
+                                  (window-max-chars-per-line win)))
+                  (insert (format "Window start:        %d\n" (window-start win)))
+                  (insert (format "Window end:          %d\n" (window-end win t)))
+                  (let ((fr (window-fringes win)))
+                    (insert (format "Fringes:             left=%spx right=%spx outside-margins=%s\n"
+                                    (nth 0 fr) (nth 1 fr) (nth 2 fr))))
+                  (let ((mg (window-margins win)))
+                    (insert (format "Margins:             left=%s right=%s\n"
+                                    (or (car mg) 0) (or (cdr mg) 0))))
+                  (insert (format "Line numbers:        %s\n"
+                                  (if dln-on (format "%s" dln-style) "off")))
+                  (insert (format "Buffer windows:      %d\n"
+                                  (length (get-buffer-window-list
+                                           src-buf nil t)))))
+              (insert "Window:              not displayed in current frame\n"))
+            ;; Terminal
+            (when ghostel-buf
               (insert "\n--- Terminal ---\n")
               (if term
                   (progn
@@ -1002,112 +1043,113 @@ omit it when the connection itself is the suspected fault."
                                     (if timer "pending" "none")))
                     (insert (format "Input mode:          %s\n"
                                     (or input-mode "(unknown)"))))
-                (insert "Term handle:         nil (no terminal)\n"))
-              ;; Size sync — surfaces #192-class bugs.
-              ;; Compare term-rows against `floor(window-screen-lines)' (what
-              ;; `window-adjust-process-window-size-smallest' uses), NOT
-              ;; `window-body-height': the latter divides by frame char
-              ;; height while screen-lines divides by `default-line-height'
-              ;; (face-remap-aware).  When a theme remaps the default face
-              ;; height, the two disagree and the body-height comparison
-              ;; cries wolf.
-              (when (and term (window-live-p win))
-                (insert "\n--- Size sync ---\n")
-                (let* ((cur-body-px (window-body-height win t))
-                       (old-body-px (window-old-body-pixel-height win))
-                       (cur-total-px (window-pixel-height win))
-                       (old-total-px (window-old-pixel-height win))
-                       (screen-lines (with-selected-window win
-                                       (window-screen-lines)))
-                       (body-rows (window-body-height win))
-                       (frame-ch (frame-char-height))
-                       (default-fh (with-selected-window win
-                                     (default-font-height)))
-                       (default-lh (with-selected-window win
-                                     (default-line-height)))
-                       (target-rows (floor screen-lines))
-                       (rendered-px (* term-rows default-lh))
-                       (gap-px (- cur-body-px rendered-px))
-                       (rows-match (eql target-rows term-rows))
-                       (px-match (eql cur-body-px old-body-px)))
-                  (insert (format "screen-lines:        %.3f → target %d (term=%s) %s\n"
-                                  screen-lines target-rows term-rows
-                                  (if rows-match "[in sync]" "[MISMATCH]")))
-                  (insert (format "Body rows (frame):   %d (window-body-height — frame chars)\n"
-                                  body-rows))
-                  (insert (format "Line height:         frame=%d px  default-font=%d px  default-line=%d px%s\n"
-                                  frame-ch default-fh default-lh
-                                  (cond ((not (eql frame-ch default-fh))
-                                         " [font ≠ frame: face-remap or :height]")
-                                        ((not (eql default-fh default-lh))
-                                         " [extra from line-spacing]")
-                                        (t ""))))
-                  (insert (format "Body pixels:         cur=%d  recorded=%d %s\n"
-                                  cur-body-px old-body-px
-                                  (if px-match "" "[redisplay pending]")))
-                  (insert (format "Window pixels:       cur=%d  recorded=%d\n"
-                                  cur-total-px old-total-px))
-                  (insert (format "Bottom gap:          %d px (%d rendered − %d body)\n"
-                                  gap-px rendered-px cur-body-px))
-                  (cond
-                   (rows-match
-                    (insert "Diagnosis:           in sync\n"))
-                   (px-match
-                    (insert "Diagnosis:           Emacs absorbed the change but\n")
-                    (insert "                     ghostel didn't reconcile (#192)\n"))
-                   (t
-                    (insert "Diagnosis:           pending redisplay; hooks will fire\n")
-                    (insert "                     on next paint\n"))))
-                ;; Rendering — font / line-spacing / face-remap.
-                ;; Most #192-class follow-ups so far have been about
-                ;; line-spacing or face-remap silently changing the row
-                ;; metric.  Surface the live values so a report tells
-                ;; us in one capture which knob is responsible.
-                (insert "\n--- Rendering ---\n")
-                (let* ((face-family
-                        (with-current-buffer ghostel-buf
-                          (face-attribute 'default :family nil 'default)))
-                       (face-height
-                        (with-current-buffer ghostel-buf
-                          (face-attribute 'default :height nil 'default)))
-                       (face-weight
-                        (with-current-buffer ghostel-buf
-                          (face-attribute 'default :weight nil 'default)))
-                       (resolved-font
-                        (with-selected-window win (face-font 'default)))
-                       (frame-font (frame-parameter nil 'font))
-                       (lsp-buf (with-current-buffer ghostel-buf
-                                  (and (local-variable-p 'line-spacing)
-                                       line-spacing)))
-                       (lsp-default (default-value 'line-spacing))
-                       (lsp-frame (frame-parameter nil 'line-spacing))
-                       (remap (with-current-buffer ghostel-buf
-                                face-remapping-alist)))
-                  (insert (format "Default face:        %s %S %s\n"
-                                  face-family face-height face-weight))
-                  (insert (format "Resolved font:       %s\n" resolved-font))
-                  (insert (format "Frame font:          %s%s\n"
-                                  frame-font
-                                  (if (and (stringp resolved-font)
-                                           (stringp frame-font)
-                                           (not (string= resolved-font frame-font)))
-                                      " [resolved differs — fallback or remap]"
-                                    "")))
-                  (insert (format "line-spacing:        buf=%S  default-value=%S  frame=%S\n"
-                                  lsp-buf lsp-default lsp-frame))
-                  (insert (format "face-remapping:      %s\n"
-                                  (if remap
-                                      (format "%S" remap)
-                                    "(none)"))))))))
-        ;; Key encoding probe — show the bytes Ghostel produces for chords
-        ;; that commonly drive `.inputrc' / readline issue reports (#239).
+                (insert "Term handle:         nil (no terminal)\n")))
+            ;; Size sync - surfaces window/terminal size-desync bugs.
+            ;; Compare term-rows against `floor(window-screen-lines)' (what
+            ;; `window-adjust-process-window-size-smallest' uses), NOT
+            ;; `window-body-height': the latter divides by frame char
+            ;; height while screen-lines divides by `default-line-height'
+            ;; (face-remap-aware).  When a theme remaps the default face
+            ;; height, the two disagree and the body-height comparison
+            ;; cries wolf.
+            (when (and term (window-live-p win))
+              (insert "\n--- Size sync ---\n")
+              (let* ((cur-body-px (window-body-height win t))
+                     (old-body-px (window-old-body-pixel-height win))
+                     (cur-total-px (window-pixel-height win))
+                     (old-total-px (window-old-pixel-height win))
+                     (screen-lines (with-selected-window win
+                                     (window-screen-lines)))
+                     (body-rows (window-body-height win))
+                     (frame-ch (frame-char-height))
+                     (default-fh (with-selected-window win
+                                   (default-font-height)))
+                     (default-lh (with-selected-window win
+                                   (default-line-height)))
+                     (target-rows (floor screen-lines))
+                     (rendered-px (* term-rows default-lh))
+                     (gap-px (- cur-body-px rendered-px))
+                     (rows-match (eql target-rows term-rows))
+                     (px-match (eql cur-body-px old-body-px)))
+                (insert (format "screen-lines:        %.3f → target %d (term=%s) %s\n"
+                                screen-lines target-rows term-rows
+                                (if rows-match "[in sync]" "[MISMATCH]")))
+                (insert (format "Body rows (frame):   %d (window-body-height - frame chars)\n"
+                                body-rows))
+                (insert (format "Line height:         frame=%d px  default-font=%d px  default-line=%d px%s\n"
+                                frame-ch default-fh default-lh
+                                (cond ((not (eql frame-ch default-fh))
+                                       " [font ≠ frame: face-remap or :height]")
+                                      ((not (eql default-fh default-lh))
+                                       " [extra from line-spacing]")
+                                      (t ""))))
+                (insert (format "Body pixels:         cur=%d  recorded=%d %s\n"
+                                cur-body-px old-body-px
+                                (if px-match "" "[redisplay pending]")))
+                (insert (format "Window pixels:       cur=%d  recorded=%d\n"
+                                cur-total-px old-total-px))
+                (insert (format "Bottom gap:          %d px (%d rendered − %d body)\n"
+                                gap-px rendered-px cur-body-px))
+                (cond
+                 (rows-match
+                  (insert "Diagnosis:           in sync\n"))
+                 (px-match
+                  (insert "Diagnosis:           Emacs absorbed the change but\n")
+                  (insert "                     ghostel didn't reconcile (size-sync bug)\n"))
+                 (t
+                  (insert "Diagnosis:           pending redisplay; hooks will fire\n")
+                  (insert "                     on next paint\n")))))
+            ;; Rendering - font / line-spacing / face-remap.
+            ;; Most size-desync reports come down to line-spacing or
+            ;; face-remap silently changing the row metric.  Surface
+            ;; the live values so a report tells us in one capture
+            ;; which knob is responsible.
+            (when (window-live-p win)
+              (insert "\n--- Rendering ---\n")
+              (let* ((face-family
+                      (with-current-buffer src-buf
+                        (face-attribute 'default :family nil 'default)))
+                     (face-height
+                      (with-current-buffer src-buf
+                        (face-attribute 'default :height nil 'default)))
+                     (face-weight
+                      (with-current-buffer src-buf
+                        (face-attribute 'default :weight nil 'default)))
+                     (resolved-font
+                      (with-selected-window win (face-font 'default)))
+                     (frame-font (frame-parameter nil 'font))
+                     (lsp-buf (with-current-buffer src-buf
+                                (and (local-variable-p 'line-spacing)
+                                     line-spacing)))
+                     (lsp-default (default-value 'line-spacing))
+                     (lsp-frame (frame-parameter nil 'line-spacing))
+                     (remap (with-current-buffer src-buf
+                              face-remapping-alist)))
+                (insert (format "Default face:        %s %S %s\n"
+                                face-family face-height face-weight))
+                (insert (format "Resolved font:       %s\n" resolved-font))
+                (insert (format "Frame font:          %s%s\n"
+                                frame-font
+                                (if (and (stringp resolved-font)
+                                         (stringp frame-font)
+                                         (not (string= resolved-font frame-font)))
+                                    " [resolved differs - fallback or remap]"
+                                  "")))
+                (insert (format "line-spacing:        buf=%S  default-value=%S  frame=%S\n"
+                                lsp-buf lsp-default lsp-frame))
+                (insert (format "face-remapping:      %s\n"
+                                (if remap
+                                    (format "%S" remap)
+                                  "(none)")))))))
+        ;; Key encoding probe - show the bytes Ghostel produces for chords
+        ;; that commonly drive `.inputrc' / readline issue reports.
         ;; Probes a fresh legacy-mode terminal so the bytes are what readline
         ;; sees in its default state, regardless of whether the live terminal
         ;; has kitty keyboard / modifyOtherKeys turned on by some app.
         (insert "\n--- Key encoding (legacy mode) ---\n")
         (cond
          ((not (fboundp 'ghostel--encode-key))
-          (insert "(native module not loaded — cannot probe encoder)\n"))
+          (insert "(native module not loaded - cannot probe encoder)\n"))
          (t
           ;; `ghostel--new' is buffer-affine: it initializes renderer state
           ;; in the current buffer, erasing it.  Keep the probe terminal and
@@ -1124,7 +1166,7 @@ omit it when the connection itself is the suspected fault."
                                      ;; raw-key-sequence path on nil.  Encoder
                                      ;; skips plain Meta+letter when no utf8
                                      ;; is supplied (live keystrokes don't
-                                     ;; supply it either) — the fallback
+                                     ;; supply it either) - the fallback
                                      ;; produces ESC + char.
                                      (sent (or (ghostel--encode-key probe key mods nil)
                                                (ghostel--raw-key-sequence key mods))))
@@ -1133,7 +1175,7 @@ omit it when the connection itself is the suspected fault."
                                   (cond ((null sent) "(no output)")
                                         ;; Pre-0.41 modules return t, not the bytes.
                                         ((not (stringp sent))
-                                         "(sent — module too old to report bytes)")
+                                         "(sent - module too old to report bytes)")
                                         ((string-empty-p sent) "(empty)")
                                         (t (mapconcat
                                             (lambda (b) (format "0x%02x" b))
@@ -1166,7 +1208,7 @@ omit it when the connection itself is the suspected fault."
              (when (and (boundp sym)
                         (string-match-p "ghostel" (symbol-name sym))
                         (get sym 'standard-value)
-                        ;; Skip minor-mode toggle vars — they show up
+                        ;; Skip minor-mode toggle vars - they show up
                         ;; in the "Active minor modes" list already and
                         ;; aren't user-tunable settings.
                         (not (memq sym minor-mode-list)))
@@ -1194,6 +1236,100 @@ omit it when the connection itself is the suspected fault."
     (display-buffer out)
     (message "Debug info written to *ghostel-debug*")))
 
+(defun ghostel-debug--count-compilation-messages ()
+  "Count `compilation-message' text-property regions in the current buffer."
+  (save-excursion
+    (save-restriction
+      (widen)
+      (let ((count 0) (pos (point-min)))
+        (when (get-text-property pos 'compilation-message)
+          (setq count 1))
+        (while (setq pos (next-single-property-change pos 'compilation-message))
+          (when (get-text-property pos 'compilation-message)
+            (cl-incf count)))
+        count))))
+
+(defun ghostel-debug--insert-compile-run (buf)
+  "Insert the `ghostel-compile' run diagnostics for BUF.
+BUF is a buffer `ghostel-compile' launched into - either still running
+\(`ghostel-mode') or finished (switched to the view mode).  Reads the
+buffer-locals `ghostel-compile--finalize' preserves across the mode
+switch, plus the error-parse state, so \"n/p/RET find nothing\"
+reports carry the parsed-message count."
+  (let (command directory cur-dir start-time end-time exit
+        interactive-p finalized args parsed msg-count nef)
+    (with-current-buffer buf
+      (setq command ghostel-compile--command
+            directory ghostel-compile--directory
+            cur-dir default-directory
+            start-time ghostel-compile--start-time
+            end-time ghostel-compile--end-time
+            exit ghostel-compile--last-exit
+            interactive-p ghostel-compile--interactive
+            finalized ghostel-compile--finalized
+            args (and (local-variable-p 'compilation-arguments)
+                      compilation-arguments)
+            parsed (and (local-variable-p 'compilation--parsed)
+                        compilation--parsed)
+            msg-count (ghostel-debug--count-compilation-messages)
+            nef next-error-function))
+    (insert (format "Command:             %s\n" command))
+    (insert (format "Directory:           %s%s\n" directory
+                    (if (and directory (not (equal directory cur-dir)))
+                        (format "  (buffer dir now: %s)" cur-dir)
+                      "")))
+    (insert (format "Launch mode:         %s\n"
+                    (if interactive-p "interactive" "compilation-style")))
+    (insert (format "Started:             %s\n"
+                    (if start-time
+                        (format-time-string "%F %T" start-time)
+                      "(unknown)")))
+    (if (not finalized)
+        (insert "Status:              running (not finalized)\n")
+      (insert (format "Finished:            %s%s\n"
+                      (if end-time
+                          (format-time-string "%F %T" end-time)
+                        "(unknown)")
+                      (if (and start-time end-time)
+                          (format ", duration %s"
+                                  (ghostel-compile--format-duration
+                                   (float-time
+                                    (time-subtract end-time start-time))))
+                        "")))
+      (insert (format "Exit status:         %s\n" exit)))
+    (insert (format "Compile arguments:   %S\n" args))
+    (insert (format "Errors parsed:       %d message%s (scanned to %s)\n"
+                    msg-count (if (= msg-count 1) "" "s")
+                    (if (markerp parsed) (marker-position parsed)
+                      (or parsed "?"))))
+    (insert (format "next-error:          function=%s  last-buffer=%s\n"
+                    nef
+                    (cond ((eq next-error-last-buffer buf) "this buffer")
+                          ((buffer-live-p next-error-last-buffer)
+                           (buffer-name next-error-last-buffer))
+                          (t next-error-last-buffer))))))
+
+(defun ghostel-debug--insert-compile-routing ()
+  "Insert the global `ghostel-compile' routing state.
+Answers \"why didn't my `compile' run through ghostel\" reports:
+whether `ghostel-compile-global-mode' is on and its advice actually
+installed, plus the shell `ghostel-compile--spawn' execs."
+  (let ((mode-on (bound-and-true-p ghostel-compile-global-mode))
+        (advised (advice-member-p
+                  'ghostel-compile--compilation-start-advice
+                  'compilation-start)))
+    (insert (format "Global mode:         %s%s\n"
+                    (if mode-on "on" "off")
+                    (cond ((and mode-on (not advised))
+                           "  *** advice missing from `compilation-start' ***")
+                          ((and (not mode-on) advised)
+                           "  *** advice still on `compilation-start' ***")
+                          (t ""))))
+    (insert (format "shell-file-name:     %s\n" shell-file-name))
+    (insert (format "shell-command-switch: %s\n" shell-command-switch))
+    (insert (format "Compiles in progress: %d\n"
+                    (length compilation-in-progress)))))
+
 (defun ghostel-debug--insert-tramp-section (dir)
   "Insert the TRAMP diagnostic block for remote DIR.
 Surfaces the values that load-bear in TRAMP `make-process' paths:
@@ -1202,7 +1338,7 @@ direct-async path applies, multi-hop status, and the local-vs-
 toplevel TERM mismatch that drives `tramp-local-environment-
 variable-p' to silently strip ghostel's pushed TERM.
 
-Each value is read with a `boundp'/`fboundp' guard — older TRAMP
+Each value is read with a `boundp'/`fboundp' guard - older TRAMP
 versions (notably the one bundled with Emacs 28) lack
 `tramp-direct-async-process' / `tramp-direct-async-process-p',
 and the report should still render usefully on those Emacsen."
@@ -1216,7 +1352,7 @@ and the report should still render usefully on those Emacsen."
                     "(unavailable)")))
   ;; tramp-direct-async-process is a defvar; report both the global
   ;; and the connection-local-resolved value (they often differ).
-  ;; Added in TRAMP 2.5 — Emacs 28 ships an older bundled TRAMP that
+  ;; Added in TRAMP 2.5 - Emacs 28 ships an older bundled TRAMP that
   ;; doesn't have it, so guard with `boundp'.
   (cond
    ((not (boundp 'tramp-direct-async-process))
@@ -1256,7 +1392,7 @@ and the report should still render usefully on those Emacsen."
                          (length (tramp-compute-multi-hops vec)))
                      (error nil)))))
     (insert (format "Multi-hop length:    %s\n" (or hops "(unknown)"))))
-  ;; TERM in the *connection shell* — what TRAMP exports for
+  ;; TERM in the *connection shell* - what TRAMP exports for
   ;; `process-file' calls and (without our preamble) what the
   ;; spawned shell would inherit.  Ghostel's spawned shell does
   ;; NOT see this directly: the on-remote `/bin/sh -c' preamble
@@ -1288,9 +1424,9 @@ when CMD is nil."
 (defun ghostel-debug--insert-spawn-capture (cap)
   "Render the spawn capture plist CAP into the current buffer.
 Wrapper script is printed verbatim (as sent to `make-process')
-because that single string is the smoking gun for #224-class bugs:
-it shows whether the on-remote TERM preamble was assembled, with
-which branches.  `process-environment' is shown as a sorted list
+because that single string is the smoking gun for remote-spawn TERM
+bugs: it shows whether the on-remote TERM preamble was assembled,
+with which branches.  `process-environment' is shown as a sorted list
 of the entries that differ from the current Emacs env, since the
 delta is what ghostel + TRAMP actually contributed."
   (insert (format "Captured at:         %s\n"
@@ -1313,15 +1449,15 @@ delta is what ghostel + TRAMP actually contributed."
       (insert "\n")
       (dolist (e extra)
         (insert (format "  %s\n" e)))))
-  ;; The wrapper script — the single most useful piece for spawn bugs.
+  ;; The wrapper script - the single most useful piece for spawn bugs.
   ;; This is what ghostel passed to `make-process', captured before
   ;; TRAMP can rewrite it on its non-direct-async dispatch path.
   (let ((cmd (plist-get cap :command)))
     (insert "\nWrapper command sent to `make-process':\n")
     (ghostel-debug--insert-command-cells cmd
-      "(nil — make-process advice did not capture a :command)"))
+      "(nil - make-process advice did not capture a :command)"))
   ;; If TRAMP rewrote the command for legacy-async dispatch, the
-  ;; resulting `process-command' won't match what we sent — typically
+  ;; resulting `process-command' won't match what we sent - typically
   ;; it's a bridge like ("/bin/sh" "-i") that proxies stdio while the
   ;; real wrapper runs on the remote via the connection shell.  Show
   ;; the divergence so the path is obvious.
@@ -1331,11 +1467,11 @@ delta is what ghostel + TRAMP actually contributed."
       (insert "\nLocal process command (`process-command'):\n")
       (ghostel-debug--insert-command-cells executed "(unavailable)")
       (insert
-       (concat "  TRAMP rewrote the command for legacy-async dispatch — the\n"
+       (concat "  TRAMP rewrote the command for legacy-async dispatch - the\n"
                "  wrapper above runs on the remote via the connection shell;\n"
                "  the bridge process here just proxies stdio.  Direct-async\n"
                "  would show the wrapper command verbatim in both sections.\n"))))
-  ;; process-environment delta — the entries ghostel + TRAMP wove in
+  ;; process-environment delta - the entries ghostel + TRAMP wove in
   ;; or that differ from the current Emacs env at info-display time.
   ;; Showing only the delta (rather than the full ~100-entry env)
   ;; keeps the diagnostic readable.
@@ -1357,23 +1493,23 @@ delta is what ghostel + TRAMP actually contributed."
         (insert "  Missing vs current (current has these, spawn didn't):\n")
         (dolist (e (sort (copy-sequence removed) #'string<))
           (insert (format "    - %s\n" e)))))))
-  ;; Phase timings — answers `where did the time go per spawn?'.
+  ;; Phase timings - answers `where did the time go per spawn?'.
   ;; Three deltas: elisp prep (start-process → spawn-pty), TRAMP+ssh
   ;; handshake (spawn-pty → first PTY byte), and any further wait
   ;; for the prompt.  See `ghostel-debug--insert-spawn-phase-timings'.
   (ghostel-debug--insert-spawn-phase-timings cap)
   ;; Unified RECV/SEND timeline.  Interleaving PTY output and
-  ;; keystrokes by timestamp makes echo gaps obvious — a SEND "l"
+  ;; keystrokes by timestamp makes echo gaps obvious - a SEND "l"
   ;; followed only by another SEND (no RECV "l" between) is the
-  ;; #224 signature.  Keeping them as separate sections (the previous
-  ;; layout) hid that pattern.
+  ;; signature of a remote shell that never echoed.  Keeping them as
+  ;; separate sections (the previous layout) hid that pattern.
   (ghostel-debug--insert-spawn-timeline cap))
 
 (defun ghostel-debug--insert-spawn-phase-timings (cap)
   "Render CAP's per-phase timings into the current buffer.
 CAP is the spawn-capture plist (see `ghostel-debug--spawn-capture').
 Shows three checkpoints relative to `ghostel--start-process' entry:
-elisp-prep cost (anything before `make-process' — typically dominated
+elisp-prep cost (anything before `make-process' - typically dominated
 by TRAMP shell-detection round-trips), TRAMP+ssh+remote-shell startup
 cost (`make-process' return → first PTY byte), and the inter-byte
 gap between spawn-pty entry and the first byte received from the
@@ -1422,7 +1558,7 @@ direct `ghostel--spawn-pty' call without going through
                                        (time-subtract t-first-rx
                                                       t-spawn)))))))))
        (t
-        (insert "  (no PTY output yet — first-byte timing unavailable)\n")))))))
+        (insert "  (no PTY output yet - first-byte timing unavailable)\n")))))))
 
 (defun ghostel-debug--insert-spawn-timeline (cap)
   "Render CAP's interleaved RECV/SEND timeline into the current buffer.
@@ -1453,7 +1589,7 @@ the plist."
              (if send-truncated ", more dropped" "")))
     (cond
      ((null events)
-      (insert "  (no PTY output, no sends — shell never wrote and Emacs never typed)\n"))
+      (insert "  (no PTY output, no sends - shell never wrote and Emacs never typed)\n"))
      (t
       (let ((print-escape-control-characters t)
             (print-escape-newlines t)
@@ -1491,9 +1627,9 @@ shell actually see' rather than `what does TRAMP's connection
 shell export', which is `TERM=dumb' regardless of preamble.
 
 Last, probes bash version and dumps `~/.inputrc' (or `$INPUTRC'
-when set) so issue reports about readline rules not firing — see
-issue #239 — carry the actual rule file alongside the byte stream
-ghostel produces (rendered locally in the `Key encoding' section)."
+when set) so issue reports about readline rules not firing carry
+the actual rule file alongside the byte stream ghostel produces
+\(rendered locally in the `Key encoding' section)."
   (let* ((preamble (ghostel--remote-term-preamble))
          ;; Strip the trailing "; " so we can append more commands.
          (preamble-clean (replace-regexp-in-string "; *\\'" "" preamble))
@@ -1534,8 +1670,8 @@ ghostel produces (rendered locally in the `Key encoding' section)."
            "  echo \"  TERM_PROGRAM_VERSION=${TERM_PROGRAM_VERSION:-unset}\"; "
            "  echo \"  COLORTERM=${COLORTERM:-unset}\"; "
            ") 2>&1; "
-           ;; Bash + inputrc probe — answers `.inputrc' issue reports
-           ;; (e.g. #239).  Surfaces bash version, the resolved INPUTRC
+           ;; Bash + inputrc probe - answers `.inputrc' issue reports.
+           ;; Surfaces bash version, the resolved INPUTRC
            ;; path, and the file's contents so we can spot $if-term
            ;; gates, syntax errors, or rules referencing different byte
            ;; streams than ghostel produces (cross-check against the
@@ -1565,7 +1701,7 @@ ghostel produces (rendered locally in the `Key encoding' section)."
         (let ((output (buffer-string)))
           (with-current-buffer (get-buffer "*ghostel-debug*")
             (insert "(Probes run via TRAMP `process-file', NOT through ghostel's\n")
-            (insert " spawn — the connection shell exports TERM=dumb to all\n")
+            (insert " spawn - the connection shell exports TERM=dumb to all\n")
             (insert " process-file calls, so we run the preamble ourselves at\n")
             (insert " the end and report the resulting env.)\n\n")
             (insert (format "Remote probe (exit=%s):\n" rc))
@@ -1617,7 +1753,7 @@ View the capture with \\[ghostel-debug-info]."
   "Around-advice on `ghostel--start-process' that records its entry time.
 ORIG is the original function; ARGS are forwarded verbatim.  The
 timestamp is stashed buffer-locally so the spawn-pty advice can fold
-it into the spawn-capture plist.  Self-removing — fires at most once."
+it into the spawn-capture plist.  Self-removing - fires at most once."
   (advice-remove 'ghostel--start-process
                  #'ghostel-debug--capture-start-process)
   (setq ghostel-debug--pending-start-process-time (current-time))
@@ -1628,14 +1764,14 @@ it into the spawn-capture plist.  Self-removing — fires at most once."
   "Around-advice on `ghostel--spawn-pty' that snapshots the spawn.
 ORIG is the original function; PROGRAM, PROGRAM-ARGS, EXTRA-ENV, and
 REMOTE-P are forwarded verbatim and recorded into
-`ghostel-debug--spawn-capture'.  Self-removing — fires at most once.
+`ghostel-debug--spawn-capture'.  Self-removing - fires at most once.
 
 Captures the wrapper command via `cl-letf*' on `make-process' rather
 than reading `process-command' on the returned process: on TRAMP's
 non-direct-async path `tramp-sh-handle-make-process' substitutes a
 local bridge process (e.g. `/bin/sh -i') for the actual spawn and
 dispatches the real command via the connection shell.  In that case
-`process-command' returns the bridge — useless for diagnosing what
+`process-command' returns the bridge - useless for diagnosing what
 actually ran on the remote.  The intercept catches the call as ghostel
 made it, before any TRAMP rewriting, so the wrapper section in the
 report stays accurate regardless of TRAMP dispatch path.
@@ -1643,7 +1779,7 @@ report stays accurate regardless of TRAMP dispatch path.
 Both views are kept: `:command' is what ghostel passed to
 `make-process' (always the meaningful wrapper script), and
 `:executed-command' is what `process-command' reports (post-TRAMP-
-rewrite — handy for telling direct-async vs legacy apart).  When the
+rewrite - handy for telling direct-async vs legacy apart).  When the
 two differ, the renderer flags it."
   (advice-remove 'ghostel--spawn-pty
                  #'ghostel-debug--capture-spawn-pty)
@@ -1663,7 +1799,7 @@ two differ, the renderer flags it."
                   (lambda (&rest plist)
                     ;; Only capture the OUTERMOST call: with direct-
                     ;; async, TRAMP's file handler may recursively
-                    ;; call make-process to reach the real spawn —
+                    ;; call make-process to reach the real spawn -
                     ;; the first call is ghostel's, which is what
                     ;; we want.
                     (unless intercepted-cmd
@@ -1695,7 +1831,7 @@ two differ, the renderer flags it."
                   :send-keys nil
                   :send-cap ghostel-debug--send-cap
                   :send-truncated nil))
-      ;; Idempotent installs — if the user runs `ghostel-debug-ghostel'
+      ;; Idempotent installs - if the user runs `ghostel-debug-ghostel'
       ;; for several buffers the advice is added once and no-ops in
       ;; buffers without a capture.
       (advice-add 'ghostel--filter :before
@@ -1789,7 +1925,7 @@ during the command, terminal mode flags, and process state."
   (advice-add 'ghostel--encode-key :filter-return
               #'ghostel--debug-kp-record-encode-key)
   (add-hook 'pre-command-hook #'ghostel--debug-kp-pre-command)
-  (message "ghostel-debug-keypress: armed — press a key in this buffer"))
+  (message "ghostel-debug-keypress: armed - press a key in this buffer"))
 
 (defun ghostel--debug-kp-add-call (kind value)
   "Append (KIND . VALUE) to the in-progress capture's :calls list."
@@ -1813,7 +1949,7 @@ during the command, terminal mode flags, and process state."
 
 (defun ghostel--debug-kp-record-encode-key (bytes)
   "Record BYTES returned by `ghostel--encode-key'.
-`:filter-return' advice — the native encoder writes the PTY directly, so
+`:filter-return' advice - the native encoder writes the PTY directly, so
 the bytes never pass through `ghostel--write-pty'."
   (when (and (stringp bytes)
              (eq (current-buffer)
@@ -1894,7 +2030,7 @@ the bytes never pass through `ghostel--write-pty'."
         ;; Sends
         (insert "\n--- Sends during this command ---\n")
         (if (null calls)
-            (insert "(no bytes sent — no calls to ghostel--encode-key,\n"
+            (insert "(no bytes sent - no calls to ghostel--encode-key,\n"
                     " ghostel--send-string, or ghostel--write-pty)\n")
           (cl-loop for (kind . data) in calls
                    for i from 1
@@ -1940,7 +2076,7 @@ the bytes never pass through `ghostel--write-pty'."
         (goto-char (point-min)))
       (special-mode))
     (display-buffer out)
-    (message "Wrote *ghostel-debug-keypress* — paste into the issue")))
+    (message "Wrote *ghostel-debug-keypress* - paste into the issue")))
 
 
 (provide 'ghostel-debug)

@@ -130,6 +130,9 @@ status message string (e.g. \"finished\\n\" or
 (defvar-local ghostel-compile--start-time nil
   "`current-time' when the most recent command was launched.")
 
+(defvar-local ghostel-compile--end-time nil
+  "`current-time' when the most recent command finished, or nil while running.")
+
 (defvar-local ghostel-compile--directory nil
   "`default-directory' captured at `ghostel-compile' invocation time.
 Used by `ghostel-recompile' so the command re-runs in the same
@@ -434,6 +437,7 @@ same as in any compilation buffer."
             (setq-local ghostel-compile--command saved-command
                         ghostel-compile--directory saved-directory
                         ghostel-compile--start-time saved-start-time
+                        ghostel-compile--end-time end-time
                         ghostel-compile--last-exit exit
                         ghostel-compile--interactive saved-interactive
                         ghostel-compile--finalized t)
@@ -772,6 +776,7 @@ any other code that walks `compilation-arguments') re-runs via
       (setq ghostel-compile--command command
             ghostel-compile--directory dir
             ghostel-compile--start-time start-time
+            ghostel-compile--end-time nil
             ghostel-compile--last-exit nil
             ghostel-compile--finalized nil
             ghostel-compile--view-mode-override finished-mode
