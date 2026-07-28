@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- Live terminal-input modes (semi-char, char, interactive `ghostel-compile`)
+  now clear `buffer-read-only` instead of setting a buffer-local
+  `inhibit-read-only`. The buffer-local binding broke
+  `(let ((inhibit-read-only t)) ...)` code entered with a ghostel buffer
+  current that then writes to another read-only buffer — e.g.
+  `C-x C-f` completion display under mct erroring with "Buffer is
+  read-only: *Completions*". Foreign edits are still intercepted and
+  forwarded to the PTY as before; copy/Emacs modes, compilation-style
+  runs, and dead terminals stay read-only. Packages gating on
+  `buffer-read-only` (e.g. meow) now see a writable buffer in the live
+  terminal-input modes. Fixes
+  [#570](https://github.com/dakra/ghostel/issues/570).
 - A finished `ghostel-compile` buffer joins the rows the terminal wrapped, so
   `compilation-mode` error parsing, `next-error`, `ffap` and saving the buffer
   see whole lines. A path straddling the wrap column used to be recorded as

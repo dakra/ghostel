@@ -87,9 +87,9 @@ ignores GUI preedit overlays, which core ghostel handles separately."
 
 (defun ghostel-ime--wrap-input-method (key)
   "Translate KEY through the original input method.
-If the input method commits text by inserting into a protected ghostel
-buffer, delete that transient insertion.  Forward the committed text
-to the PTY as UTF-8 only in terminal-input modes."
+If the input method commits text by inserting into the renderer-owned
+buffer (any mode but line mode), delete that transient insertion.
+Forward the committed text to the PTY as UTF-8 only in terminal-input modes."
   (let ((ghostel-ime--composition-buffer (current-buffer))
         (original ghostel-ime--original-input-method-function)
         (before-point (point)))
@@ -107,7 +107,7 @@ to the PTY as UTF-8 only in terminal-input modes."
           (when (> after-point before-point)
             (let ((inserted (buffer-substring-no-properties
                              before-point after-point)))
-              (when buffer-read-only
+              (when (not (eq ghostel--input-mode 'line))
                 (let ((inhibit-read-only t))
                   (delete-region before-point after-point)))
               (when (ghostel--terminal-input-mode-p)

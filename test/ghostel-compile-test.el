@@ -1185,8 +1185,8 @@ Post-finalize the keys remain bound but the commands refuse to act
 
 After `\\[ghostel-compile-switch-to-interactive]' the local map must
 drop the compilation-style one for `ghostel-semi-char-mode-map', and
-`mode-line-process' must show `:run/i'.  The buffer remains
-read-only because the renderer owns it.  After
+`mode-line-process' must show `:run/i'.  The buffer becomes
+writable, with foreign edits intercepted by the forwarding hook.  After
 `\\[ghostel-compile-switch-to-compilation-style]' the buffer must install
 `ghostel-compile-view-mode-map', and the mode-line must read `:run'
 again."
@@ -1214,7 +1214,7 @@ again."
             ;; Switch to interactive input.
             (ghostel-compile-switch-to-interactive)
             (should ghostel-compile--interactive)
-            (should buffer-read-only)
+            (should-not buffer-read-only)
             (should (eq (current-local-map) ghostel-semi-char-mode-map))
             (should (equal ":run/i" (cadr (car mode-line-process))))
             ;; No-op when already interactive.
@@ -1312,9 +1312,9 @@ When `ghostel-compile--start' is called with INTERACTIVE non-nil
 the live buffer must keep `ghostel-mode's local map and must not enable
 `compilation-minor-mode', so letters like `q', `a', `g' reach the
 process (this is what makes `htop', `less', read prompts etc. work).
-The buffer itself remains renderer-owned and read-only.  `--spawn'
-must set `ghostel--process' so `ghostel--self-insert' has a process
-to send keystrokes to.
+The buffer is renderer-owned: writable, with foreign edits intercepted
+by the forwarding hook.  `--spawn' must set `ghostel--process' so
+`ghostel--self-insert' has a process to send keystrokes to.
 
 Run a small interactive echo loop, verify both conditions, then send
 bytes through the process to confirm they land in the buffer."
@@ -1350,8 +1350,9 @@ bytes through the process to confirm they land in the buffer."
             ;; minor mode stealing keys.
             (should (eq major-mode 'ghostel-mode))
             (should-not (bound-and-true-p compilation-minor-mode))
-            ;; The buffer remains protected even though keys reach the PTY.
-            (should buffer-read-only)
+            ;; Interactive run: writable, foreign edits intercepted by
+            ;; the forwarding hook.
+            (should-not buffer-read-only)
             ;; Plain letters route through ghostel-mode's self-insert,
             ;; not through compilation-mode's navigation commands.
             (should (eq (key-binding "q") #'ghostel--self-insert))

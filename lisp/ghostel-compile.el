@@ -71,7 +71,7 @@
                   (term &optional full force-sync))
 (declare-function ghostel--set-size "ghostel-module")
 (declare-function ghostel--write-vt "ghostel-module")
-(declare-function ghostel--sync-inhibit-read-only "ghostel")
+(declare-function ghostel--sync-read-only "ghostel")
 (defvar ghostel--inhibit-insert-forwarding)
 
 
@@ -595,7 +595,7 @@ local machine happens to have)."
     ;; (`htop', `less', test prompts, ...) during the compile.
     (with-current-buffer buffer
       (setq ghostel--process proc)
-      (ghostel--sync-inhibit-read-only))
+      (ghostel--sync-read-only))
     (set-process-coding-system proc 'binary 'binary)
     (set-process-window-size proc height width)
     (when compilation-always-kill
@@ -951,8 +951,9 @@ nothing to send keystrokes to, and a non-compile buffer has no
 `ghostel-semi-char-mode-map' is restored so keystrokes reach the running
 process — useful when the command turned out to need input (a
 `read -p', a `git push' password prompt, an `htop'-style program).
-The renderer-owned buffer remains read-only.  No-op if the buffer
-is already interactive.
+Keystrokes are forwarded to the process; foreign buffer edits are
+intercepted by `ghostel--forward-inserts-after-change'.
+No-op if the buffer is already interactive.
 
 Bound to \\[ghostel-compile-switch-to-interactive] in
 `ghostel-compile-toggle-mode' (active in compile buffers)."
@@ -962,9 +963,8 @@ Bound to \\[ghostel-compile-switch-to-interactive] in
       (message "ghostel-compile: already interactive")
     (setq ghostel-compile--interactive t)
     (use-local-map ghostel-semi-char-mode-map)
-    (setq buffer-read-only t)
     (setq ghostel--inhibit-insert-forwarding nil)
-    (ghostel--sync-inhibit-read-only)
+    (ghostel--sync-read-only)
     ;; Place point at the VT cursor so the user's first keystroke
     ;; lands at the prompt, not at wherever they happened to be
     ;; navigating in the read-only buffer.
@@ -993,9 +993,8 @@ Bound to \\[ghostel-compile-switch-to-compilation-style] in
       (message "ghostel-compile: already compilation-style")
     (setq ghostel-compile--interactive nil)
     (use-local-map ghostel-compile-view-mode-map)
-    (setq buffer-read-only t)
     (setq ghostel--inhibit-insert-forwarding t)
-    (ghostel--sync-inhibit-read-only)
+    (ghostel--sync-read-only)
     (ghostel-compile--set-mode-line-running)
     (when ghostel-compile-debug
       (message "ghostel-compile: switched to compilation-style"))))

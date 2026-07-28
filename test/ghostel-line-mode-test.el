@@ -343,7 +343,9 @@ but the cursor is at the end of the REPL's prompt."
             (ghostel-line-mode-send)
             (should-not buffer-read-only)
             (ghostel-semi-char-mode)
-            (should buffer-read-only)
+            ;; Live semi-char: writable, edits intercepted by the
+            ;; after-change forwarding hook.
+            (should-not buffer-read-only)
             (should (equal sent "1+1"))
             (should (equal encoded "return"))))
       (kill-buffer buf))))

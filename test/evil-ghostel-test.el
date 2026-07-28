@@ -1035,7 +1035,7 @@ Off the cursor row there's no PTY-routed editing to be done — the
 delete is a no-op on the scrollback line, then `evil-ghostel-insert'
 takes the off-row branch and the entry hook's `reset-cursor-point'
 pulls point onto the live cursor's row.  No history-navigation `up'
-arrows are sent (which the old `sync-inhibit' path mistakenly did)."
+arrows are sent."
   (evil-ghostel-test--with-evil-buffer
    (setq-local ghostel--term t)
    (insert "line one\nline two\nline three")

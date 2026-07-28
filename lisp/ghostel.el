@@ -1170,9 +1170,7 @@ is non-nil."
 
 (defsubst ghostel--terminal-input-mode-p ()
   "Non-nil when user input should be forwarded to the terminal.
-True in semi-char and char modes.  This is independent of
-`buffer-read-only': ghostel buffers are protected by default because
-the rendered buffer is owned by the terminal, not by editing commands."
+True in semi-char and char modes."
   (memq ghostel--input-mode '(semi-char char)))
 
 (defsubst ghostel--terminal-live-p ()
@@ -1732,14 +1730,15 @@ restoring the terminal contents, with point realigned to the VT cursor."
               (ghostel--paste-text text)
             (ghostel--send-string (encode-coding-string text 'utf-8))))))))
 
-(defun ghostel--sync-inhibit-read-only ()
-  "Set buffer-local `inhibit-read-only' from the terminal state.
-Non-nil in terminal-input modes with a live process, so
-`(interactive \"*\")' commands run and the after-change hook
-forwards their insertions while `buffer-read-only' stays non-nil;
-nil restores the plain read-only barrier."
-  (setq-local inhibit-read-only
-              (and (ghostel--insert-forwarding-live-p) t)))
+(defun ghostel--sync-read-only ()
+  "Set `buffer-read-only' from the terminal state.
+Nil while foreign edits are intercepted (live terminal-input modes, see
+`ghostel--forward-inserts-after-change') or user-editable (line mode);
+t restores the read-only barrier for copy/Emacs modes,
+dead terminals and compile-style buffers."
+  (setq buffer-read-only
+        (not (or (ghostel--insert-forwarding-live-p)
+                 (eq ghostel--input-mode 'line)))))
 
 
 ;;; Public input API
@@ -2455,7 +2454,7 @@ Most keys are sent to the terminal; keys in
       ('line  (ghostel--line-mode-teardown)))
     (setq ghostel--char-mode-override-active nil)
     (setq ghostel--input-mode 'semi-char)
-    (ghostel--sync-inhibit-read-only)
+    (ghostel--sync-read-only)
     (use-local-map ghostel-semi-char-mode-map)
     (setq ghostel--mode-line-tag nil)
     (ghostel--mode-line-refresh)
@@ -2484,7 +2483,7 @@ Even keys listed in `ghostel-keymap-exceptions' (\\`C-c', \\`C-x',
       ('emacs (ghostel--leave-readonly-state))
       ('line  (ghostel--line-mode-teardown)))
     (setq ghostel--input-mode 'char)
-    (ghostel--sync-inhibit-read-only)
+    (ghostel--sync-read-only)
     ;; Route char mode through `emulation-mode-map-alists' so it
     ;; overrides minor-mode keymaps (without this, a minor mode that
     ;; binds a prefix like \\`C-c' would steal those keys before
@@ -2552,7 +2551,7 @@ a non-read-only mode."
       (when ghostel--term
         (ghostel--invalidate)))
     (setq ghostel--input-mode mode)
-    (ghostel--sync-inhibit-read-only)
+    (ghostel--sync-read-only)
     (use-local-map (ghostel--readonly-keymap))
     (setq ghostel--mode-line-tag (ghostel--mode-line-tag-make mode label))
     (ghostel--mode-line-refresh)
@@ -4131,7 +4130,7 @@ EVENT is the state-change description passed by Emacs."
         (ghostel--fake-cursor-clear)
         (run-hook-with-args 'ghostel-exit-functions buf event)
         ;; Dead terminal: restore the plain read-only barrier.
-        (ghostel--sync-inhibit-read-only)
+        (ghostel--sync-read-only)
         (if ghostel-kill-buffer-on-exit
             (kill-buffer buf)
           (let ((inhibit-read-only t))
@@ -4649,7 +4648,7 @@ TRAMP can manage the remote shell."
     (when (processp process)
       (process-put process 'adjust-window-size-function #'ignore))
     (setq ghostel--process process)
-    (ghostel--sync-inhibit-read-only)
+    (ghostel--sync-read-only)
     process))
 
 (defun ghostel--spawn-via-emacs (program program-args &optional remote-p)
@@ -5413,11 +5412,12 @@ may change freely (`ghostel-compile' finalize relies on this)."
   ;; whether font-lock ends up on.  `ghostel-mode' has no keywords, so
   ;; skipping unfontify has no other effect.
   (setq-local font-lock-unfontify-region-function #'ignore)
-  ;; The terminal renderer owns the buffer contents.  User-editable
-  ;; modes are exceptional and must opt in explicitly.
+  ;; The terminal renderer owns the buffer contents.  Read-only until
+  ;; a process spawn runs `ghostel--sync-read-only'.
   (setq buffer-read-only t)
-  ;; Terminal-input modes forward foreign insertions to the PTY and
-  ;; repair foreign deletions; see `ghostel--sync-inhibit-read-only'.
+  ;; Live terminal-input modes clear `buffer-read-only' and instead
+  ;; intercept foreign edits here: insertions are forwarded to the PTY,
+  ;; deletions repaired by a redraw; see `ghostel--sync-read-only'.
   ;; Depth 90 so other hook members still see an insertion before the
   ;; forwarding removes it.
   (add-hook 'after-change-functions
@@ -5535,7 +5535,8 @@ spawn after initialization."
     (setq buffer-read-only t)
     (let ((inhibit-read-only t))
       (erase-buffer))
-    (setq ghostel--term nil
+    (setq ghostel--input-mode 'semi-char
+          ghostel--term nil
           ghostel--term-rows nil
           ghostel--term-cols nil
           ghostel--process nil

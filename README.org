@@ -1526,7 +1526,9 @@ available even mid-run.
 Pass a prefix arg (=C-u M-x ghostel-compile=, mirroring =C-u M-x compile=) to launch
 in *interactive* mode instead - keystrokes are forwarded to the running process,
 so programs like =htop= and =less=, test runners that prompt for input, or
-anything that wants live keystrokes work.  The rendered buffer remains read-only.
+anything that wants live keystrokes work.  The buffer content stays owned by the
+renderer: edits made by Emacs commands are intercepted and forwarded to the
+process rather than kept in the buffer.
 =ghostel-recompile= (=g=) preserves whichever mode the buffer was launched in.
 
 When the command finishes, the live process and ghostel renderer are torn down
@@ -1721,8 +1723,8 @@ Emacs Lisp input methods compose and commit text by editing the current buffer
 instead of returning key events: =hangul-input-method= inserts the composed
 syllable directly, and Quail-based methods (Japanese, Chinese, ...) use the
 buffer for their in-flight preedit as well.  A ghostel buffer is
-terminal-owned, so those edits either fail against the read-only barrier or
-are picked up by insert forwarding and sent to the PTY mid-composition.
+terminal-owned, so those edits are either rejected (copy and Emacs modes) or
+picked up by insert forwarding and sent to the PTY mid-composition.
 
 =ghostel-ime-mode= is an optional minor mode that wraps the buffer-local
 =input-method-function=.  When the input method commits by buffer insertion, the

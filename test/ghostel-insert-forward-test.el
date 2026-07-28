@@ -31,7 +31,7 @@ and the PTY writers are stubbed, so no native module is needed."
                          "ghostel-insert-forward" (current-buffer)))
              (setq-local ghostel--process proc)
              (setq-local ghostel--term 'fake)
-             (ghostel--sync-inhibit-read-only)
+             (ghostel--sync-read-only)
              (cl-letf (((symbol-function 'ghostel--send-string)
                         (lambda (s) (push s sent)))
                        ((symbol-function 'ghostel--paste-text)
@@ -58,11 +58,11 @@ and the PTY writers are stubbed, so no native module is needed."
     (should (null sent))))
 
 (ert-deftest ghostel-test-insert-forward-star-spec-commands-run ()
-  "`(interactive \"*\")' commands run: the read-only barrier is lifted.
-`buffer-read-only' itself stays non-nil so packages gating on the
-variable (e.g. meow's `meow--allow-modify-p') still see protection."
+  "`(interactive \"*\")' commands run: the buffer is writable.
+`buffer-read-only' is nil in live terminal-input modes; the edits
+these commands make are intercepted by the after-change hook."
   (ghostel-insert-forward-test--with-live-buffer
-    (should buffer-read-only)
+    (should-not buffer-read-only)
     (barf-if-buffer-read-only)
     (call-interactively
      (lambda () (interactive "*") (insert "hi")))
@@ -131,7 +131,7 @@ Sent raw, a \\r would execute the pending input in the shell."
                 (progn
                   (setq-local ghostel--term (ghostel--new 5 40 100))
                   (setq-local ghostel--process proc)
-                  (ghostel--sync-inhibit-read-only)
+                  (ghostel--sync-read-only)
                   (ghostel--write-vt ghostel--term "\e[H\e[2Jhello world")
                   (ghostel-test--redraw ghostel--term t)
                   (let ((before (buffer-string)))
@@ -147,7 +147,7 @@ Sent raw, a \\r would execute the pending input in the shell."
   "Setting the opt-out flag restores the plain read-only barrier."
   (ghostel-insert-forward-test--with-live-buffer
     (setq ghostel--inhibit-insert-forwarding t)
-    (ghostel--sync-inhibit-read-only)
+    (ghostel--sync-read-only)
     (should-error (insert "x") :type 'buffer-read-only)
     (should (null sent))))
 
@@ -185,6 +185,47 @@ This is the seam `ghostel-ime' uses to protect its composition inserts."
       (ghostel--sentinel proc "finished\n")
       (should-error (insert "x") :type 'buffer-read-only)
       (should (null sent)))))
+
+(ert-deftest ghostel-test-insert-forward-no-local-inhibit-read-only ()
+  "`inhibit-read-only' never becomes buffer-local (issue #570).
+A buffer-local binding would make `(let ((inhibit-read-only t)) ...)'
+entered in the ghostel buffer rebind only the local slot, breaking
+writes to other read-only buffers made from inside the let."
+  (ghostel-insert-forward-test--with-live-buffer
+    (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+              ((symbol-function 'ghostel--anchor-window) #'ignore)
+              ((symbol-function 'ghostel-force-redraw) #'ignore)
+              ((symbol-function 'ghostel--adjust-size) #'ignore))
+      (should-not (local-variable-p 'inhibit-read-only))
+      (ghostel-char-mode)
+      (should-not (local-variable-p 'inhibit-read-only))
+      (ghostel-copy-mode)
+      (should-not (local-variable-p 'inhibit-read-only))
+      (ghostel-emacs-mode)
+      (should-not (local-variable-p 'inhibit-read-only))
+      (ghostel-semi-char-mode)
+      (should-not (local-variable-p 'inhibit-read-only))
+      (let ((ghostel-kill-buffer-on-exit nil))
+        (delete-process proc)
+        (ghostel--sentinel proc "finished\n"))
+      (should-not (local-variable-p 'inhibit-read-only)))))
+
+(ert-deftest ghostel-test-insert-forward-inhibit-read-only-let-reaches-other-buffers ()
+  "A global `inhibit-read-only' let-binding works across buffers (issue #570).
+`window--display-buffer' and friends bind `inhibit-read-only' with the
+ghostel buffer current and then write to another read-only buffer
+\(e.g. *Completions*); that write must not signal."
+  (ghostel-insert-forward-test--with-live-buffer
+    (let ((other (generate-new-buffer " *ghostel-570-other*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer other
+              (setq buffer-read-only t))
+            (let ((inhibit-read-only t))
+              (with-current-buffer other
+                (insert "x")))
+            (should (equal (with-current-buffer other (buffer-string)) "x")))
+        (kill-buffer other)))))
 
 (provide 'ghostel-insert-forward-test)
 ;;; ghostel-insert-forward-test.el ends here
