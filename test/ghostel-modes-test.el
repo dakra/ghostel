@@ -670,6 +670,30 @@ buffer does not pull point off the content end."
         ;; The way out is the semi-char-mode binding (C-c C-j by default).
         (should (string-match-p "C-c C-j" text))))))
 
+(ert-deftest ghostel-test-copy-mode-entry-message-respects-fast-exit ()
+  "Copy mode's entry message names exit keys that match `ghostel-readonly-fast-exit'."
+  (dolist (case '((t . "press any printable key")
+                  (nil . "C-c C-t or C-c C-j")))
+    (let ((buf (generate-new-buffer " *ghostel-test-copy-entry-msg*")))
+      (unwind-protect
+          (with-current-buffer buf
+            (ghostel-mode)
+            (let ((ghostel-readonly-fast-exit (car case))
+                  (ghostel--term 'fake)
+                  (captured nil))
+              (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                        ((symbol-function 'ghostel--anchor-window) #'ignore)
+                        ((symbol-function 'message)
+                         (lambda (fmt &rest args)
+                           (setq captured (apply #'format fmt args)))))
+                (ghostel-copy-mode)
+                (should (stringp captured))
+                (should (string-match-p (regexp-quote (cdr case)) captured))
+                ;; Without fast exit, pressing keys must not be advertised.
+                (unless (car case)
+                  (should-not (string-match-p "any" captured))))))
+        (kill-buffer buf)))))
+
 (ert-deftest ghostel-test-mode-line-tag-integration ()
   "Entering char/copy/emacs sets `mode-line-process' to the propertized tag."
   (let ((buf (generate-new-buffer " *ghostel-test-mode-line-tag*")))

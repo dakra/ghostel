@@ -2621,8 +2621,13 @@ returns to whichever input mode was active before."
   (ghostel--ensure-ghostel-buffer)
   (if (eq ghostel--input-mode 'copy)
       (ghostel-readonly-exit)
-    (ghostel--enter-readonly 'copy t ":Copy"
-                             "Copy mode: Press any key to exit")))
+    (ghostel--enter-readonly
+     'copy t ":Copy"
+     (if ghostel-readonly-fast-exit
+         "Copy mode: press any printable key to exit"
+       (format "Copy mode: %s or %s to exit"
+               (substitute-command-keys "\\[ghostel-copy-mode]")
+               (substitute-command-keys "\\[ghostel-semi-char-mode]"))))))
 
 (defun ghostel--mark-activated ()
   "Switch input mode when the region becomes active in semi-char mode.
