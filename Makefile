@@ -79,7 +79,7 @@ test-hypothesis-cases: build
 # test targets never load stale .elc (Emacs prefers .elc over .el
 # even when the source is newer, which silently masks edits).
 lisp/%.elc: lisp/%.el
-	$(EMACS) --batch $(EMACSFLAGS) -Q -L lisp --eval "(setq byte-compile-error-on-warn t)" -f batch-byte-compile $<
+	$(EMACS) --batch $(EMACSFLAGS) -Q -L lisp --eval "(setq byte-compile-error-on-warn t load-prefer-newer t)" -f batch-byte-compile $<
 
 # Extension packages depend on third-party libraries; reuse the evil
 # checkout that `test-evil' manages.
@@ -91,7 +91,7 @@ $(EVIL_DIR):
 # before a core function it uses exists in the loaded bytecode.
 extensions/evil-ghostel/%.elc: extensions/evil-ghostel/%.el $(filter lisp/%.elc,$(ELC)) | $(EVIL_DIR)
 	$(EMACS) --batch $(EMACSFLAGS) -Q -L "$(EVIL_DIR)" -L lisp -L extensions/evil-ghostel \
-		--eval "(setq byte-compile-error-on-warn t)" -f batch-byte-compile $<
+		--eval "(setq byte-compile-error-on-warn t load-prefer-newer t)" -f batch-byte-compile $<
 
 # Per-topic test files.  Each file becomes its own Make target with a
 # per-file stamp under .build/tests/, so `make -jN' parallelises test
