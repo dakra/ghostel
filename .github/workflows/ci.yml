@@ -157,6 +157,7 @@ jobs:
           - os: ubuntu-latest
             platform: x86_64-linux
             suffix: .so
+            target: x86_64-linux-gnu.2.35
           - os: macos-26
             platform: aarch64-macos
             suffix: .dylib
@@ -167,7 +168,7 @@ jobs:
           - os: ubuntu-latest
             platform: aarch64-linux
             suffix: .so
-            target: aarch64-linux-gnu
+            target: aarch64-linux-gnu.2.35
           - os: ubuntu-latest
             platform: x86_64-freebsd
             suffix: .so
@@ -241,7 +242,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             platform: x86_64-linux
             suffix: .so
             emacs_version: '29.4'

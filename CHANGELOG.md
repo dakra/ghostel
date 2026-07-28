@@ -69,6 +69,7 @@ All notable changes to this project will be documented in this file.
 - A saved `ghostel-compile` log reopens in `ghostel-compile-view-mode`. Its
   header named a mode that does not exist, so the file landed in
   `fundamental-mode` without error navigation.
+- Pre-built Linux modules now target glibc 2.35 so they load on Ubuntu 22.04.
 
 ## [0.46.0] — 2026-07-27
 
