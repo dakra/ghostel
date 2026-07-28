@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- New option `ghostel-readonly-default-mode` (`copy` or `emacs`): the
+  read-only mode entered by `C-x C-q` (new command `ghostel-readonly-enter`;
+  pressed again inside copy/Emacs mode it exits), by hyperlink navigation,
+  and by `ghostel-mouse-drag-input-mode`, `ghostel-mark-activation-input-mode`
+  and `ghostel-point-leave-input-mode` at their new `default` setting — one
+  knob for users who prefer Emacs mode over copy mode everywhere. Explicit
+  `copy`/`emacs`/`nil` settings on the trigger options behave as before.
+  `ghostel-mode` is also marked mode-class `special` (like `term-mode`), so
+  `view-read-only` can no longer pull `view-mode` into a terminal buffer.
+
 ### Changed
 - Live terminal-input modes (semi-char, char, interactive `ghostel-compile`)
   now clear `buffer-read-only` instead of setting a buffer-local

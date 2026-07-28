@@ -123,6 +123,10 @@ the two is that *copy mode* freezes the terminal, so if you have continuous
 output nothing "scrolls away" while you try to select something.  *emacs mode* is
 /live/, so new output keeps coming in while you scroll and select.
 
+=C-x C-q= (the usual read-only toggle) enters your preferred read-only mode -
+picked by =ghostel-readonly-default-mode=, =copy= by default - and exits it
+again when pressed inside copy or Emacs mode.
+
 Those read-only modes have =ghostel-readonly-fast-exit= enabled by default (it defaults to =t=),
 which automatically exits them on most keys that you expect to be sent to the
 terminal.  This makes for seamless transitions: say you have some output running
@@ -415,6 +419,7 @@ Most keys are sent to the terminal.  Keys in =ghostel-keymap-exceptions=
 | =C-c C-p=     | Jump to previous hyperlink                   |
 | =C-c M-n=     | Enter Emacs mode and jump to next prompt     |
 | =C-c M-p=     | Enter Emacs mode and jump to previous prompt |
+| =C-x C-q=     | Enter =ghostel-readonly-default-mode=          |
 | =C-c C-q=     | Send next key literally (escape hatch)       |
 | Mouse wheel | Scroll through scrollback                    |
 
@@ -481,6 +486,7 @@ read-only but live, so output resumes - without going through semi-char.
 | =C-c M-n=     | Jump to next prompt            |
 | =C-c M-p=     | Jump to previous prompt        |
 | =C-l=         | Recenter viewport              |
+| =C-x C-q=     | Exit read-only mode            |
 | =q=           | Exit without copying           |
 | =a= - =z=       | Exit and send key to terminal  |
 
@@ -494,8 +500,10 @@ Soft-wrapped newlines are automatically stripped from copied text.
 Click-and-drag inside a ghostel buffer creates a region.  On release,
 =ghostel-mouse-drag-or-set-region= switches input mode so streaming terminal
 output cannot clobber the selection - the target is picked by
-=ghostel-mouse-drag-input-mode= (default =copy=):
+=ghostel-mouse-drag-input-mode=:
 
+- =default= (the default) - enter the mode picked by
+  =ghostel-readonly-default-mode= (initially =copy=).
 - =copy= - enter copy mode.  Redraws pause; the selection is stable regardless of
   where it sits.
 - =emacs= - enter Emacs mode.  The terminal keeps streaming and the buffer becomes
@@ -524,8 +532,8 @@ and protect that region the same way a drag does (from any window, focused or no
 The same protection exists for keyboard selections: when a command activates
 the mark in semi-char mode - =C-SPC= (=set-mark-command=), an expand-region
 variant, =C-x h=, anything that turns the region on - ghostel switches to the
-input mode picked by =ghostel-mark-activation-input-mode= (=copy= by default,
-=emacs=, or =nil= to stay in semi-char).  This hooks mark activation rather than
+input mode picked by =ghostel-mark-activation-input-mode= (=default= follows
+=ghostel-readonly-default-mode=; =copy=, =emacs=, or =nil= to stay in semi-char).  This hooks mark activation rather than
 any particular key, so custom bindings like =set-mark-or-expand= trigger it
 too.  Note that on a TTY Ctrl+Space is indistinguishable from =C-@= (NUL) and
 is forwarded to the terminal instead; in char mode Ctrl+Space always reaches
@@ -534,8 +542,9 @@ the terminal as NUL (GUI and TTY alike).
 The same applies when a command merely *moves point* off the live input point
 without selecting anything.  =isearch= (via =isearch-mode-end-hook=) and
 minibuffer commands like =consult-line= (via =minibuffer-exit-hook=) switch to
-the mode picked by =ghostel-point-leave-input-mode= (=copy= by default,
-=emacs=, or =nil= to disable), so the position is frozen and the content is
+the mode picked by =ghostel-point-leave-input-mode= (=default= follows
+=ghostel-readonly-default-mode=; =copy=, =emacs=, or =nil= to disable), so the
+position is frozen and the content is
 navigable instead of the next redraw yanking point back to the prompt.
 
 Other jump packages have no built-in hook, so wire them up with the command
@@ -1353,9 +1362,10 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 | =ghostel-ignore-cursor-change=       | =nil=               | Ignore terminal-driven cursor shape/visibility changes.                                                              |
 | =ghostel-readonly-fast-exit=         | =t=                 | In copy/Emacs modes, exit on =q=, =C-g=, or any self-insert key.                                                         |
 | =ghostel-readonly-fake-cursor=       | =t=                 | Draw a hint cursor at the live terminal position in copy/Emacs modes.                                                |
-| =ghostel-mouse-drag-input-mode=      | =copy=              | Mode to enter after a click/drag/multi-click selection: =copy=, =emacs=, or =nil=.                                         |
-| =ghostel-mark-activation-input-mode= | =copy=              | Mode to enter when a command activates the mark: =copy=, =emacs=, or =nil=.                                                |
-| =ghostel-point-leave-input-mode=     | =copy=              | Mode to enter when point leaves the input point (isearch/minibuffer): =copy=, =emacs=, or =nil=.                            |
+| =ghostel-readonly-default-mode=      | =copy=              | Read-only mode entered by =C-x C-q=, hyperlink navigation, and every trigger below left at =default=: =copy= or =emacs=.     |
+| =ghostel-mouse-drag-input-mode=      | =default=           | Mode to enter after a click/drag/multi-click selection: =default=, =copy=, =emacs=, or =nil=.                                |
+| =ghostel-mark-activation-input-mode= | =default=           | Mode to enter when a command activates the mark: =default=, =copy=, =emacs=, or =nil=.                                       |
+| =ghostel-point-leave-input-mode=     | =default=           | Mode to enter when point leaves the input point (isearch/minibuffer): =default=, =copy=, =emacs=, or =nil=.                  |
 | =ghostel-word-boundary-string=       | (see docstring)   | Characters that terminate words for double-click selection and word motion (mirrors Ghostty's =selection-word-chars=). |
 | =ghostel-scroll-on-input=            | =t=                 | Jump to the bottom when typing while scrolled into scrollback.                                                       |
 | =ghostel-bold-color=                 | =nil=               | How bold text is colored: =nil=, =bright=, or a =#RRGGBB= string.                                                          |
@@ -1768,6 +1778,7 @@ Enable it for any Emacs Lisp input method:
 | =M-x ghostel-char-mode=                | Switch to char input mode.                                                |
 | =M-x ghostel-emacs-mode=               | Switch to Emacs input mode (read-only, live).                             |
 | =M-x ghostel-copy-mode=                | Enter copy mode (frozen).                                                 |
+| =M-x ghostel-readonly-enter=           | Enter the read-only mode picked by =ghostel-readonly-default-mode=.         |
 | =M-x ghostel-line-mode=                | Switch to line input mode.                                                |
 | =M-x ghostel-copy-all=                 | Copy the entire scrollback to the kill ring.                              |
 | =M-x ghostel-paste=                    | Paste from the kill ring.                                                 |

@@ -1000,6 +1000,99 @@ Exiting returns to whatever mode the user was in beforehand, mirroring
             (should mark-active)))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-readonly-default-mode-resolution ()
+  "A `default' trigger setting follows `ghostel-readonly-default-mode'."
+  (let ((buf (generate-new-buffer " *ghostel-test-readonly-default*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake)
+                (ghostel--redraw-timer nil)
+                (ghostel-mark-activation-input-mode 'default)
+                (transient-mark-mode t))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--anchor-window) #'ignore)
+                      ((symbol-function 'ghostel-force-redraw) #'ignore)
+                      ((symbol-function 'ghostel--adjust-size) #'ignore))
+              (let ((ghostel-readonly-default-mode 'copy))
+                (set-mark-command nil)
+                (should (eq ghostel--input-mode 'copy))
+                (ghostel-readonly-exit))
+              (should (eq ghostel--input-mode 'semi-char))
+              (let ((ghostel-readonly-default-mode 'emacs))
+                (set-mark-command nil)
+                (should (eq ghostel--input-mode 'emacs))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-readonly-enter-toggles-via-read-only-mode-remap ()
+  "The `read-only-mode' remap toggles the configured read-only mode.
+It resolves to `ghostel-readonly-enter' in semi-char and to
+`ghostel-readonly-exit' in the read-only modes."
+  (let ((buf (generate-new-buffer " *ghostel-test-readonly-enter*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake)
+                (ghostel--redraw-timer nil)
+                (ghostel-readonly-default-mode 'emacs))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--anchor-window) #'ignore)
+                      ((symbol-function 'ghostel-force-redraw) #'ignore)
+                      ((symbol-function 'ghostel--adjust-size) #'ignore))
+              (should (eq (key-binding (kbd "C-x C-q")) #'ghostel-readonly-enter))
+              (call-interactively (key-binding (kbd "C-x C-q")))
+              (should (eq ghostel--input-mode 'emacs))
+              (should (eq (key-binding (kbd "C-x C-q")) #'ghostel-readonly-exit))
+              (call-interactively (key-binding (kbd "C-x C-q")))
+              (should (eq ghostel--input-mode 'semi-char)))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-readonly-enter-never-activates-view-mode ()
+  "`view-read-only' must not drag `view-mode' into a ghostel buffer.
+`ghostel-mode' is mode-class `special' and `read-only-mode' is
+remapped, so neither the remapped command nor a raw `read-only-mode'
+call may activate `view-mode'."
+  (should (eq (get 'ghostel-mode 'mode-class) 'special))
+  (let ((buf (generate-new-buffer " *ghostel-test-readonly-view*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake)
+                (ghostel--redraw-timer nil)
+                (view-read-only t))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--anchor-window) #'ignore)
+                      ((symbol-function 'ghostel-force-redraw) #'ignore)
+                      ((symbol-function 'ghostel--adjust-size) #'ignore))
+              (call-interactively (key-binding (kbd "C-x C-q")))
+              (should-not (bound-and-true-p view-mode))
+              (ghostel-readonly-exit)
+              ;; The raw command stays reachable via M-x; mode-class
+              ;; `special' keeps view-mode out of that path too.
+              (read-only-mode 1)
+              (should-not (bound-and-true-p view-mode))
+              (read-only-mode -1))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-hyperlink-navigation-honors-readonly-default ()
+  "Hyperlink navigation enters the configured read-only mode."
+  (let ((buf (generate-new-buffer " *ghostel-test-link-readonly*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake)
+                (ghostel--redraw-timer nil)
+                (ghostel-readonly-default-mode 'emacs))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--anchor-window) #'ignore)
+                      ((symbol-function 'ghostel--goto-hyperlink) #'ignore))
+              (ghostel-next-hyperlink)
+              (should (eq ghostel--input-mode 'emacs))
+              ;; Already read-only: no re-entry, mode is preserved.
+              (ghostel-previous-hyperlink)
+              (should (eq ghostel--input-mode 'emacs)))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-mark-activation-only-in-semi-char ()
   "Mark activation in char or copy mode does not switch (or toggle) modes."
   (let ((buf (generate-new-buffer " *ghostel-test-mark-other-modes*")))

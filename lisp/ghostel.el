@@ -782,10 +782,25 @@ anchor the input region.  Has no effect on `ghostel-exec'."
                  (const :tag "Char mode" char)
                  (const :tag "Line mode" line)))
 
-(defcustom ghostel-mouse-drag-input-mode 'copy
+(defcustom ghostel-readonly-default-mode 'copy
+  "Which read-only mode gestures and commands enter by default.
+
+- `copy' (default): `ghostel-copy-mode'.
+  Pauses redraws - the buffer is stable while you look around.
+- `emacs': `ghostel-emacs-mode'.  Terminal output keeps streaming.
+
+Followed by `ghostel-readonly-enter', hyperlink navigation and every trigger
+option left at its `default' setting: `ghostel-mouse-drag-input-mode',
+`ghostel-mark-activation-input-mode', `ghostel-point-leave-input-mode'.
+Set one of those to override this choice for that trigger only."
+  :type '(choice (const :tag "Copy mode (frozen)" copy)
+                 (const :tag "Emacs mode (live)"  emacs)))
+
+(defcustom ghostel-mouse-drag-input-mode 'default
   "Input mode to switch to after a left-button mouse click or selection.
 
-- `copy' (default): enter `ghostel-copy-mode'.  Pauses redraws -
+- `default': enter `ghostel-readonly-default-mode' (initially copy).
+- `copy': enter `ghostel-copy-mode'.  Pauses redraws -
   the selection is stable and the buffer is read-only.
 - `emacs': enter `ghostel-emacs-mode'.  Terminal output keeps
   streaming; the buffer is read-only.  Pick this when you do not
@@ -798,30 +813,35 @@ when the buffer is not in semi-char-mode when the gesture
 completes.  Copy, Emacs, and line modes keep normal Emacs mouse
 behavior even if terminal mouse tracking is active.
 A click that focuses the window or its frame never switches mode."
-  :type '(choice (const :tag "Copy mode (default)" copy)
-                 (const :tag "Emacs mode"          emacs)
-                 (const :tag "Do not switch"       nil)))
+  :type '(choice (const :tag "Follow ghostel-readonly-default-mode" default)
+                 (const :tag "Copy mode"     copy)
+                 (const :tag "Emacs mode"    emacs)
+                 (const :tag "Do not switch" nil)))
 
-(defcustom ghostel-mark-activation-input-mode 'copy
+(defcustom ghostel-mark-activation-input-mode 'default
   "Input mode to switch to when the mark becomes active in semi-char mode.
 Triggered by any command that activates the region, e.g. `set-mark-command',
 expand-region variants, `mark-whole-buffer', `exchange-point-and-mark'.
+`default' follows `ghostel-readonly-default-mode'; nil disables the switch.
 
 Mouse selection is governed separately by `ghostel-mouse-drag-input-mode'."
-  :type '(choice (const :tag "Copy mode (default)" copy)
-                 (const :tag "Emacs mode"          emacs)
-                 (const :tag "Do not switch"       nil)))
+  :type '(choice (const :tag "Follow ghostel-readonly-default-mode" default)
+                 (const :tag "Copy mode"     copy)
+                 (const :tag "Emacs mode"    emacs)
+                 (const :tag "Do not switch" nil)))
 
-(defcustom ghostel-point-leave-input-mode 'copy
+(defcustom ghostel-point-leave-input-mode 'default
   "Input mode to switch to when point leaves the live input point in semi-char.
 Triggered by any command that moves point off the terminal cursor without a
 mouse click or region activation.  Something like `isearch', `consult-line',
 `avy', `goto-line', wheel scrolling, etc.
+`default' follows `ghostel-readonly-default-mode'; nil disables the switch.
 
 See also `ghostel-mouse-drag-input-mode', `ghostel-mark-activation-input-mode'."
-  :type '(choice (const :tag "Copy mode (default)" copy)
-                 (const :tag "Emacs mode"          emacs)
-                 (const :tag "Do not switch"       nil)))
+  :type '(choice (const :tag "Follow ghostel-readonly-default-mode" default)
+                 (const :tag "Copy mode"     copy)
+                 (const :tag "Emacs mode"    emacs)
+                 (const :tag "Do not switch" nil)))
 
 (defcustom ghostel-word-boundary-string " \t\"'`|:;,()[]{}<>$│"
   "Characters that terminate words in ghostel buffers.
@@ -1318,6 +1338,9 @@ Input modes (`ghostel-semi-char-mode-map', `ghostel-char-mode-map',
   "C-c C-j"          #'ghostel-semi-char-mode
   "C-c M-d"          #'ghostel-char-mode
   "C-c C-l"          #'ghostel-line-mode
+  ;; `buffer-read-only' is owned by the input-mode machinery; C-x C-q
+  ;; enters the configured read-only mode instead of raw `read-only-mode'
+  "<remap> <read-only-mode>" #'ghostel-readonly-enter
   ;; Mouse click events
   "<down-mouse-1>"   #'ghostel-mouse-press-or-copy-mode
   "<mouse-1>"        #'ghostel-mouse-release-or-set-point
@@ -1442,7 +1465,9 @@ top so that \\`q', \\`C-g', or any self-insert key exits."
   "M->"            #'ghostel-readonly-end-of-buffer
   "C-e"            #'ghostel-readonly-end-of-line
   "RET"            #'ghostel-open-link-at-point
-  "<return>"       #'ghostel-open-link-at-point)
+  "<return>"       #'ghostel-open-link-at-point
+  ;; Toggle symmetry with the parent map's `ghostel-readonly-enter'.
+  "<remap> <read-only-mode>" #'ghostel-readonly-exit)
 
 (defvar-keymap ghostel-readonly-fast-exit-mode-map
   :doc "Keymap layered on `ghostel-readonly-mode-map' when fast exit is on.
@@ -2193,9 +2218,7 @@ the pre-click view and stays in semi-char (skipped when
      (t
       (mouse-set-point event promote-to-region)
       (when active
-        (pcase ghostel-mouse-drag-input-mode
-          ('copy  (ghostel-copy-mode))
-          ('emacs (ghostel-emacs-mode))))))))
+        (ghostel--enter-readonly-input-mode ghostel-mouse-drag-input-mode))))))
 
 (defun ghostel-mouse-drag-or-set-region (event)
   "Forward EVENT to the terminal, or hand off to `mouse-set-region'.
@@ -2219,9 +2242,7 @@ so a focus click stays in semi-char like a plain click."
    (t
     (mouse-set-region event)
     (when (eq ghostel--input-mode 'semi-char)
-      (pcase ghostel-mouse-drag-input-mode
-        ('copy  (ghostel-copy-mode))
-        ('emacs (ghostel-emacs-mode)))))))
+      (ghostel--enter-readonly-input-mode ghostel-mouse-drag-input-mode)))))
 
 (defun ghostel-mouse-down-2-or-noop (event)
   "Offer middle-button press EVENT to the terminal.
@@ -2515,6 +2536,20 @@ mode and copy → Emacs → exit returns to copy.")
       ghostel-readonly-fast-exit-mode-map
     ghostel-readonly-mode-map))
 
+(defun ghostel--enter-readonly-input-mode (spec)
+  "Enter the read-only input mode SPEC names.
+`copy' and `emacs' enter that mode directly; `default' follows
+`ghostel-readonly-default-mode'; nil is a no-op."
+  (pcase (if (eq spec 'default) ghostel-readonly-default-mode spec)
+    ('copy  (ghostel-copy-mode))
+    ('emacs (ghostel-emacs-mode))))
+
+(defun ghostel-readonly-enter ()
+  "Enter the read-only mode configured in `ghostel-readonly-default-mode'."
+  (interactive)
+  (ghostel--ensure-ghostel-buffer)
+  (ghostel--enter-readonly-input-mode 'default))
+
 (defun ghostel--enter-readonly (mode freeze label entry-message)
   "Enter or transition between read-only modes.
 MODE is `copy' or `emacs'.  FREEZE non-nil pauses live terminal
@@ -2602,9 +2637,7 @@ command set the region, so the selection survives the switch."
                                        ghostel-mouse-release-or-set-point
                                        ghostel-mouse-drag-or-set-region)))
              (eq ghostel--input-mode 'semi-char))
-    (pcase ghostel-mark-activation-input-mode
-      ('copy  (ghostel-copy-mode))
-      ('emacs (ghostel-emacs-mode)))))
+    (ghostel--enter-readonly-input-mode ghostel-mark-activation-input-mode)))
 
 (defun ghostel-maybe-leave-input (&rest _)
   "Leave semi-char for `ghostel-point-leave-input-mode' if point left the input.
@@ -2618,9 +2651,7 @@ Add it to other jump commands as a hook or `:after' advice (see the README)."
              ghostel--cursor-char-pos
              (not executing-kbd-macro)
              (/= (point) ghostel--cursor-char-pos))
-    (pcase ghostel-point-leave-input-mode
-      ('copy  (ghostel-copy-mode))
-      ('emacs (ghostel-emacs-mode)))))
+    (ghostel--enter-readonly-input-mode ghostel-point-leave-input-mode)))
 
 (defun ghostel-readonly-exit ()
   "Exit copy or Emacs mode and return to the mode active before entry."
@@ -2996,22 +3027,22 @@ Signals `user-error' if the buffer has no hyperlinks at all."
       (user-error "No hyperlinks in buffer"))))
 
 (defun ghostel-next-hyperlink (&optional n)
-  "Enter copy mode and move point to the Nth next hyperlink.
+  "Enter `ghostel-readonly-default-mode' and move to the Nth next hyperlink.
 A hyperlink is any OSC 8 link, auto-detected URL, or `file:line'
 reference in the buffer.  Wraps to `point-min' when no link is found
 after point.  Press RET to follow the link at point."
   (interactive "p")
-  (unless (eq ghostel--input-mode 'copy)
-    (ghostel-copy-mode))
+  (unless (memq ghostel--input-mode '(copy emacs))
+    (ghostel--enter-readonly-input-mode 'default))
   (dotimes (_ (or n 1))
     (ghostel--goto-hyperlink 'next)))
 
 (defun ghostel-previous-hyperlink (&optional n)
-  "Enter copy mode and move point to the Nth previous hyperlink.
+  "Enter `ghostel-readonly-default-mode' and move to the Nth previous hyperlink.
 Wraps to `point-max' when no link is found before point."
   (interactive "p")
-  (unless (eq ghostel--input-mode 'copy)
-    (ghostel-copy-mode))
+  (unless (memq ghostel--input-mode '(copy emacs))
+    (ghostel--enter-readonly-input-mode 'default))
   (dotimes (_ (or n 1))
     (ghostel--goto-hyperlink 'previous)))
 
@@ -5393,6 +5424,10 @@ the native module and PTY depend on; once the process is dead the mode
 may change freely (`ghostel-compile' finalize relies on this)."
   (when (process-live-p ghostel--process)
     (user-error "Cannot change major mode in a live ghostel buffer")))
+
+;; Like `term-mode': the buffer is not for ordinary text editing, and
+;; `read-only-mode' must not drag in `view-mode' under `view-read-only'.
+(put 'ghostel-mode 'mode-class 'special)
 
 (define-derived-mode ghostel-mode fundamental-mode "Ghostel"
   "Major mode for Ghostel terminal emulator."
