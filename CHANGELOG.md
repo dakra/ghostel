@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.47.0] — 2026-07-28
+
 ### Added
 - New option `ghostel-readonly-default-mode` (`copy` or `emacs`): the
   read-only mode entered by `C-x C-q` (new command `ghostel-readonly-enter`;
@@ -55,8 +57,17 @@ All notable changes to this project will be documented in this file.
   terminal keep following as before.
   While reading scrollback with pending typed input, async output no
   longer teleports point back to the input line.
+- `ghostel-debug-info` now reports the buffer, window, and rendering sections
+  for any buffer (with the major-mode parent chain and read-only state)
+  instead of printing only a "not in a ghostel buffer" note, and adds
+  Compile run and Compile routing sections for `ghostel-compile`: command,
+  directories, launch mode, timings, exit status, parsed-error count, and
+  global-mode/advice wiring.
 
 ### Fixed
+- Kitty graphics placements are sized with the correct cell geometry: per-cell
+  pixel dimensions are passed to libghostty's resize API instead of being
+  multiplied into the terminal dimensions, which inflated image placements.
 - URLs and `file:line` references that the terminal wrapped across rows are now
   detected as one link: every row carries the whole target, and link navigation
   treats the rows as a single link. They also survive the reflow a window
@@ -70,6 +81,11 @@ All notable changes to this project will be documented in this file.
   header named a mode that does not exist, so the file landed in
   `fundamental-mode` without error navigation.
 - Pre-built Linux modules now target glibc 2.35 so they load on Ubuntu 22.04.
+
+### Internal
+- Byte compilation sets `load-prefer-newer`, so recompiling after a source
+  change no longer loads stale `.elc` files and warns "Source file newer than
+  byte-compiled file".
 
 ## [0.46.0] — 2026-07-27
 
