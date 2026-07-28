@@ -428,7 +428,7 @@ would write properties to the previous line."
 
 (ert-deftest ghostel-test-kitty-graphics-emit-end-to-end ()
   "A kitty transmit-and-place escape reaches `ghostel--kitty-display-image'.
-Smoke test for the C boundary: feeds a 1x1 RGB transmission, redraws,
+Smoke test for the C boundary: feeds a 2x2 RGB transmission, redraws,
 and checks that the elisp callback receives the expected geometry and
 unibyte image data.  Without this, protocol-level regressions in the
 Zig glue (placement iterator, render-info query, RGBA→PPM conversion)
@@ -446,21 +446,16 @@ now we verify only the arguments the native module hands off."
 		(with-current-buffer buf
 		  (let* ((term (ghostel--new 5 40 1000))
 				 (inhibit-read-only t))
-			;; Kitty graphics needs cell pixel dimensions to compute
-			;; placement grid sizes (libghostty's example does this
-			;; before sending kitty commands).
-			(ghostel--set-size term 5 40 8 16)
+			;; With 1x1 cells, the 2x2 image must occupy a 2x2 grid.
+			(ghostel--set-size term 5 40 1 1)
 			(cl-letf (((symbol-function 'ghostel--kitty-display-image)
 					   (lambda (&rest args) (push args calls)))
 					  ((symbol-function 'display-graphic-p) (lambda () t)))
-			  ;; Kitty transmit-and-place a 1x1 red PNG, quiet=1
-			  ;; (suppress success responses).  Payload is the
-			  ;; ghostty/example/c-vt-kitty-graphics 1x1 red PNG.
 			  (ghostel--write-vt
 			   term (concat "\e_Ga=T,f=100,q=1;"
-							"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA"
-							"DUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
-							"\e\\"))
+							"iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAA"
+							"E0lEQVR4nGP4z8AAQmAKSDAwAAA/0gX7BydG0gAAAABJRU5E"
+							"rkJggg==\e\\"))
 			  (ghostel--redraw term t))
 			(should calls)
 			(let ((args (car calls)))
@@ -473,10 +468,10 @@ now we verify only the arguments the native module hands off."
 			  (should (eq (nth 1 args) nil))               ; is-png = nil (PPM)
 			  (should (integerp (nth 2 args)))             ; abs-row
 			  (should (integerp (nth 3 args)))             ; vp-col
-			  (should (>= (nth 4 args) 1))                 ; grid-cols >= 1
-			  (should (>= (nth 5 args) 1))                 ; grid-rows >= 1
-			  (should (= (nth 6 args) 1))                  ; pixel-w = 1
-			  (should (= (nth 7 args) 1)))))               ; pixel-h = 1
+			  (should (= (nth 4 args) 2))                  ; grid-cols
+			  (should (= (nth 5 args) 2))                  ; grid-rows
+			  (should (= (nth 6 args) 2))                  ; pixel-w
+			  (should (= (nth 7 args) 2)))))               ; pixel-h
 	  (kill-buffer buf))))
 
 (provide 'ghostel-kitty-test)

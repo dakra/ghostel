@@ -1027,10 +1027,8 @@ fn commitResize(self: *Self, env: emacs.Env) !void {
             .cols = rz.cols,
             .rows = rz.rows,
             .cell_size_px = .{
-                .width = std.math.mul(u32, rz.cols, rz.cell_w) catch
-                    std.math.maxInt(u32),
-                .height = std.math.mul(u32, rz.rows, rz.cell_h) catch
-                    std.math.maxInt(u32),
+                .width = rz.cell_w,
+                .height = rz.cell_h,
             },
         });
         self.pending_resize = null;
