@@ -742,6 +742,12 @@ to leave the directory alone.
   rows, and each row is clickable for the whole target.  Hyperlink navigation
   visits such a link once, and a window resize that reflows the terminal
   leaves it intact.
+- *thing-at-point and ffap* - =thing-at-point= (=filename=,
+  =existing-filename=, =url=) returns the whole target across wrapped rows,
+  which =browse-url-at-point=, embark's URL target, and the find-file =M-n=
+  default pick up.  =find-file-at-point= is remapped to
+  =ghostel-find-file-at-point=, which opens the link at point at its
+  recorded line instead of stopping at the row break.
 
 ** Clipboard
 :properties:

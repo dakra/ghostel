@@ -1432,5 +1432,163 @@ which used to drop the link entirely."
           (should (= 1 (length (seq-uniq (mapcar (lambda (run) (nth 2 run))
                                                  runs))))))))))
 
+
+;;; thing-at-point and ffap across soft-wrapped rows
+
+(defmacro ghostel-test--with-thingatpt-buffer (&rest body)
+  "Run BODY in a `ghostel-mode' temp buffer with renderer-owned inserts.
+The mode registers the providers `thing-at-point' consults; `insert'
+and `ghostel-test--wrap-split' work despite the read-only default."
+  (declare (indent 0) (debug t))
+  `(with-temp-buffer
+     (ghostel-mode)
+     (ghostel-test--with-rendered-output
+       ,@body)))
+
+(ert-deftest ghostel-test-thingatpt-filename-across-soft-wrap ()
+  "`thing-at-point' returns the whole path from either fragment.
+`filename' drops the `:LINE' tail so `existing-filename' (which
+expands and stats it) works; both fragments answer alike."
+  (let* ((file (locate-library "ghostel"))
+         (default-directory (file-name-directory file)))
+    (ghostel-test--with-thingatpt-buffer
+      (insert "see ")
+      (ghostel-test--wrap-split (concat file ":42") 20)
+      (insert " end\n")
+      (ghostel--detect-urls)
+      (dolist (pos (list 10                            ; first fragment
+                         (+ 10 (- (length file) 15)))) ; second fragment
+        (goto-char pos)
+        (should (equal file (thing-at-point 'filename)))
+        (should (equal file (thing-at-point 'existing-filename)))))))
+
+(ert-deftest ghostel-test-thingatpt-filename-unwrapped-link-drops-tail ()
+  "On an unwrapped detected link, `filename' still drops the tail."
+  (let* ((file (locate-library "ghostel"))
+         (default-directory (file-name-directory file)))
+    (ghostel-test--with-thingatpt-buffer
+      (insert "see " file ":42:7 end\n")
+      (ghostel--detect-urls)
+      (goto-char 10)
+      (should (equal file (thing-at-point 'filename))))))
+
+(ert-deftest ghostel-test-thingatpt-filename-fallback-without-link ()
+  "A wrapped path that names no file still yields the joined token.
+Detection attaches no link (the file does not exist), so the
+provider extracts the filename-character run from the joined line."
+  (ghostel-test--with-thingatpt-buffer
+    (insert "see ")
+    (ghostel-test--wrap-split "/no/such/dir/deeply/nested/file.rb:4" 20)
+    (insert " end\n")
+    (ghostel--detect-urls)
+    ;; Both fragments: the second exercises the offset map past the wrap.
+    (dolist (pos '(10 30))
+      (goto-char pos)
+      (should (equal "/no/such/dir/deeply/nested/file.rb:4"
+                     (thing-at-point 'filename))))))
+
+(ert-deftest ghostel-test-thingatpt-url-across-soft-wrap ()
+  "`thing-at-point' returns the whole URL from either fragment."
+  (ghostel-test--with-thingatpt-buffer
+    (insert "go ")
+    (ghostel-test--wrap-split "https://example.com/very/long/path" 22)
+    (insert " end\n")
+    (let ((ghostel-enable-url-detection t))
+      (ghostel--detect-urls))
+    (dolist (pos '(6 30))
+      (goto-char pos)
+      (should (equal "https://example.com/very/long/path"
+                     (thing-at-point 'url))))))
+
+(ert-deftest ghostel-test-thingatpt-url-fallback-without-link ()
+  "A wrapped URL yields the whole match even with detection off.
+Covers the active prompt line, which detection skips, and users who
+disable `ghostel-enable-url-detection'."
+  (ghostel-test--with-thingatpt-buffer
+    (insert "go ")
+    (ghostel-test--wrap-split "https://example.com/very/long/path" 22)
+    (insert " end\n")
+    (goto-char 6)
+    (should (equal "https://example.com/very/long/path"
+                   (thing-at-point 'url)))))
+
+(ert-deftest ghostel-test-thingatpt-url-of-osc8-link-is-target ()
+  "On an OSC 8 link, `thing-at-point' returns the target, not the text."
+  (ghostel-test--with-thingatpt-buffer
+    (insert "click here\n")
+    (add-text-properties 7 11 (list 'help-echo "https://example.com"
+                                    'keymap ghostel-link-map
+                                    'ghostel-link-id "osc8"))
+    (goto-char 8)
+    (should (equal "https://example.com" (thing-at-point 'url)))
+    (should-not (thing-at-point 'existing-filename))))
+
+(ert-deftest ghostel-test-thingatpt-bounds-span-the-wrap ()
+  "`bounds-of-thing-at-point' covers every fragment of a wrapped link."
+  (skip-unless (boundp 'bounds-of-thing-at-point-provider-alist))
+  (let* ((file (locate-library "ghostel"))
+         (default-directory (file-name-directory file)))
+    (ghostel-test--with-thingatpt-buffer
+      (insert "see ")
+      (ghostel-test--wrap-split (concat file ":42") 20)
+      (insert " end\n")
+      (ghostel--detect-urls)
+      (goto-char 10)
+      (let ((bounds (bounds-of-thing-at-point 'filename)))
+        (should bounds)
+        ;; Text plus the one wrap newline between the fragments.
+        (should (= (+ (length (concat file ":42")) 1)
+                   (- (cdr bounds) (car bounds))))
+        (should (= (car bounds) 5))))))
+
+(ert-deftest ghostel-test-file-name-at-point-hook ()
+  "`file-name-at-point-functions' yields the absolute detected file.
+This feeds `M-n' in `find-file' prompts and `context-menu-ffap'."
+  (let* ((file (locate-library "ghostel"))
+         (default-directory (file-name-directory file)))
+    (ghostel-test--with-thingatpt-buffer
+      (insert "see ")
+      (ghostel-test--wrap-split (concat file ":42") 20)
+      (insert " end\n")
+      (ghostel--detect-urls)
+      (goto-char 10)
+      (should (equal file (run-hook-with-args-until-success
+                           'file-name-at-point-functions)))
+      ;; Off the link the ghostel hook member declines.
+      (goto-char (point-max))
+      (should-not (ghostel--fileref-file-at-point)))))
+
+(ert-deftest ghostel-test-find-file-at-point-opens-wrapped-link ()
+  "`ghostel-find-file-at-point' opens the detected link at its line.
+Off a link it falls back to `find-file-at-point'."
+  (let* ((file (locate-library "ghostel"))
+         (default-directory (file-name-directory file))
+         (opened nil)
+         (fallback nil))
+    (require 'ffap)
+    (ghostel-test--with-thingatpt-buffer
+      (insert "see ")
+      (ghostel-test--wrap-split (concat file ":42") 20)
+      (insert " end\n")
+      (ghostel--detect-urls)
+      (cl-letf (((symbol-function 'find-file-other-window)
+                 (lambda (f) (setq opened f)))
+                ((symbol-function 'find-file-at-point)
+                 (lambda (&optional _) (interactive) (setq fallback t))))
+        (goto-char 10)
+        (ghostel-find-file-at-point)
+        (should (equal file opened))
+        (should-not fallback)
+        (goto-char (point-max))
+        (ghostel-find-file-at-point)
+        (should fallback)
+        ;; A detected file deleted since detection also falls back.
+        (setq opened nil fallback nil)
+        (goto-char 10)
+        (cl-letf (((symbol-function 'file-exists-p) (lambda (_) nil)))
+          (ghostel-find-file-at-point))
+        (should fallback)
+        (should-not opened)))))
+
 (provide 'ghostel-links-test)
 ;;; ghostel-links-test.el ends here

@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `thing-at-point` integration: in ghostel buffers, `filename`,
+  `existing-filename`, and `url` things resolve to the whole target even
+  when the terminal soft-wrapped it across rows, instead of the fragment
+  on one row.  On a detected link the answer comes from the link's
+  target (so `existing-filename` is the absolute path detection already
+  validated); elsewhere the logical line is joined before extraction.
+  Consumers that ask `thing-at-point` — `browse-url-at-point`, embark's
+  URL target — pick this up automatically; on Emacs 30
+  `bounds-of-thing-at-point` spans the wrap on detected links too.
+- The find-file prompt's `M-n` default now names the detected file at
+  point via `file-name-at-point-functions`.
+- New command `ghostel-find-file-at-point`, bound via
+  `<remap> <find-file-at-point>`: opens the link at point at its
+  recorded line and column, falling back to `find-file-at-point`.
+  Plain `ffap` reads raw buffer text, so on a soft-wrapped path it
+  stops at the row break and visits only the directory prefix.
+
 ## [0.47.0] — 2026-07-28
 
 ### Added

@@ -92,6 +92,7 @@
 (require 'project)
 (require 'shell)
 (require 'text-property-search)
+(require 'thingatpt)
 (require 'tramp)
 (require 'url-parse)
 (require 'face-remap)
@@ -661,6 +662,14 @@ per-redraw scan stays cheap."
   "Fixed optional `:LINE[:COL]' tail.
 When absent, the match is linkified as a bare file/directory
 reference opened at its start.")
+
+(defconst ghostel--url-regex
+  "https?://[^ \t\n\r\"<>]*[^ \t\n\r\"<>.,;:!?)>]"
+  "Regex matching a plain-text http(s) URL.")
+
+(defconst ghostel--fileref-regex
+  "\\`fileref:\\(.*?\\)\\(?::\\([0-9]+\\)\\(?::\\([0-9]+\\)\\)?\\)?\\'"
+  "Match a `fileref:' URI into path (group 1), line (2), and column (3).")
 
 (defcustom ghostel-shell-integration t
   "Automatically inject shell integration on startup.
@@ -1341,6 +1350,9 @@ Input modes (`ghostel-semi-char-mode-map', `ghostel-char-mode-map',
   ;; `buffer-read-only' is owned by the input-mode machinery; C-x C-q
   ;; enters the configured read-only mode instead of raw `read-only-mode'
   "<remap> <read-only-mode>" #'ghostel-readonly-enter
+  ;; ffap extracts its string from raw buffer text, so a path split by a
+  ;; soft-wrapped row resolves to the fragment before the break
+  "<remap> <find-file-at-point>" #'ghostel-find-file-at-point
   ;; Mouse click events
   "<down-mouse-1>"   #'ghostel-mouse-press-or-copy-mode
   "<mouse-1>"        #'ghostel-mouse-release-or-set-point
@@ -2946,7 +2958,7 @@ the file at the given position in another window.  A fileref without
 a line suffix opens at the start of the file or directory."
   (when (and url (stringp url))
     (cond
-     ((string-match "\\`fileref:\\(.*?\\)\\(?::\\([0-9]+\\)\\(?::\\([0-9]+\\)\\)?\\)?\\'" url)
+     ((string-match ghostel--fileref-regex url)
       (let ((file (match-string 1 url))
             (line (and (match-string 2 url)
                        (string-to-number (match-string 2 url))))
@@ -3295,9 +3307,7 @@ outside the redraw scope."
     ;; Pass 1: http(s) URLs
     (when ghostel-enable-url-detection
       (let ((offset 0))
-        (while (string-match
-                "https?://[^ \t\n\r\"<>]*[^ \t\n\r\"<>.,;:!?)>]"
-                text offset)
+        (while (string-match ghostel--url-regex text offset)
           (setq offset (match-end 0))
           (let* ((beg (ghostel--wrap-offset-to-pos (match-beginning 0) chunks))
                  (mend (ghostel--wrap-offset-to-pos (match-end 0) chunks))
@@ -3360,6 +3370,169 @@ outside the redraw scope."
                      raw)))))))))
     (ghostel--drop-stranded-links
      begin end matched ghostel-enable-url-detection files)))
+
+
+;;; thing-at-point and ffap across soft-wrapped rows
+
+(defun ghostel--wrap-pos-to-offset (pos chunks)
+  "Return the string offset for buffer POS given CHUNKS.
+Inverse of `ghostel--wrap-offset-to-pos'.  A POS on a wrap newline
+maps to the offset of the next row's first character, since the
+newline itself is not part of the joined string."
+  (let ((i (1- (length chunks))))
+    (while (and (> i 0) (> (cdr (aref chunks i)) pos))
+      (setq i (1- i)))
+    (let ((chunk (aref chunks i)))
+      (+ (car chunk) (- pos (cdr chunk))))))
+
+(defun ghostel--logical-line-at-point ()
+  "Return (STRING . CHUNKS) for point's logical line, or nil if unwrapped.
+STRING is the line's text with soft-wrap newlines removed and CHUNKS
+maps its offsets back to buffer positions, as returned by
+`ghostel--wrap-joined-region'.  Nil when no soft wrap is involved, so
+callers can fall back to ordinary single-line behavior."
+  (let ((bol (line-beginning-position))
+        (eol (line-end-position)))
+    (when (or (get-text-property eol 'ghostel-wrap)
+              (and (> bol (point-min))
+                   (get-text-property (1- bol) 'ghostel-wrap)))
+      (let ((begin (ghostel--soft-wrap-line-beginning
+                    (point) ghostel--soft-wrap-row-limit))
+            (end (ghostel--soft-wrap-line-end
+                  (point) ghostel--soft-wrap-row-limit)))
+        (ghostel--wrap-joined-region begin end ghostel--soft-wrap-row-limit)))))
+
+(defun ghostel--joined-token-at-point (chars)
+  "Return the run of CHARS around point on the joined logical line, or nil.
+CHARS is a `skip-chars' style set.  Nil when point's line has no soft
+wrap or no such run touches point."
+  (when-let* ((joined (ghostel--logical-line-at-point)))
+    (let* ((text (car joined))
+           (class (concat "[" chars "]"))
+           (len (length text))
+           (start (min (ghostel--wrap-pos-to-offset (point) (cdr joined)) len))
+           (end start))
+      (while (and (> start 0)
+                  (string-match-p class (char-to-string (aref text (1- start)))))
+        (setq start (1- start)))
+      (while (and (< end len)
+                  (string-match-p class (char-to-string (aref text end))))
+        (setq end (1+ end)))
+      (and (< start end) (substring text start end)))))
+
+(defun ghostel--link-uri-at-point ()
+  "Return the URI of the ghostel link at point, or nil.
+The `keymap' check tells ghostel's own links from a foreign
+`help-echo' some other source put in the buffer."
+  (and (eq (get-text-property (point) 'keymap) ghostel-link-map)
+       (ghostel--uri-at-pos (point))))
+
+(defun ghostel--fileref-file-at-point ()
+  "Return the absolute file name of the detected file link at point.
+Nil when point is not on a `fileref:' link.  The name was resolved
+against `default-directory' and checked for existence when the link
+was detected.  Suitable for `file-name-at-point-functions'."
+  (let ((uri (ghostel--link-uri-at-point)))
+    (and uri
+         (string-match ghostel--fileref-regex uri)
+         (match-string 1 uri))))
+
+(defun ghostel--thing-at-point-filename ()
+  "Return the file name at point, crossing soft-wrapped rows.
+For `thing-at-point-provider-alist'.  On a detected file link the
+name is the link's text without its `:LINE[:COL]' tail; elsewhere on
+a wrapped line, the filename-character run around point."
+  (let ((uri (ghostel--link-uri-at-point)))
+    (if (and uri (string-prefix-p "fileref:" uri))
+        (let ((raw (get-text-property (point) 'ghostel-link-text)))
+          ;; OSC 8 spans have no link text; the detection regexes
+          ;; guarantee a detected path holds no colon before the tail.
+          (when raw
+            (if (string-match "\\(?::[0-9]+\\)\\{1,2\\}\\'" raw)
+                (substring raw 0 (match-beginning 0))
+              raw)))
+      (ghostel--joined-token-at-point thing-at-point-file-name-chars))))
+
+(defun ghostel--thing-at-point-url ()
+  "Return the URL at point, crossing soft-wrapped rows.
+For `thing-at-point-provider-alist'.  On a URL link (OSC 8 or
+detected) this is the link target; elsewhere on a wrapped line, the
+URL match around point."
+  (let ((uri (ghostel--link-uri-at-point)))
+    (cond
+     ((and uri (not (string-prefix-p "fileref:" uri))) uri)
+     (uri nil)                          ; file link: not a URL
+     (t (when-let* ((joined (ghostel--logical-line-at-point)))
+          (let* ((text (car joined))
+                 (off (ghostel--wrap-pos-to-offset (point) (cdr joined)))
+                 (start 0)
+                 (found nil))
+            (while (and (not found)
+                        (string-match ghostel--url-regex text start)
+                        (<= (match-beginning 0) off))
+              (if (<= off (match-end 0))
+                  (setq found (match-string 0 text))
+                (setq start (match-end 0))))
+            found))))))
+
+(defun ghostel--link-bounds (pos)
+  "Return (BEG . END) covering every fragment of the link at POS, or nil.
+Fragments of a soft-wrapped link share a `ghostel-link-id' but never
+cover the wrap newline between them, so the span is extended across
+single newlines whose neighbor continues the same link."
+  (let* ((echo (get-text-property pos 'help-echo))
+         (id (get-text-property pos 'ghostel-link-id))
+         (same (lambda (p)
+                 (and (equal echo (get-text-property p 'help-echo))
+                      (equal id (get-text-property p 'ghostel-link-id)))))
+         (beg pos)
+         (end pos))
+    (when (stringp echo)
+      (while (cond ((and (> beg (point-min)) (funcall same (1- beg)))
+                    (setq beg (1- beg)))
+                   ((and id (> beg (1+ (point-min)))
+                         (get-text-property (1- beg) 'ghostel-wrap)
+                         (funcall same (- beg 2)))
+                    (setq beg (- beg 2)))))
+      (while (cond ((and (< end (point-max)) (funcall same end))
+                    (setq end (1+ end)))
+                   ((and id (< (1+ end) (point-max))
+                         (get-text-property end 'ghostel-wrap)
+                         (funcall same (1+ end)))
+                    (setq end (1+ end)))))
+      (cons beg end))))
+
+(defun ghostel--bounds-of-file-link-at-point ()
+  "Bounds of the detected file link at point, or nil.
+For `bounds-of-thing-at-point-provider-alist'."
+  (and (ghostel--fileref-file-at-point)
+       (ghostel--link-bounds (point))))
+
+(defun ghostel--bounds-of-url-link-at-point ()
+  "Bounds of the URL link at point, or nil.
+For `bounds-of-thing-at-point-provider-alist'."
+  (let ((uri (ghostel--link-uri-at-point)))
+    (and uri
+         (not (string-prefix-p "fileref:" uri))
+         (ghostel--link-bounds (point)))))
+
+(declare-function find-file-at-point "ffap")
+
+(defun ghostel-find-file-at-point ()
+  "Open the hyperlink at point, or fall back to `find-file-at-point'.
+A detected file reference opens at its recorded line and column even
+when the path is split across soft-wrapped rows, which plain `ffap'
+resolves to only the fragment before the row break.  A detected
+file deleted since detection falls back as well."
+  (interactive)
+  (let* ((uri (ghostel--link-uri-at-point))
+         (file (and uri
+                    (string-match ghostel--fileref-regex uri)
+                    (match-string 1 uri))))
+    (if (and uri (or (not file) (file-exists-p file)))
+        (ghostel--open-link uri)
+      (require 'ffap)
+      (call-interactively #'find-file-at-point))))
 
 (defun ghostel--run-queued-plain-link-detection (buffer)
   "Run any queued redraw-triggered plain-text link detection for BUFFER."
@@ -5500,6 +5673,21 @@ may change freely (`ghostel-compile' finalize relies on this)."
   (add-hook 'change-major-mode-hook #'ghostel--change-major-mode-guard nil t)
   ;; Show the hyperlink URI at point in eldoc.
   (add-hook 'eldoc-documentation-functions #'ghostel--eldoc-link nil t)
+  ;; Serve whole targets to thing-at-point (and through it embark,
+  ;; `existing-filename', etc.) and to the find-file `M-n' default,
+  ;; which otherwise see only the fragment of a soft-wrapped row.
+  (setq-local thing-at-point-provider-alist
+              (append '((filename . ghostel--thing-at-point-filename)
+                        (existing-filename . ghostel--fileref-file-at-point)
+                        (url . ghostel--thing-at-point-url))
+                      thing-at-point-provider-alist))
+  (when (boundp 'bounds-of-thing-at-point-provider-alist)
+    (setq-local bounds-of-thing-at-point-provider-alist
+                (append '((filename . ghostel--bounds-of-file-link-at-point)
+                          (existing-filename . ghostel--bounds-of-file-link-at-point)
+                          (url . ghostel--bounds-of-url-link-at-point))
+                        bounds-of-thing-at-point-provider-alist)))
+  (add-hook 'file-name-at-point-functions #'ghostel--fileref-file-at-point nil t)
 
   ;; Set up the comint/shell completion plumbing once per buffer so
   ;; `ghostel-line-mode-complete-at-point' has the right
