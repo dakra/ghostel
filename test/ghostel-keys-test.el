@@ -54,6 +54,12 @@ Covers punctuation, digits, uppercase, space, and lowercase letters."
   ;; Lowercase letters still work (existing behavior)
   (should (equal "\eb" (ghostel--raw-key-sequence "b" "meta"))))
 
+(ert-deftest ghostel-test-raw-key-ctrl-meta ()
+  "Ctrl+Meta char keeps the meta bit as an ESC prefix on the C0 byte."
+  (should (equal "\C-s" (ghostel--raw-key-sequence "s" "ctrl")))
+  (should (equal "\e\C-s" (ghostel--raw-key-sequence "s" "ctrl,meta")))
+  (should (equal "\e\C-a" (ghostel--raw-key-sequence "a" "meta,ctrl"))))
+
 (ert-deftest ghostel-test-modifier-number ()
   "Test modifier bitmask parsing."
   (should (equal 0 (ghostel--modifier-number "")))            ; no mods
@@ -96,9 +102,23 @@ Covers punctuation, digits, uppercase, space, and lowercase letters."
         (sim (aref (kbd "C-S-<return>") 0) "return"   "ctrl,shift")
         (sim (aref (kbd "M-.") 0)  "."  "meta")
         (sim (aref (kbd "M-1") 0)  "1"  "meta")
+        ;; Uppercase chords arrive as lowercase base + shift; the key
+        ;; name restores the case so the encoder sends the shifted char.
+        (sim ?\M-T  "T" "shift,meta")
+        (sim ?\C-\S-t "T" "shift,ctrl")
         ;; Control + non-letter punctuation decomposes to base + ctrl.
         (sim ?\C-]      "]" "ctrl")
         (sim ?\M-\C-]   "]" "ctrl,meta")
+        ;; Control letters decompose to letter + ctrl.
+        (sim ?\C-s      "s" "ctrl")
+        ;; NUL (TTY C-@/C-SPC, GUI C-@) decomposes to @ + ctrl.
+        (sim 0          "@" "ctrl")
+        ;; Raw C0 bytes for RET/TAB/ESC (as a TTY delivers them) map to
+        ;; the functional key, not to C-m/C-i/C-[ — the encoder would
+        ;; fixterms-encode those as CSI-u and break Enter/Tab.
+        (sim ?\r        "return" "")
+        (sim ?\t        "tab"    "")
+        (sim ?\e        "escape" "")
         ;; backtab (Emacs's name for S-TAB)
         (sim (aref (kbd "<backtab>") 0)   "tab"       "shift")))))
 
@@ -150,6 +170,60 @@ SETUP, when non-nil, is called before sending the key."
   :tags '(native posix)
   (ghostel-test--with-pty-matrix backend
     (should (equal "7f" (ghostel-test--send-key-and-read-hex "backspace" "" 1)))))
+
+(defun ghostel-test--kitty-disambiguate ()
+  "Enable the kitty keyboard protocol (disambiguate flag) on the terminal."
+  (ghostel--write-vt ghostel--term "\e[=1u"))
+
+(ert-deftest ghostel-test-encode-key-kitty-meta-char ()
+  "M-<letter> encodes as CSI-u when kitty keyboard mode is active."
+  :tags '(native posix)
+  (ghostel-test--with-pty-matrix backend
+    ;; \e[116;3u
+    (should (equal "1b5b3131363b3375"
+                   (ghostel-test--send-key-and-read-hex
+                    "t" "meta" 8 #'ghostel-test--kitty-disambiguate)))))
+
+(ert-deftest ghostel-test-encode-key-kitty-ctrl-char ()
+  "C-<letter> encodes as CSI-u instead of a C0 byte under kitty mode."
+  :tags '(native posix)
+  (ghostel-test--with-pty-matrix backend
+    ;; \e[115;5u
+    (should (equal "1b5b3131353b3575"
+                   (ghostel-test--send-key-and-read-hex
+                    "s" "ctrl" 8 #'ghostel-test--kitty-disambiguate)))))
+
+(ert-deftest ghostel-test-encode-key-kitty-ctrl-meta-char ()
+  "C-M-<letter> encodes as CSI-u with both modifiers under kitty mode."
+  :tags '(native posix)
+  (ghostel-test--with-pty-matrix backend
+    ;; \e[115;7u
+    (should (equal "1b5b3131353b3775"
+                   (ghostel-test--send-key-and-read-hex
+                    "s" "ctrl,meta" 8 #'ghostel-test--kitty-disambiguate)))))
+
+(ert-deftest ghostel-test-encode-key-kitty-shifted-meta-char ()
+  "M-<uppercase letter> encodes the unshifted codepoint plus shift mod."
+  :tags '(native posix)
+  (ghostel-test--with-pty-matrix backend
+    ;; \e[116;4u
+    (should (equal "1b5b3131363b3475"
+                   (ghostel-test--send-key-and-read-hex
+                    "T" "meta" 8 #'ghostel-test--kitty-disambiguate)))))
+
+(ert-deftest ghostel-test-encode-key-legacy-meta-char ()
+  "M-<letter> keeps the legacy ESC prefix without kitty mode."
+  :tags '(native posix)
+  (ghostel-test--with-pty-matrix backend
+    ;; ESC t
+    (should (equal "1b74" (ghostel-test--send-key-and-read-hex "t" "meta" 2)))))
+
+(ert-deftest ghostel-test-encode-key-legacy-ctrl-meta-char ()
+  "C-M-<letter> keeps the meta bit as ESC + C0 byte without kitty mode."
+  :tags '(native posix)
+  (ghostel-test--with-pty-matrix backend
+    ;; ESC DC3
+    (should (equal "1b13" (ghostel-test--send-key-and-read-hex "s" "ctrl,meta" 2)))))
 
 (ert-deftest ghostel-test-filter-writes-vt-and-invalidates ()
   "`ghostel--filter' feeds output to the terminal and triggers a redraw.
@@ -377,13 +451,13 @@ SETUP, when non-nil, is called before sending the paste."
         (ghostel-readonly-fast-exit t))
     (cl-letf (((symbol-function 'ghostel-readonly-exit)
                (lambda () (push 'exit call-order)))
-              ((symbol-function 'ghostel--send-encoded)
-               (lambda (key mods &rest _)
-                 (setq send-args (list key mods))
+              ((symbol-function 'ghostel--send-string)
+               (lambda (str)
+                 (setq send-args str)
                  (push 'send call-order))))
       (ghostel-send-C-c)
       (should (equal '(send exit) call-order))
-      (should (equal '("c" "ctrl") send-args)))))
+      (should (equal "\x03" send-args)))))
 
 (ert-deftest ghostel-test-c-c-no-fast-exit-stays-readonly ()
   "The interrupt prefix stays in copy/Emacs mode when fast exit is off."
@@ -392,7 +466,7 @@ SETUP, when non-nil, is called before sending the paste."
         (ghostel-readonly-fast-exit nil))
     (cl-letf (((symbol-function 'ghostel-readonly-exit)
                (lambda () (setq exit-called t)))
-              ((symbol-function 'ghostel--send-encoded) #'ignore))
+              ((symbol-function 'ghostel--send-string) #'ignore))
       (ghostel-send-C-c)
       (should-not exit-called))))
 
@@ -400,6 +474,21 @@ SETUP, when non-nil, is called before sending the paste."
   "The fast-exit map still routes the interrupt prefix through its command."
   (should (eq (lookup-key ghostel-readonly-fast-exit-mode-map (kbd "C-c C-c"))
               #'ghostel-send-C-c)))
+
+(ert-deftest ghostel-test-terminal-control-commands-send-raw-bytes ()
+  "The \\`C-c' prefix rescue commands bypass the key encoder.
+Their bytes must reach the tty line discipline (SIGINT, SIGTSTP,
+EOF, SIGQUIT) even when a hung foreground program still has kitty
+keyboard mode active — a CSI-u sequence would never get there."
+  (let (sent)
+    (cl-letf (((symbol-function 'ghostel--send-string)
+               (lambda (s) (push s sent)))
+              ((symbol-function 'ghostel--on-user-input) #'ignore))
+      (ghostel-send-C-c)
+      (ghostel-send-C-z)
+      (ghostel-send-C-d)
+      (ghostel-send-C-backslash))
+    (should (equal (nreverse sent) '("\x03" "\x1a" "\x04" "\x1c")))))
 
 (ert-deftest ghostel-test-inhibit-quit ()
   "`ghostel-mode' should set `inhibit-quit' buffer-locally."
@@ -431,22 +520,22 @@ side effects have to happen explicitly inside the command."
           (goto-char (point-max))
           (should (region-active-p))
           (setq quit-flag t)
-          (cl-letf (((symbol-function 'ghostel--send-string)
-                     (lambda (s) (push s sent))))
+          (cl-letf (((symbol-function 'ghostel--send-encoded)
+                     (lambda (key mods &optional _utf8)
+                       (push (cons key mods) sent))))
             (ghostel-send-C-g))
           (should-not (region-active-p))
           (should-not quit-flag)
-          (should (equal sent (list (string 7)))))
+          (should (equal sent '(("g" . "ctrl")))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-c-g-binding-routes-through-send-handler ()
   "Quit binding must route through the quit handler in both live input modes.
-`ghostel--define-terminal-keys' binds every control-letter to a
-lambda that sends the raw control code.  Without skipping the
-quit binding, that lambda shadows the parent `ghostel-mode-map'
-override and the function `deactivate-mark' plus the `quit-flag'
-clear vanish on real keypresses (regression of #200 introduced
-by the input-mode refactor)."
+`ghostel--define-terminal-keys' binds every control-letter to
+`ghostel--send-event'.  Without skipping the quit binding, that
+binding shadows the parent `ghostel-mode-map' override and the
+function `deactivate-mark' plus the `quit-flag' clear vanish on
+real keypresses (regression of the input-mode refactor)."
   :tags '(native)
   (should (eq (lookup-key ghostel-semi-char-mode-map (kbd "C-g"))
               #'ghostel-send-C-g))
@@ -536,14 +625,10 @@ Only keys that the ghostty encoder maps to a terminal byte are forwarded."
                 #'ghostel--send-event))))
 
 (ert-deftest ghostel-test-control-punct-char-mode ()
-  "Char mode forwards C-]/C-/ but keeps the explicit C-\\ lambda."
-  (dolist (key-str '("C-]" "C-/" "C-M-]" "C-M-/"))
+  "Char mode forwards C-]/C-/ and C-\\ through `ghostel--send-event'."
+  (dolist (key-str '("C-]" "C-/" "C-M-]" "C-M-/" "C-\\"))
     (should (eq (lookup-key ghostel-char-mode-map (kbd key-str))
                 #'ghostel--send-event)))
-  ;; C-\ in char mode keeps its explicit \x1c lambda (not send-event).
-  (should (commandp (lookup-key ghostel-char-mode-map (kbd "C-\\"))))
-  (should-not (eq (lookup-key ghostel-char-mode-map (kbd "C-\\"))
-                  #'ghostel--send-event))
   ;; ESC still must not be hijacked in char mode either.
   (should-not (eq (lookup-key ghostel-char-mode-map (kbd "C-["))
                   #'ghostel--send-event)))
@@ -574,7 +659,7 @@ encoder recognizes is forwarded; see `ghostel--define-terminal-keys'.)"
                      (ghostel-test--send-key-and-read-hex name mods count))))))
 
 (ert-deftest ghostel-test-send-encoded-meta-period ()
-  "M-. sends ESC + period via raw fallback (legacy alt encoding)."
+  "M-. falls back to ESC + period when the encoder produces no output."
   :tags '(native)
   (let ((ghostel--term 'fake)
         sent)

@@ -5,8 +5,6 @@
 /// (application cursor keys, Kitty keyboard protocol, etc.).
 const std = @import("std");
 const gt = @import("ghostty-vt");
-const emacs = @import("emacs.zig");
-const GhostelTerm = @import("GhostelTerm.zig");
 
 /// Map an Emacs key name to a GhosttyKey.
 /// Returns GHOSTTY_KEY_UNIDENTIFIED for unknown keys.
@@ -85,4 +83,125 @@ pub fn parseMods(mod_str: []const u8) gt.input.KeyMods {
         }
     }
     return mods;
+}
+
+/// Build a key event from an Emacs key name, modifier string, and
+/// optional generated text.
+///
+/// Single printable-ASCII character keys carry their unshifted codepoint
+/// and (unless UTF8 is given) the character as generated text; the
+/// encoder needs both to produce CSI-u and alt-prefixed sequences.
+/// Uppercase letters fold to the lowercase codepoint with shift added as
+/// a consumed modifier.
+pub fn keyEvent(key_name: []const u8, mod_str: []const u8, utf8: ?[]const u8) gt.input.KeyEvent {
+    var event: gt.input.KeyEvent = .{
+        .action = .press,
+        .key = mapKey(key_name),
+        .mods = parseMods(mod_str),
+    };
+    if (utf8) |text| event.utf8 = text;
+    if (key_name.len == 1 and key_name[0] >= ' ' and key_name[0] <= '~') {
+        const ch = key_name[0];
+        if (std.ascii.isUpper(ch)) {
+            event.mods.shift = true;
+            event.consumed_mods.shift = true;
+            event.unshifted_codepoint = std.ascii.toLower(ch);
+        } else {
+            event.unshifted_codepoint = ch;
+        }
+        if (event.utf8.len == 0) event.utf8 = key_name;
+    }
+    return event;
+}
+
+fn testEncode(buf: []u8, event: gt.input.KeyEvent, opts: gt.input.KeyEncodeOptions) ![]const u8 {
+    var writer = std.Io.Writer.fixed(buf);
+    try gt.input.encodeKey(&writer, event, opts);
+    return writer.buffered();
+}
+
+const test_kitty_opts: gt.input.KeyEncodeOptions = .{
+    .kitty_flags = .{ .disambiguate = true },
+    .alt_esc_prefix = true,
+    .macos_option_as_alt = .true,
+};
+
+const test_legacy_opts: gt.input.KeyEncodeOptions = .{
+    .alt_esc_prefix = true,
+    .macos_option_as_alt = .true,
+};
+
+test "kitty: modified character keys encode as CSI-u" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "\x1b[116;3u",
+        try testEncode(&buf, keyEvent("t", "meta", null), test_kitty_opts),
+    );
+    try std.testing.expectEqualStrings(
+        "\x1b[115;5u",
+        try testEncode(&buf, keyEvent("s", "ctrl", null), test_kitty_opts),
+    );
+    try std.testing.expectEqualStrings(
+        "\x1b[115;7u",
+        try testEncode(&buf, keyEvent("s", "ctrl,meta", null), test_kitty_opts),
+    );
+    // Uppercase folds to the unshifted codepoint with shift reported.
+    try std.testing.expectEqualStrings(
+        "\x1b[116;4u",
+        try testEncode(&buf, keyEvent("T", "meta", null), test_kitty_opts),
+    );
+    try std.testing.expectEqualStrings(
+        "\x1b[116;6u",
+        try testEncode(&buf, keyEvent("T", "shift,ctrl", null), test_kitty_opts),
+    );
+    // Unmapped punctuation uses the character itself as codepoint.
+    try std.testing.expectEqualStrings(
+        "\x1b[33;3u",
+        try testEncode(&buf, keyEvent("!", "meta", null), test_kitty_opts),
+    );
+}
+
+test "kitty: unmodified character keys stay plain text" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "t",
+        try testEncode(&buf, keyEvent("t", "", null), test_kitty_opts),
+    );
+    try std.testing.expectEqualStrings(
+        "T",
+        try testEncode(&buf, keyEvent("T", "", null), test_kitty_opts),
+    );
+}
+
+test "legacy: modified character keys keep legacy sequences" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "\x1bt",
+        try testEncode(&buf, keyEvent("t", "meta", null), test_legacy_opts),
+    );
+    try std.testing.expectEqualStrings(
+        "\x1bT",
+        try testEncode(&buf, keyEvent("T", "meta", null), test_legacy_opts),
+    );
+    try std.testing.expectEqualStrings(
+        "\x13",
+        try testEncode(&buf, keyEvent("s", "ctrl", null), test_legacy_opts),
+    );
+    // Ctrl+Meta keeps the meta bit as an ESC prefix on the C0 byte.
+    try std.testing.expectEqualStrings(
+        "\x1b\x13",
+        try testEncode(&buf, keyEvent("s", "ctrl,meta", null), test_legacy_opts),
+    );
+    // Control punctuation resolves through the unshifted codepoint.
+    try std.testing.expectEqualStrings(
+        "\x00",
+        try testEncode(&buf, keyEvent("@", "ctrl", null), test_legacy_opts),
+    );
+    // Fixterms: ctrl+i/m/[ encode as CSI-u to stay distinguishable from
+    // tab/enter/escape.  `ghostel--send-event' maps the raw C0 bytes a
+    // TTY delivers to the functional keys before they reach this path.
+    try std.testing.expectEqualStrings(
+        "\x1b[109;5u",
+        try testEncode(&buf, keyEvent("m", "ctrl", null), test_legacy_opts),
+    );
 }

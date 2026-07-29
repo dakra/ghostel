@@ -146,15 +146,12 @@ pub fn effect(_: *Self, comptime func: []const u8, args: anytype) void {
 pub fn encode(
     self: *Self,
     buf: []u8,
-    key: gt.input.Key,
-    mods: gt.input.KeyMods,
-    utf8: ?[]const u8,
+    event: gt.input.KeyEvent,
 ) !?[]const u8 {
-    const options = gt.input.KeyEncodeOptions.fromTerminal(&self.terminal);
-    var event = gt.input.KeyEvent{ .action = .press, .key = key, .mods = mods };
-    if (utf8) |text| {
-        event.utf8 = text;
-    }
+    var options = gt.input.KeyEncodeOptions.fromTerminal(&self.terminal);
+    // Emacs resolves option-vs-meta before the event reaches us, so a
+    // meta modifier always means alt.
+    options.macos_option_as_alt = .true;
 
     // Encode
     var writer = std.Io.Writer.fixed(buf);
@@ -529,6 +526,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         \\
         \\(ghostel--encode-key TERM KEY MODS &optional UTF8)
         \\
+        \\For a single-character KEY, UTF8 defaults to KEY itself.
         \\Writes the encoded bytes to the PTY and returns them as a unibyte
         \\string, or nil when the encoder produced no output.
         ,
@@ -545,10 +543,9 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     env.extractString(args[3], &utf8_buf) catch null
                 else
                     null;
-                const key = input.mapKey(key_name);
-                const mods = input.parseMods(mod_str);
+                const event = input.keyEvent(key_name, mod_str, utf8);
                 var encode_buf: [128]u8 = undefined;
-                const sent = try term.encode(&encode_buf, key, mods, utf8);
+                const sent = try term.encode(&encode_buf, event);
                 return if (sent) |bytes|
                     env.makeUnibyteString(bytes) orelse env.t()
                 else

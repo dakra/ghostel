@@ -1186,7 +1186,8 @@ When NO-EXCEPTIONS is non-nil, also bind the keys in
   (define-key map (kbd "DEL") #'ghostel--send-event)
   ;; Emacs reports S-TAB as <backtab>
   (define-key map (kbd "<backtab>") #'ghostel--send-event)
-  ;; Control keys - bind all C-<letter> to send ASCII control codes.
+  ;; Control keys - bind all C-<letter> to go through the key encoder
+  ;; (C0 byte in legacy mode, CSI-u when kitty mode is active).
   ;; C-i = TAB and C-m = RET are equivalent to <tab>/<return> (bound above).
   ;; C-y is reserved for ghostel-yank in semi-char mode.
   ;; C-g is bound separately via `ghostel--rebuild-semi-char-keymap'.
@@ -1196,10 +1197,7 @@ When NO-EXCEPTIONS is non-nil, also bind the keys in
         (unless (or (memq c skip)
                     (and (not no-exceptions)
                          (member key-str ghostel-keymap-exceptions)))
-          (define-key map (kbd key-str)
-                      (let ((code (- c 96)))
-                        (lambda () (interactive)
-                          (ghostel--send-string (string code)))))))))
+          (define-key map (kbd key-str) #'ghostel--send-event)))))
   ;; Meta keys - bind M-<printable ASCII> so the full set reaches the terminal.
   ;; Skip ?\[ and ?O: those are escape-sequence prefixes (CSI / SS3)
   ;; used by Emacs input decoding for arrow/function keys in TTY mode.
@@ -1232,15 +1230,12 @@ When NO-EXCEPTIONS is non-nil, also bind the keys in
   ;; Ctrl+Space is NUL. A TTY delivers it as `C-@'.  GUI Emacs as the distinct
   ;; event `C-SPC', which only char mode captures.  In semi-char `C-SPC' falls
   ;; through to the global map so mark commands run there.
-  (define-key map (kbd "C-@")
-              (lambda () (interactive) (ghostel--send-string "\x00")))
+  (define-key map (kbd "C-@") #'ghostel--send-event)
   ;; Char mode extras: also bind non-letter exception keys so nothing
   ;; gets stolen by Emacs while a TUI app runs.
   (when no-exceptions
-    (define-key map (kbd "C-SPC")
-                (lambda () (interactive) (ghostel--send-string "\x00")))
-    (define-key map (kbd "C-\\")
-                (lambda () (interactive) (ghostel--send-string "\x1c")))
+    (define-key map (kbd "C-SPC") #'ghostel--send-event)
+    (define-key map (kbd "C-\\") #'ghostel--send-event)
     (define-key map (kbd "M-:") #'ghostel--send-event)))
 
 (defvar-keymap ghostel-mode-map
@@ -1517,12 +1512,16 @@ Returns the sequence string, or nil for unknown keys."
      ;; Ctrl + a single ASCII char with a C0 control code.  Both a-z and
      ;; the @ A-Z [ \ ] ^ _ range fold to (char & #x1f): ctrl-a=1,
      ;; ctrl-z=26, ctrl-^=#x1e, ctrl-_=#x1f (readline / zle undo).
+     ;; Meta additionally prefixes the C0 byte with ESC.
      ((and (= (length key-name) 1)
            (let ((c (aref key-name 0)))
              (or (and (<= ?a c) (<= c ?z))
                  (and (<= ?@ c) (<= c ?_))))
            (> (logand mod-num 4) 0))        ; ctrl bit
-      (string (logand (aref key-name 0) #x1f)))
+      (let ((c0 (string (logand (aref key-name 0) #x1f))))
+        (if (> (logand mod-num 2) 0)        ; alt/meta bit
+            (concat "\e" c0)
+          c0)))
      ;; Meta + printable ASCII → ESC + char (legacy alt encoding)
      ((and (= (length key-name) 1)
            (let ((c (aref key-name 0)))
@@ -1620,14 +1619,30 @@ Detect that case via `this-command-keys-vector' and re-inject meta."
          (mods (if (and via-esc (not (memq 'meta mods)))
                    (cons 'meta mods)
                  mods))
+         ;; Raw C0 bytes for RET/TAB/ESC are ambiguous with C-m/C-i/C-[
+         ;; and Emacs decodes them as ctrl+letter.  Treat them as the
+         ;; functional key and drop the artifact ctrl modifier so Enter
+         ;; encodes as CR, not as a fixterms CSI-u sequence.
+         (c0-key (and (memq event '(?\r ?\t ?\e))
+                      (cdr (assq event '((?\r . "return")
+                                         (?\t . "tab")
+                                         (?\e . "escape"))))))
+         (mods (if c0-key (remq 'control mods) mods))
          (key-name (cond
+                    (c0-key c0-key)
                     ;; backtab is Emacs's name for S-TAB
                     ((eq base 'backtab) "tab")
                     ;; Terminal mode sends ASCII 127 for the backspace key
                     ((and (integerp base) (= base 127)) "backspace")
-                    ;; Integer base (character key)
+                    ;; Integer base (character key).  Uppercase chords
+                    ;; arrive as lowercase base + shift; restore the case
+                    ;; so the encoder emits the shifted character.
                     ((integerp base)
-                     (and (< base 128) (string base)))
+                     (and (< base 128)
+                          (string (if (and (memq 'shift mods)
+                                           (<= ?a base ?z))
+                                      (upcase base)
+                                    base))))
                     ((eq base 'deletechar) "delete")
                     ;; Normal function key symbol
                     ((and base (symbolp base)) (symbol-name base))
@@ -1744,16 +1759,20 @@ paste rather than character-by-character typed keystrokes."
 ;;; Terminal control commands (C-c prefix)
 
 (defun ghostel-send-C-c ()
-  "Send interrupt signal to the terminal."
+  "Send interrupt signal to the terminal.
+Sends the raw byte so the tty line discipline raises SIGINT even
+when the foreground program has kitty keyboard mode active."
   (interactive)
   (ghostel--on-user-input)
-  (ghostel--send-encoded "c" "ctrl"))
+  (ghostel--send-string "\x03"))
 
 (defun ghostel-send-C-z ()
-  "Send suspend signal to the terminal."
+  "Send suspend signal to the terminal.
+Sends the raw byte so the tty line discipline raises SIGTSTP even
+when the foreground program has kitty keyboard mode active."
   (interactive)
   (ghostel--on-user-input)
-  (ghostel--send-encoded "z" "ctrl"))
+  (ghostel--send-string "\x1a"))
 
 (defun ghostel-send-C-backslash ()
   "Send C-\\ (quit) to the terminal."
@@ -1762,10 +1781,12 @@ paste rather than character-by-character typed keystrokes."
   (ghostel--send-string "\x1c"))
 
 (defun ghostel-send-C-d ()
-  "Send EOF to the terminal."
+  "Send EOF to the terminal.
+Sends the raw byte so the tty line discipline sees EOF even when
+the foreground program has kitty keyboard mode active."
   (interactive)
   (ghostel--on-user-input)
-  (ghostel--send-encoded "d" "ctrl"))
+  (ghostel--send-string "\x04"))
 
 (defun ghostel-send-C-g ()
   "Send \\`C-g' to the terminal.
@@ -1775,7 +1796,7 @@ overlay clears the way \\`keyboard-quit' would in other buffers."
   (interactive)
   (setq quit-flag nil)
   (deactivate-mark)
-  (ghostel--send-string (string 7)))
+  (ghostel--send-encoded "g" "ctrl"))
 
 
 ;;; Paste / yank

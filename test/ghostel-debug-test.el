@@ -762,13 +762,12 @@ report to the tail of the key-encoding table."
 
 (ert-deftest ghostel-test-encode-key-returns-bytes ()
   "`ghostel--encode-key' returns the encoded bytes as a unibyte string.
-nil means the encoder produced nothing (plain Meta+letter without utf8
-defers to the elisp raw fallback)."
+Character keys encode natively, including modified ones."
   :tags '(native)
   (with-temp-buffer
     (let ((probe (ghostel--new 25 80 100)))
       (should (equal (ghostel--encode-key probe "backspace" "" nil) "\x7f"))
-      (should-not (ghostel--encode-key probe "f" "meta" nil)))))
+      (should (equal (ghostel--encode-key probe "f" "meta" nil) "\ef")))))
 
 (provide 'ghostel-debug-test)
 ;;; ghostel-debug-test.el ends here

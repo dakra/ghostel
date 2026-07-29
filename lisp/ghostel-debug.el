@@ -1163,11 +1163,7 @@ omit it when the connection itself is the suspected fault."
                         (pcase-let* ((`(,key ,mods ,label) chord)
                                      ;; Mirror `ghostel--send-encoded': try
                                      ;; encoder, fall back to the
-                                     ;; raw-key-sequence path on nil.  Encoder
-                                     ;; skips plain Meta+letter when no utf8
-                                     ;; is supplied (live keystrokes don't
-                                     ;; supply it either) - the fallback
-                                     ;; produces ESC + char.
+                                     ;; raw-key-sequence path on nil.
                                      (sent (or (ghostel--encode-key probe key mods nil)
                                                (ghostel--raw-key-sequence key mods))))
                           (format "  %-13s → %s\n"
