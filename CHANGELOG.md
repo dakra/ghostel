@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.48.0] — 2026-07-29
+
 ### Added
 - `thing-at-point` integration: in ghostel buffers, `filename`,
   `existing-filename`, and `url` things resolve to the whole target even
@@ -30,6 +32,31 @@ All notable changes to this project will be documented in this file.
   `ghostel-prompt-navigation-input-mode` (`default`, `copy`, or `emacs`)
   overrides the choice for prompt navigation only; set it to `emacs` to
   keep the previous behavior.
+
+### Fixed
+- Modified character keys are now encoded through the kitty keyboard
+  protocol when the running program has enabled it: `M-<letter>` went
+  out as legacy `ESC <letter>` even under kitty flags, and
+  `C-M-<letter>` lost the meta modifier entirely, sending the bare
+  control byte. `C-<letter>` chords sent programmatically and uppercase
+  chords like `M-T` now also report correctly under kitty flags; legacy
+  byte sequences are unchanged. `ghostel-send-C-c`/`-C-z`/`-C-d` remain
+  raw bytes so SIGINT/SIGTSTP/EOF reach a hung program that holds kitty
+  mode. One API note: `ghostel-send-key` with `"m"`/`"i"`/`"["` plus
+  ctrl now yields the fixterms CSI-u sequence (matching ghostty) instead
+  of a C0 byte; live keystrokes are unaffected. Fixes
+  [#579](https://github.com/dakra/ghostel/issues/579).
+- The copy-mode entry message now describes the actual exit: with
+  `ghostel-readonly-fast-exit` off it names the copy-mode toggle and the
+  semi-char switch (reflecting user rebindings) instead of the incorrect
+  "Press any key to exit". Fixes
+  [#580](https://github.com/dakra/ghostel/issues/580).
+
+### Internal
+- The hyperlink subsystem (link keymap and commands, plain-text URL and
+  file detection, deferred detection, thing-at-point/ffap integration)
+  moved from `ghostel.el` into the new `lisp/ghostel-links.el`; no
+  behavior change.
 
 ## [0.47.0] — 2026-07-28
 
