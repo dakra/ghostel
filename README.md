@@ -186,8 +186,8 @@ and select your text. When you copy something or type any
 character you're automatically back in your normal ghostel
 terminal session.
 Similarly, some actions automatically activate **copy mode**,
-like selecting with the mouse, navigating to hyperlinks (`C-c C-p`),
-activating the mark.  In copy mode, mouse selection remains normal
+like selecting with the mouse, navigating to hyperlinks (`C-c C-p`)
+or prompts (`C-c M-p`), activating the mark.  In copy mode, mouse selection remains normal
 Emacs selection even if the terminal app enabled mouse tracking.
 
 ## Documentation

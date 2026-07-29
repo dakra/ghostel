@@ -1655,19 +1655,20 @@ prefix so point sits where the user would type."
     (should (= (point) 3))
     (should (looking-at "make build"))))
 
-(ert-deftest ghostel-test-imenu-goto-switches-to-emacs-mode ()
-  "Selecting an imenu entry from semi-char mode switches to Emacs mode.
+(ert-deftest ghostel-test-imenu-goto-switches-to-readonly-mode ()
+  "Selecting an imenu entry from semi-char mode enters the configured mode.
 Without the switch, the renderer would yank point back to the
 live cursor on the next redraw and the jump would be invisible."
-  (let ((emacs-mode-called nil))
+  (let ((entered nil)
+        (ghostel-prompt-navigation-input-mode 'copy))
     (with-temp-buffer
       (ghostel-test--insert-prompt "$ " "make")
       (setq-local ghostel--input-mode 'semi-char)
-      (cl-letf (((symbol-function 'ghostel-emacs-mode)
-                 (lambda () (setq emacs-mode-called t)
-                   (setq ghostel--input-mode 'emacs))))
+      (cl-letf (((symbol-function 'ghostel--enter-readonly-input-mode)
+                 (lambda (spec) (setq entered spec)
+                   (setq ghostel--input-mode 'copy))))
         (ghostel--imenu-goto "make" 1))
-      (should emacs-mode-called))))
+      (should (eq entered 'copy)))))
 
 (ert-deftest ghostel-test-imenu-goto-preserves-line-mode ()
   "Line mode is preserved across an imenu jump.
@@ -1675,37 +1676,37 @@ Mode is not switched to Emacs; `set-window-start' pins the
 window to the target's line so the next redraw's anchored
 predicate (`ghostel.el' line 5520) sees the window as
 scrolled-back."
-  (let ((emacs-mode-called nil))
+  (let ((entered nil))
     (with-temp-buffer
       (ghostel-test--insert-prompt "$ " "make")
       (setq-local ghostel--input-mode 'line)
-      (cl-letf (((symbol-function 'ghostel-emacs-mode)
-                 (lambda () (setq emacs-mode-called t))))
+      (cl-letf (((symbol-function 'ghostel--enter-readonly-input-mode)
+                 (lambda (_spec) (setq entered t))))
         (ghostel--imenu-goto "make" 1))
-      (should-not emacs-mode-called)
+      (should-not entered)
       (should (eq ghostel--input-mode 'line)))))
 
 (ert-deftest ghostel-test-imenu-goto-skips-mode-switch-in-emacs ()
-  "When already in Emacs mode, goto does not re-enter Emacs mode."
-  (let ((emacs-mode-called nil))
+  "When already in Emacs mode, goto does not switch modes."
+  (let ((entered nil))
     (with-temp-buffer
       (ghostel-test--insert-prompt "$ " "make")
       (setq-local ghostel--input-mode 'emacs)
-      (cl-letf (((symbol-function 'ghostel-emacs-mode)
-                 (lambda () (setq emacs-mode-called t))))
+      (cl-letf (((symbol-function 'ghostel--enter-readonly-input-mode)
+                 (lambda (_spec) (setq entered t))))
         (ghostel--imenu-goto "make" 1))
-      (should-not emacs-mode-called))))
+      (should-not entered))))
 
 (ert-deftest ghostel-test-imenu-goto-skips-mode-switch-in-copy ()
-  "When already in copy mode, goto does not switch to Emacs mode."
-  (let ((emacs-mode-called nil))
+  "When already in copy mode, goto does not switch modes."
+  (let ((entered nil))
     (with-temp-buffer
       (ghostel-test--insert-prompt "$ " "make")
       (setq-local ghostel--input-mode 'copy)
-      (cl-letf (((symbol-function 'ghostel-emacs-mode)
-                 (lambda () (setq emacs-mode-called t))))
+      (cl-letf (((symbol-function 'ghostel--enter-readonly-input-mode)
+                 (lambda (_spec) (setq entered t))))
         (ghostel--imenu-goto "make" 1))
-      (should-not emacs-mode-called))))
+      (should-not entered))))
 
 (ert-deftest ghostel-test-input-start-point-osc133-on-cursor-row ()
   "When `ghostel-prompt' covers the cursor row's prefix, use its end.

@@ -11,7 +11,8 @@
 ;;   semantic prompt marker (A/B/C/D/P); it tracks prompt positions and fires
 ;;  `ghostel-command-start-functions' / `ghostel-command-finish-functions'.
 ;; - `ghostel-next-prompt' / `ghostel-previous-prompt' jump between
-;;   prompts (switching to Emacs mode so the terminal keeps running).
+;;   prompts (switching to the read-only mode picked by
+;;   `ghostel-prompt-navigation-input-mode').
 ;; - imenu integration turns each OSC 133 prompt into an index entry
 ;;   labelled "<cwd>  <command>".
 ;;
@@ -28,7 +29,8 @@
 (require 'imenu)
 (require 'seq)
 
-(declare-function ghostel-emacs-mode "ghostel")
+(declare-function ghostel--enter-readonly-input-mode "ghostel")
+(defvar ghostel-prompt-navigation-input-mode)
 (defvar ghostel--input-mode)
 (defvar ghostel--command-running)
 (defvar ghostel--prompt-positions)
@@ -140,21 +142,19 @@ the natural position where the user would begin typing."
       (ghostel--prompt-input-start))))
 
 (defun ghostel-next-prompt (&optional n)
-  "Enter Emacs mode and move to the Nth next prompt.
-Emacs mode keeps the terminal running, so you can navigate between
-prompts while output continues streaming in."
+  "Move to the Nth next prompt.
+Enters the read-only mode picked by `ghostel-prompt-navigation-input-mode'."
   (interactive "p")
   (unless (memq ghostel--input-mode '(emacs copy))
-    (ghostel-emacs-mode))
+    (ghostel--enter-readonly-input-mode ghostel-prompt-navigation-input-mode))
   (ghostel--navigate-next-prompt n))
 
 (defun ghostel-previous-prompt (&optional n)
-  "Enter Emacs mode and move to the Nth previous prompt.
-Emacs mode keeps the terminal running, so you can navigate between
-prompts while output continues streaming in."
+  "Move to the Nth previous prompt.
+Enters the read-only mode picked by `ghostel-prompt-navigation-input-mode'."
   (interactive "p")
   (unless (memq ghostel--input-mode '(emacs copy))
-    (ghostel-emacs-mode))
+    (ghostel--enter-readonly-input-mode ghostel-prompt-navigation-input-mode))
   (ghostel--navigate-previous-prompt n))
 
 
@@ -181,9 +181,8 @@ prompts while output continues streaming in."
 
 (defvar-local ghostel--imenu-cwds nil
   "Chronological list of cwds for prompts that have had OSC 133 \\='C\\=' fire.
-Pushed at command-start time, so newest-first.  Aligned by order
-to the `ghostel-prompt' regions in the buffer when the index is
-built.")
+Pushed at command-start time, so newest-first.  Aligned by order to
+the `ghostel-prompt' regions in the buffer when the index is built.")
 
 (defun ghostel--imenu-stamp-cwd (buffer)
   "Record BUFFER's `default-directory' for its most recent submitted command.
@@ -247,12 +246,12 @@ skipped.  Labels are truncated to 80 columns."
 
 (defun ghostel--imenu-goto (_name position &rest _)
   "Jump to POSITION, then advance past the prompt prefix.
-Switches to Emacs mode first in semi-char/char modes so navigation
-stays in scrollback while the terminal continues running.  Line mode
-is preserved.  Mirrors the landing position used by
+In semi-char/char modes, first enters the read-only mode picked by
+`ghostel-prompt-navigation-input-mode'; line, copy, and Emacs modes
+are preserved.  Mirrors the landing position used by
 `ghostel-next-prompt'."
   (unless (memq ghostel--input-mode '(emacs line copy))
-    (ghostel-emacs-mode))
+    (ghostel--enter-readonly-input-mode ghostel-prompt-navigation-input-mode))
   (when (or (< position (point-min)) (> position (point-max)))
     (widen))
   (goto-char position)

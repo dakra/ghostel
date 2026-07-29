@@ -736,7 +736,8 @@ anchor the input region.  Has no effect on `ghostel-exec'."
 
 Followed by `ghostel-readonly-enter', hyperlink navigation and every trigger
 option left at its `default' setting: `ghostel-mouse-drag-input-mode',
-`ghostel-mark-activation-input-mode', `ghostel-point-leave-input-mode'.
+`ghostel-mark-activation-input-mode', `ghostel-point-leave-input-mode',
+`ghostel-prompt-navigation-input-mode'.
 Set one of those to override this choice for that trigger only."
   :type '(choice (const :tag "Copy mode (frozen)" copy)
                  (const :tag "Emacs mode (live)"  emacs)))
@@ -787,6 +788,15 @@ See also `ghostel-mouse-drag-input-mode', `ghostel-mark-activation-input-mode'."
                  (const :tag "Copy mode"     copy)
                  (const :tag "Emacs mode"    emacs)
                  (const :tag "Do not switch" nil)))
+
+(defcustom ghostel-prompt-navigation-input-mode 'default
+  "Input mode prompt navigation switches to before jumping.
+Applies to `ghostel-next-prompt', `ghostel-previous-prompt', and imenu
+jumps to a prompt.  `default' follows `ghostel-readonly-default-mode';
+`copy' freezes the terminal while you browse, `emacs' keeps output streaming."
+  :type '(choice (const :tag "Follow ghostel-readonly-default-mode" default)
+                 (const :tag "Copy mode"  copy)
+                 (const :tag "Emacs mode" emacs)))
 
 (defcustom ghostel-word-boundary-string " \t\"'`|:;,()[]{}<>$│"
   "Characters that terminate words in ghostel buffers.
@@ -1260,8 +1270,8 @@ Input modes (`ghostel-semi-char-mode-map', `ghostel-char-mode-map',
   "C-c C-n"          #'ghostel-next-hyperlink
   "C-c C-p"          #'ghostel-previous-hyperlink
   ;; Prompt navigation (OSC 133) — `ghostel-next-prompt' and
-  ;; `ghostel-previous-prompt' switch to Emacs mode so the terminal
-  ;; keeps running while the user jumps between prompts.
+  ;; `ghostel-previous-prompt' switch to the read-only mode picked by
+  ;; `ghostel-prompt-navigation-input-mode' before jumping.
   "C-c M-n"          #'ghostel-next-prompt
   "C-c M-p"          #'ghostel-previous-prompt
   ;; Input mode switching (eat.el conventions)

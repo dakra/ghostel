@@ -22,6 +22,15 @@ All notable changes to this project will be documented in this file.
   Plain `ffap` reads raw buffer text, so on a soft-wrapped path it
   stops at the row break and visits only the directory prefix.
 
+### Changed
+- Prompt navigation (`C-c M-n` / `C-c M-p` and imenu jumps) now honors
+  `ghostel-readonly-default-mode` instead of always entering Emacs mode,
+  matching hyperlink navigation and the other read-only triggers — with
+  everything at defaults it now enters copy mode.  The new option
+  `ghostel-prompt-navigation-input-mode` (`default`, `copy`, or `emacs`)
+  overrides the choice for prompt navigation only; set it to `emacs` to
+  keep the previous behavior.
+
 ## [0.47.0] — 2026-07-28
 
 ### Added

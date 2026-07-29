@@ -403,26 +403,26 @@ Ghostel offers five eat.el-style input modes.  You enter a ghostel buffer in
 *semi-char mode*; switch modes with the key bindings below and watch
 =mode-line-process= for the current mode indicator.
 
-| Mode      | Indicator | Terminal | Input handling                               |
-|-----------+-----------+----------+----------------------------------------------|
+| Mode      | Indicator | Terminal | Input handling                              |
+|-----------+-----------+----------+---------------------------------------------|
 | semi-char | /(none)/    | live     | type to terminal, =C-c= reserved              |
 | char      | =:Char=     | live     | /all/ keys go to the terminal                 |
-| Emacs     | =:Emacs=    | live     | Emacs navigation/search/copy                 |
-| copy      | =:Copy=     | frozen   | Emacs navigation/search/copy, stable output  |
-| line      | =:Line=     | live     | compose input with Emacs keys, send on =RET=   |
+| Emacs     | =:Emacs=    | live     | Emacs navigation/search/copy                |
+| copy      | =:Copy=     | frozen   | Emacs navigation/search/copy, stable output |
+| line      | =:Line=     | live     | compose input with Emacs keys, send on =RET=  |
 
 ** Mode-switch keybindings
 
 Available from every mode except char mode:
 
-| Key       | Action                                    |
-|-----------+-------------------------------------------|
-| =C-c C-j=   | Switch to semi-char mode (universal exit) |
-| =C-c M-d=   | Switch to char mode                       |
-| =C-c C-e=   | Switch to Emacs mode                      |
-| =C-c C-t=   | Toggle copy mode                          |
-| =C-c C-l=   | Switch to line mode                       |
-| =M-RET=     | Char mode only: return to semi-char       |
+| Key     | Action                                    |
+|---------+-------------------------------------------|
+| =C-c C-j= | Switch to semi-char mode (universal exit) |
+| =C-c M-d= | Switch to char mode                       |
+| =C-c C-e= | Switch to Emacs mode                      |
+| =C-c C-t= | Toggle copy mode                          |
+| =C-c C-l= | Switch to line mode                       |
+| =M-RET=   | Char mode only: return to semi-char       |
 
 ** Semi-char mode (default)
 :properties:
@@ -432,25 +432,25 @@ Available from every mode except char mode:
 Most keys are sent to the terminal.  Keys in =ghostel-keymap-exceptions=
 (default: =C-c=, =C-x=, =C-u=, =C-h=, =M-x=, =M-:=, =C-\=) pass through to Emacs.
 
-| Key         | Action                                       |
-|-------------+----------------------------------------------|
-| Most keys   | Sent directly to the terminal                |
-| =C-c C-c=     | Send interrupt (C-c)                         |
-| =C-c C-z=     | Send suspend (C-z)                           |
-| =C-c C-d=     | Send EOF (C-d)                               |
-| =C-c C-\=     | Send quit (C-\)                              |
-| =C-c M-w=     | Copy entire scrollback to kill ring          |
-| =C-y=         | Yank from kill ring (bracketed paste)        |
-| =M-y=         | Yank-pop (cycle through kill ring)           |
-| =C-c C-y=     | Paste from kill ring                         |
-| =C-c M-l=     | Clear scrollback                             |
-| =C-c C-n=     | Jump to next hyperlink                       |
-| =C-c C-p=     | Jump to previous hyperlink                   |
-| =C-c M-n=     | Enter Emacs mode and jump to next prompt     |
-| =C-c M-p=     | Enter Emacs mode and jump to previous prompt |
-| =C-x C-q=     | Enter =ghostel-readonly-default-mode=          |
-| =C-c C-q=     | Send next key literally (escape hatch)       |
-| Mouse wheel | Scroll through scrollback                    |
+| Key         | Action                                     |
+|-------------+--------------------------------------------|
+| Most keys   | Sent directly to the terminal              |
+| =C-c C-c=     | Send interrupt (C-c)                       |
+| =C-c C-z=     | Send suspend (C-z)                         |
+| =C-c C-d=     | Send EOF (C-d)                             |
+| =C-c C-\=     | Send quit (C-\)                            |
+| =C-c M-w=     | Copy entire scrollback to kill ring        |
+| =C-y=         | Yank from kill ring (bracketed paste)      |
+| =M-y=         | Yank-pop (cycle through kill ring)         |
+| =C-c C-y=     | Paste from kill ring                       |
+| =C-c M-l=     | Clear scrollback                           |
+| =C-c C-n=     | Jump to next hyperlink                     |
+| =C-c C-p=     | Jump to previous hyperlink                 |
+| =C-c M-n=     | Enter read-only mode, jump to next prompt  |
+| =C-c M-p=     | Enter read-only mode, jump to prev. prompt |
+| =C-x C-q=     | Enter =ghostel-readonly-default-mode=        |
+| =C-c C-q=     | Send next key literally (escape hatch)     |
+| Mouse wheel | Scroll through scrollback                  |
 
 ** Char mode
 :properties:
@@ -1401,6 +1401,7 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 | =ghostel-mouse-drag-input-mode=      | =default=           | Mode to enter after a click/drag/multi-click selection: =default=, =copy=, =emacs=, or =nil=.                                |
 | =ghostel-mark-activation-input-mode= | =default=           | Mode to enter when a command activates the mark: =default=, =copy=, =emacs=, or =nil=.                                       |
 | =ghostel-point-leave-input-mode=     | =default=           | Mode to enter when point leaves the input point (isearch/minibuffer): =default=, =copy=, =emacs=, or =nil=.                  |
+| =ghostel-prompt-navigation-input-mode= | =default=         | Mode to enter for prompt navigation (=C-c M-n= / =C-c M-p=, imenu): =default=, =copy=, or =emacs=.                             |
 | =ghostel-word-boundary-string=       | (see docstring)   | Characters that terminate words for double-click selection and word motion (mirrors Ghostty's =selection-word-chars=). |
 | =ghostel-scroll-on-input=            | =t=                 | Jump to the bottom when typing while scrolled into scrollback.                                                       |
 | =ghostel-bold-color=                 | =nil=               | How bold text is colored: =nil=, =bright=, or a =#RRGGBB= string.                                                          |
