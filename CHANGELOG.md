@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Foreground-process detection without shell integration: the new
+  `ghostel-foreground-pid` reports the PTY's foreground process-group id
+  (via `tcgetpgrp` on the native path, `process-running-child-p` on the
+  Emacs PTY path), and `ghostel-command-running-p` combines it with the
+  OSC 133 command state.
+- New abnormal hook `ghostel-foreground-change-functions`, called with
+  the buffer, process-group id, and process name whenever the PTY's
+  foreground process group changes — e.g. to run elisp when a specific
+  program starts or exits in the terminal.
+
+### Changed
+- `ghostel-query-before-killing`'s `auto` setting no longer requires
+  OSC 133 shell integration: it now asks whenever something other than
+  the shell holds the terminal's foreground.  This includes an ssh
+  client or nested shell sitting at its prompt, since killing the
+  buffer would kill that session.  Commands inside remote (TRAMP)
+  sessions are still detected only through OSC 133.
+
 ## [0.49.0] — 2026-08-02
 
 ### Fixed

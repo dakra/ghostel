@@ -402,6 +402,11 @@ pub fn resize(self: *Self, cols: u16, rows: u16) !void {
     if (resize_pseudo_console.?(hpc, size) < 0) return error.PtyResizeFailed;
 }
 
+/// ConPTY has no foreground process-group concept.
+pub fn foregroundPgid(_: *Self) ?i32 {
+    return null;
+}
+
 pub fn requestStop(self: *Self, _: std.Thread) void {
     if (self.interrupt_event == c.INVALID_HANDLE_VALUE) return;
     _ = c.SetEvent(self.interrupt_event);

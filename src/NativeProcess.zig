@@ -173,6 +173,14 @@ pub fn resizePty(self: *Self, cols: u16, rows: u16) !void {
     if (self.backend) |*backend| try backend.resize(cols, rows);
 }
 
+pub fn foregroundPgid(self: *Self) !?i32 {
+    try self.backend_handoff_mutex.lock(self.io);
+    defer self.backend_handoff_mutex.unlock(self.io);
+
+    if (self.backend) |*backend| return backend.foregroundPgid();
+    return null;
+}
+
 pub fn effect(self: *Self, comptime func: []const u8, args: anytype) void {
     self.effectFallible(func, args) catch |err| {
         log.err("ghostel: Failed to write to event pipe: {s}", .{@errorName(err)});

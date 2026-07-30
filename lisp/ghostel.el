@@ -426,9 +426,13 @@ Set to nil to disable renaming entirely."
 
 t      Always query while the terminal process is alive.
 nil    Never query.
-auto   Query only while a shell command is running.  Requires OSC 133 shell
-       integration: at a prompt confirmation is skipped, and it is enabled
-       between the OSC 133 C (command start) and D (command finish) markers."
+auto   Query only while something is running in the terminal, as reported
+       by `ghostel-command-running-p': the PTY's foreground process group
+       differs from the shell's (a command, nested shell, or ssh client is
+       in the foreground — killing the buffer would kill it), or OSC 133
+       shell integration reports a command between its C and D markers.
+       Commands running in a remote (TRAMP) session are only detected
+       through the OSC 133 markers."
   :type '(choice (const :tag "Always" t)
                  (const :tag "Never" nil)
                  (const :tag "While a command is running" auto)))
@@ -468,6 +472,30 @@ redraws (which emit D markers without a preceding C).
 
 Errors in hook functions are demoted to messages via
 `with-demoted-errors' (re-signalled when `debug-on-error' is
+non-nil so the debugger can fire)."
+  :type 'hook)
+
+(defcustom ghostel-foreground-change-functions nil
+  "Hook run when the PTY's foreground process group changes.
+Each function is called with three arguments: the buffer, the new
+foreground process-group id, and that process's name (the `comm'
+field of `process-attributes'; nil when the process vanished before
+lookup).  The name is truncated by the OS, and interpreter-run
+scripts report the interpreter (e.g. \"node\"), not the script.
+
+The foreground is sampled after each redraw while this hook is
+non-nil, so both directions fire: a program taking over the
+terminal and the shell reclaiming it.  A launch can fire twice —
+an early sample can catch the forked command before `exec', still
+under the shell's name, and the hook fires again under the
+program's real name at its next output.  A program that produces
+no output may only ever appear under the shell's name.  Does not
+work for remote (TRAMP) sessions, where the probe only sees the
+local client.
+
+The hook fires from the redraw path; defer heavy work via
+`run-at-time'.  Errors in hook functions are demoted to messages
+via `with-demoted-errors' (re-signalled when `debug-on-error' is
 non-nil so the debugger can fire)."
   :type 'hook)
 
@@ -899,6 +927,7 @@ to nil to disable the regex fallback entirely (OSC 133 only)."
 (declare-function ghostel--write-vt "ghostel-module")
 (declare-function ghostel--write-pty "ghostel-module")
 (declare-function ghostel--pty-password-input-p "ghostel-module" (term))
+(declare-function ghostel--pty-foreground-pgid "ghostel-module" (term))
 (declare-function ghostel--spawn-native-process "ghostel-module" (term command pipe))
 (declare-function ghostel--kill-native-process "ghostel-module" (term))
 
@@ -1020,6 +1049,9 @@ local code should not assume it is signalable unless the process is local.")
 
 (defvar-local ghostel--command-running nil
   "Non-nil between OSC 133 command-start and command-finish markers.")
+
+(defvar-local ghostel--last-foreground nil
+  "Foreground (PGID . COMM) pair at the last redraw sample.")
 
 (defvar-local ghostel--redraw-timer nil
   "Timer for delayed redraw.")
@@ -2992,6 +3024,53 @@ Matching is case-insensitive, mirroring `comint-watch-for-password-prompt'."
               (case-fold-search t))
     (string-match-p ghostel-password-prompt-regex row)))
 
+(defun ghostel-foreground-pid ()
+  "Return the foreground process-group id of the buffer's PTY, or nil.
+The id equals the shell's pid (`ghostel--pid') while the shell sits
+at its prompt and differs while another process group — a running
+command, a nested shell, an ssh client — is in the foreground.
+Returns nil when the buffer has no live terminal or the probe is
+unavailable (e.g. on Windows).  For remote (TRAMP) sessions the
+probe sees only the local client process, never remote commands.
+
+`tcgetpgrp' only answers on the PTY primary, so the query has to go
+through whoever holds that fd: the native module for the native PTY
+path, Emacs (`process-running-child-p') for Emacs-owned PTYs."
+  (when ghostel--term
+    (or (ghostel--pty-foreground-pgid ghostel--term)
+        (when-let* ((proc ghostel--process)
+                    ((eq (process-type proc) 'real))
+                    ((process-live-p proc)))
+          (pcase (ignore-errors (process-running-child-p proc))
+            ((and (pred integerp) pgid) pgid)
+            ('nil ghostel--pid))))))
+
+(defun ghostel-command-running-p ()
+  "Return non-nil when something is running in the buffer's terminal.
+True while the PTY's foreground process group differs from the
+shell's (see `ghostel-foreground-pid') or, with OSC 133 shell
+integration, between the command-start and command-finish markers.
+The OSC arm also covers remote (TRAMP) commands, which the PTY
+probe cannot see."
+  (or ghostel--command-running
+      (when-let* ((fg (ghostel-foreground-pid)))
+        (and ghostel--pid (/= fg ghostel--pid)))))
+
+(defun ghostel--notify-foreground-change ()
+  "Run `ghostel-foreground-change-functions' if the foreground changed.
+The foreground identity is the (PGID . COMM) pair, not the pgid
+alone: a freshly forked command keeps the launching shell's name
+until `exec' replaces the process image, so an early sample sees
+the shell's comm under the new pgid.  Comparing the pair re-fires
+once the program's real name becomes visible."
+  (when-let* ((pid (ghostel-foreground-pid)))
+    (let ((comm (alist-get 'comm (process-attributes pid))))
+      (unless (and (eql pid (car-safe ghostel--last-foreground))
+                   (equal comm (cdr-safe ghostel--last-foreground)))
+        (setq ghostel--last-foreground (cons pid comm))
+        (ghostel--run-hook-safely 'ghostel-foreground-change-functions
+                                  (current-buffer) pid comm)))))
+
 (defun ghostel--cancel-password-confirm-timer ()
   "Cancel the pending `ghostel--password-confirm-timer', if any."
   (when ghostel--password-confirm-timer
@@ -4667,46 +4746,54 @@ them during synchronized output or when BUFFER has no render window."
           ;; Pause line mode if alt-screen just turned on.  This must run
           ;; before the snapshot so a pause can take ownership of its input.
           (ghostel--line-mode-pre-redraw)
-          (let* ((anchored (ghostel--anchored-windows buffer t))
-                 ;; Line-mode input is not part of libghostty's grid.  Remove
-                 ;; it while native rendering runs, then restore it after
-                 ;; rendering.
-                 (line-snapshot (and (eq ghostel--input-mode 'line)
-                                     (ghostel--line-mode-snapshot)))
-                 (inhibit-read-only t)
-                 (inhibit-redisplay t)
-                 (inhibit-modification-hooks t)
-                 (gc-cons-threshold most-positive-fixnum)
-                 (rendered
-                  (with-selected-window render-win
-                    ;; FULL and FORCE-SYNC are separate native policies.
-                    (ghostel--redraw ghostel--term
-                                     (eq ghostel--input-mode 'line)
-                                     ghostel--force-next-redraw))))
-            (when rendered
-              (setq ghostel--pending-redraw nil
-                    ghostel--force-next-redraw nil))
-            (ghostel--apply-cursor-style)
-            ;; FOLLOWING=t: the render advanced the cursor while preserving
-            ;; window-point, so the pre-render snapshot carries the Emacs-mode
-            ;; follow decision.
-            (dolist (win anchored) (ghostel--anchor-window win nil t))
-            (let ((line-restored
-                   (and line-snapshot
-                        (ghostel--line-mode-restore line-snapshot))))
-              ;; Restore failed because the prompt moved or disappeared;
-              ;; forward the saved input rather than silently losing it.
-              (when (and line-snapshot (not line-restored))
-                (let ((input (plist-get line-snapshot :input)))
-                  (when (and input (> (length input) 0))
-                    (ghostel--write-pty ghostel--term input)
-                    (message
-                     "ghostel: line-mode prompt lost; input forwarded raw"))))
-              (ghostel--schedule-link-detection))
-            ;; Resume line mode if alt-screen just turned off, and update the
-            ;; alt-screen-prev cache for the next cycle.
-            (ghostel--line-mode-post-redraw)
-            (ghostel--detect-password-prompt)))))))
+          (let ((notify-foreground nil))
+            (let* ((anchored (ghostel--anchored-windows buffer t))
+                   ;; Line-mode input is not part of libghostty's grid.  Remove
+                   ;; it while native rendering runs, then restore it after
+                   ;; rendering.
+                   (line-snapshot (and (eq ghostel--input-mode 'line)
+                                       (ghostel--line-mode-snapshot)))
+                   (inhibit-read-only t)
+                   (inhibit-redisplay t)
+                   (inhibit-modification-hooks t)
+                   (gc-cons-threshold most-positive-fixnum)
+                   (rendered
+                    (with-selected-window render-win
+                      ;; FULL and FORCE-SYNC are separate native policies.
+                      (ghostel--redraw ghostel--term
+                                       (eq ghostel--input-mode 'line)
+                                       ghostel--force-next-redraw))))
+              (when rendered
+                (setq ghostel--pending-redraw nil
+                      ghostel--force-next-redraw nil)
+                (setq notify-foreground
+                      (and ghostel-foreground-change-functions t)))
+              (ghostel--apply-cursor-style)
+              ;; FOLLOWING=t: the render advanced the cursor while preserving
+              ;; window-point, so the pre-render snapshot carries the Emacs-mode
+              ;; follow decision.
+              (dolist (win anchored) (ghostel--anchor-window win nil t))
+              (let ((line-restored
+                     (and line-snapshot
+                          (ghostel--line-mode-restore line-snapshot))))
+                ;; Restore failed because the prompt moved or disappeared;
+                ;; forward the saved input rather than silently losing it.
+                (when (and line-snapshot (not line-restored))
+                  (let ((input (plist-get line-snapshot :input)))
+                    (when (and input (> (length input) 0))
+                      (ghostel--write-pty ghostel--term input)
+                      (message
+                       "ghostel: line-mode prompt lost; input forwarded raw"))))
+                (ghostel--schedule-link-detection))
+              ;; Resume line mode if alt-screen just turned off, and update the
+              ;; alt-screen-prev cache for the next cycle.
+              (ghostel--line-mode-post-redraw)
+              (ghostel--detect-password-prompt))
+            ;; The change hook runs outside the render `let*' so user code
+            ;; sees normal editing semantics (modification hooks, read-only
+            ;; enforcement, redisplay) instead of the render inhibits.
+            (when notify-foreground
+              (ghostel--notify-foreground-change))))))))
 
 (defun ghostel-force-redraw ()
   "Force an immediate terminal redraw, bypassing synchronized-output batching.
@@ -4897,14 +4984,15 @@ and point settle first.  See `ghostel-point-leave-input-mode'."
 
 (defun ghostel--kill-buffer-query ()
   "Return non-nil when the current ghostel buffer may be killed.
-Honors `ghostel-query-before-killing' and `ghostel--command-running'
-for both native and Emacs PTY paths."
+Honors `ghostel-query-before-killing' for both native and Emacs
+PTY paths; the `auto' setting defers to `ghostel-command-running-p'."
   (or (not (process-live-p ghostel--process))
-      (pcase `(,ghostel-query-before-killing . ,ghostel--command-running)
-        ((or `(t . ,_) `(auto . t))
-         (yes-or-no-p (format "Buffer %S has a running process; kill it? "
-                              (buffer-name (current-buffer)))))
-        (_ t))))
+      (if (or (eq ghostel-query-before-killing t)
+              (and (eq ghostel-query-before-killing 'auto)
+                   (ghostel-command-running-p)))
+          (yes-or-no-p (format "Buffer %S has a running process; kill it? "
+                               (buffer-name (current-buffer))))
+        t)))
 
 
 ;;; Major mode
@@ -5072,6 +5160,7 @@ spawn after initialization."
           ghostel--last-directory nil
           ghostel--title nil
           ghostel--command-running nil
+          ghostel--last-foreground nil
           ghostel--event-buf nil
           ghostel--redraw-timer nil
           ghostel--pending-redraw nil

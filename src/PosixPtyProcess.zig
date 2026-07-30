@@ -78,6 +78,19 @@ const Pty = struct {
         }
     }
 
+    /// Foreground process-group id of the PTY, or null when the query
+    /// fails or there is no foreground group.  `TIOCGPGRP` must run on
+    /// the primary: a separately opened replica fd is not the caller's
+    /// controlling terminal, so the kernel rejects the ioctl there with
+    /// ENOTTY.  Read-only query, safe to run per-redraw.
+    pub fn foregroundPgid(self: *@This()) ?i32 {
+        if (self.primary_fd == -1) return null;
+        var pgid: c.pid_t = undefined;
+        if (sys.errno(c.ioctl(self.primary_fd, c.TIOCGPGRP, &pgid)) != .SUCCESS) return null;
+        if (pgid <= 0) return null;
+        return @intCast(pgid);
+    }
+
     pub fn closeReplica(self: *@This()) void {
         if (self.replica_fd != -1) {
             _ = sys.close(self.replica_fd);
@@ -256,6 +269,10 @@ pub fn pidValue(self: *const Self) i64 {
 
 pub fn resize(self: *Self, cols: u16, rows: u16) !void {
     try self.pty.resize(cols, rows);
+}
+
+pub fn foregroundPgid(self: *Self) ?i32 {
+    return self.pty.foregroundPgid();
 }
 
 pub fn write(
