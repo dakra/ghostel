@@ -259,7 +259,7 @@ const AndroidLibC = struct {
 /// `ndk-sysroot` package provides.
 fn resolveAndroidLibC(b: *std.Build, target: std.Target) AndroidLibC {
     if (findAndroidNdk(b)) |ndk_dir| return androidNdkLibC(b, target, ndk_dir);
-    if (termuxLibC(b)) |libc| return libc;
+    if (termuxLibC(b, target)) |libc| return libc;
     std.debug.panic(
         "Android builds need the Android NDK (set ANDROID_NDK_HOME or ANDROID_HOME); " ++
             "inside Termux, `pkg install ndk-sysroot` instead",
@@ -288,16 +288,27 @@ fn androidNdkLibC(b: *std.Build, target: std.Target, ndk_dir: []const u8) Androi
     };
 }
 
-/// Termux's `ndk-sysroot` package installs the bionic headers merged into
-/// `$PREFIX/include` and the crt objects into `$PREFIX/lib`.
-fn termuxLibC(b: *std.Build) ?AndroidLibC {
+/// Termux's `ndk-sysroot` package installs the bionic headers into
+/// `$PREFIX/include`, the architecture-specific ones (`asm/' and friends) into
+/// a target triple subdirectory of it, and the crt objects into `$PREFIX/lib`.
+fn termuxLibC(b: *std.Build, target: std.Target) ?AndroidLibC {
     if (b.graph.environ_map.get("TERMUX_VERSION") == null) return null;
     const prefix = b.graph.environ_map.get("PREFIX") orelse return null;
     if (prefix.len == 0) return null;
 
     const include_dir = b.pathJoin(&.{ prefix, "include" });
-    if (!dirHasHeader(b.allocator, include_dir, "errno.h")) return null;
+    if (!dirHasFile(b.allocator, include_dir, "errno.h")) return null;
     const lib_dir = b.pathJoin(&.{ prefix, "lib" });
+
+    const triple = androidTriple(target.cpu.arch) orelse std.debug.panic(
+        "unsupported Android architecture: {s}",
+        .{@tagName(target.cpu.arch)},
+    );
+    const arch_include = b.pathJoin(&.{ include_dir, triple });
+    const sys_include_dir = if (dirHasFile(b.allocator, arch_include, "asm/types.h"))
+        arch_include
+    else
+        include_dir;
 
     // ghostty's vendored android-ndk helper insists on an NDK directory
     // at graph construction time, although none of the artifacts that
@@ -307,18 +318,67 @@ fn termuxLibC(b: *std.Build) ?AndroidLibC {
     return .{
         .source = .termux,
         .include_dir = include_dir,
-        .sys_include_dir = include_dir,
-        .crt_dir = lib_dir,
+        .sys_include_dir = sys_include_dir,
+        .crt_dir = termuxCrtDir(b, target.cpu.arch, lib_dir),
         .lib_dir = lib_dir,
     };
 }
 
-fn dirHasHeader(allocator: std.mem.Allocator, dir: []const u8, header: []const u8) bool {
-    const path = std.fs.path.join(allocator, &.{ dir, header }) catch
-        @panic("out of memory while resolving libc header");
+fn dirHasFile(allocator: std.mem.Allocator, dir: []const u8, name: []const u8) bool {
+    const path = std.fs.path.join(allocator, &.{ dir, name }) catch
+        @panic("out of memory while resolving a libc path");
     defer allocator.free(path);
     std.Io.Dir.cwd().access(io.io(), path, .{}) catch return false;
     return true;
+}
+
+/// Zig resolves `-lc' and friends from `crt_dir' alone, so that directory
+/// has to hold the crt objects and the bionic stubs together.  Termux's
+/// `ndk-sysroot' ships only the former and leaves libc, libm and libdl to
+/// the system, so stage a directory carrying both.  A sysroot that already
+/// has its own stubs, as an NDK mirror does, is used as-is.
+fn termuxCrtDir(b: *std.Build, arch: std.Target.Cpu.Arch, lib_dir: []const u8) []const u8 {
+    if (dirHasFile(b.allocator, lib_dir, "libc.so")) return lib_dir;
+    return stageTermuxCrtDir(b, arch, lib_dir) catch |err| std.debug.panic(
+        "cannot stage the Termux crt directory: {s}",
+        .{@errorName(err)},
+    );
+}
+
+fn stageTermuxCrtDir(b: *std.Build, arch: std.Target.Cpu.Arch, lib_dir: []const u8) ![]const u8 {
+    const system_dir: []const u8 = switch (arch) {
+        .aarch64, .x86_64 => "/system/lib64",
+        else => "/system/lib",
+    };
+    const cache_root = b.cache_root.path orelse return error.NoCacheRoot;
+    const staged = b.pathJoin(&.{ cache_root, "termux-crt" });
+    const cwd: std.Io.Dir = .cwd();
+
+    var crt = try cwd.openDir(io.io(), lib_dir, .{ .iterate = true });
+    defer crt.close(io.io());
+    var it = crt.iterate();
+    while (try it.next(io.io())) |entry| {
+        if (!std.mem.endsWith(u8, entry.name, ".o")) continue;
+        try cwd.copyFile(
+            b.pathJoin(&.{ lib_dir, entry.name }),
+            cwd,
+            b.pathJoin(&.{ staged, entry.name }),
+            io.io(),
+            .{ .make_path = true },
+        );
+    }
+
+    for ([_][]const u8{ "libc.so", "libm.so", "libdl.so" }) |name| {
+        try cwd.copyFile(
+            b.pathJoin(&.{ system_dir, name }),
+            cwd,
+            b.pathJoin(&.{ staged, name }),
+            io.io(),
+            .{ .make_path = true },
+        );
+    }
+
+    return staged;
 }
 
 fn setAndroidLibCFile(b: *std.Build, lib: *std.Build.Step.Compile, libc: AndroidLibC) void {

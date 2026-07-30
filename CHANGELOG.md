@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- On-device Termux builds complete.  Two parts of the bionic sysroot are
+  not where `build.zig` looked: `ndk-sysroot` keeps the
+  architecture-specific headers in a target triple subdirectory of
+  `$PREFIX/include`, so every `translate-c` step failed on
+  `asm/types.h`, and it ships no `libc.so`, `libm.so` or `libdl.so`,
+  leaving those to the system, so the link failed on `-lc`.
+
 ## [0.48.0] — 2026-07-29
 
 ### Added
