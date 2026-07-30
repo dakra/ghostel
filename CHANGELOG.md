@@ -11,6 +11,24 @@ All notable changes to this project will be documented in this file.
   and slant, so softening `bold` for a light default face reaches
   terminal output.
   Fixes [#700](https://github.com/dakra/ghostel/issues/700).
+- Foreground-process detection without shell integration: the new
+  `ghostel-foreground-pid` reports the PTY's foreground process-group id
+  (via `tcgetpgrp` on the native path, `process-running-child-p` on the
+  Emacs PTY path), and `ghostel-command-running-p` combines it with the
+  OSC 133 command state.
+- New abnormal hook `ghostel-foreground-change-functions`, called with
+  the buffer, process-group id, and process name whenever the PTY's
+  foreground process group changes — e.g. to run elisp when a specific
+  program starts or exits in the terminal.
+
+### Changed
+- `ghostel-query-before-killing`'s `auto` setting no longer requires
+  OSC 133 shell integration: it asks whenever something other than the
+  shell holds the foreground, including an ssh client or nested shell
+  at its prompt.  This also gates the `save-buffers-kill-emacs`
+  confirmation.  Buffers that run a program directly (`ghostel-exec`,
+  `ghostel-compile`) have no shell to compare against and are
+  unaffected.  Remote (TRAMP) commands still need OSC 133.
 
 ### Fixed
 - A mouse selection left active with `ghostel-mouse-drag-input-mode` nil

@@ -335,6 +335,11 @@ pub fn isPasswordMode(self: *Self) !bool {
     return false;
 }
 
+pub fn foregroundPgid(self: *Self) !?i32 {
+    if (self.process) |process| return process.foregroundPgid();
+    return null;
+}
+
 var module_alloc: Allocator = undefined;
 var module_io: std.Io = undefined;
 var temp_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -926,6 +931,25 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 if (env.isNil(args[0])) return env.nil();
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
                 return if (try term.isPasswordMode()) env.t() else env.nil();
+            }
+        },
+    },
+    .{
+        .name = "ghostel--pty-foreground-pgid",
+        .arity = .{ 1, 1 },
+        .doc =
+        \\Return the foreground process-group id of TERM's PTY, or nil.
+        \\
+        \\From `tcgetpgrp' on the native PTY primary.  Nil when TERM is nil,
+        \\is not on the native PTY path, or the query fails (e.g. Windows).
+        \\
+        \\(ghostel--pty-foreground-pgid TERM)
+        ,
+        .impl = struct {
+            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
+                if (env.isNil(args[0])) return env.nil();
+                const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
+                return env.makeValue(try term.foregroundPgid());
             }
         },
     },
