@@ -276,10 +276,10 @@ The typed input before the cursor pre-fills the minibuffer.
 The entry is pasted, not submitted, so it stays editable: a pending
 line that prefixes the entry is completed in place, any other is
 aborted with Ctrl-C first.
-Refuses while a command is running (needs shell integration's OSC 133 marks).
+Refuses while a command is running.
 History comes from `ghostel-shell-history-commands'."
   (interactive)
-  (when ghostel--command-running
+  (when (ghostel-command-running-p)
     (user-error "The shell is busy running a command"))
   (let* ((history (consult--remove-dups (ghostel-shell-history)))
          (region (consult-ghostel--input-region))

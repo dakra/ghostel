@@ -135,7 +135,7 @@ is non-nil, a `cd' is typed into it, but only while the shell is idle
   "Return non-nil when the shell sits at an empty prompt.
 Nil while a command or a full-screen program runs."
   (and (not (ghostel-alt-screen-p))
-       (not ghostel--command-running)
+       (not (ghostel-command-running-p))
        ghostel--cursor-char-pos
        (eq ghostel--cursor-char-pos (ghostel-input-start-point))))
 
