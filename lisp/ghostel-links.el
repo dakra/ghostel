@@ -332,7 +332,8 @@ a vector of (STRING-OFFSET . BUFFER-POS) pairs, one per row, ascending.
 
 LIMIT bounds how many rows may be joined into one line, which keeps a
 megabyte-long line of output from becoming one unbroken token for the
-regexps to chew through."
+regexps to chew through.  The count is per logical line: a hard
+newline in the region ends one line and starts the next from zero."
   (let ((chunks nil)
         (parts nil)
         (offset 0)
@@ -348,7 +349,11 @@ regexps to chew through."
                                (t end)))))
         (push (cons offset pos) chunks)
         (push piece parts)
-        (setq rows (if join (1+ rows) 0)
+        ;; A hard newline inside PIECE ended the logical line the count was
+        ;; for; the row being joined now is the first of a new one.
+        (setq rows (cond ((not join) 0)
+                         ((string-search "\n" piece) 1)
+                         (t (1+ rows)))
               offset (+ offset (length piece))
               pos (if wrapped (1+ wrap) end))))
     (cons (string-join (nreverse parts))

@@ -1641,6 +1641,25 @@ Return the (BEGIN . END) each tick asked for, oldest first."
     (should (< ticks 500)))
   (setq ghostel-test--link-regions (nreverse ghostel-test--link-regions)))
 
+(ert-deftest ghostel-test-soft-wrap-row-limit-is-per-logical-line ()
+  "`ghostel--soft-wrap-row-limit' bounds rows joined into one logical line.
+Counting a whole scan region's wraps cumulatively instead stopped
+joining at every LIMIT-th wrapped line in the region, losing that
+line's path."
+  (let* ((file (locate-library "ghostel"))
+         (default-directory (file-name-directory file))
+         (lines (+ ghostel--soft-wrap-row-limit 10)))
+    (with-temp-buffer
+      (dotimes (i lines)
+        (insert (format "%3d see " i))
+        (ghostel-test--wrap-split (concat file ":42") 20)
+        (insert " end\n"))
+      (let ((ghostel-enable-url-detection nil)
+            (ghostel-enable-file-detection t))
+        (ghostel--detect-urls))
+      ;; Two runs per line: the path is split across its two rows.
+      (should (= (* 2 lines) (length (ghostel-test--link-runs)))))))
+
 (ert-deftest ghostel-test-plain-link-detection-drains-in-chunks ()
   "The queued scan covers its whole range across bounded ticks."
   (let* ((file (locate-library "ghostel"))
