@@ -127,6 +127,13 @@ at unrelated text.")
   "Queued end bound for redraw-triggered plain-text link detection.
 A marker, for the reason given at `ghostel--plain-link-detection-begin'.")
 
+(defvar ghostel--inhibit-active-line-skip nil
+  "When non-nil, `ghostel--detect-urls' scans the cursor's line too.
+That line is normally left alone as the prompt being typed at.  A
+terminal that has exited has no prompt, and its last row is ordinary
+output — often the one row a command that printed no trailing
+newline ended on.")
+
 (defconst ghostel--link-detection-chunk 100000
   "Characters `ghostel--run-queued-plain-link-detection' scans per tick.
 A single redraw can materialize megabytes of output at once; scanning
@@ -517,11 +524,13 @@ bounds widened to whole logical lines."
          ;; `ghostel--cursor-char-pos' is the live terminal cursor after a redraw;
          ;; its line is the prompt the user is currently editing.  Capture as
          ;; buffer-position bounds so the per-match skip check is O(1).
-         (active-pos (or ghostel--cursor-char-pos (point)))
-         (active-bounds (cons (ghostel--soft-wrap-line-beginning
-                               active-pos ghostel--soft-wrap-row-limit)
-                              (ghostel--soft-wrap-line-end
-                               active-pos ghostel--soft-wrap-row-limit)))
+         (active-bounds
+          (unless ghostel--inhibit-active-line-skip
+            (let ((active-pos (or ghostel--cursor-char-pos (point))))
+              (cons (ghostel--soft-wrap-line-beginning
+                     active-pos ghostel--soft-wrap-row-limit)
+                    (ghostel--soft-wrap-line-end
+                     active-pos ghostel--soft-wrap-row-limit)))))
          (joined (ghostel--wrap-joined-region
                   begin end ghostel--soft-wrap-row-limit))
          (text (car joined))
@@ -797,6 +806,18 @@ caught up on afterwards, then re-arms while anything is left."
                     (run-with-timer ghostel-plain-link-detection-delay nil
                                     #'ghostel--run-queued-plain-link-detection
                                     buffer)))))))))
+
+(defun ghostel--flush-plain-link-detection ()
+  "Drain the queued plain-text link detection to completion, now.
+For a terminal at the end of its life: no later redraw will repaint
+its text, so ticks still owed would never run, and the row the cursor
+stopped on is output rather than a prompt to leave alone."
+  (let ((ghostel--inhibit-active-line-skip t))
+    (while ghostel--plain-link-detection-begin
+      (when ghostel--plain-link-detection-timer
+        (cancel-timer ghostel--plain-link-detection-timer)
+        (setq ghostel--plain-link-detection-timer nil))
+      (ghostel--run-queued-plain-link-detection (current-buffer)))))
 
 (defun ghostel--queue-plain-link-detection (begin end)
   "Coalesce redraw-triggered plain-text link detection for BEGIN..END."

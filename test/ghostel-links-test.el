@@ -1603,8 +1603,8 @@ Off a link it falls back to `find-file-at-point'."
 
 ;;; Link detection coverage
 
-(defvar ghostel-test--link-timer nil
-  "Captured (FN . ARGS) of the pending plain-link detection tick, or nil.")
+(defvar ghostel-test--link-timers nil
+  "Captured (FN . ARGS) of every pending plain-link detection tick.")
 
 (defvar ghostel-test--link-regions nil
   "The (BEGIN . END) each drained detection tick asked for, newest first.")
@@ -1612,16 +1612,27 @@ Off a link it falls back to `find-file-at-point'."
 (defmacro ghostel-test--with-link-timers (&rest body)
   "Run BODY with plain-link detection timers captured, not scheduled.
 BODY queues detection; `ghostel-test--drain-link-detection' then runs
-the queue to completion."
+the queue to completion.
+
+Every tick is kept, not just the newest: a customize `:set' handler
+redraws each ghostel buffer in the session, so more than one can queue
+inside one BODY.  The stub hands back a real but already cancelled
+timer for the same reason — the value lands in those buffers' timer
+slots, where `cancel-timer' later runs on it."
   (declare (indent 0))
-  `(let ((ghostel-test--link-timer nil)
+  `(let ((ghostel-test--link-timers nil)
          (ghostel-test--link-regions nil)
+         (ghostel-test--real-run-with-timer
+          (symbol-function 'run-with-timer))
          (ghostel-test--real-detect-urls
           (symbol-function 'ghostel--detect-urls)))
      (cl-letf (((symbol-function 'run-with-timer)
                 (lambda (_delay _repeat fn &rest args)
-                  (setq ghostel-test--link-timer (cons fn args))
-                  'ghostel-test-link-timer))
+                  (push (cons fn args) ghostel-test--link-timers)
+                  (let ((timer (funcall ghostel-test--real-run-with-timer
+                                        3600 nil #'ignore)))
+                    (cancel-timer timer)
+                    timer)))
                ((symbol-function 'ghostel--detect-urls)
                 (lambda (&optional begin end)
                   (push (cons begin end) ghostel-test--link-regions)
@@ -1629,13 +1640,12 @@ the queue to completion."
        ,@body)))
 
 (defun ghostel-test--drain-link-detection ()
-  "Run captured plain-link detection ticks until the queue is empty.
+  "Run captured plain-link detection ticks until none are pending.
 Return the (BEGIN . END) each tick asked for, oldest first."
   (let ((ticks 0))
-    (while (and ghostel-test--link-timer (< ticks 500))
-      (let ((call ghostel-test--link-timer))
-        (setq ghostel-test--link-timer nil
-              ticks (1+ ticks))
+    (while (and ghostel-test--link-timers (< ticks 500))
+      (let ((call (pop ghostel-test--link-timers)))
+        (setq ticks (1+ ticks))
         (apply (car call) (cdr call))))
     ;; A drain that never empties would otherwise hang the suite.
     (should (< ticks 500)))
@@ -1747,7 +1757,7 @@ positions queued before the deletion point at unrelated text after it."
                            (setq depth (1- depth))))))
               (ghostel--queue-plain-link-detection (point-min) (point-max))
               ;; The synchronous first tick must not have run the backlog.
-              (should ghostel-test--link-timer)
+              (should ghostel-test--link-timers)
               (setq regions (ghostel-test--drain-link-detection)))))
         (should (> (length regions) 3))
         (should (= 1 max-depth))
@@ -1830,6 +1840,37 @@ scan region can no longer be guessed from the live viewport."
               (ghostel-previous-hyperlink)
               (push (get-text-property (point) 'ghostel-link-id) ids))
             (should (= occurrences (length (seq-uniq ids))))))))))
+
+(ert-deftest ghostel-test-bold-config-change-keeps-detected-links ()
+  "Changing a bold setting must not leave the buffer without links.
+Its `:set' rebuilds every ghostel buffer from libghostty, and
+re-inserting the rows drops the properties detection attached."
+  :tags '(native)
+  (ghostel-test--with-long-path-file file
+    (let ((saved ghostel-bold-color))
+      (ghostel-test--with-terminal-buffer (_buf term 5 40 100000)
+        (unwind-protect
+            (let ((inhibit-read-only t)
+                  (inhibit-modification-hooks t)
+                  (default-directory (file-name-directory file))
+                  (ghostel-enable-url-detection nil)
+                  (ghostel-enable-file-detection t)
+                  (ghostel-plain-link-detection-delay 0.1))
+              (dotimes (i 40)
+                (ghostel--write-vt term (if (zerop (% i 10))
+                                            (format "%s:42\r\n" file)
+                                          (format "filler %d\r\n" i))))
+              (ghostel--redraw term)
+              (ghostel-test--with-link-timers
+                (ghostel--schedule-link-detection)
+                (ghostel-test--drain-link-detection))
+              (let ((before (length (ghostel-test--link-runs))))
+                (should (> before 0))
+                (ghostel-test--with-link-timers
+                  (customize-set-variable 'ghostel-bold-color 'bright)
+                  (ghostel-test--drain-link-detection))
+                (should (= before (length (ghostel-test--link-runs))))))
+          (customize-set-variable 'ghostel-bold-color saved))))))
 
 (ert-deftest ghostel-test-pending-wrap-path-links-once-completed ()
   "A path that exactly fills a row links up once its next row arrives.

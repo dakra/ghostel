@@ -964,6 +964,7 @@ Matches Ghostty 1.2.0's `bold-color' configuration."
                (let ((inhibit-read-only t)
                      (inhibit-modification-hooks t))
                  (ghostel--redraw ghostel--term t t))
+               (ghostel--schedule-link-detection)
                (ghostel--apply-cursor-style))))))
 
 (defvar-local ghostel--cursor-pos nil
@@ -1699,6 +1700,7 @@ restoring the terminal contents, with point realigned to the VT cursor."
     (if (> old-len 0)
         (progn
           (ghostel--redraw ghostel--term t t)
+          (ghostel--schedule-link-detection)
           ;; The reverted edit must not move point either; realign it.
           (when ghostel--cursor-char-pos
             (goto-char ghostel--cursor-char-pos)))

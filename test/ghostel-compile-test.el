@@ -2039,5 +2039,71 @@ record the fragment after the break as the file name."
           (kill-buffer buf-name)))
       (delete-directory root t))))
 
+(ert-deftest ghostel-test-compile-finalize-drains-queued-link-detection ()
+  "Finalizing must not drop link detection the run still owes.
+The mode switch drops the buffer-locals holding the queued scan, and
+nothing repaints a finished compile buffer, so a scan left pending
+would never run.  The path here is soft-wrapped, so it is only
+detectable while the wrap properties `--unwrap-soft-wraps' removes are
+still in place."
+  :tags '(native)
+  (ghostel-test--with-long-path-file file
+    (let ((uri (concat "fileref:" file ":42")))
+      (ghostel-test--with-terminal-buffer (buf term 5 40 100000)
+        (let ((inhibit-read-only t)
+              (inhibit-modification-hooks t)
+              (default-directory (file-name-directory file))
+              (ghostel-enable-url-detection nil)
+              (ghostel-enable-file-detection t)
+              ;; Long enough that no tick fires before finalize does.
+              (ghostel-plain-link-detection-delay 60))
+          (should (> (length file) 40))
+          (setq-local ghostel-compile--scan-marker (copy-marker (point-min)))
+          (ghostel--write-vt term (format "%s:42\r\ndone\r\n" file))
+          (ghostel--redraw term)
+          (ghostel--schedule-link-detection)
+          (should ghostel--plain-link-detection-timer)
+          (goto-char (point-min))
+          (should-not (text-property-not-all (point-min) (point-max)
+                                             'help-echo nil))
+          (ghostel-compile--finalize buf 0 (current-time))
+          (should (eq major-mode 'ghostel-compile-view-mode))
+          ;; Unwrapping joined the rows, so the whole path is one run now.
+          ;; Probed at its last character: a Windows drive prefix sits
+          ;; outside the span, which starts at the leading `/'.
+          (goto-char (point-min))
+          (should (search-forward file nil t))
+          (should (equal uri (get-text-property (1- (match-end 0))
+                                                'help-echo))))))))
+
+(ert-deftest ghostel-test-compile-finalize-links-the-cursor-row ()
+  "A command printing no trailing newline still gets its last row linked.
+Detection leaves the cursor's line alone as the prompt being typed
+at, but a finished compile has no prompt and this is its last scan
+ever, so that row would keep its link forever otherwise."
+  :tags '(native)
+  (ghostel-test--with-long-path-file file
+    (let ((uri (concat "fileref:" file ":42")))
+      (ghostel-test--with-terminal-buffer (buf term 5 40 100000)
+        (let ((inhibit-read-only t)
+              (inhibit-modification-hooks t)
+              (default-directory (file-name-directory file))
+              (ghostel-enable-url-detection nil)
+              (ghostel-enable-file-detection t)
+              (ghostel-plain-link-detection-delay 60))
+          (setq-local ghostel-compile--scan-marker (copy-marker (point-min)))
+          ;; No trailing newline: the VT cursor stops on the path's own row.
+          (ghostel--write-vt term (format "done\r\n%s:42" file))
+          (ghostel--redraw term)
+          (ghostel--schedule-link-detection)
+          (should ghostel--cursor-char-pos)
+          (ghostel-compile--finalize buf 0 (current-time))
+          ;; Probed at the path's last character: a Windows drive prefix
+          ;; sits outside the span, which starts at the leading `/'.
+          (goto-char (point-min))
+          (should (search-forward file nil t))
+          (should (equal uri (get-text-property (1- (match-end 0))
+                                                'help-echo))))))))
+
 (provide 'ghostel-compile-test)
 ;;; ghostel-compile-test.el ends here

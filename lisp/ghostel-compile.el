@@ -400,6 +400,13 @@ same as in any compilation buffer."
           (when start
             (ghostel-compile--trim-trailing-blanks start))
           (ghostel-compile--teardown-terminal)
+          ;; Owed link detection has to run before the rows are joined,
+          ;; whose `ghostel-wrap' properties it reads, and before the mode
+          ;; switch drops the queue's buffer-locals.  Demoted because
+          ;; `ghostel-compile--finalized' is already set: a signal here
+          ;; would leave the buffer with no footer and no way to retry.
+          (with-demoted-errors "ghostel-compile: link detection failed: %S"
+            (ghostel--flush-plain-link-detection))
           ;; Must follow the teardown: a live renderer would rewrite the
           ;; joined rows on its next redraw.
           (ghostel-compile--unwrap-soft-wraps)
@@ -504,7 +511,9 @@ destroys the grid, so commit it here or lose the output it holds."
                          (with-selected-window window
                            (ghostel--redraw ghostel--term full t))
                        (ghostel--redraw ghostel--term full t))))
-      (when rendered (setq ghostel--pending-redraw nil)))))
+      (when rendered
+        (setq ghostel--pending-redraw nil)
+        (ghostel--schedule-link-detection)))))
 
 (defun ghostel-compile--sentinel (process _event)
   "Sentinel for the compile PROCESS: finalize the buffer on exit."
