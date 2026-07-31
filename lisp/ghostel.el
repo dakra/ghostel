@@ -4828,6 +4828,10 @@ When BUFFER is non-nil, only refit windows showing BUFFER."
 
 (unless (advice-member-p #'ghostel--around-local-font-scale 'text-scale-mode)
   (advice-add 'text-scale-mode :around #'ghostel--around-local-font-scale))
+;; `buffer-face-set', `buffer-face-toggle' and `variable-pitch-mode' all
+;; remap through `buffer-face-mode', which rescales the font.
+(unless (advice-member-p #'ghostel--around-local-font-scale 'buffer-face-mode)
+  (advice-add 'buffer-face-mode :around #'ghostel--around-local-font-scale))
 (when (and (fboundp 'global-text-scale-adjust)
            (not (advice-member-p #'ghostel--around-global-font-scale
                                  'global-text-scale-adjust)))

@@ -16,6 +16,42 @@
     (should (member 'ghostel-default
                     (cdr (assq 'default face-remapping-alist))))))
 
+(ert-deftest ghostel-test-default-face-specifies-no-attributes ()
+  "`ghostel-default' pins no attribute of its own out of the box.
+`face-remap-add-relative' orders the `default' remappings by how many
+attributes they leave unspecified, giving the most relative one the
+highest precedence.  An attribute pinned here — including `:inherit
+default', which drags in every attribute of `default' — therefore
+outranks and silently masks other `default' remappings in the buffer,
+such as `buffer-face-mode'."
+  (should (seq-every-p (lambda (attr) (eq (cdr attr) 'unspecified))
+                       (face-all-attributes 'ghostel-default))))
+
+(ert-deftest ghostel-test-buffer-face-mode-refits-terminal ()
+  "`buffer-face-mode' resizes the terminal to the rescaled window.
+Its font change leaves the window's pixel geometry untouched, so
+`window-size-change-functions' never fires."
+  (let ((buf (generate-new-buffer " *ghostel-test-buffer-face*"))
+        (orig-buf (window-buffer (selected-window))))
+    (unwind-protect
+        (progn
+          (set-window-buffer (selected-window) buf)
+          (with-current-buffer buf
+            (ghostel-mode)
+            (let ((adjust-args nil))
+              (cl-letf (((symbol-function 'ghostel--window-anchored-p)
+                         (lambda (&rest _) nil))
+                        ((symbol-function 'ghostel--adjust-size)
+                         (lambda (&rest args) (setq adjust-args args))))
+                (buffer-face-set '(:height 2.0))
+                (should (equal (list (selected-window) t) adjust-args))
+                (setq adjust-args nil)
+                (buffer-face-mode -1)
+                (should (equal (list (selected-window) t) adjust-args))))))
+      (when (buffer-live-p orig-buf)
+        (set-window-buffer (selected-window) orig-buf))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-major-mode-change-blocked-while-live ()
   "Changing the major mode signals `user-error' while the terminal runs.
 The switch is aborted before `kill-all-local-variables' wipes the

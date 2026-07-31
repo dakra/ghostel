@@ -114,7 +114,7 @@ Used when `cursor-in-non-selected-windows' resolves to box."
   :group 'ghostel)
 
 (defface ghostel-default
-  '((t :inherit default))
+  '((t nil))
   "Base face for default text in ghostel terminal buffers.
 Customize this to give ghostel buffers a different default foreground,
 background, font, or size than the rest of Emacs.  Foreground and
