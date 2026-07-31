@@ -4764,7 +4764,8 @@ by the buffer's font height."
 
 (defun ghostel--set-size-with-cell-dims (term rows cols)
   "Resize TERM to ROWS×COLS, including the reported cell pixel dimensions.
-Convenience wrapper to keep the five resize sites consistent."
+Convenience wrapper to keep the resize sites consistent.  Resolves the cell
+dimensions from the current buffer, so call it with TERM's buffer current."
   (ghostel--set-size term rows cols
                      (ghostel--reported-cell-width)
                      (ghostel--reported-cell-height)))

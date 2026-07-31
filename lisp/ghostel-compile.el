@@ -69,7 +69,6 @@
 
 (declare-function ghostel--redraw "ghostel-module"
                   (term &optional full force-sync))
-(declare-function ghostel--set-size "ghostel-module")
 (declare-function ghostel--write-vt "ghostel-module")
 (declare-function ghostel--sync-read-only "ghostel")
 (defvar ghostel--inhibit-insert-forwarding)
@@ -798,7 +797,7 @@ any other code that walks `compilation-arguments') re-runs via
         (let ((oh (max 1 (with-selected-window outwin
                            (floor (window-screen-lines)))))
               (ow (max 1 (window-max-chars-per-line outwin))))
-          (ghostel--set-size ghostel--term oh ow)))
+          (ghostel--set-size-with-cell-dims ghostel--term oh ow)))
       ;; Render the compilation header into the terminal before spawning
       ;; the command, so the user sees the "Compilation started at ..."
       ;; banner *during* the run rather than only when it finishes (the

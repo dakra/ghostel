@@ -1421,14 +1421,17 @@ dimensions available before `display-buffer').  If the compile
 buffer ends up in a smaller window, the PTY's `set-process-window-size'
 agrees with the output window but the VT still thinks it has the
 width of the selected window, so early output wraps at the wrong column.
-`--start' must call `ghostel--set-size' with the output-window
-dimensions *before* rendering the header, and `--spawn' must receive
-the same dimensions so PTY and VT always agree."
+`--start' must resize with the output-window dimensions *before*
+rendering the header, and `--spawn' must receive the same dimensions so
+PTY and VT always agree.  The resize must carry the cell pixel
+dimensions too: `ghostel--set-size' defaults omitted ones to 1 px,
+dropping what `ghostel--init-buffer' seeded."
   (let* ((buf-name "*ghostel-test-compile-size*")
          (set-size-calls nil)
          (spawn-calls nil)
          (call-order nil)
          (inhibit-message t)
+         (ghostel-cell-pixel-scale 1)
          (save-some-buffers-default-predicate (lambda () nil))
          (ghostel-compile-finished-major-mode nil))
     (when (get-buffer buf-name)
@@ -1438,12 +1441,13 @@ the same dimensions so PTY and VT always agree."
         (cl-letf* (((symbol-function 'ghostel--load-module) #'ignore)
                    ((symbol-function 'ghostel--new)
                     (lambda (&rest _) 'fake-term))
-                   ((symbol-function 'ghostel--set-size-with-cell-dims) #'ignore)
                    ((symbol-function 'ghostel--apply-palette) #'ignore)
+                   ((symbol-function 'default-font-width) (lambda () 8))
+                   ((symbol-function 'default-font-height) (lambda () 16))
                    ((symbol-function 'ghostel--set-size)
-                    (lambda (_term rows cols)
+                    (lambda (_term rows cols &optional cell-w cell-h)
                       (push 'set-size call-order)
-                      (push (list rows cols) set-size-calls)))
+                      (push (list rows cols cell-w cell-h) set-size-calls)))
                    ((symbol-function 'ghostel-compile--render-header-live)
                     (lambda (&rest _) (push 'render-header call-order)))
                    (ghostel--cursor-pos (cons 0 0))
@@ -1460,19 +1464,21 @@ the same dimensions so PTY and VT always agree."
           (let ((buf (ghostel-compile--start "true" buf-name
                                              default-directory)))
             (with-current-buffer buf
-              ;; The reconcile call happened.
-              (should set-size-calls)
-              ;; Reconcile must precede the header render *and* the spawn —
-              ;; otherwise the header / early command output wraps at the
-              ;; pre-reconcile column.  `call-order' is LIFO, so chronological
-              ;; order is the reverse.
+              ;; Two resizes: `prepare-buffer' seeds from the selected
+              ;; window, `--start' reconciles to the output window.  Both
+              ;; must precede the header render *and* the spawn — otherwise
+              ;; the header / early command output wraps at the
+              ;; pre-reconcile column.  `call-order' is LIFO, so
+              ;; chronological order is the reverse.
               (let ((chronological (reverse call-order)))
                 (should (equal chronological
-                               '(set-size render-header spawn))))
-              ;; Final VT size equals what was handed to the process.
+                               '(set-size set-size render-header spawn))))
+              ;; Final VT size equals what was handed to the process, and
+              ;; carries the cell pixel dimensions.
               (let ((vt-size (car set-size-calls))
                     (pty-size (car spawn-calls)))
-                (should (equal vt-size pty-size)))
+                (should (equal (seq-take vt-size 2) pty-size))
+                (should (equal (nthcdr 2 vt-size) '(8 16))))
               ;; Clean up the fake process.
               (let ((p ghostel--process))
                 (when (process-live-p p)
@@ -1487,10 +1493,10 @@ the same dimensions so PTY and VT always agree."
   "If `display-buffer' returns nil, reconcile is skipped safely.
 `allow-no-window' permits `display-buffer' to choose not to show the
 buffer at all.  The `(when (and outwin ...))' guard in `--start' must
-gate the `ghostel--set-size' call so we don't crash or pass bogus
-dimensions when no output window exists."
+gate the reconcile so we don't crash or pass bogus dimensions when no
+output window exists — leaving the sizing `prepare-buffer' seeded."
   (let* ((buf-name "*ghostel-test-compile-no-outwin*")
-         (set-size-called nil)
+         (set-size-calls 0)
          (inhibit-message t)
          (save-some-buffers-default-predicate (lambda () nil))
          (ghostel-compile-finished-major-mode nil))
@@ -1501,11 +1507,10 @@ dimensions when no output window exists."
         (cl-letf* (((symbol-function 'ghostel--load-module) #'ignore)
                    ((symbol-function 'ghostel--new)
                     (lambda (&rest _) 'fake-term))
-                   ((symbol-function 'ghostel--set-size-with-cell-dims) #'ignore)
                    ((symbol-function 'ghostel--apply-palette) #'ignore)
                    ((symbol-function 'display-buffer) (lambda (&rest _) nil))
                    ((symbol-function 'ghostel--set-size)
-                    (lambda (&rest _) (setq set-size-called t)))
+                    (lambda (&rest _) (setq set-size-calls (1+ set-size-calls))))
                    ((symbol-function 'ghostel-compile--render-header-live)
                     #'ignore)
                    (ghostel--cursor-pos (cons 0 0))
@@ -1520,7 +1525,8 @@ dimensions when no output window exists."
           (let ((buf (ghostel-compile--start "true" buf-name
                                              default-directory)))
             (should (buffer-live-p buf))
-            (should-not set-size-called)
+            ;; Only `prepare-buffer' sized the VT; no reconcile ran.
+            (should (= set-size-calls 1))
             (with-current-buffer buf
               (let ((p ghostel--process))
                 (when (process-live-p p)
