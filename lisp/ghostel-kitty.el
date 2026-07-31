@@ -180,8 +180,8 @@ user shouldn't have to trigger one)."
     (condition-case err
         (progn
           (ghostel--kitty-check-source-rect src-x src-y src-w src-h pixel-w pixel-h)
-          (let* ((cw (frame-char-width))
-                 (ch (frame-char-height))
+          (let* ((cw (default-font-width))
+                 (ch (default-font-height))
                  (g-cols (if (> grid-cols 0) grid-cols
                            (max 1 (/ (+ pixel-w cw -1) cw))))
                  (g-rows (if (> grid-rows 0) grid-rows
@@ -234,8 +234,8 @@ DATA is a unibyte string (PNG or PPM).  IS-PNG is non-nil for PNG."
   (when (display-graphic-p)
     (condition-case err
         (let ((placeholder (string #x10EEEE))
-              (cw (frame-char-width))
-              (ch (frame-char-height))
+              (cw (default-font-width))
+              (ch (default-font-height))
               grid-cols grid-rows img)
           (save-excursion
             ;; First pass: measure the grid by walking the buffer line by
@@ -293,9 +293,9 @@ DATA is a unibyte string (PNG or PPM).  IS-PNG is non-nil for PNG."
                         ;; tiles flush and the file-list column on the same
                         ;; line doesn't grow taller than non-image lines.
                         ;; The U+10EEEE fallback font and any Nerd Font
-                        ;; icons would otherwise pull line height above
-                        ;; `frame-char-height', leaving gaps below the
-                        ;; slice and above the next line's content.
+                        ;; icons would otherwise pull line height above the
+                        ;; buffer's default font height, leaving gaps below
+                        ;; the slice and above the next line's content.
                         (when (< line-end (point-max))
                           (add-text-properties line-end (1+ line-end)
                                                (list 'line-height ch

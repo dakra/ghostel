@@ -11,14 +11,18 @@
 
 (defun ghostel-test--kitty-fixture (body)
   "Run BODY in a temp buffer with kitty-related primitives faked.
-Stubs `display-graphic-p', `create-image', `frame-char-width', and
-`frame-char-height' so display callbacks can be exercised in batch."
+Stubs `display-graphic-p', `create-image', and the font/frame cell
+metrics so display callbacks can be exercised in batch.  The frame char
+dimensions deliberately differ from the buffer's font dimensions, as
+they do under a `default' face remap."
   (with-temp-buffer
     (cl-letf (((symbol-function 'display-graphic-p) (lambda () t))
               ((symbol-function 'create-image)
                (lambda (&rest _args) 'fake-image))
-              ((symbol-function 'frame-char-width) (lambda (&rest _) 8))
-              ((symbol-function 'frame-char-height) (lambda (&rest _) 16)))
+              ((symbol-function 'frame-char-width) (lambda (&rest _) 5))
+              ((symbol-function 'frame-char-height) (lambda (&rest _) 10))
+              ((symbol-function 'default-font-width) (lambda () 8))
+              ((symbol-function 'default-font-height) (lambda () 16)))
       (funcall body))))
 
 (ert-deftest ghostel-test-detect-cell-pixel-scale-standard-dpi ()
@@ -88,12 +92,17 @@ Stubs `display-graphic-p', `create-image', `frame-char-width', and
                (lambda () nil)))
       (should (= (ghostel--cell-pixel-scale) 1)))))
 
-(ert-deftest ghostel-test-reported-cell-dims-multiply-frame-by-scale ()
-  "Reported cell width/height = frame char dim * scale, rounded.
+(ert-deftest ghostel-test-reported-cell-dims-multiply-font-by-scale ()
+  "Reported cell width/height = the buffer's font dim * scale, rounded.
+The frame's char dimensions are not used: a `default' face remap
+\(`text-scale-mode', `buffer-face-mode', a `ghostel-default' `:height')
+resizes the buffer's font while they stay put.
 Uses scale 1.4 (not 1.5) to avoid the half-integer boundary where
 Emacs uses banker's rounding."
-  (cl-letf (((symbol-function 'frame-char-width) (lambda (&rest _) 8))
-            ((symbol-function 'frame-char-height) (lambda (&rest _) 16)))
+  (cl-letf (((symbol-function 'frame-char-width) (lambda (&rest _) 5))
+            ((symbol-function 'frame-char-height) (lambda (&rest _) 10))
+            ((symbol-function 'default-font-width) (lambda () 8))
+            ((symbol-function 'default-font-height) (lambda () 16)))
     (let ((ghostel-cell-pixel-scale 2))
       (should (= (ghostel--reported-cell-width) 16))
       (should (= (ghostel--reported-cell-height) 32)))
@@ -114,6 +123,28 @@ The display property and the marker share the same range."
 	 (should ghostel--kitty-active)
 	 ;; Trailing space outside placement (col 4..6) should not be tagged
 	 (should (null (get-text-property 5 'ghostel-kitty))))))
+
+(ert-deftest ghostel-test-kitty-display-image-sized-from-buffer-font ()
+  "Placement pixel geometry comes from the buffer's font, not the frame.
+Sizing the image and its slices off `frame-char-width'/`frame-char-height'
+tiles them at the wrong scale once the `default' face is remapped."
+  (let (image-args)
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'display-graphic-p) (lambda () t))
+                ((symbol-function 'create-image)
+                 (lambda (&rest args) (setq image-args args) 'fake-image))
+                ((symbol-function 'frame-char-width) (lambda (&rest _) 5))
+                ((symbol-function 'frame-char-height) (lambda (&rest _) 10))
+                ((symbol-function 'default-font-width) (lambda () 8))
+                ((symbol-function 'default-font-height) (lambda () 16)))
+        (insert "row1xx\nrow2xx\n")
+        (ghostel--kitty-display-image "data" nil 0 0 4 2 32 32 0 0 0 0)
+        (let ((props (nthcdr 3 image-args)))
+          (should (= (plist-get props :width) 32))    ; 4 cols * 8
+          (should (= (plist-get props :height) 32)))  ; 2 rows * 16
+        (should (equal (car (get-text-property 1 'display))
+                       '(slice 0 0 32 16)))
+        (should (eql (get-text-property 7 'line-height) 16))))))
 
 (ert-deftest ghostel-test-kitty-display-image-empty-line-uses-overlay ()
   "Empty placement range uses an overlay (so the newline isn't eaten)."
@@ -372,19 +403,22 @@ overlays per row by the number of times the image has been visible."
 	 (ghostel--kitty-display-virtual "data" nil)
 	 (should ghostel--kitty-active)
 	 (should (get-text-property 1 'display))
-	 (should (get-text-property 1 'ghostel-kitty)))))
+	 (should (get-text-property 1 'ghostel-kitty))
+	 ;; Slice geometry follows the buffer's font, not the frame's cell.
+	 (should (equal (car (get-text-property 1 'display))
+			'(slice 0 0 24 16))))))
 
 (ert-deftest ghostel-test-kitty-display-image-records-error ()
   "Display-callback errors are captured to a buffer-local variable.
 The error survives past the redraw — not just flashed via `message'."
-  (with-temp-buffer
-	(cl-letf (((symbol-function 'display-graphic-p) (lambda () t))
-			  ((symbol-function 'create-image)
-			   (lambda (&rest _) (error "Boom"))))
-	  (insert "row\n")
-	  (ghostel--kitty-display-image "data" nil 0 0 1 1 8 16 0 0 0 0)
-	  (should ghostel--kitty-last-error)
-	  (should (eq (car ghostel--kitty-last-error) 'error)))))
+  (ghostel-test--kitty-fixture
+   (lambda ()
+     (cl-letf (((symbol-function 'create-image)
+                (lambda (&rest _) (error "Boom"))))
+       (insert "row\n")
+       (ghostel--kitty-display-image "data" nil 0 0 1 1 8 16 0 0 0 0)
+       (should ghostel--kitty-last-error)
+       (should (eq (car ghostel--kitty-last-error) 'error))))))
 
 (ert-deftest ghostel-test-kitty-display-image-rejects-source-rect ()
   "Non-default source rect is recorded as an error rather than silent miss.

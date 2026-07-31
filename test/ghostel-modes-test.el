@@ -137,16 +137,18 @@ windows a forced size adjustment; other buffers are untouched."
 
 (ert-deftest ghostel-test-cell-height-includes-line-spacing ()
   "`ghostel--cell-height' adds the buffer's `line-spacing' in pixels.
-Integer spacing adds as-is, float spacing as a rounded fraction of
-`frame-char-height'; unsupported values and non-graphic displays add
-nothing."
-  (cl-letf (((symbol-function 'frame-char-height) (lambda (&optional _) 14))
+The base is the buffer's default font height, so a `default' face remap
+carries through.  Integer spacing adds as-is, float spacing as a rounded
+fraction of `frame-char-height' (what redisplay scales it by);
+unsupported values and non-graphic displays add nothing."
+  (cl-letf (((symbol-function 'default-font-height) (lambda () 14))
+            ((symbol-function 'frame-char-height) (lambda (&optional _) 20))
             ((symbol-function 'display-graphic-p) (lambda (&optional _) t)))
     (with-temp-buffer
       (setq-local line-spacing 3)
       (should (eql (ghostel--cell-height) 17))
       (setq-local line-spacing 0.1)
-      (should (eql (ghostel--cell-height) 15))
+      (should (eql (ghostel--cell-height) 16))
       (setq-local line-spacing 0)
       (should (eql (ghostel--cell-height) 14))
       ;; Emacs 28/29 reject non-number values at `setq-local' time

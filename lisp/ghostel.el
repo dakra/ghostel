@@ -292,7 +292,7 @@ This is a heuristic — Emacs has no portable API for the OS-level
 backing scale factor, so exact parity with standalone Ghostty
 \(which measures cell size in real physical pixels via the window
 server) requires setting an explicit number here.  Useful overrides:
-the exact `physical_cell_w / frame-char-width' ratio (e.g. 2.28) for
+the exact `physical_cell_w / default-font-width' ratio (e.g. 2.28) for
 pixel-perfect parity with standalone Ghostty's image rendering, or
 1 to opt out of HiDPI-aware reporting altogether.
 
@@ -4744,12 +4744,14 @@ reported (some multi-monitor setups), letting the caller fall back."
 
 (defun ghostel--reported-cell-width ()
   "Return cell width to report to libghostty, in physical pixels."
-  (round (* (frame-char-width) (ghostel--cell-pixel-scale))))
+  (round (* (default-font-width) (ghostel--cell-pixel-scale))))
 
 (defun ghostel--cell-height ()
   "Return the terminal cell height in logical pixels.
-`frame-char-height' plus the buffer's `line-spacing' in pixels."
-  (+ (frame-char-height)
+The buffer's default font height plus its `line-spacing' in pixels.
+Redisplay scales a float `line-spacing' by the frame's char height, not
+by the buffer's font height."
+  (+ (default-font-height)
      (cond ((not (display-graphic-p)) 0)
            ((integerp line-spacing) (max 0 line-spacing))
            ((floatp line-spacing)
