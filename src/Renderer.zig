@@ -60,7 +60,16 @@ bold_config: ?gt.Style.BoldColor = null,
 /// rendering passes to avoid allocations.
 saved_markers: SavedBufferMarkers = .{},
 
+/// Buffer range rewritten by the redraw in progress, or null when it has
+/// painted nothing yet. Published so elisp can scan exactly what changed.
+repainted: ?BufferRegion = null,
+
 const PageSerial = @FieldType(gt.PageList.List.Node, "serial");
+
+const BufferRegion = struct {
+    min: usize,
+    max: usize,
+};
 
 const ScreenId = struct {
     key: gt.ScreenSet.Key,
@@ -160,6 +169,8 @@ pub fn redraw(self: *Self, env: emacs.Env, force_full: bool, force_sync: bool) !
     self.is_rendering = true;
     defer self.is_rendering = false;
 
+    self.repainted = null;
+
     const screen = self.term.screens.active;
     try self.saved_markers.save(self.alloc, env);
     defer self.saved_markers.restoreAndClear(screen, env);
@@ -191,6 +202,12 @@ pub fn redraw(self: *Self, env: emacs.Env, force_full: bool, force_sync: bool) !
         screen.pages.rows
     else
         screen.pages.total_rows;
+
+    if (self.repainted) |r| {
+        env.set("ghostel--repainted-region", env.cons(r.min, r.max));
+    } else {
+        env.set("ghostel--repainted-region", env.nil());
+    }
     return true;
 }
 
@@ -865,6 +882,12 @@ fn flushSpan(self: *Self, env: emacs.Env) !void {
 
     const span_start = env.cast(usize, env.f("point", .{}));
     _ = env.f("insert", .{self.span.text.items});
+
+    const span_end = span_start + self.span.char_len;
+    self.repainted = if (self.repainted) |r| .{
+        .min = @min(r.min, span_start),
+        .max = @max(r.max, span_end),
+    } else .{ .min = span_start, .max = span_end };
 
     for (self.span.runs.items) |*run| {
         if (run.key) |*key| {

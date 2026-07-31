@@ -118,10 +118,21 @@ buffer positions.")
   "Timer for delayed redraw-triggered plain-text link detection.")
 
 (defvar-local ghostel--plain-link-detection-begin nil
-  "Queued start bound for redraw-triggered plain-text link detection.")
+  "Queued start bound for redraw-triggered plain-text link detection.
+A marker: scrollback eviction deletes from the buffer start between
+the queue and the scan, which would leave a plain position pointing
+at unrelated text.")
 
 (defvar-local ghostel--plain-link-detection-end nil
-  "Queued end bound for redraw-triggered plain-text link detection.")
+  "Queued end bound for redraw-triggered plain-text link detection.
+A marker, for the reason given at `ghostel--plain-link-detection-begin'.")
+
+(defconst ghostel--link-detection-chunk 100000
+  "Characters `ghostel--run-queued-plain-link-detection' scans per tick.
+A single redraw can materialize megabytes of output at once; scanning
+all of it in one pass would block Emacs for as long as that takes.
+The drain takes this much from the newest end of the queued range and
+re-arms for the rest.")
 
 
 ;;; Hyperlinks (OSC 8)
@@ -485,7 +496,10 @@ Bounding the scan keeps streaming output from re-scanning the entire
 materialized scrollback on every redraw.
 Binds `inhibit-read-only' and suppresses modification hooks so the scan
 can attach text properties when called from the deferred-detection timer
-outside the redraw scope."
+outside the redraw scope.
+
+Returns the (BEGIN . END) actually covered, which the caller-supplied
+bounds widened to whole logical lines."
   (let* (;; Whole logical lines: a value the terminal split across rows is
          ;; only recognisable once the rows are joined, and starting mid-line
          ;; would let the `^' anchor below match where there is no line start.
@@ -579,7 +593,8 @@ outside the redraw scope."
                        (concat "fileref:" abs-path))
                      raw)))))))))
     (ghostel--drop-stranded-links
-     begin end matched ghostel-enable-url-detection files)))
+     begin end matched ghostel-enable-url-detection files)
+    (cons begin end)))
 
 
 ;;; thing-at-point and ffap across soft-wrapped rows
@@ -744,29 +759,51 @@ file deleted since detection falls back as well."
       (require 'ffap)
       (call-interactively #'find-file-at-point))))
 
+(defun ghostel--clear-plain-link-detection-bounds ()
+  "Drop the queued detection bounds, releasing their markers."
+  (when ghostel--plain-link-detection-begin
+    (set-marker ghostel--plain-link-detection-begin nil))
+  (when ghostel--plain-link-detection-end
+    (set-marker ghostel--plain-link-detection-end nil))
+  (setq ghostel--plain-link-detection-begin nil
+        ghostel--plain-link-detection-end nil))
+
 (defun ghostel--run-queued-plain-link-detection (buffer)
-  "Run any queued redraw-triggered plain-text link detection for BUFFER."
+  "Scan one chunk of BUFFER's queued plain-text link detection range.
+Takes `ghostel--link-detection-chunk' characters off the newest end of
+the range, so what is on screen is linkified first and a backlog is
+caught up on afterwards, then re-arms while anything is left."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
+      (setq ghostel--plain-link-detection-timer nil)
       (let ((begin ghostel--plain-link-detection-begin)
             (end ghostel--plain-link-detection-end))
-        (setq ghostel--plain-link-detection-timer nil
-              ghostel--plain-link-detection-begin nil
-              ghostel--plain-link-detection-end nil)
-        (when (and begin end (<= begin end))
-          (ghostel--detect-urls begin end))))))
+        (when (and begin end (<= (marker-position begin) (marker-position end)))
+          (let* ((stop (marker-position end))
+                 (start (max (marker-position begin)
+                             (- stop ghostel--link-detection-chunk)))
+                 ;; The scan widens to whole logical lines; resume from where
+                 ;; it really started rather than rescanning that line.
+                 (next (car (ghostel--detect-urls start stop))))
+            (if (<= next (marker-position begin))
+                (ghostel--clear-plain-link-detection-bounds)
+              (set-marker end next)
+              (setq ghostel--plain-link-detection-timer
+                    (run-with-timer ghostel-plain-link-detection-delay nil
+                                    #'ghostel--run-queued-plain-link-detection
+                                    buffer)))))))))
 
 (defun ghostel--queue-plain-link-detection (begin end)
   "Coalesce redraw-triggered plain-text link detection for BEGIN..END."
   (when (and begin end (<= begin end))
-    (setq ghostel--plain-link-detection-begin
-          (if ghostel--plain-link-detection-begin
-              (min ghostel--plain-link-detection-begin begin)
-            begin)
-          ghostel--plain-link-detection-end
-          (if ghostel--plain-link-detection-end
-              (max ghostel--plain-link-detection-end end)
-            end))
+    (if ghostel--plain-link-detection-begin
+        (when (< begin ghostel--plain-link-detection-begin)
+          (set-marker ghostel--plain-link-detection-begin begin))
+      (setq ghostel--plain-link-detection-begin (copy-marker begin)))
+    (if ghostel--plain-link-detection-end
+        (when (> end ghostel--plain-link-detection-end)
+          (set-marker ghostel--plain-link-detection-end end))
+      (setq ghostel--plain-link-detection-end (copy-marker end)))
     (unless ghostel--plain-link-detection-timer
       (if (<= ghostel-plain-link-detection-delay 0)
           (ghostel--run-queued-plain-link-detection (current-buffer))

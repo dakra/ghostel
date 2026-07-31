@@ -538,10 +538,13 @@ E.g. `compilation-mode' error loci in `ghostel-compile-view-mode'."
                                timer-args args)
                          'ghostel-test-link-timer))
                       ((symbol-function 'ghostel--redraw)
-                       (lambda (&rest _) t))
-                      ((symbol-function 'ghostel--window-anchored-p) #'ignore)
-                      ((symbol-function 'ghostel--viewport-start)
-                       (lambda () nil)))
+                       (lambda (&rest _)
+                         ;; What the real renderer publishes: the buffer
+                         ;; range it just rewrote.
+                         (setq ghostel--repainted-region
+                               (cons (point-min) (point-max)))
+                         t))
+                      ((symbol-function 'ghostel--window-anchored-p) #'ignore))
               (set-window-buffer (selected-window) buf)
               (let ((inhibit-read-only t))
                 (insert "see https://example.com here\n"))
@@ -587,10 +590,11 @@ E.g. `compilation-mode' error loci in `ghostel-compile-view-mode'."
                                timer-args args)
                          'ghostel-test-link-timer))
                       ((symbol-function 'ghostel--redraw)
-                       (lambda (&rest _) t))
-                      ((symbol-function 'ghostel--window-anchored-p) #'ignore)
-                      ((symbol-function 'ghostel--viewport-start)
-                       (lambda () nil)))
+                       (lambda (&rest _)
+                         (setq ghostel--repainted-region
+                               (cons (point-min) (point-max)))
+                         t))
+                      ((symbol-function 'ghostel--window-anchored-p) #'ignore))
               (set-window-buffer (selected-window) buf)
               (let ((inhibit-read-only t))
                 (insert "first https://first.example\n"))
@@ -690,8 +694,10 @@ E.g. `compilation-mode' error loci in `ghostel-compile-view-mode'."
                                (get-text-property url-beg 'help-echo)))))))
       (kill-buffer buf))))
 
-(ert-deftest ghostel-test-sentinel-cancels-plain-link-detection-timer ()
-  "Process exit should cancel queued plain-text link detection timers."
+(ert-deftest ghostel-test-sentinel-keeps-plain-link-detection-draining ()
+  "Process exit must not drop a partly drained link scan.
+A program that floods and then exits leaves a backlog that nothing
+will ever repaint, so the remaining ticks have to run."
   (let ((buf (generate-new-buffer " *ghostel-test-sentinel-links*")))
     (unwind-protect
         (let ((proc (make-pipe-process :name "ghostel-test-sentinel-links"
@@ -701,9 +707,13 @@ E.g. `compilation-mode' error loci in `ghostel-compile-view-mode'."
             (setq ghostel-kill-buffer-on-exit nil
                   ghostel--plain-link-detection-timer
                   (run-with-timer 60 nil #'ignore))
+            (insert "backlog\n")
+            (ghostel--queue-plain-link-detection (point-min) (point-max))
             (cl-letf (((symbol-function 'ghostel--kill-native-process) #'ignore))
               (ghostel--sentinel proc "finished\n"))
-            (should-not ghostel--plain-link-detection-timer))
+            (should ghostel--plain-link-detection-timer)
+            (should ghostel--plain-link-detection-begin)
+            (should ghostel--plain-link-detection-end))
           (when (process-live-p proc)
             (delete-process proc)))
       (when (buffer-live-p buf)
@@ -1589,6 +1599,251 @@ Off a link it falls back to `find-file-at-point'."
           (ghostel-find-file-at-point))
         (should fallback)
         (should-not opened)))))
+
+
+;;; Link detection coverage
+
+(defvar ghostel-test--link-timer nil
+  "Captured (FN . ARGS) of the pending plain-link detection tick, or nil.")
+
+(defvar ghostel-test--link-regions nil
+  "The (BEGIN . END) each drained detection tick asked for, newest first.")
+
+(defmacro ghostel-test--with-link-timers (&rest body)
+  "Run BODY with plain-link detection timers captured, not scheduled.
+BODY queues detection; `ghostel-test--drain-link-detection' then runs
+the queue to completion."
+  (declare (indent 0))
+  `(let ((ghostel-test--link-timer nil)
+         (ghostel-test--link-regions nil)
+         (ghostel-test--real-detect-urls
+          (symbol-function 'ghostel--detect-urls)))
+     (cl-letf (((symbol-function 'run-with-timer)
+                (lambda (_delay _repeat fn &rest args)
+                  (setq ghostel-test--link-timer (cons fn args))
+                  'ghostel-test-link-timer))
+               ((symbol-function 'ghostel--detect-urls)
+                (lambda (&optional begin end)
+                  (push (cons begin end) ghostel-test--link-regions)
+                  (funcall ghostel-test--real-detect-urls begin end))))
+       ,@body)))
+
+(defun ghostel-test--drain-link-detection ()
+  "Run captured plain-link detection ticks until the queue is empty.
+Return the (BEGIN . END) each tick asked for, oldest first."
+  (let ((ticks 0))
+    (while (and ghostel-test--link-timer (< ticks 500))
+      (let ((call ghostel-test--link-timer))
+        (setq ghostel-test--link-timer nil
+              ticks (1+ ticks))
+        (apply (car call) (cdr call))))
+    ;; A drain that never empties would otherwise hang the suite.
+    (should (< ticks 500)))
+  (setq ghostel-test--link-regions (nreverse ghostel-test--link-regions)))
+
+(ert-deftest ghostel-test-plain-link-detection-drains-in-chunks ()
+  "The queued scan covers its whole range across bounded ticks."
+  (let* ((file (locate-library "ghostel"))
+         (default-directory (file-name-directory file))
+         (lines 40))
+    (with-temp-buffer
+      (dotimes (i lines)
+        (insert (format "line %d see %s:42 end\n" i file)))
+      (goto-char (point-max))
+      (let ((ghostel-enable-url-detection nil)
+            (ghostel-enable-file-detection t)
+            (ghostel-plain-link-detection-delay 0.1)
+            (ghostel--link-detection-chunk 200)
+            regions)
+        (ghostel-test--with-link-timers
+          (ghostel--queue-plain-link-detection (point-min) (point-max))
+          (setq regions (ghostel-test--drain-link-detection)))
+        (should (> (length regions) 3))
+        ;; Newest end first: tick 1 covers the tail, not the whole range.
+        (should (= (cdr (car regions)) (point-max)))
+        (should (> (car (car regions)) (point-min)))
+        ;; Each tick resumes where the previous one started, walking down
+        ;; to the queued begin with no row left between two ticks.
+        (cl-loop for (this next) on regions
+                 while next
+                 do (should (<= (cdr next) (car this)))
+                    (should (< (car next) (car this))))
+        (should (= (car (car (last regions))) (point-min)))
+        (should (= lines (length (ghostel-test--link-runs))))
+        ;; And the queue released its bounds once drained.
+        (should-not ghostel--plain-link-detection-begin)
+        (should-not ghostel--plain-link-detection-end)))))
+
+(ert-deftest ghostel-test-plain-link-detection-bounds-survive-eviction ()
+  "Queued bounds follow the scrollback eviction that deletes buffer text.
+The renderer evicts whole pages off the front of the buffer between
+the redraw that queued a scan and the tick that runs it; plain
+positions queued before the deletion point at unrelated text after it."
+  (let* ((file (locate-library "ghostel"))
+         (default-directory (file-name-directory file))
+         (evicted-lines 20))
+    (with-temp-buffer
+      (dotimes (_ evicted-lines) (insert "evicted\n"))
+      (let ((link-line (point)))
+        (insert (format "see %s:42 end\n" file))
+        (insert "tail\n")
+        (goto-char (point-max))
+        (let ((ghostel-enable-url-detection nil)
+              (ghostel-enable-file-detection t)
+              (ghostel-plain-link-detection-delay 0.1))
+          (ghostel-test--with-link-timers
+            (ghostel--queue-plain-link-detection link-line (point-max))
+            ;; What `evictScrollback' does before the tick fires.
+            (delete-region (point-min) (- link-line 1))
+            (ghostel-test--drain-link-detection)))
+        (goto-char (point-min))
+        (should (search-forward (substring file 0 20) nil t))
+        (should (string-prefix-p
+                 "fileref:"
+                 (get-text-property (match-beginning 0) 'help-echo)))))))
+
+(ert-deftest ghostel-test-plain-link-detection-zero-delay-rearms-via-timer ()
+  "A zero delay re-arms the drain through a timer instead of recursing."
+  (let* ((file (locate-library "ghostel"))
+         (default-directory (file-name-directory file))
+         (lines 20))
+    (with-temp-buffer
+      (dotimes (i lines)
+        (insert (format "line %d see %s:42 end\n" i file)))
+      (goto-char (point-max))
+      (let ((ghostel-enable-url-detection nil)
+            (ghostel-enable-file-detection t)
+            (ghostel-plain-link-detection-delay 0)
+            (ghostel--link-detection-chunk 100)
+            (depth 0)
+            (max-depth 0)
+            regions)
+        (ghostel-test--with-link-timers
+          (let ((real (symbol-function 'ghostel--detect-urls)))
+            (cl-letf (((symbol-function 'ghostel--detect-urls)
+                       (lambda (&optional begin end)
+                         (setq depth (1+ depth)
+                               max-depth (max max-depth depth))
+                         (prog1 (funcall real begin end)
+                           (setq depth (1- depth))))))
+              (ghostel--queue-plain-link-detection (point-min) (point-max))
+              ;; The synchronous first tick must not have run the backlog.
+              (should ghostel-test--link-timer)
+              (setq regions (ghostel-test--drain-link-detection)))))
+        (should (> (length regions) 3))
+        (should (= 1 max-depth))
+        (should (= lines (length (ghostel-test--link-runs))))))))
+
+(ert-deftest ghostel-test-renderer-publishes-repainted-region ()
+  "The renderer publishes the buffer range it rewrote."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (_buf term 5 80 1000)
+    (let ((inhibit-read-only t))
+      (ghostel--write-vt term "one\r\ntwo\r\nthree\r\n")
+      (setq ghostel--repainted-region nil)
+      (ghostel--redraw term)
+      (let ((region ghostel--repainted-region))
+        (should (consp region))
+        (goto-char (point-min))
+        (should (search-forward "one" nil t))
+        (should (<= (car region) (match-beginning 0)))
+        (should (search-forward "three" nil t))
+        (should (>= (cdr region) (match-end 0))))
+      ;; A redraw that repaints a couple of rows publishes less than the
+      ;; whole viewport, not the `point-max'-minus-term-rows guess.
+      (setq ghostel--repainted-region nil)
+      (ghostel--write-vt term "four\r\n")
+      (ghostel--redraw term)
+      (let ((region ghostel--repainted-region))
+        (should (consp region))
+        (should (< (- (cdr region) (car region))
+                   (- (point-max) (point-min))))
+        (goto-char (point-min))
+        (should (search-forward "four" nil t))
+        (should (<= (car region) (match-beginning 0)))
+        (should (>= (cdr region) (match-end 0))))
+      ;; Nothing written, nothing dirty: the previous region is cleared
+      ;; rather than left behind for a later redraw to consume as its own.
+      (should ghostel--repainted-region)
+      (ghostel--redraw term)
+      (should-not ghostel--repainted-region))))
+
+(ert-deftest ghostel-test-flood-linkifies-rows-pushed-past-the-viewport ()
+  "Wrapped paths a flood pushed past the viewport still linkify.
+One write materializes far more rows than the terminal has, so the
+scan region can no longer be guessed from the live viewport."
+  :tags '(native)
+  (ghostel-test--with-long-path-file file
+    (let* ((uri (concat "fileref:" file ":42"))
+           (occurrences 30)
+           ;; Narrower than the path but wider than half of it, so an
+           ;; occurrence takes exactly two rows however long the name the
+           ;; temp directory contributed is.
+           (cols (- (length file) 10)))
+      (ghostel-test--with-terminal-buffer (_buf term 5 cols 2000)
+        (let ((inhibit-read-only t)
+              (default-directory (file-name-directory file))
+              (ghostel-enable-url-detection nil)
+              (ghostel-enable-file-detection t)
+              (ghostel-plain-link-detection-delay 0.1)
+              (ghostel--input-mode 'emacs))
+          ;; Too long for one row, short enough for two.
+          (should (> (+ (length file) 3) cols))
+          (should (<= (+ (length file) 3) (* 2 cols)))
+          (dotimes (i (* occurrences 10))
+            (ghostel--write-vt term
+                               (if (zerop (% i 10))
+                                   (format "%s:42\r\n" file)
+                                 (format "filler %d\r\n" i))))
+          (setq ghostel--repainted-region nil)
+          (ghostel--redraw term)
+          (ghostel-test--with-link-timers
+            (ghostel--schedule-link-detection)
+            (ghostel-test--drain-link-detection))
+          (let ((runs (seq-filter (lambda (run) (equal uri (cadr run)))
+                                  (ghostel-test--link-runs))))
+            ;; Two rows per occurrence, each carrying the whole target.
+            (should (= (* 2 occurrences) (length runs))))
+          ;; And every one of them is reachable by hyperlink navigation.
+          (goto-char (point-max))
+          (let ((ids nil))
+            (dotimes (_ occurrences)
+              (ghostel-previous-hyperlink)
+              (push (get-text-property (point) 'ghostel-link-id) ids))
+            (should (= occurrences (length (seq-uniq ids))))))))))
+
+(ert-deftest ghostel-test-pending-wrap-path-links-once-completed ()
+  "A path that exactly fills a row links up once its next row arrives.
+The row's wrap flag is only set when the terminal prints past the
+last column, which happens in a later write than the one that filled
+the row."
+  :tags '(native)
+  (ghostel-test--with-long-path-file file
+    (let* ((text (concat file ":42"))
+           (uri (concat "fileref:" file ":42"))
+           (cols 40))
+      (ghostel-test--with-terminal-buffer (_buf term 5 cols 1000)
+        (let ((inhibit-read-only t)
+              (default-directory (file-name-directory file))
+              (ghostel-enable-url-detection nil)
+              (ghostel-enable-file-detection t)
+              (ghostel-plain-link-detection-delay 0.1))
+          (should (> (length text) cols))
+          ;; Row filled exactly: pending wrap, row flag not set yet.
+          (ghostel--write-vt term (substring text 0 cols))
+          (ghostel--redraw term)
+          (ghostel--write-vt term (concat (substring text cols) "\r\ndone\r\n"))
+          (setq ghostel--repainted-region nil)
+          (ghostel--redraw term)
+          (ghostel-test--with-link-timers
+            (ghostel--schedule-link-detection)
+            (ghostel-test--drain-link-detection))
+          (let* ((runs (seq-filter (lambda (run) (equal uri (cadr run)))
+                                   (ghostel-test--link-runs)))
+                 (ids (seq-uniq (mapcar (lambda (run) (nth 2 run)) runs))))
+            ;; Split across rows, but joined into a single link.
+            (should (> (length runs) 1))
+            (should (= 1 (length ids)))))))))
 
 (provide 'ghostel-links-test)
 ;;; ghostel-links-test.el ends here

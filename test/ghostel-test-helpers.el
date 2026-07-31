@@ -31,6 +31,31 @@
            ,@body)
        (kill-buffer ,var))))
 
+(defmacro ghostel-test--with-long-path-file (var &rest body)
+  "Run BODY with VAR bound to an existing file with a long absolute name.
+A test that needs the terminal to soft-wrap a path cannot take one
+from `locate-library': its length depends on where the checkout
+lives, and CI checks out into a path short enough on Windows
+\(`D:\\a\\ghostel\\ghostel') that the name fits a 40-column row
+unwrapped.
+
+Created under `default-directory' rather than in the system temp
+directory: `ghostel-file-detection-path-regex' does not match a
+`C:' drive prefix, so a detected path resolves against whichever
+drive is current, and only a file on that drive resolves back to
+itself.  The file and the directory holding it are deleted
+afterwards."
+  (declare (indent 1))
+  `(let* ((temporary-file-directory default-directory)
+          (long-path-dir (make-temp-file "ghostel-test-longpath-" t))
+          (,var (expand-file-name (concat (make-string 48 ?a) ".txt")
+                                  long-path-dir)))
+     (unwind-protect
+         (progn
+           (with-temp-file ,var (insert "x\n"))
+           ,@body)
+       (delete-directory long-path-dir t))))
+
 (defmacro ghostel-test--with-terminal-buffer (spec &rest body)
   "Run BODY in a fresh ghostel buffer with a terminal attached.
 SPEC is (BUFFER TERM ROWS COLS SCROLLBACK).  The terminal is created

@@ -992,6 +992,12 @@ otherwise hide its cursor for whatever buffer it shows next.")
 Values match libghostty's cursor style enum: 0=bar, 1=block,
 2=underline, 3=hollow-block, or nil for hidden.")
 
+(defvar-local ghostel--repainted-region nil
+  "Buffer range the last redraw rewrote, as a (MIN . MAX) cons, or nil.
+Published by the renderer, which inserts every character of terminal
+output.  Every redraw that renders sets it: nil when it painted
+nothing, so the value never outlives the redraw that produced it.")
+
 (defvar-local ghostel--input-mode 'semi-char
   "Current input mode.
 One of `semi-char', `char', `copy', `emacs', or `line'.  See
@@ -3629,11 +3635,6 @@ EVENT is the state-change description passed by Emacs."
   (let ((buf (process-buffer process)))
     (when (buffer-live-p buf)
       (with-current-buffer buf
-        (when ghostel--plain-link-detection-timer
-          (cancel-timer ghostel--plain-link-detection-timer)
-          (setq ghostel--plain-link-detection-timer nil
-                ghostel--plain-link-detection-begin nil
-                ghostel--plain-link-detection-end nil))
         (ghostel--cancel-password-confirm-timer)
         (ghostel--spinner-stop)
         (remove-hook 'pre-redisplay-functions #'ghostel--fake-cursor-update t)
@@ -4419,14 +4420,17 @@ timer.  Hidden output remains pending until the buffer is displayed."
         (line-beginning-position)))))
 
 (defun ghostel--schedule-link-detection ()
-  "Schedule deferred plain-text link detection over the viewport.
-Falls back to `point-min' when the buffer has no viewport yet.  Covers
-plain-text URL and file:line detection; native OSC-8 hyperlink spans
-remain handled inside the renderer."
-  (when (or ghostel-enable-url-detection ghostel-enable-file-detection)
-    (ghostel--queue-plain-link-detection
-     (or (ghostel--viewport-start) (point-min))
-     (point-max))))
+  "Schedule deferred plain-text link detection over the repainted region.
+The renderer publishes the buffer range it rewrote in
+`ghostel--repainted-region', and every character of terminal output
+goes through it, so queueing that range scans each row exactly once —
+including rows a flood pushed past the viewport between two redraws.
+Covers plain-text URL and file:line detection; native OSC-8 hyperlink
+spans remain handled inside the renderer."
+  (when-let* ((region ghostel--repainted-region))
+    (setq ghostel--repainted-region nil)
+    (when (or ghostel-enable-url-detection ghostel-enable-file-detection)
+      (ghostel--queue-plain-link-detection (car region) (cdr region)))))
 
 (defun ghostel--daemon-dummy-frame-p (frame)
   "Non-nil if FRAME is the daemon's invisible initial frame.
@@ -5051,6 +5055,7 @@ spawn after initialization."
       (cancel-timer ghostel--redraw-timer))
     (when ghostel--plain-link-detection-timer
       (cancel-timer ghostel--plain-link-detection-timer))
+    (ghostel--clear-plain-link-detection-bounds)
     ;; Reinitialization may reuse an existing ghostel buffer that was in
     ;; line mode; reset it to the renderer-owned default before erasing.
     (setq buffer-read-only t)
@@ -5069,11 +5074,10 @@ spawn after initialization."
           ghostel--redraw-timer nil
           ghostel--pending-redraw nil
           ghostel--plain-link-detection-timer nil
-          ghostel--plain-link-detection-begin nil
-          ghostel--plain-link-detection-end nil
           ghostel--force-next-redraw nil
           ghostel--cursor-pos nil
-          ghostel--cursor-char-pos nil)
+          ghostel--cursor-char-pos nil
+          ghostel--repainted-region nil)
     (let* ((w (or (get-buffer-window buffer t) (selected-window)))
            (height (max 1 (or rows
                               (if (window-live-p w)
