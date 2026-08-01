@@ -535,16 +535,15 @@ destroys the grid, so commit it here or lose the output it holds."
 
 (defconst ghostel-compile--stty-flags
   (concat ghostel--default-stty " -echo")
-  "`stty' flags for the compile PTY.
-Layers `-echo' on top of `ghostel--default-stty' so we don't render
-an echoed copy of the command (which users already see in the
-header).  `sane' in the baseline turns echo on; the trailing
-`-echo' overrides it.")
+  "`stty' flags for compilation-style compile PTYs.
+Layers `-echo' on top of `ghostel--default-stty': the buffer is a
+pure log, and echoed terminal query replies (DA1, DSR, OSC color
+reports) would render as escape-sequence garbage.")
 
-(defun ghostel-compile--spawn (command buffer height width)
+(defun ghostel-compile--spawn (command buffer height width &optional interactive)
   "Spawn COMMAND in BUFFER via a PTY sized HEIGHT rows by WIDTH columns.
-Installs `ghostel--filter' and `ghostel-compile--sentinel'.  Returns
-the process.
+Installs `ghostel--filter' and `ghostel-compile--sentinel'.
+When INTERACTIVE is non-nil the PTY keeps echo on, so input typed is visible.
 
 COMMAND is passed verbatim to `shell-file-name' via
 `shell-command-switch', so multi-line scripts and shell
@@ -555,7 +554,9 @@ exec'ing the user's shell.
 For remote (TRAMP) `default-directory's, `shell-file-name' and
 `shell-command-switch' are resolved via `with-connection-local-variables'
 so the remote host's shell is used (not whatever zsh/bash path the
-local machine happens to have)."
+local machine happens to have).
+
+Returns the process."
   (let* ((remote-p (file-remote-p default-directory))
          (shell (if remote-p
                     (with-connection-local-variables shell-file-name)
@@ -566,7 +567,9 @@ local machine happens to have)."
          (wrapper
           (list "/bin/sh" "-c"
                 (concat
-                 "stty " ghostel-compile--stty-flags
+                 "stty " (if interactive
+                             ghostel--default-stty
+                           ghostel-compile--stty-flags)
                  (format " rows %d columns %d" height width)
                  " 2>/dev/null; "
                  "exec "
@@ -833,7 +836,8 @@ any other code that walks `compilation-arguments') re-runs via
              (width (max 1 (if outwin
                                (window-max-chars-per-line outwin)
                              (window-max-chars-per-line))))
-             (proc (ghostel-compile--spawn command buffer height width)))
+             (proc (ghostel-compile--spawn command buffer height width
+                                           interactive)))
         ;; Match stock `compilation-start' ordering: hook fires before
         ;; `compilation-in-progress' is updated, so hook functions can
         ;; install filter-hooks / error-regexps before the next
@@ -950,6 +954,26 @@ nothing to send keystrokes to, and a non-compile buffer has no
   (unless (and (boundp 'ghostel--process) (process-live-p ghostel--process))
     (user-error "No live process - recompile with `g' instead")))
 
+(defun ghostel-compile--set-pty-echo (enable)
+  "Flip the live compile PTY's ECHO flag to ENABLE, best-effort.
+Acts on `process-tty-name' with an out-of-band `stty'; local runs
+only.  Enabling is skipped while the tty is in non-canonical mode —
+a full-screen program owns the display then, and echoed keystrokes
+would splatter over it."
+  (when-let* ((tty (and (not (file-remote-p default-directory))
+                        (processp ghostel--process)
+                        (process-live-p ghostel--process)
+                        (process-tty-name ghostel--process))))
+    (ignore-errors
+      (call-process
+       "/bin/sh" nil nil nil "-c"
+       (if enable
+           (format "s=$(stty -a < %s 2>/dev/null) || exit 0; \
+case \"$s\" in *-icanon*) ;; *) stty echo < %s 2>/dev/null ;; esac"
+                   (shell-quote-argument tty) (shell-quote-argument tty))
+         (format "stty -echo < %s 2>/dev/null"
+                 (shell-quote-argument tty)))))))
+
 (defun ghostel-compile-switch-to-interactive ()
   "Switch the current `ghostel-compile' run to interactive mode.
 `ghostel-semi-char-mode-map' is restored so keystrokes reach the running
@@ -969,6 +993,12 @@ Bound to \\[ghostel-compile-switch-to-interactive] in
     (use-local-map ghostel-semi-char-mode-map)
     (setq ghostel--inhibit-insert-forwarding nil)
     (ghostel--sync-read-only)
+    ;; Turn on PTY echo so input typed at a read prompt is visible.
+    ;; Skipped when the cursor row looks like a password prompt: the
+    ;; pty state cannot distinguish a program-set `-echo' from the
+    ;; spawn default, but the prompt text can.
+    (unless (ghostel--password-regex-matches-cursor-row-p)
+      (ghostel-compile--set-pty-echo t))
     ;; Place point at the VT cursor so the user's first keystroke
     ;; lands at the prompt, not at wherever they happened to be
     ;; navigating in the read-only buffer.
@@ -999,6 +1029,7 @@ Bound to \\[ghostel-compile-switch-to-compilation-style] in
     (use-local-map ghostel-compile-view-mode-map)
     (setq ghostel--inhibit-insert-forwarding t)
     (ghostel--sync-read-only)
+    (ghostel-compile--set-pty-echo nil)
     (ghostel-compile--set-mode-line-running)
     (when ghostel-compile-debug
       (message "ghostel-compile: switched to compilation-style"))))

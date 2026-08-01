@@ -1052,7 +1052,7 @@ custom MODE / NAME-FUNCTION / HIGHLIGHT-REGEXP survive a revert."
               ((symbol-function 'ghostel-compile--render-header-live)
                #'ignore)
               ((symbol-function 'ghostel-compile--spawn)
-               (lambda (_cmd buf _h _w)
+               (lambda (_cmd buf _h _w &optional _interactive)
                  (let ((p (ghostel-test--dummy-process
                            "ghostel-test-args" buf)))
                    (set-process-sentinel p #'ignore)
@@ -1087,7 +1087,7 @@ custom MODE / NAME-FUNCTION / HIGHLIGHT-REGEXP survive a revert."
               ((symbol-function 'ghostel-compile--render-header-live)
                #'ignore)
               ((symbol-function 'ghostel-compile--spawn)
-               (lambda (_cmd buf _h _w)
+               (lambda (_cmd buf _h _w &optional _interactive)
                  (let ((p (ghostel-test--dummy-process "ghostel-test-args2" buf)))
                    (set-process-sentinel p #'ignore)
                    (with-current-buffer buf (setq ghostel--process p))
@@ -1374,6 +1374,193 @@ bytes through the process to confirm they land in the buffer."
         (let ((kill-buffer-query-functions nil))
           (kill-buffer buf-name))))))
 
+(ert-deftest ghostel-test-compile-interactive-echoes-typed-input ()
+  "Interactive runs must echo typed input at a read prompt.
+The PTY of an interactive run keeps ECHO on, so bytes typed at a
+canonical-mode prompt (`read', `git push' username, ...) render in
+the buffer as the user types — before the program responds.  The
+script blocks in `read' until it sees a newline, so the typed text
+appearing in the terminal can only come from tty echo, not from
+program output."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let* ((buf-name "*ghostel-test-interactive-echo*")
+         ;; Markers are assembled from fragments so the command line the
+         ;; header echoes never contains the contiguous marker text.
+         (script (concat "printf 'REA%s\\n' DY; IFS= read -r line; "
+                         "printf 'GOT[%s]\\n' \"$line\""))
+         (shell-file-name "/bin/sh")
+         (inhibit-message t)
+         (save-some-buffers-default-predicate (lambda () nil))
+         (ghostel-compile-finished-major-mode nil))
+    (when (get-buffer buf-name)
+      (let ((kill-buffer-query-functions nil)) (kill-buffer buf-name)))
+    (unwind-protect
+        (let ((buf (ghostel-compile--start script buf-name
+                                           default-directory nil t)))
+          (with-current-buffer buf
+            (ghostel-test--wait-for
+             ghostel--process
+             (lambda ()
+               (string-match-p "READY"
+                               (ghostel--copy-all-text ghostel--term))))
+            (process-send-string ghostel--process "vqz7ek")
+            ;; No newline sent yet — `read' is still blocked, so this
+            ;; is the kernel echo, not the program.
+            (ghostel-test--wait-for
+             ghostel--process
+             (lambda ()
+               (string-match-p "vqz7ek"
+                               (ghostel--copy-all-text ghostel--term))))
+            (should-not (string-match-p
+                         "GOT\\[vqz7ek" (ghostel--copy-all-text ghostel--term)))
+            (process-send-string ghostel--process "\n")
+            (ghostel-test--wait-for
+             ghostel--process
+             (lambda () ghostel-compile--finalized) 10)
+            (should (string-match-p "GOT\\[vqz7ek\\]" (buffer-string)))))
+      (when (get-buffer buf-name)
+        (let ((kill-buffer-query-functions nil)) (kill-buffer buf-name))))))
+
+(ert-deftest ghostel-test-compile-switch-to-interactive-enables-echo ()
+  "`ghostel-compile-switch-to-interactive' turns on PTY echo mid-run.
+Compilation-style runs spawn with ECHO off; the toggle flips it on
+out-of-band so input typed at an unexpected prompt is visible."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let* ((buf-name "*ghostel-test-toggle-echo*")
+         ;; Markers are assembled from fragments so the command line the
+         ;; header echoes never contains the contiguous marker text.
+         (script (concat "printf 'REA%s\\n' DY; IFS= read -r line; "
+                         "printf 'GOT[%s]\\n' \"$line\""))
+         (shell-file-name "/bin/sh")
+         (inhibit-message t)
+         (save-some-buffers-default-predicate (lambda () nil))
+         (ghostel-compile-finished-major-mode nil))
+    (when (get-buffer buf-name)
+      (let ((kill-buffer-query-functions nil)) (kill-buffer buf-name)))
+    (unwind-protect
+        (let ((buf (ghostel-compile--start script buf-name
+                                           default-directory nil nil)))
+          (with-current-buffer buf
+            (ghostel-test--wait-for
+             ghostel--process
+             (lambda ()
+               (string-match-p "READY"
+                               (ghostel--copy-all-text ghostel--term))))
+            (ghostel-compile-switch-to-interactive)
+            (process-send-string ghostel--process "kq9zvh")
+            (ghostel-test--wait-for
+             ghostel--process
+             (lambda ()
+               (string-match-p "kq9zvh"
+                               (ghostel--copy-all-text ghostel--term))))
+            (process-send-string ghostel--process "\n")
+            (ghostel-test--wait-for
+             ghostel--process
+             (lambda () ghostel-compile--finalized) 10)
+            (should (string-match-p "GOT\\[kq9zvh\\]" (buffer-string)))))
+      (when (get-buffer buf-name)
+        (let ((kill-buffer-query-functions nil)) (kill-buffer buf-name))))))
+
+(ert-deftest ghostel-test-compile-switch-to-interactive-echo-raw-guard ()
+  "The echo toggle must not force ECHO on while the tty is raw.
+A full-screen program (htop, less) owns the display in non-canonical
+mode; echoed keystrokes would splatter over it.
+`ghostel-compile--set-pty-echo' reads the tty state first and skips
+the flip when ICANON is off."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let* ((buf-name "*ghostel-test-toggle-echo-raw*")
+         ;; Enter raw mode like a TUI would, then block on a 1-byte read.
+         ;; The marker is assembled from fragments so the command line the
+         ;; header echoes never contains the contiguous marker text.
+         (script (concat "stty raw -echo; printf 'RAWREA%s\\n' DY; "
+                         "dd bs=1 count=1 2>/dev/null"))
+         (shell-file-name "/bin/sh")
+         (inhibit-message t)
+         (save-some-buffers-default-predicate (lambda () nil))
+         (ghostel-compile-finished-major-mode nil))
+    (when (get-buffer buf-name)
+      (let ((kill-buffer-query-functions nil)) (kill-buffer buf-name)))
+    (unwind-protect
+        (let ((buf (ghostel-compile--start script buf-name
+                                           default-directory nil nil)))
+          (with-current-buffer buf
+            (ghostel-test--wait-for
+             ghostel--process
+             (lambda ()
+               (string-match-p "RAWREADY"
+                               (ghostel--copy-all-text ghostel--term))))
+            (ghostel-compile-switch-to-interactive)
+            ;; The tty must still have ECHO off: read its state
+            ;; out-of-band, the same way the toggle does.
+            (let ((state
+                   (with-output-to-string
+                     (call-process
+                      "/bin/sh" nil standard-output nil "-c"
+                      (format "stty -a < %s"
+                              (shell-quote-argument
+                               (process-tty-name ghostel--process)))))))
+              (should (string-match-p "-icanon" state))
+              (should (string-match-p "-echo[ \t\n;]" state)))
+            ;; Unblock `dd' so the run can finish.
+            (process-send-string ghostel--process "x")
+            (ghostel-test--wait-for
+             ghostel--process
+             (lambda () ghostel-compile--finalized) 10)))
+      (when (get-buffer buf-name)
+        (let ((kill-buffer-query-functions nil)) (kill-buffer buf-name))))))
+
+(ert-deftest ghostel-test-compile-switch-to-interactive-password-prompt-no-echo ()
+  "The echo toggle must not force ECHO while a password prompt is on screen.
+The pty state cannot distinguish a program-set `-echo' (ssh, sudo,
+`read -s') from the compile spawn default, so the toggle matches the
+cursor row against `ghostel-password-prompt-regex' instead and leaves
+ECHO alone on a hit — typed secrets must not render into the buffer."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let* ((buf-name "*ghostel-test-toggle-echo-password*")
+         ;; The prompt is assembled from fragments so the command line the
+         ;; header echoes never contains the contiguous prompt text.
+         (script "printf 'Pass%s: ' word; IFS= read -r line")
+         (shell-file-name "/bin/sh")
+         (inhibit-message t)
+         (save-some-buffers-default-predicate (lambda () nil))
+         (ghostel-compile-finished-major-mode nil))
+    (when (get-buffer buf-name)
+      (let ((kill-buffer-query-functions nil)) (kill-buffer buf-name)))
+    (unwind-protect
+        (let ((buf (ghostel-compile--start script buf-name
+                                           default-directory nil nil)))
+          (with-current-buffer buf
+            (ghostel-test--wait-for
+             ghostel--process
+             (lambda ()
+               (string-match-p "Password:"
+                               (ghostel--copy-all-text ghostel--term))))
+            ;; The render loop must have caught up so the cursor row
+            ;; the toggle inspects shows the prompt.
+            (ghostel--redraw-now buf)
+            (ghostel-compile-switch-to-interactive)
+            ;; Interactive mode is on, but the tty keeps ECHO off.
+            (should ghostel-compile--interactive)
+            (let ((state
+                   (with-output-to-string
+                     (call-process
+                      "/bin/sh" nil standard-output nil "-c"
+                      (format "stty -a < %s"
+                              (shell-quote-argument
+                               (process-tty-name ghostel--process)))))))
+              (should (string-match-p "-echo[ \t\n;]" state)))
+            ;; Unblock `read' so the run can finish.
+            (process-send-string ghostel--process "\n")
+            (ghostel-test--wait-for
+             ghostel--process
+             (lambda () ghostel-compile--finalized) 10)))
+      (when (get-buffer buf-name)
+        (let ((kill-buffer-query-functions nil)) (kill-buffer buf-name))))))
+
 (ert-deftest ghostel-test-compile-multiline-end-to-end ()
   "A multi-line shell paragraph must run intact under `ghostel-compile'.
 The paragraph must land in the buffer unmangled and the run must
@@ -1452,7 +1639,7 @@ dropping what `ghostel--init-buffer' seeded."
                     (lambda (&rest _) (push 'render-header call-order)))
                    (ghostel--cursor-pos (cons 0 0))
                    ((symbol-function 'ghostel-compile--spawn)
-                    (lambda (_cmd buf h w)
+                    (lambda (_cmd buf h w &optional _interactive)
                       (push 'spawn call-order)
                       (push (list h w) spawn-calls)
                       (let ((p (ghostel-test--dummy-process
@@ -1515,7 +1702,7 @@ output window exists — leaving the sizing `prepare-buffer' seeded."
                     #'ignore)
                    (ghostel--cursor-pos (cons 0 0))
                    ((symbol-function 'ghostel-compile--spawn)
-                    (lambda (_cmd buf _h _w)
+                    (lambda (_cmd buf _h _w &optional _interactive)
                       (let ((p (ghostel-test--dummy-process
                                 "ghostel-test-nowin-fake" buf)))
                         (set-process-sentinel p #'ignore)
