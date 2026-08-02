@@ -4,6 +4,51 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.49.0] — 2026-08-02
+
+### Fixed
+- Plain-text file/URL link detection now scans the region the renderer
+  actually repainted instead of the last screenful.  A flood of output
+  (a compiler, a test runner) materializes far more rows than one
+  viewport between scans, and everything above the final screen was
+  never scanned: soft-wrapped paths there carried no highlight, were
+  not clickable, and were invisible to `ghostel-previous-hyperlink`.
+  Large backlogs drain in chunks from the newest end so on-screen rows
+  are linkified first and a multi-megabyte redraw cannot block Emacs,
+  and the row the cursor leaves is rescanned, so the last line of a
+  command with no trailing newline gets its link once the prompt
+  returns.  Soft-wrap joining also restarts its row limit at every
+  hard newline; regions holding more than 50 wrapped lines used to
+  stop joining at each 50th, losing that line's link.  Fixes
+  [#582](https://github.com/dakra/ghostel/issues/582).
+- Redraws that rebuild the whole buffer — changing `ghostel-bold-color`,
+  the foreign-insert repair, line-mode teardown — no longer strip
+  detected file/URL links for good; they queue a rescan of what they
+  rebuilt.  `ghostel-compile` drains detection synchronously before
+  finalizing, so a compile buffer keeps the links in the tail of its
+  output.
+- `buffer-face-mode`, `buffer-face-set`, and `variable-pitch-mode` now
+  take effect in ghostel buffers and resize the terminal grid to the
+  new font.  The `ghostel-default` remapping used to mask any face-name
+  remapping added after it, and the font change never triggered a
+  window-size recalculation, so the shell kept the old row/column
+  count.  Fixes [#588](https://github.com/dakra/ghostel/issues/588).
+- The cell pixel dimensions reported to programs (XTWINOPS CSI 14/16 t)
+  and used for kitty graphics sizing now come from the buffer's actual
+  font rather than the frame's, so `text-scale-mode`,
+  `buffer-face-mode`, or a `ghostel-default` `:height` is reflected in
+  what programs see, and image placements scale with the text.
+- `ghostel-compile` no longer runs the compilation with a 1×1 px cell
+  size: reconciling the VT to the output window dropped the cell
+  dimensions, corrupting CSI 14/16 t replies and kitty graphics
+  geometry until the first manual window resize.
+- Interactive `ghostel-compile` runs now echo typed input.  The PTY
+  spawns with echo enabled for interactive runs, and the line-mode
+  toggle flips it on the live PTY mid-run — except while a full-screen
+  program owns the display or the cursor row matches
+  `ghostel-password-prompt-regex`.  Compilation-style runs keep echo
+  off so terminal query replies don't render as garbage in the log.
+
 ## [0.48.0] — 2026-07-29
 
 ### Added
