@@ -325,9 +325,35 @@ jobs:
         run: |
           touch ghostel-module.dll
           git clone --depth 1 https://github.com/emacs-compat/compat.git /tmp/compat
-          make \
-            EMACS="timeout 60s emacs" \
-            EMACSFLAGS="-L /tmp/compat" \
+          # Neither stream of this emacs reaches the job log, even
+          # redirected to a file, so ERT results would be invisible.  Have
+          # it write its own *Messages* out through elisp instead, and echo
+          # that from the wrapper below.
+          cat > /tmp/ert-capture.el <<'CAPTURE'
+          (add-hook 'kill-emacs-hook
+                    (lambda ()
+                      (let ((f (getenv "GHOSTEL_ERT_LOG")))
+                        (when f
+                          (write-region (with-current-buffer (messages-buffer)
+                                          (buffer-string))
+                                        nil f 'append 'silent)))))
+          CAPTURE
+          cat > /tmp/emacs-capture.sh <<'WRAPPER'
+          #!/bin/sh
+          GHOSTEL_ERT_LOG=$(mktemp)
+          export GHOSTEL_ERT_LOG
+          timeout 60s emacs "$@"
+          status=$?
+          cat "$GHOSTEL_ERT_LOG"
+          rm -f "$GHOSTEL_ERT_LOG"
+          exit $status
+          WRAPPER
+          chmod +x /tmp/emacs-capture.sh
+          # `-k': the test files run serially here, so without it a failing
+          # one hides every file after it.
+          make -k \
+            EMACS=/tmp/emacs-capture.sh \
+            EMACSFLAGS="-L /tmp/compat -l /tmp/ert-capture.el" \
             test-native
 
   test-hypothesis-cases:
