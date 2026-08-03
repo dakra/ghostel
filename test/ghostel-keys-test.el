@@ -823,31 +823,74 @@ survive a rebuild."
       (customize-set-variable 'ghostel-keymap-exceptions orig))))
 
 (ert-deftest ghostel-test-send-next-key-control-x ()
-  "Send-next-key sends the prefix key as raw byte 24 (not intercepted by Emacs)."
-  (let (sent-key)
-    (cl-letf (((symbol-function 'ghostel--send-string)
-               (lambda (str) (setq sent-key str))))
+  "Send-next-key routes the prefix key through the encoder as ctrl+x."
+  (let (captured-key captured-mods
+                     (ghostel--term 'fake))
+    (cl-letf (((symbol-function 'ghostel--send-encoded)
+               (lambda (key mods &optional _utf8)
+                 (setq captured-key key captured-mods mods))))
       (let ((unread-command-events (list ?\C-x)))
         (ghostel-send-next-key))
-      (should (equal (string 24) sent-key)))))
+      (should (equal "x" captured-key))
+      (should (equal "ctrl" captured-mods)))))
 
 (ert-deftest ghostel-test-send-next-key-control-h ()
-  "Send-next-key sends the help key as raw byte 8."
-  (let (sent-key)
-    (cl-letf (((symbol-function 'ghostel--send-string)
-               (lambda (str) (setq sent-key str))))
+  "Send-next-key routes the help key through the encoder as ctrl+h."
+  (let (captured-key captured-mods
+                     (ghostel--term 'fake))
+    (cl-letf (((symbol-function 'ghostel--send-encoded)
+               (lambda (key mods &optional _utf8)
+                 (setq captured-key key captured-mods mods))))
       (let ((unread-command-events (list ?\C-h)))
         (ghostel-send-next-key))
-      (should (equal (string 8) sent-key)))))
+      (should (equal "h" captured-key))
+      (should (equal "ctrl" captured-mods)))))
 
 (ert-deftest ghostel-test-send-next-key-regular-char ()
-  "Send-next-key sends a regular character as-is."
-  (let (sent-key)
-    (cl-letf (((symbol-function 'ghostel--send-string)
-               (lambda (str) (setq sent-key str))))
+  "Send-next-key routes a regular character through the encoder."
+  (let (captured-key captured-mods
+                     (ghostel--term 'fake))
+    (cl-letf (((symbol-function 'ghostel--send-encoded)
+               (lambda (key mods &optional _utf8)
+                 (setq captured-key key captured-mods mods))))
       (let ((unread-command-events (list ?a)))
         (ghostel-send-next-key))
-      (should (equal "a" sent-key)))))
+      (should (equal "a" captured-key))
+      (should (equal "" captured-mods)))))
+
+(ert-deftest ghostel-test-send-next-key-c0-bytes ()
+  "Send-next-key maps raw C0 bytes to functional keys via the encoder.
+A TTY delivers Enter/Tab/ESC as 13/9/27; they must encode as the
+functional key, not as a ctrl chord, and the escape hatch must not
+inject raw bytes a kitty-protocol child cannot parse."
+  (dolist (case '((?\e "escape" "")
+                  (?\r "return" "")
+                  (?\t "tab" "")
+                  (127 "backspace" "")
+                  (?\C-c "c" "ctrl")))
+    (let (encoded raw)
+      (cl-letf (((symbol-function 'ghostel--send-encoded)
+                 (lambda (key mods &optional _utf8)
+                   (setq encoded (cons key mods))))
+                ((symbol-function 'ghostel--send-string)
+                 (lambda (str) (setq raw str))))
+        (let ((unread-command-events (list (car case))))
+          (ghostel-send-next-key))
+        (should (equal (cons (nth 1 case) (nth 2 case)) encoded))
+        (should-not raw)))))
+
+(ert-deftest ghostel-test-send-next-key-non-ascii-utf8 ()
+  "Send-next-key falls back to UTF-8 bytes for non-ASCII characters."
+  (let (encoded raw)
+    (cl-letf (((symbol-function 'ghostel--send-encoded)
+               (lambda (key mods &optional _utf8)
+                 (setq encoded (cons key mods))))
+              ((symbol-function 'ghostel--send-string)
+               (lambda (str) (setq raw str))))
+      (let ((unread-command-events (list ?ä)))
+        (ghostel-send-next-key))
+      (should-not encoded)
+      (should (equal (encode-coding-string "ä" 'utf-8) raw)))))
 
 (ert-deftest ghostel-test-send-next-key-meta-x ()
   "Send-next-key routes meta-x through the encoder with meta modifier."
@@ -1103,6 +1146,33 @@ External packages may still call the old internal name."
     (ghostel--define-terminal-keys map)
     (should-not (eq (lookup-key map (kbd "ESC ESC"))
                     #'ghostel--send-event))))
+
+(ert-deftest ghostel-test-event-key-spec ()
+  "`ghostel--event-key-spec' decodes events into encoder key/mod pairs."
+  ;; Raw C0 bytes for RET/TAB/ESC map to the functional key, ctrl dropped.
+  (should (equal '("return" . "") (ghostel--event-key-spec ?\r)))
+  (should (equal '("tab" . "") (ghostel--event-key-spec ?\t)))
+  (should (equal '("escape" . "") (ghostel--event-key-spec ?\e)))
+  ;; Other C0 chars demodify to ctrl+base.
+  (should (equal '("a" . "ctrl") (ghostel--event-key-spec ?\C-a)))
+  (should (equal '("@" . "ctrl") (ghostel--event-key-spec ?\C-@)))
+  ;; TTY backspace byte.
+  (should (equal '("backspace" . "") (ghostel--event-key-spec 127)))
+  ;; Plain and shifted ASCII.
+  (should (equal '("q" . "") (ghostel--event-key-spec ?q)))
+  (should (equal '(" " . "") (ghostel--event-key-spec ?\s)))
+  (should (equal '("A" . "shift")
+                 (ghostel--event-key-spec (event-convert-list '(shift ?a)))))
+  ;; Modified keys and function-key symbols.
+  (should (equal '("x" . "meta") (ghostel--event-key-spec ?\M-x)))
+  (should (equal '("a" . "ctrl,meta") (ghostel--event-key-spec ?\C-\M-a)))
+  (should (equal '("f5" . "") (ghostel--event-key-spec 'f5)))
+  (should (equal '("up" . "ctrl") (ghostel--event-key-spec 'C-up)))
+  ;; META adds meta for the TTY ESC-prefix delivery, without doubling.
+  (should (equal '("x" . "meta") (ghostel--event-key-spec ?x t)))
+  (should (equal '("x" . "meta") (ghostel--event-key-spec ?\M-x t)))
+  ;; Non-ASCII characters have no encoder representation.
+  (should-not (ghostel--event-key-spec ?ä)))
 
 (provide 'ghostel-keys-test)
 ;;; ghostel-keys-test.el ends here

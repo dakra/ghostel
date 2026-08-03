@@ -1462,48 +1462,19 @@ Drives the `emulation-mode-map-alists' entry that makes
 This is an escape hatch for sending keys that are normally
 intercepted by Emacs (e.g., interrupt or prefix keys).
 Uses `read-event' so that prefix keys return immediately instead
-of waiting for a continuation keystroke."
+of waiting for a continuation keystroke.  The event goes through
+the terminal's key encoder, so a child that enabled the kitty
+keyboard protocol receives the protocol-correct sequence."
   (interactive)
-  (let ((event (read-event "Send key: ")))
+  (let* ((event (read-event "Send key: "))
+         (spec (ghostel--event-key-spec event)))
     (cond
-     ;; Control character (C-@=0, C-a=1 through C-_=31)
-     ((and (integerp event) (<= event 31))
-      (ghostel--send-string (string event)))
-     ;; ASCII (32-127)
-     ((and (integerp event) (<= event 127))
-      (ghostel--send-string (string event)))
+     (spec
+      (ghostel--send-encoded (car spec) (cdr spec)))
      ;; Non-ASCII character without modifier bits — send as UTF-8
      ((and (integerp event) (< event #x400000))
       (ghostel--send-string (encode-coding-string (string event) 'utf-8)))
-     ;; Modified key (M-x, C-M-a, etc.) or function key — use encoder
-     (t
-      (let* ((base (event-basic-type event))
-             (mods (event-modifiers event))
-             (key-name (cond
-                        ((eq base 'backtab) "tab")
-                        ((integerp base)
-                         (and (< base 128) (string base)))
-                        ((eq base 'deletechar) "delete")
-                        ((and base (symbolp base)) (symbol-name base))
-                        ((and (null base) (symbolp event))
-                         (replace-regexp-in-string
-                          "\\`\\(?:[CMSHs]-\\)*" "" (symbol-name event)))
-                        (t nil)))
-             (mods (if (eq base 'backtab) (cons 'shift mods) mods))
-             (mod-str (mapconcat
-                       #'identity
-                       (delq nil
-                             (mapcar
-                              (lambda (m)
-                                (pcase m
-                                  ('shift "shift") ('control "ctrl")
-                                  ('meta "meta") ('alt "alt")
-                                  ('hyper "hyper") ('super "super")))
-                              mods))
-                       ",")))
-        (if key-name
-            (ghostel--send-encoded key-name mod-str)
-          (message "ghostel: unrecognized key %S" event)))))))
+     (t (message "ghostel: unrecognized key %S" event)))))
 
 (defun ghostel--send-string (string)
   "Send STRING as raw bytes to the terminal's PTY.
@@ -1622,23 +1593,13 @@ Returns the sequence string, or nil for unknown keys."
                 (encode-coding-string (string char) 'utf-8))))
     (ghostel--send-string str)))
 
-(defun ghostel--send-event ()
-  "Send the current key event to the terminal via the key encoder.
-Extracts the base key name and modifiers from `last-command-event'
-and routes through the ghostty key encoder, which respects terminal
-modes (application cursor keys, Kitty keyboard protocol, etc.).
-
-In TTY Emacs, `M-<key>' arrives as two events (ESC then <key>) via
-`esc-map'; `last-command-event' is just <key> and has no meta bit.
-Detect that case via `this-command-keys-vector' and re-inject meta."
-  (interactive)
-  (ghostel--on-user-input)
-  (let* ((event last-command-event)
-         (keys (this-command-keys-vector))
-         (via-esc (and (> (length keys) 1) (eq (aref keys 0) 27)))
-         (base (event-basic-type event))
+(defun ghostel--event-key-spec (event &optional meta)
+  "Decode EVENT into a (KEY-NAME . MOD-STRING) cons for the key encoder.
+Non-nil META adds the meta modifier unless EVENT already carries it.
+Returns nil when EVENT has no encoder representation."
+  (let* ((base (event-basic-type event))
          (mods (event-modifiers event))
-         (mods (if (and via-esc (not (memq 'meta mods)))
+         (mods (if (and meta (not (memq 'meta mods)))
                    (cons 'meta mods)
                  mods))
          ;; Raw C0 bytes for RET/TAB/ESC are ambiguous with C-m/C-i/C-[
@@ -1678,14 +1639,33 @@ Detect that case via `this-command-keys-vector' and re-inject meta."
          ;; backtab needs shift added back since it's baked into the name
          (mods (if (eq base 'backtab) (cons 'shift mods) mods))
          (mod-str (mapconcat
-                   (lambda (m)
-                     (pcase m
-                       ('shift "shift") ('control "ctrl")
-                       ('meta "meta") ('hyper "hyper")
-                       ('super "super") (_ nil)))
-                   mods ",")))
-    (when key-name
-      (ghostel--send-encoded key-name mod-str))))
+                   #'identity
+                   (delq nil
+                         (mapcar (lambda (m)
+                                   (pcase m
+                                     ('shift "shift") ('control "ctrl")
+                                     ('meta "meta") ('alt "alt")
+                                     ('hyper "hyper") ('super "super")))
+                                 mods))
+                   ",")))
+    (when key-name (cons key-name mod-str))))
+
+(defun ghostel--send-event ()
+  "Send the current key event to the terminal via the key encoder.
+Routes `last-command-event' through the ghostty key encoder, which
+respects terminal modes (application cursor keys, Kitty keyboard
+protocol, etc.).
+
+In TTY Emacs, `M-<key>' arrives as two events (ESC then <key>) via
+`esc-map'; `last-command-event' is just <key> and has no meta bit.
+Detect that case via `this-command-keys-vector' and re-inject meta."
+  (interactive)
+  (ghostel--on-user-input)
+  (let* ((keys (this-command-keys-vector))
+         (via-esc (and (> (length keys) 1) (eq (aref keys 0) 27)))
+         (spec (ghostel--event-key-spec last-command-event via-esc)))
+    (when spec
+      (ghostel--send-encoded (car spec) (cdr spec)))))
 
 
 ;;; Programmatic insert forwarding
