@@ -941,5 +941,18 @@ External packages may still call the old internal name."
   (with-temp-buffer
     (should-error (ghostel-paste-string "x") :type 'user-error)))
 
+(ert-deftest ghostel-test-send-escape ()
+  "`ghostel-send-escape' routes Escape through the mode-aware encoder,
+so the encoder emits CSI-u under the Kitty keyboard protocol and a bare
+ESC otherwise."
+  (let (captured-key captured-mods)
+    (cl-letf (((symbol-function 'ghostel--on-user-input) #'ignore)
+              ((symbol-function 'ghostel--send-encoded)
+               (lambda (key mods &optional _utf8)
+                 (setq captured-key key captured-mods mods))))
+      (ghostel-send-escape)
+      (should (equal "escape" captured-key))
+      (should (equal "" captured-mods)))))
+
 (provide 'ghostel-keys-test)
 ;;; ghostel-keys-test.el ends here
