@@ -1806,6 +1806,19 @@ overlay clears the way \\`keyboard-quit' would in other buffers."
   (deactivate-mark)
   (ghostel--send-encoded "g" "ctrl"))
 
+(defun ghostel-send-escape ()
+  "Send Escape to the terminal, encoded for its current keyboard mode.
+Routed through the key encoder, so it is `\\e[27u' when the foreground
+program has the Kitty keyboard protocol on and a bare `\\e' otherwise.
+
+Useful under TTY Emacs, where a lone Esc is claimed as the Meta prefix
+and never reaches the terminal, so \"Esc to close\" in an agent's modal
+does nothing.  Bind this to a reachable key to send one deliberately.
+Under GUI Emacs the Esc key already works and this is not needed."
+  (interactive)
+  (ghostel--on-user-input)
+  (ghostel--send-encoded "escape" ""))
+
 
 ;;; Paste / yank
 
