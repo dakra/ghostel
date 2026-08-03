@@ -1806,6 +1806,84 @@ overlay clears the way \\`keyboard-quit' would in other buffers."
   (deactivate-mark)
   (ghostel--send-encoded "g" "ctrl"))
 
+
+;;; Lone Escape under TTY Emacs
+
+;; In a TTY, Emacs claims the ESC byte as the Meta prefix, so a lone Esc
+;; never reaches ghostel's `<escape>' binding and is lost.  `ghostel-tty-
+;; escape-mode' translates a bare ESC into the `escape' event so it flows
+;; through the normal encoder, using the same input-decode trick as
+;; `evil-esc-mode'.  Off by default because of the Meta-prefix latency.
+
+(defcustom ghostel-tty-escape-delay 0.01
+  "Seconds to wait before treating a lone TTY Escape as the `escape' key.
+Used by `ghostel-tty-escape-mode'.  A bare ESC not followed by more input
+within this window is delivered as `escape'; a longer press that is
+really the Meta prefix or a CSI/SS3 sequence is left alone.  Mirrors
+`evil-esc-delay': larger is more tolerant of slow links but adds that
+much latency to \\`M-' keys inside ghostel buffers."
+  :type 'number
+  :group 'ghostel)
+
+(defun ghostel--tty-escape (map)
+  "Decode a lone TTY Escape into the `escape' event inside ghostel buffers.
+Return [escape] only when the keys read so far are exactly ESC, the
+current buffer is a ghostel terminal accepting input, and no further byte
+arrives within `ghostel-tty-escape-delay' — so Meta (ESC+key) and
+ESC-[/ESC-O function-key sequences still decode through MAP unchanged."
+  (if (and (derived-mode-p 'ghostel-mode)
+           (ghostel--terminal-input-mode-p)
+           (equal (this-single-command-keys) [?\e])
+           (sit-for ghostel-tty-escape-delay))
+      [escape]
+    map))
+
+(defun ghostel--tty-escape-init (frame)
+  "Install the lone-Escape decoder on FRAME's terminal, once per terminal.
+A no-op on graphical terminals, where Esc already arrives as `escape'."
+  (with-selected-frame frame
+    (let ((term (frame-terminal frame)))
+      (when (and (eq t (terminal-live-p term))      ; text terminal only
+                 (not (terminal-parameter term 'ghostel--tty-esc-map)))
+        (let ((esc-map (lookup-key input-decode-map [?\e])))
+          (set-terminal-parameter term 'ghostel--tty-esc-map esc-map)
+          (define-key input-decode-map [?\e]
+            `(menu-item "" ,esc-map :filter ,#'ghostel--tty-escape)))))))
+
+(defun ghostel--tty-escape-deinit (frame)
+  "Undo `ghostel--tty-escape-init' for FRAME's terminal."
+  (with-selected-frame frame
+    (let ((term (frame-terminal frame)))
+      (when (terminal-live-p term)
+        (let ((esc-map (terminal-parameter term 'ghostel--tty-esc-map)))
+          (when esc-map (define-key input-decode-map [?\e] esc-map)))
+        (set-terminal-parameter term 'ghostel--tty-esc-map nil)))))
+
+;;;###autoload
+(define-minor-mode ghostel-tty-escape-mode
+  "Make a lone Escape work in ghostel buffers under TTY Emacs.
+
+Off by default.  In a TTY, Emacs claims the ESC byte as the Meta prefix,
+so a bare Escape never reaches ghostel and \"Esc to close\" in a terminal
+program (such as an agent's modal) does nothing.  When this global mode
+is on, a lone ESC that is not immediately followed by more input is
+delivered as the `escape' event and forwarded through ghostel's key
+encoder (`\\e[27u' under the Kitty keyboard protocol, `\\e' otherwise),
+while Meta keys and function-key sequences keep decoding normally.
+
+The cost is `ghostel-tty-escape-delay' latency on the Meta prefix inside
+ghostel terminal buffers, which is why it is opt-in.  Uses the same
+`input-decode-map' technique as `evil-esc-mode', and is a no-op under GUI
+Emacs, where the Esc key already works."
+  :global t
+  :group 'ghostel
+  (if ghostel-tty-escape-mode
+      (progn
+        (add-hook 'after-make-frame-functions #'ghostel--tty-escape-init)
+        (mapc #'ghostel--tty-escape-init (frame-list)))
+    (remove-hook 'after-make-frame-functions #'ghostel--tty-escape-init)
+    (mapc #'ghostel--tty-escape-deinit (frame-list))))
+
 
 ;;; Paste / yank
 
