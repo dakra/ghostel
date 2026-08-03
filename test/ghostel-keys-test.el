@@ -941,5 +941,168 @@ External packages may still call the old internal name."
   (with-temp-buffer
     (should-error (ghostel-paste-string "x") :type 'user-error)))
 
+(ert-deftest ghostel-test-tty-esc-filter-translates-lone-esc ()
+  "`ghostel--tty-esc' yields [escape] in terminal-input ghostel buffers."
+  (let ((saved-map (make-sparse-keymap))
+        (fake-keys [?\e])
+        (quiet t))                      ; sit-for result: no pending input
+    (cl-letf (((symbol-function 'this-single-command-keys)
+               (lambda () fake-keys))
+              ((symbol-function 'sit-for) (lambda (_seconds) quiet))
+              ;; Keep the mode body from touching the real terminal.
+              ((symbol-function 'ghostel--tty-esc-init) #'ignore))
+      (with-temp-buffer
+        (ghostel-mode)
+        (setq ghostel--term 'fake)
+        ;; Semi-char (mode default) and char both translate.
+        (should (equal [escape] (ghostel--tty-esc saved-map)))
+        (setq ghostel--input-mode 'char)
+        (should (equal [escape] (ghostel--tty-esc saved-map)))
+        ;; ESC as the trailing byte of a chord (e.g. C-c ESC) translates
+        ;; too; the unbound C-c <escape> falls back through
+        ;; `local-function-key-map' to the meta-prefix behavior.
+        (setq ghostel--input-mode 'semi-char)
+        (setq fake-keys [?\C-c ?\e])
+        (should (equal [escape] (ghostel--tty-esc saved-map)))))))
+
+(ert-deftest ghostel-test-tty-esc-filter-passes-map-through ()
+  "`ghostel--tty-esc' returns the saved map in every non-translating case."
+  (let ((saved-map (make-sparse-keymap))
+        (fake-keys [?\e])
+        (quiet t))
+    (cl-letf (((symbol-function 'this-single-command-keys)
+               (lambda () fake-keys))
+              ((symbol-function 'sit-for) (lambda (_seconds) quiet))
+              ;; Keep the mode body from touching the real terminal.
+              ((symbol-function 'ghostel--tty-esc-init) #'ignore))
+      ;; Non-ghostel buffer (no `ghostel--term').
+      (with-temp-buffer
+        (should (eq saved-map (ghostel--tty-esc saved-map))))
+      (with-temp-buffer
+        (ghostel-mode)
+        (setq ghostel--term 'fake)
+        ;; Disabled via nil delay.
+        (let ((ghostel-tty-escape-delay nil))
+          (should (eq saved-map (ghostel--tty-esc saved-map))))
+        ;; Read-only/line input modes keep ESC as a meta prefix.
+        (dolist (mode '(copy emacs line))
+          (setq ghostel--input-mode mode)
+          (should (eq saved-map (ghostel--tty-esc saved-map))))
+        (setq ghostel--input-mode 'semi-char)
+        ;; Introspection (`lookup-key' etc.) runs the filter with no
+        ;; command keys pending — must not see [escape].
+        (setq fake-keys [])
+        (should (eq saved-map (ghostel--tty-esc saved-map)))
+        ;; Trailing key isn't ESC.
+        (setq fake-keys [?x])
+        (should (eq saved-map (ghostel--tty-esc saved-map)))
+        ;; Fast double-tap: first ESC already committed — leave the
+        ;; second raw so [27 27] reaches the ESC ESC binding.
+        (setq fake-keys [?\e ?\e])
+        (should (eq saved-map (ghostel--tty-esc saved-map)))
+        ;; Follow-up byte arrives within the delay (escape sequence or
+        ;; fast M-<char>): decode as usual.
+        (setq fake-keys [?\e])
+        (setq quiet nil)
+        (should (eq saved-map (ghostel--tty-esc saved-map)))))))
+
+(ert-deftest ghostel-test-tty-esc-init-wraps-esc-entry ()
+  "`ghostel--tty-esc-init' wraps the raw ESC entry and is idempotent."
+  (let* ((term (frame-terminal))
+         (old-raw (cdr (assq ?\e (cdr input-decode-map))))
+         (old-param (terminal-parameter term 'ghostel--tty-esc-map))
+         (fake-inner (make-sparse-keymap)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'terminal-live-p) (lambda (_term) t)))
+          (set-terminal-parameter term 'ghostel--tty-esc-map nil)
+          (define-key input-decode-map [?\e] fake-inner)
+          (ghostel--tty-esc-init)
+          (let ((entry (cdr (assq ?\e (cdr input-decode-map)))))
+            (should (eq (car-safe entry) 'menu-item))
+            (should (eq (nth 2 entry) fake-inner))
+            (should (equal (memq :filter entry) '(:filter ghostel--tty-esc)))
+            (should (eq (terminal-parameter term 'ghostel--tty-esc-map)
+                        fake-inner))
+            ;; Outside ghostel buffers `lookup-key' resolves the filter
+            ;; back to the wrapped entry — introspection unchanged.
+            (should (eq (lookup-key input-decode-map [?\e]) fake-inner))
+            ;; Second call: wrapper intact, no-op (no re-wrap/nesting).
+            (ghostel--tty-esc-init)
+            (should (eq (cdr (assq ?\e (cdr input-decode-map))) entry))
+            (should (eq (nth 2 entry) fake-inner))))
+      (define-key input-decode-map [?\e] old-raw)
+      (set-terminal-parameter term 'ghostel--tty-esc-map old-param))))
+
+(ert-deftest ghostel-test-tty-esc-init-rewraps-replaced-entry ()
+  "`ghostel--tty-esc-init' re-installs after another package took over ESC."
+  (let* ((term (frame-terminal))
+         (old-raw (cdr (assq ?\e (cdr input-decode-map))))
+         (old-param (terminal-parameter term 'ghostel--tty-esc-map))
+         (fake-inner (make-sparse-keymap))
+         (usurper (make-sparse-keymap)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'terminal-live-p) (lambda (_term) t)))
+          (set-terminal-parameter term 'ghostel--tty-esc-map nil)
+          (define-key input-decode-map [?\e] fake-inner)
+          (ghostel--tty-esc-init)
+          ;; Another package (e.g. evil-esc-mode) replaces the entry.
+          (define-key input-decode-map [?\e] usurper)
+          (ghostel--tty-esc-init)
+          (let ((entry (cdr (assq ?\e (cdr input-decode-map)))))
+            (should (eq (car-safe entry) 'menu-item))
+            (should (eq (nth 2 entry) usurper))
+            (should (eq (terminal-parameter term 'ghostel--tty-esc-map)
+                        usurper))))
+      (define-key input-decode-map [?\e] old-raw)
+      (set-terminal-parameter term 'ghostel--tty-esc-map old-param))))
+
+(ert-deftest ghostel-test-tty-esc-init-skips-gui-terminals ()
+  "`ghostel--tty-esc-init' does nothing on non-tty terminals."
+  (let* ((term (frame-terminal))
+         (old-raw (cdr (assq ?\e (cdr input-decode-map))))
+         (old-param (terminal-parameter term 'ghostel--tty-esc-map)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'terminal-live-p) (lambda (_term) 'x)))
+          (set-terminal-parameter term 'ghostel--tty-esc-map nil)
+          (ghostel--tty-esc-init)
+          (should (eq (cdr (assq ?\e (cdr input-decode-map))) old-raw))
+          (should-not (terminal-parameter term 'ghostel--tty-esc-map)))
+      (define-key input-decode-map [?\e] old-raw)
+      (set-terminal-parameter term 'ghostel--tty-esc-map old-param))))
+
+(ert-deftest ghostel-test-tty-esc-mode-integration ()
+  "`ghostel-mode' installs the lone-ESC filter and window-change hook."
+  (let* ((term (frame-terminal))
+         (old-raw (cdr (assq ?\e (cdr input-decode-map))))
+         (old-param (terminal-parameter term 'ghostel--tty-esc-map))
+         (fake-inner (make-sparse-keymap)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'terminal-live-p) (lambda (_term) t)))
+          (set-terminal-parameter term 'ghostel--tty-esc-map nil)
+          (define-key input-decode-map [?\e] fake-inner)
+          (with-temp-buffer
+            (ghostel-mode)
+            (should (memq #'ghostel--tty-esc-window-change
+                          window-buffer-change-functions))
+            (let ((entry (cdr (assq ?\e (cdr input-decode-map)))))
+              (should (eq (car-safe entry) 'menu-item))
+              (should (eq (nth 2 entry) fake-inner))
+              (should (eq (cadr (memq :filter entry)) 'ghostel--tty-esc)))))
+      (define-key input-decode-map [?\e] old-raw)
+      (set-terminal-parameter term 'ghostel--tty-esc-map old-param))))
+
+(ert-deftest ghostel-test-esc-esc-key-binding ()
+  "TTY double-tap ESC routes to `ghostel--send-event' in both input maps."
+  (should (eq (lookup-key ghostel-semi-char-mode-map (kbd "ESC ESC"))
+              #'ghostel--send-event))
+  (should (eq (lookup-key ghostel-char-mode-map (kbd "ESC ESC"))
+              #'ghostel--send-event))
+  ;; `ghostel-keymap-exceptions' is honored.
+  (let ((ghostel-keymap-exceptions '("ESC ESC"))
+        (map (make-sparse-keymap)))
+    (ghostel--define-terminal-keys map)
+    (should-not (eq (lookup-key map (kbd "ESC ESC"))
+                    #'ghostel--send-event))))
+
 (provide 'ghostel-keys-test)
 ;;; ghostel-keys-test.el ends here

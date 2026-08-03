@@ -672,6 +672,13 @@ These keys pass through to Emacs instead."
          (set-default sym newval)
          (ghostel--rebuild-semi-char-keymap)))
 
+(defcustom ghostel-tty-escape-delay 0.01
+  "Seconds to wait before treating a bare TTY ESC byte as the escape key.
+When nil, the translation is disabled and a lone ESC stays a meta prefix;
+useful on high-latency connections where a split escape sequence
+could otherwise misdecode."
+  :type '(choice (const :tag "Disabled" nil) number))
+
 (defcustom ghostel-ignore-cursor-change nil
   "When non-nil, ignore terminal requests to change cursor shape or visibility.
 Useful when editor-owned cursor behavior should take precedence over
@@ -1217,6 +1224,14 @@ When NO-EXCEPTIONS is non-nil, also bind the keys in
             (define-key map (kbd key-str) #'ghostel--send-event))))))
   ;; M-SPC: `(format "M-%c" ?\s)' yields "M- ", which `kbd' rejects.
   (let ((key-str "M-SPC"))
+    (when (or no-exceptions
+              (not (member key-str ghostel-keymap-exceptions)))
+      (define-key map (kbd key-str) #'ghostel--send-event)))
+  ;; TTY double-tap ESC: a second ESC byte within
+  ;; `ghostel-tty-escape-delay' passes the lone-ESC filter raw as [27 27].
+  ;; Send it as alt+escape (GUI M-<escape> parity) rather than pending
+  ;; on the global `ESC ESC ESC' prefix.
+  (let ((key-str "ESC ESC"))
     (when (or no-exceptions
               (not (member key-str ghostel-keymap-exceptions)))
       (define-key map (kbd key-str) #'ghostel--send-event)))
@@ -4860,6 +4875,66 @@ and the TTY display that needs it off keeps working in parallel)."
       (unless (equal auto-composition-mode tt)
         (setq-local auto-composition-mode tt)))))
 
+(defun ghostel--tty-esc (map)
+  "Translate a lone ESC to `escape' in ghostel terminal-input buffers.
+`menu-item' filter on the ESC entry of a TTY's `input-decode-map'.
+When no follow-up byte arrives within `ghostel-tty-escape-delay',
+yield the `escape' event; otherwise return MAP so escape sequences
+and ESC-as-meta decode as usual."
+  (if (and ghostel-tty-escape-delay
+           (ghostel--terminal-input-mode-p)
+           ghostel--term
+           (let* ((keys (this-single-command-keys))
+                  (len (length keys)))
+             (and (> len 0)
+                  (eq (aref keys (1- len)) ?\e)
+                  ;; The first ESC of a fast pair is already committed
+                  ;; when the second decodes; leave the second raw so
+                  ;; [27 27] reaches the ESC ESC binding instead of
+                  ;; the unbound ESC <escape>.
+                  (not (and (> len 1) (eq (aref keys (- len 2)) ?\e)))))
+           (sit-for ghostel-tty-escape-delay))
+      [escape]
+    map))
+
+(defun ghostel--tty-esc-init (&optional frame)
+  "Install the lone-ESC to `escape' filter on FRAME's terminal.
+Only acts on text terminals; re-wraps if another package later
+replaced the entry.  The wrapped entry may itself be another
+package's filter (e.g. evil's) — nested filters compose, with at
+most one translation delay paid per key.  The filter is inert
+outside ghostel terminal-input buffers, so no uninstall is needed."
+  (let ((term (frame-terminal frame)))
+    (when (eq (terminal-live-p term) t)
+      ;; `input-decode-map' is terminal-local; select the frame to
+      ;; read and modify the right terminal's map.
+      (with-selected-frame (or frame (selected-frame))
+        ;; `lookup-key' resolves menu-item filters to the wrapped map,
+        ;; dropping another package's wrapper — read the entry
+        ;; structurally.
+        (let* ((cell (assq ?\e (cdr input-decode-map)))
+               (raw (if cell (cdr cell)
+                      (lookup-key input-decode-map [?\e]))))
+          ;; Recognize our wrapper by its :filter tag; `define-key'
+          ;; copies the menu-item list, so object identity won't do.
+          (unless (if cell
+                      (and (eq (car-safe raw) 'menu-item)
+                           (eq (cadr (memq :filter raw)) 'ghostel--tty-esc))
+                    (terminal-parameter term 'ghostel--tty-esc-map))
+            (set-terminal-parameter term 'ghostel--tty-esc-map (or raw t))
+            ;; package-lint's reserved-key check matches literal
+            ;; vectors only; a translation-map entry is not a
+            ;; reserved binding.
+            (define-key input-decode-map (vector ?\e)
+              `(menu-item "" ,raw :filter ghostel--tty-esc))))))))
+
+(defun ghostel--tty-esc-window-change (window)
+  "Install the lone-ESC filter on WINDOW's frame terminal.
+Covers ghostel buffers displayed on frames created after the buffer,
+e.g. a later \"emacsclient -t\" session."
+  (when (windowp window)
+    (ghostel--tty-esc-init (window-frame window))))
+
 (defun ghostel--pre-redisplay (_window)
   "Render pending terminal state before displaying this buffer."
   (when ghostel--pending-redraw
@@ -4977,6 +5052,7 @@ may change freely (`ghostel-compile' finalize relies on this)."
   (add-hook 'window-buffer-change-functions #'ghostel--focus-change)
   (add-hook 'window-buffer-change-functions #'ghostel--window-buffer-change nil t)
   (add-hook 'window-buffer-change-functions #'ghostel--sync-tty-composition nil t)
+  (add-hook 'window-buffer-change-functions #'ghostel--tty-esc-window-change nil t)
   (add-hook 'pre-redisplay-functions #'ghostel--pre-redisplay nil t)
   (add-hook 'window-size-change-functions #'ghostel--adjust-size nil t)
   (add-hook 'minibuffer-exit-hook #'ghostel--minibuffer-exit)
@@ -4987,6 +5063,9 @@ may change freely (`ghostel-compile' finalize relies on this)."
   (add-hook 'change-major-mode-hook #'ghostel--change-major-mode-guard nil t)
   ;; Eldoc link echo, thing-at-point providers, file-name-at-point.
   (ghostel-links-setup)
+  ;; Lone-ESC decoding on the creating terminal
+  ;; (later TTY frames are covered by `ghostel--tty-esc-window-change' above).
+  (ghostel--tty-esc-init)
 
   ;; Set up the comint/shell completion plumbing once per buffer so
   ;; `ghostel-line-mode-complete-at-point' has the right

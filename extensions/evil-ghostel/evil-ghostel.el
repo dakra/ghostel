@@ -875,9 +875,11 @@ the default."
 (define-key evil-ghostel-mode-map (kbd "C-c C-r")
             #'evil-ghostel-toggle-send-escape)
 
-;; The <escape> function-key event exists on GUI frames and on ttys with
-;; the kitty keyboard protocol (kkp.el); legacy ttys never generate it,
-;; so this binding cannot shadow the ESC-prefixed C-c M-... keys there.
+;; The <escape> function-key event exists on GUI frames, on ttys with
+;; the kitty keyboard protocol (kkp.el), and on legacy ttys in ghostel
+;; terminal-input buffers via ghostel's lone-ESC `input-decode-map'
+;; filter.  Fast C-c M-... chords still decode as meta there: the
+;; filter sees the pending follow-up byte and leaves ESC alone.
 (define-key evil-ghostel-mode-map (kbd "C-c <escape>")
             #'evil-force-normal-state)
 
