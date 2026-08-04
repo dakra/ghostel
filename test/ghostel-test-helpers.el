@@ -191,6 +191,14 @@ succeeds.  TIMEOUT is scaled by `ghostel-test--timeout-scale'."
                 (< (float-time) deadline)
                 (process-live-p proc))
       (accept-process-output proc 0.05))
+    ;; The child's exit is visible via `process-live-p' before its
+    ;; sentinel has run; drain events briefly so sentinel-driven
+    ;; predicates get their chance before this fails.
+    (unless (or result (process-live-p proc))
+      (let ((grace (+ (float-time) 1.0)))
+        (while (and (not (setq result (funcall pred)))
+                    (< (float-time) grace))
+          (accept-process-output nil 0.05))))
     (unless result
       (ert-fail
        (if (process-live-p proc)
