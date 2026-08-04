@@ -54,7 +54,8 @@
 ;;   `compilation-auto-jump-to-first-error'
 ;;   `compilation-finish-functions' (runs alongside
 ;;     `ghostel-compile-finish-functions')
-;;   `compilation-scroll-output' (effectively always on)
+;;   `compilation-scroll-output' (`first-error' follows the output
+;;     and jumps to the first error message when the command finishes)
 ;;
 ;; Keys in the finished buffer:
 ;;   g           — ghostel-recompile
@@ -220,6 +221,11 @@ the same keys work while the command is still executing."
   (add-hook 'eldoc-documentation-functions #'ghostel--eldoc-link nil t)
   ;; Expose cwd to buffer-menu/ibuffer
   (setq-local list-buffers-directory (expand-file-name default-directory)))
+
+(defun ghostel-compile--anchor-inhibit (_window force)
+  "Veto following live output while `compilation-scroll-output' is nil.
+Interactive runs always follow the output, as do FORCE anchors (e.g. paste)."
+  (not (or force ghostel-compile--interactive compilation-scroll-output)))
 
 (defun ghostel-compile--format-duration (seconds)
   "Format SECONDS (float) as a compilation-style duration string.
@@ -479,10 +485,33 @@ same as in any compilation buffer."
                   (error
                    (message "ghostel-compile: error scanning output: %s"
                             (error-message-string err)))))))
-          (goto-char (point-max))
-          (dolist (win (get-buffer-window-list buffer nil t))
-            (set-window-point win (point-max))
-            (with-selected-window win (recenter -1))))
+          ;; Final point position per `compilation-scroll-output':
+          ;; non-nil tails past the footer, `first-error' lands on the first
+          ;; error message (tail when the run had none), nil leaves point where
+          ;; the user (or the initial top-of-buffer placement) left it.
+          (cond
+           ((or ghostel-compile--interactive  ; Interactive runs always tail.
+                (and compilation-scroll-output
+                     (not (eq compilation-scroll-output 'first-error))))
+            (goto-char (point-max))
+            (dolist (win (get-buffer-window-list buffer nil t))
+              (set-window-point win (point-max))
+              (with-selected-window win (recenter -1))))
+           ((eq compilation-scroll-output 'first-error)
+            ;; One char before the scan start: `compilation-next-error'
+            ;; skips a message point is already on, and the command's
+            ;; first output line may itself be one.
+            (goto-char (max (point-min) (1- (or start (point-min)))))
+            (condition-case nil
+                (compilation-next-error 1)
+              (error (goto-char (point-max))))
+            ;; Also establish the window start: the sentinel's last
+            ;; render anchored the window to the tail, and that forced
+            ;; start would win at the next redisplay, clamping a bare
+            ;; `set-window-point' back into the tail view.
+            (dolist (win (get-buffer-window-list buffer nil t))
+              (set-window-point win (point))
+              (with-selected-window win (recenter))))))
         (ghostel-compile--set-mode-line-exit exit)
         (setq next-error-last-buffer buffer)
         (run-hook-with-args 'compilation-finish-functions
@@ -703,6 +732,10 @@ the rendered buffer remains read-only in both cases."
       ;; Wire up `next-error' so `\\[next-error]' / `M-g n' work as soon
       ;; as errors land, including in the interactive variant.
       (setq-local next-error-function #'compilation-next-error-function)
+      ;; Honour `compilation-scroll-output': when nil, windows on a
+      ;; compilation-style run must not follow the output.
+      (add-hook 'ghostel-inhibit-anchor-functions
+                #'ghostel-compile--anchor-inhibit nil t)
 
       ;; In compilation-style mode, swap only the local keymap.  Major mode stays
       ;; `ghostel-mode'
@@ -834,6 +867,15 @@ any other code that walks `compilation-arguments') re-runs via
               (forward-line (cdr ghostel--cursor-pos))
               (copy-marker (point))))
       (ghostel-compile--set-mode-line-running)
+      ;; With `compilation-scroll-output' nil the window stays at the
+      ;; top of the buffer while output flows
+      ;; (`ghostel-compile--anchor-inhibit' vetoes output-following);
+      ;; park point there like `compilation-start' does.
+      (unless (or interactive compilation-scroll-output)
+        (goto-char (point-min))
+        (when (window-live-p outwin)
+          (set-window-start outwin (point-min))
+          (set-window-point outwin (point-min))))
       ;; Match the VT size computed above (or fall back to the selected
       ;; window's own dimensions when `display-buffer' didn't surface a
       ;; window, e.g. `allow-no-window').  Use `window-max-chars-per-line'
@@ -883,11 +925,12 @@ Interactively, prompts for the command if option
 `compilation-read-command' is non-nil, otherwise uses
 `compile-command'.  With prefix arg, always prompts.
 
-Output always scrolls as it arrives (equivalent to
-`compilation-scroll-output' being non-nil).  `compilation-ask-about-save'
-and `compilation-auto-jump-to-first-error' are honoured.  The command
-default and history are shared with \\[compile] via `compile-command'
-and `compile-history'."
+`compilation-scroll-output', `compilation-ask-about-save' and
+`compilation-auto-jump-to-first-error' are honoured.  The value
+`first-error' of `compilation-scroll-output' follows the output during
+the run and leaves point on the first error message in the compile
+buffer when the command finishes.  The command default and history are
+shared with \\[compile] via `compile-command' and `compile-history'."
   (interactive
    (list
     (let ((default (eval compile-command t)))
@@ -1016,6 +1059,9 @@ Bound to \\[ghostel-compile-switch-to-interactive] in
         (goto-char (point-min))
         (forward-line (cdr rc))
         (move-to-column (car rc))))
+    ;; Bottom-align the window on the live output; a nil-scroll run
+    ;; has it parked at the top of the buffer.
+    (ghostel--anchor-window nil t)
     (ghostel-compile--set-mode-line-running)
     (when ghostel-compile-debug
       (message "ghostel-compile: switched to interactive"))))

@@ -309,7 +309,7 @@ another window.  RET/`compile-goto-error' is for opening."
         (should-not opened)))))                              ; no file opened
 
 (ert-deftest ghostel-test-compile-finalize-leaves-point-at-end ()
-  "Regression: finalize must put point at `point-max', past the footer.
+  "Regression: with scrolling on, finalize puts point at `point-max'.
 The \"Compilation finished at ..., duration ...\" line must be visible
 when the window recenters to the bottom.  Point at the start of the
 footer (or at the end of output before the footer) leaves the footer
@@ -321,7 +321,8 @@ scrolled below the window."
       (setq ghostel-compile--command "true"
             ghostel-compile--start-time (current-time)
             ghostel-compile--scan-marker (copy-marker (point-min))))
-    (ghostel-compile--finalize buf 0 (current-time))
+    (let ((compilation-scroll-output t))
+      (ghostel-compile--finalize buf 0 (current-time)))
     (should (= (point) (point-max)))                           ; past footer
     ;; And the footer text really is the last thing in the buffer.
     (should (string-match-p
@@ -329,6 +330,137 @@ scrolled below the window."
              (buffer-substring-no-properties
               (max (point-min) (- (point-max) 200))
               (point-max))))))
+
+(ert-deftest ghostel-test-compile-finalize-scroll-output-nil-keeps-point ()
+  "With `compilation-scroll-output' nil, finalize leaves point alone."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t))
+      (insert "line A\nline B\nline C\n")
+      (setq ghostel-compile--command "true"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--scan-marker (copy-marker (point-min))))
+    (goto-char (point-min))
+    (let ((compilation-scroll-output nil))
+      (ghostel-compile--finalize buf 0 (current-time)))
+    (should (= (point) (point-min)))))
+
+(ert-deftest ghostel-test-compile-finalize-scroll-output-nil-interactive-tails ()
+  "An interactive run tails at finalize even with scrolling off."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t))
+      (insert "line A\n")
+      (setq ghostel-compile--command "true"
+            ghostel-compile--interactive t
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--scan-marker (copy-marker (point-min))))
+    (goto-char (point-min))
+    (let ((compilation-scroll-output nil))
+      (ghostel-compile--finalize buf 0 (current-time)))
+    (should (= (point) (point-max)))))
+
+(ert-deftest ghostel-test-compile-finalize-scroll-first-error-lands-on-error ()
+  "With `compilation-scroll-output' `first-error', point ends on the error."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t))
+      (insert "building\n")
+      (setq ghostel-compile--command "make"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--scan-marker (copy-marker (point)))
+      (insert "more output\n/tmp/foo.c:10:5: error: bad thing\ntail\n")
+      (goto-char (point-max)))
+    (let ((compilation-scroll-output 'first-error))
+      (ghostel-compile--finalize buf 1 (current-time)))
+    (should (save-excursion (beginning-of-line)
+                            (looking-at "/tmp/foo\\.c")))))
+
+(ert-deftest ghostel-test-compile-finalize-scroll-first-error-without-errors-tails ()
+  "`first-error' falls back to the tail when the run produced no errors."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t))
+      (insert "clean output\nall good\n")
+      (setq ghostel-compile--command "true"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--scan-marker (copy-marker (point-min))))
+    (goto-char (point-min))
+    (let ((compilation-scroll-output 'first-error))
+      (ghostel-compile--finalize buf 0 (current-time)))
+    (should (= (point) (point-max)))))
+
+(ert-deftest ghostel-test-compile-finalize-scroll-first-error-at-scan-start ()
+  "`first-error' finds a message starting exactly at the scan marker."
+  (ghostel-test--with-compile-buffer buf
+    (let ((inhibit-read-only t))
+      (insert "header\n")
+      (setq ghostel-compile--command "make"
+            ghostel-compile--start-time (current-time)
+            ghostel-compile--scan-marker (copy-marker (point)))
+      (insert "/tmp/first.c:1:1: error: first line\ntail\n")
+      (goto-char (point-max)))
+    (let ((compilation-scroll-output 'first-error))
+      (ghostel-compile--finalize buf 1 (current-time)))
+    (should (save-excursion (beginning-of-line)
+                            (looking-at "/tmp/first\\.c")))))
+
+(ert-deftest ghostel-test-compile-prepare-buffer-installs-anchor-veto ()
+  "`ghostel-compile--prepare-buffer' adds the scroll veto buffer-locally.
+The `(ghostel-mode)' reset kills local hooks, so the veto must be
+added after it — including on the recompile reuse path (second
+iteration)."
+  :tags '(native)
+  (let ((buf-name "*ghostel-test-anchor-veto*")
+        (inhibit-message t))
+    (when (get-buffer buf-name)
+      (let ((kill-buffer-query-functions nil)) (kill-buffer buf-name)))
+    (unwind-protect
+        (dotimes (_ 2)
+          (let ((buf (ghostel-compile--prepare-buffer
+                      buf-name default-directory)))
+            (with-current-buffer buf
+              (should (local-variable-p 'ghostel-inhibit-anchor-functions))
+              (should (memq #'ghostel-compile--anchor-inhibit
+                            ghostel-inhibit-anchor-functions)))))
+      (when (get-buffer buf-name)
+        (let ((kill-buffer-query-functions nil)) (kill-buffer buf-name))))))
+
+(ert-deftest ghostel-test-compile-scroll-output-nil-run-keeps-point-at-top ()
+  "A nil-scroll run parks point at the top and finalize leaves it there."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let* ((buf-name "*ghostel-test-noscroll-run*")
+         (inhibit-message t)
+         (compilation-scroll-output nil)
+         (shell-file-name "/bin/sh")
+         (save-some-buffers-default-predicate (lambda () nil)))
+    (when (get-buffer buf-name)
+      (let ((kill-buffer-query-functions nil)) (kill-buffer buf-name)))
+    (unwind-protect
+        (let ((buf (ghostel-compile--start "seq 1 200" buf-name
+                                           default-directory)))
+          (with-current-buffer buf
+            (should (= (point) (point-min)))            ; parked at top
+            (ghostel-test--wait-for
+             ghostel--process
+             (lambda () ghostel-compile--finalized) 10)
+            (should (= (point) (point-min)))            ; still at top
+            (should (string-match-p "Compilation finished"
+                                    (buffer-string)))))
+      (when (get-buffer buf-name)
+        (let ((kill-buffer-query-functions nil)) (kill-buffer buf-name))))))
+
+(ert-deftest ghostel-test-compile-anchor-inhibit-honours-scroll-output ()
+  "`ghostel-compile--anchor-inhibit' vetoes only nil-scroll read-only runs."
+  (ghostel-test--with-compile-buffer buf
+    (setq ghostel-compile--interactive nil)
+    (let ((compilation-scroll-output nil))
+      (should (ghostel-compile--anchor-inhibit nil nil))
+      (should-not (ghostel-compile--anchor-inhibit nil t)))    ; FORCE wins
+    (let ((compilation-scroll-output t))
+      (should-not (ghostel-compile--anchor-inhibit nil nil)))
+    (let ((compilation-scroll-output 'first-error))
+      (should-not (ghostel-compile--anchor-inhibit nil nil)))
+    (setq ghostel-compile--interactive t)
+    (let ((compilation-scroll-output nil))
+      (should-not (ghostel-compile--anchor-inhibit nil nil)))))
 
 (ert-deftest ghostel-test-compile-finalize-switches-major-mode ()
   "With the default option, finalize switches to `ghostel-compile-view-mode'."

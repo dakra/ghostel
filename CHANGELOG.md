@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- `ghostel-compile` now honours `compilation-scroll-output` instead of
+  always scrolling.  With the default nil, compilation-style runs keep
+  the window at the top of the output like `M-x compile`; any non-nil
+  value follows the output as it arrives, and `first-error`
+  additionally leaves point on the first error message in the compile
+  buffer when the command finishes.  Interactive runs (`C-u
+  M-x ghostel-compile`) always follow the live cursor.  To keep the
+  previous always-scroll behavior, set `compilation-scroll-output` to
+  t.  Fixes [#599](https://github.com/dakra/ghostel/issues/599).
+
 ### Fixed
 - evil-ghostel: typing the first key of an `evil-escape` chord (e.g.
   `jk`) no longer doubles the character in the shell, and completing

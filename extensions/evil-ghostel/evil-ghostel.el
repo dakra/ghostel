@@ -192,8 +192,14 @@ alt-screen and when the native renderer defers synchronized output."
               (move-to-column saved-col)))
            ;; Don't drag point to the cursor while the user reads scrollback;
            ;; redisplay would yank the viewport back to the bottom each frame.
+           ;; A `ghostel-inhibit-anchor-functions' veto (e.g. a compile
+           ;; buffer with `compilation-scroll-output' nil) blocks the drag
+           ;; the same way it blocks the window anchor.
            ((and (memq evil-state '(insert emacs))
-                 (evil-ghostel--following-window-p))
+                 (evil-ghostel--following-window-p)
+                 (not (run-hook-with-args-until-success
+                       'ghostel-inhibit-anchor-functions
+                       (get-buffer-window (current-buffer) t) nil)))
             (evil-ghostel--reset-cursor-point)))
           (when visual-p
             (let ((pmax (point-max)))
