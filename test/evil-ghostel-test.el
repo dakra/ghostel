@@ -2617,6 +2617,21 @@ character, so it must not consume a backspace or a replacement char."
 `cw' / `cW' behave like `ce' / `cE' (stop at the word end)."
   (should (memq 'evil-ghostel-change evil-change-commands)))
 
+(ert-deftest evil-ghostel-test-evil-escape-insert-skipped ()
+  "evil-escape's speculative first-key insert is a no-op in ghostel buffers.
+Defines a stub `evil-escape--insert'; evil-ghostel's pending advice
+attaches to it and gates it by major mode."
+  (defun evil-escape--insert () (insert "x") t)
+  (should (advice-member-p #'evil-ghostel--evil-escape-skip-insert
+                           'evil-escape--insert))
+  (with-temp-buffer
+    (setq major-mode 'ghostel-mode)
+    (should-not (evil-escape--insert))
+    (should (string-empty-p (buffer-string))))
+  (with-temp-buffer
+    (should (evil-escape--insert))
+    (should (equal "x" (buffer-string)))))
+
 (defun evil-ghostel-test-run ()
   "Run all evil-ghostel tests.
 Most tests mock the native module; the few that drive a real terminal

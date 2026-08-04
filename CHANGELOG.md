@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- evil-ghostel: typing the first key of an `evil-escape` chord (e.g.
+  `jk`) no longer doubles the character in the shell, and completing
+  the chord no longer leaks it.  evil-escape previews the first key
+  with a speculative insert it reverts moments later; since terminal
+  buffers became writable (0.47.0) that preview was forwarded to the
+  PTY where it could not be reverted.  The preview is now skipped in
+  ghostel buffers — the chord itself keeps working.  Fixes
+  [#597](https://github.com/dakra/ghostel/issues/597).
+
 ## [0.49.0] — 2026-08-02
 
 ### Fixed

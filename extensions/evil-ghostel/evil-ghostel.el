@@ -884,6 +884,19 @@ the default."
             #'evil-force-normal-state)
 
 
+;; evil-escape
+
+(defun evil-ghostel--evil-escape-skip-insert ()
+  "Return nil in ghostel buffers, gating `evil-escape--insert'.
+Its speculative first-key preview would be forwarded to the PTY by the
+foreign-edit interceptor before evil-escape can revert it, leaking the key
+to the shell; without the preview the chord still works via `read-event'."
+  (not (derived-mode-p 'ghostel-mode)))
+
+(advice-add 'evil-escape--insert :before-while
+            #'evil-ghostel--evil-escape-skip-insert)
+
+
 ;; Minor mode
 
 (defun evil-ghostel--any-active-elsewhere-p (except-buffer)
