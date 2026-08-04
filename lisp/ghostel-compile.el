@@ -371,154 +371,169 @@ cursor one row and would stack the lines diagonally."
       (setq ghostel--redraw-timer nil))
     (ghostel--redraw-now (current-buffer))))
 
+(defun ghostel-compile--reenter-or-abort (buffer)
+  "Re-enter BUFFER after a foreign callback during finalization.
+A callback may kill the buffer (e.g. via a popup rule that kills
+it when its window is deleted) — Emacs then quietly makes another
+buffer current — or switch buffers without killing anything.
+Throws `ghostel-compile--buffer-killed' if BUFFER died."
+  (unless (buffer-live-p buffer)
+    (throw 'ghostel-compile--buffer-killed nil))
+  (set-buffer buffer))
+
 (defun ghostel-compile--finalize (buffer exit end-time)
   "Insert header/footer, parse errors, switch major mode for BUFFER.
 EXIT is the command exit status; END-TIME its completion time.
 Safe to call more than once — second and later calls are no-ops
 thanks to `ghostel-compile--finalized'.
+Aborts as soon as a finish function or mode hook kills BUFFER.
 
 Switches the buffer's major mode to
-`ghostel-compile-finished-major-mode' (by default
-`ghostel-compile-view-mode') so the buffer becomes a regular,
-read-only Emacs buffer that can never transition back to
-interactive terminal mode.
+`ghostel-compile-finished-major-mode' (by default `ghostel-compile-view-mode')
+so the buffer becomes a regular, read-only Emacs buffer that can never
+transition back to interactive terminal mode.
 
 Header and footer are inserted as plain buffer text (matching
 `M-x compile') rather than overlays, so cursor motion behaves the
 same as in any compilation buffer."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (unless ghostel-compile--finalized
-        (setq ghostel-compile--finalized t)
-        (let* (;; A marker, not a position: `--unwrap-soft-wraps' deletes
-               ;; newlines in the header, above the scan point.
-               (start ghostel-compile--scan-marker)
-               (start-time ghostel-compile--start-time)
-               (command ghostel-compile--command)
-               (directory ghostel-compile--directory)
-               (footer (ghostel-compile--footer-text exit start-time end-time))
-               (msg (ghostel-compile--status-message exit))
-               (inhibit-read-only t))
-          (setq ghostel-compile--last-exit exit)
-          (when ghostel-compile-debug
-            (message "ghostel-compile: finalizing exit=%S buffer=%S"
-                     exit (buffer-name buffer)))
-          (when start
-            (ghostel-compile--trim-trailing-blanks start))
-          (ghostel-compile--teardown-terminal)
-          ;; Owed link detection has to run before the rows are joined,
-          ;; whose `ghostel-wrap' properties it reads, and before the mode
-          ;; switch drops the queue's buffer-locals.  Demoted because
-          ;; `ghostel-compile--finalized' is already set: a signal here
-          ;; would leave the buffer with no footer and no way to retry.
-          (with-demoted-errors "ghostel-compile: link detection failed: %S"
-            (ghostel--flush-plain-link-detection))
-          ;; Must follow the teardown: a live renderer would rewrite the
-          ;; joined rows on its next redraw.
-          (ghostel-compile--unwrap-soft-wraps)
-          ;; Switch major mode now that the process is dead.  Preserve state
-          ;; that `kill-all-local-variables' would otherwise wipe.  A
-          ;; per-buffer override (set by the `compilation-start' advice
-          ;; when the caller passes a custom compile-mode subclass) wins
-          ;; over the global default — so error-regexp and font-lock
-          ;; customisations the subclass installs survive into the
-          ;; finished buffer.
-          (let* ((saved-command command)
-                 (saved-start-time start-time)
-                 (saved-directory directory)
-                 (saved-interactive ghostel-compile--interactive)
-                 (saved-compilation-arguments-local
-                  (local-variable-p 'compilation-arguments))
-                 (saved-compilation-arguments
-                  (and saved-compilation-arguments-local
-                       compilation-arguments))
-                 ;; Some callers (Dape) install buffer-local finish hooks
-                 ;; after starting compilation, with buffer-local state those
-                 ;; hooks need.  Run those before the mode switch kills locals;
-                 ;; run the normal hook below too so the finished mode can add
-                 ;; its own local hooks, matching `compilation-start'.
-                 (saved-local-finish-functions
-                  (and (local-variable-p 'compilation-finish-functions)
-                       (remq t compilation-finish-functions)))
-                 (target-mode (or ghostel-compile--view-mode-override
-                                  ghostel-compile-finished-major-mode)))
-            (when target-mode
-              (dolist (fn saved-local-finish-functions)
-                (funcall fn buffer msg))
-              (funcall target-mode))
-            (setq-local ghostel-compile--command saved-command
-                        ghostel-compile--directory saved-directory
-                        ghostel-compile--start-time saved-start-time
-                        ghostel-compile--end-time end-time
-                        ghostel-compile--last-exit exit
-                        ghostel-compile--interactive saved-interactive
-                        ghostel-compile--finalized t)
-            ;; Preserve `compilation-arguments' so `revert-buffer' on
-            ;; the finished buffer still reproduces the same run.
-            (when saved-compilation-arguments
-              (setq-local compilation-arguments saved-compilation-arguments))
-            ;; Pin the buffer's `default-directory' to the directory the
-            ;; user invoked `ghostel-compile' from, so it doesn't drift if
-            ;; the command happened to `cd' elsewhere during the run.
-            (when saved-directory
-              (setq default-directory saved-directory)))
-          ;; The header was rendered into the VT terminal pre-spawn, so
-          ;; it is already buffer text above `scan-marker'.  Append the
-          ;; footer and parse errors over the run's own output.
-          (let* ((inhibit-read-only t)
-                 (parse-start (copy-marker (or start (point-min)))))
-            (save-excursion
+      (catch 'ghostel-compile--buffer-killed
+        (unless ghostel-compile--finalized
+          (setq ghostel-compile--finalized t)
+          (let* (;; A marker, not a position: `--unwrap-soft-wraps' deletes
+                 ;; newlines in the header, above the scan point.
+                 (start ghostel-compile--scan-marker)
+                 (start-time ghostel-compile--start-time)
+                 (command ghostel-compile--command)
+                 (directory ghostel-compile--directory)
+                 (footer (ghostel-compile--footer-text exit start-time end-time))
+                 (msg (ghostel-compile--status-message exit))
+                 (inhibit-read-only t))
+            (setq ghostel-compile--last-exit exit)
+            (when ghostel-compile-debug
+              (message "ghostel-compile: finalizing exit=%S buffer=%S"
+                       exit (buffer-name buffer)))
+            (when start
+              (ghostel-compile--trim-trailing-blanks start))
+            (ghostel-compile--teardown-terminal)
+            ;; Owed link detection has to run before the rows are joined,
+            ;; whose `ghostel-wrap' properties it reads, and before the mode
+            ;; switch drops the queue's buffer-locals.  Demoted because
+            ;; `ghostel-compile--finalized' is already set: a signal here
+            ;; would leave the buffer with no footer and no way to retry.
+            (with-demoted-errors "ghostel-compile: link detection failed: %S"
+              (ghostel--flush-plain-link-detection))
+            ;; Must follow the teardown: a live renderer would rewrite the
+            ;; joined rows on its next redraw.
+            (ghostel-compile--unwrap-soft-wraps)
+            ;; Switch major mode now that the process is dead.  Preserve state
+            ;; that `kill-all-local-variables' would otherwise wipe.  A
+            ;; per-buffer override (set by the `compilation-start' advice
+            ;; when the caller passes a custom compile-mode subclass) wins
+            ;; over the global default — so error-regexp and font-lock
+            ;; customisations the subclass installs survive into the
+            ;; finished buffer.
+            (let* ((saved-command command)
+                   (saved-start-time start-time)
+                   (saved-directory directory)
+                   (saved-interactive ghostel-compile--interactive)
+                   (saved-compilation-arguments-local
+                    (local-variable-p 'compilation-arguments))
+                   (saved-compilation-arguments
+                    (and saved-compilation-arguments-local
+                         compilation-arguments))
+                   ;; Some callers (Dape) install buffer-local finish hooks
+                   ;; after starting compilation, with buffer-local state those
+                   ;; hooks need.  Run those before the mode switch kills locals;
+                   ;; run the normal hook below too so the finished mode can add
+                   ;; its own local hooks, matching `compilation-start'.
+                   (saved-local-finish-functions
+                    (and (local-variable-p 'compilation-finish-functions)
+                         (remq t compilation-finish-functions)))
+                   (target-mode (or ghostel-compile--view-mode-override
+                                    ghostel-compile-finished-major-mode)))
+              (when target-mode
+                (dolist (fn saved-local-finish-functions)
+                  (funcall fn buffer msg)
+                  (ghostel-compile--reenter-or-abort buffer))
+                (funcall target-mode)
+                ;; The mode's hooks are foreign code too.
+                (ghostel-compile--reenter-or-abort buffer))
+              (setq-local ghostel-compile--command saved-command
+                          ghostel-compile--directory saved-directory
+                          ghostel-compile--start-time saved-start-time
+                          ghostel-compile--end-time end-time
+                          ghostel-compile--last-exit exit
+                          ghostel-compile--interactive saved-interactive
+                          ghostel-compile--finalized t)
+              ;; Preserve `compilation-arguments' so `revert-buffer' on
+              ;; the finished buffer still reproduces the same run.
+              (when saved-compilation-arguments
+                (setq-local compilation-arguments saved-compilation-arguments))
+              ;; Pin the buffer's `default-directory' to the directory the
+              ;; user invoked `ghostel-compile' from, so it doesn't drift if
+              ;; the command happened to `cd' elsewhere during the run.
+              (when saved-directory
+                (setq default-directory saved-directory)))
+            ;; The header was rendered into the VT terminal pre-spawn, so
+            ;; it is already buffer text above `scan-marker'.  Append the
+            ;; footer and parse errors over the run's own output.
+            (let* ((inhibit-read-only t)
+                   (parse-start (copy-marker (or start (point-min)))))
+              (save-excursion
+                (goto-char (point-max))
+                ;; Start the footer on a fresh line, then leave a blank
+                ;; separator line between the last output and the footer
+                ;; — matches the `\n\nCompilation finished ...' format
+                ;; `M-x compile' uses.
+                (unless (or (bobp) (bolp))
+                  (insert "\n"))
+                (insert "\n" footer))
+              (save-excursion
+                (save-restriction
+                  (widen)
+                  (setq-local compilation--parsed (copy-marker parse-start))
+                  (condition-case err
+                      (compilation--ensure-parse (point-max))
+                    (error
+                     (message "ghostel-compile: error scanning output: %s"
+                              (error-message-string err)))))))
+            ;; Final point position per `compilation-scroll-output':
+            ;; non-nil tails past the footer, `first-error' lands on the first
+            ;; error message (tail when the run had none), nil leaves point where
+            ;; the user (or the initial top-of-buffer placement) left it.
+            (cond
+             ((or ghostel-compile--interactive  ; Interactive runs always tail.
+                  (and compilation-scroll-output
+                       (not (eq compilation-scroll-output 'first-error))))
               (goto-char (point-max))
-              ;; Start the footer on a fresh line, then leave a blank
-              ;; separator line between the last output and the footer
-              ;; — matches the `\n\nCompilation finished ...' format
-              ;; `M-x compile' uses.
-              (unless (or (bobp) (bolp))
-                (insert "\n"))
-              (insert "\n" footer))
-            (save-excursion
-              (save-restriction
-                (widen)
-                (setq-local compilation--parsed (copy-marker parse-start))
-                (condition-case err
-                    (compilation--ensure-parse (point-max))
-                  (error
-                   (message "ghostel-compile: error scanning output: %s"
-                            (error-message-string err)))))))
-          ;; Final point position per `compilation-scroll-output':
-          ;; non-nil tails past the footer, `first-error' lands on the first
-          ;; error message (tail when the run had none), nil leaves point where
-          ;; the user (or the initial top-of-buffer placement) left it.
-          (cond
-           ((or ghostel-compile--interactive  ; Interactive runs always tail.
-                (and compilation-scroll-output
-                     (not (eq compilation-scroll-output 'first-error))))
-            (goto-char (point-max))
-            (dolist (win (get-buffer-window-list buffer nil t))
-              (set-window-point win (point-max))
-              (with-selected-window win (recenter -1))))
-           ((eq compilation-scroll-output 'first-error)
-            ;; One char before the scan start: `compilation-next-error'
-            ;; skips a message point is already on, and the command's
-            ;; first output line may itself be one.
-            (goto-char (max (point-min) (1- (or start (point-min)))))
-            (condition-case nil
-                (compilation-next-error 1)
-              (error (goto-char (point-max))))
-            ;; Also establish the window start: the sentinel's last
-            ;; render anchored the window to the tail, and that forced
-            ;; start would win at the next redisplay, clamping a bare
-            ;; `set-window-point' back into the tail view.
-            (dolist (win (get-buffer-window-list buffer nil t))
-              (set-window-point win (point))
-              (with-selected-window win (recenter))))))
-        (ghostel-compile--set-mode-line-exit exit)
-        (setq next-error-last-buffer buffer)
-        (run-hook-with-args 'compilation-finish-functions
-                            buffer (ghostel-compile--status-message exit))
-        (ghostel-compile--auto-jump buffer)
-        (run-hook-with-args 'ghostel-compile-finish-functions
-                            buffer (ghostel-compile--status-message exit))))))
+              (dolist (win (get-buffer-window-list buffer nil t))
+                (set-window-point win (point-max))
+                (with-selected-window win (recenter -1))))
+             ((eq compilation-scroll-output 'first-error)
+              ;; One char before the scan start: `compilation-next-error'
+              ;; skips a message point is already on, and the command's
+              ;; first output line may itself be one.
+              (goto-char (max (point-min) (1- (or start (point-min)))))
+              (condition-case nil
+                  (compilation-next-error 1)
+                (error (goto-char (point-max))))
+              ;; Also establish the window start: the sentinel's last
+              ;; render anchored the window to the tail, and that forced
+              ;; start would win at the next redisplay, clamping a bare
+              ;; `set-window-point' back into the tail view.
+              (dolist (win (get-buffer-window-list buffer nil t))
+                (set-window-point win (point))
+                (with-selected-window win (recenter))))))
+          (ghostel-compile--set-mode-line-exit exit)
+          (setq next-error-last-buffer buffer)
+          (run-hook-with-args 'compilation-finish-functions
+                              buffer (ghostel-compile--status-message exit))
+          (ghostel-compile--reenter-or-abort buffer)
+          (ghostel-compile--auto-jump buffer)
+          (run-hook-with-args 'ghostel-compile-finish-functions
+                              buffer (ghostel-compile--status-message exit)))))))
 
 
 ;;; Spawning

@@ -617,6 +617,98 @@ has to be one Emacs can actually find."
       (should (equal (cons buf "finished\n")
                      ghostel-test-compile--mode-finish-called)))))
 
+(ert-deftest ghostel-test-compile-finalize-aborts-when-local-finish-hook-kills-buffer ()
+  "A buffer-local finish function that kills the buffer aborts finalize.
+Emacs makes another buffer current when the current one dies;
+finalize must not switch that buffer's major mode or insert the
+footer into it."
+  (let ((buf (generate-new-buffer " *ghostel-test-compile*"))
+        (victim (generate-new-buffer " *ghostel-test-victim*"))
+        (second-ran nil)
+        (inhibit-message t))
+    (unwind-protect
+        (progn
+          (with-current-buffer victim
+            (text-mode)
+            (insert "victim text\n"))
+          (with-current-buffer buf
+            (ghostel-mode)
+            (add-hook 'compilation-finish-functions
+                      (lambda (b _msg)
+                        (kill-buffer b)
+                        (set-buffer victim))
+                      nil t)
+            (add-hook 'compilation-finish-functions
+                      (lambda (_b _msg) (setq second-ran t))
+                      t t)
+            (setq ghostel-compile--command "true"
+                  ghostel-compile--start-time (current-time)
+                  ghostel-compile--scan-marker (copy-marker (point-max))))
+          (ghostel-compile--finalize buf 0 (current-time))
+          (should-not (buffer-live-p buf))
+          ;; Later finish functions must not run against the dead buffer.
+          (should-not second-ran)
+          (with-current-buffer victim
+            (should (eq major-mode 'text-mode))
+            (should (equal "victim text\n"
+                           (buffer-substring-no-properties
+                            (point-min) (point-max))))))
+      (when (buffer-live-p buf) (kill-buffer buf))
+      (kill-buffer victim))))
+
+(ert-deftest ghostel-test-compile-finalize-aborts-when-mode-switch-kills-buffer ()
+  "A mode hook of the finished major mode that kills the buffer aborts finalize."
+  (let ((buf (generate-new-buffer " *ghostel-test-compile*"))
+        (victim (generate-new-buffer " *ghostel-test-victim*"))
+        (inhibit-message t))
+    (unwind-protect
+        (let ((ghostel-compile-finished-major-mode
+               (lambda ()
+                 (ghostel-compile-view-mode)
+                 (kill-buffer buf)
+                 (set-buffer victim))))
+          (with-current-buffer victim
+            (text-mode)
+            (insert "victim text\n"))
+          (with-current-buffer buf
+            (ghostel-mode)
+            (setq ghostel-compile--command "true"
+                  ghostel-compile--start-time (current-time)
+                  ghostel-compile--scan-marker (copy-marker (point-max))))
+          (ghostel-compile--finalize buf 0 (current-time))
+          (should-not (buffer-live-p buf))
+          (with-current-buffer victim
+            (should (eq major-mode 'text-mode))
+            (should (equal "victim text\n"
+                           (buffer-substring-no-properties
+                            (point-min) (point-max))))))
+      (when (buffer-live-p buf) (kill-buffer buf))
+      (kill-buffer victim))))
+
+(ert-deftest ghostel-test-compile-finalize-aborts-when-global-finish-hook-kills-buffer ()
+  "A global finish function that kills the buffer aborts finalize.
+The later `ghostel-compile-finish-functions' must not run against
+the dead buffer."
+  (let* ((buf (generate-new-buffer " *ghostel-test-compile*"))
+         (inhibit-message t)
+         (ghostel-calls nil)
+         (ghostel-compile-finished-major-mode nil)
+         (compilation-finish-functions
+          (list (lambda (b _msg) (kill-buffer b))))
+         (ghostel-compile-finish-functions
+          (list (lambda (b m) (push (cons b m) ghostel-calls)))))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf
+            (ghostel-mode)
+            (setq ghostel-compile--command "true"
+                  ghostel-compile--start-time (current-time)
+                  ghostel-compile--scan-marker (copy-marker (point-max))))
+          (ghostel-compile--finalize buf 0 (current-time))
+          (should-not (buffer-live-p buf))
+          (should-not ghostel-calls))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
 (ert-deftest ghostel-test-compile-auto-jump-to-first-error ()
   "With `compilation-auto-jump-to-first-error' set, jump after parsing."
   (ghostel-test--with-compile-buffer buf
