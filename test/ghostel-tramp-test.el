@@ -179,5 +179,19 @@ matching on TRAMP-launched ghostel remotes — this canary catches it."
     (ghostel--update-directory "file://myhost/home/dan")
     (should (equal "/ssh:dan@myhost:/home/dan/" default-directory))))
 
+(ert-deftest ghostel-test-cleanup-temp-paths-non-essential ()
+  "Temp-path cleanup must not let TRAMP open a new connection.
+`non-essential' has to be bound around the deletions so TRAMP refuses
+to re-establish a dead connection — reconnecting would prompt for a
+password, e.g. right after `tramp-cleanup-all-connections'."
+  (let (seen)
+    (cl-letf (((symbol-function 'delete-file)
+               (lambda (&rest _) (push non-essential seen)))
+              ((symbol-function 'delete-directory)
+               (lambda (&rest _) (push non-essential seen))))
+      (ghostel--cleanup-temp-paths
+       '("/ssh:host:/tmp/ghostel-rc") '("/ssh:host:/tmp/ghostel-terminfo")))
+    (should (equal seen '(t t)))))
+
 (provide 'ghostel-tramp-test)
 ;;; ghostel-tramp-test.el ends here

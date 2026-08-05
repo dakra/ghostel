@@ -3832,11 +3832,15 @@ available or the push fails."
 (defun ghostel--cleanup-temp-paths (files dirs)
   "Delete temporary FILES and DIRS created for remote shell integration.
 Directories are removed recursively so any contents written into them,
-such as a per-session `.zshenv', are cleaned up as well."
-  (dolist (f files)
-    (ignore-errors (delete-file f)))
-  (dolist (d dirs)
-    (ignore-errors (delete-directory d t))))
+such as a per-session `.zshenv', are cleaned up as well.
+Binding `non-essential' keeps TRAMP from opening a new connection (and
+possibly prompting for a password) just to delete temp files; when the
+remote connection is already gone the paths are simply left behind."
+  (let ((non-essential t))
+    (dolist (f files)
+      (ignore-errors (delete-file f)))
+    (dolist (d dirs)
+      (ignore-errors (delete-directory d t)))))
 
 (defun ghostel--merge-integration-plists (base extra)
   "Merge EXTRA into BASE plist, appending list values for shared keys.
