@@ -2632,6 +2632,68 @@ attaches to it and gates it by major mode."
     (should (evil-escape--insert))
     (should (equal "x" (buffer-string)))))
 
+(ert-deftest evil-ghostel-test-wrap-pattern-args-transforms-literal ()
+  "Ex-search patterns get wrap-tolerant regexps without mutation."
+  (with-temp-buffer
+    (setq major-mode 'ghostel-mode)
+    (let* ((pattern (list "foo" nil t))
+           (args (list pattern 'forward))
+           (out (evil-ghostel--wrap-search-pattern-args args)))
+      (should (equal (nth 0 (car out))
+                     (ghostel--wrap-tolerant-regexp "foo")))
+      (should (equal (cdr out) '(forward)))
+      ;; The shared pattern object must never be mutated.
+      (should (equal pattern '("foo" nil t)))
+      ;; Case and whole-line flags carry over.
+      (should (equal (cdr (car out)) '(nil t))))
+    ;; Real regexps and already-transformed patterns pass through.
+    (let ((args (list (list "f.o" nil t) 'forward)))
+      (should (eq (evil-ghostel--wrap-search-pattern-args args) args)))
+    (let ((args (list (list (ghostel--wrap-tolerant-regexp "foo") nil t))))
+      (should (eq (evil-ghostel--wrap-search-pattern-args args) args))))
+  ;; Outside ghostel buffers: untouched.
+  (with-temp-buffer
+    (let ((args (list (list "foo" nil t) 'forward)))
+      (should (eq (evil-ghostel--wrap-search-pattern-args args) args)))))
+
+(ert-deftest evil-ghostel-test-wrap-search-function-crosses-wrap ()
+  "`evil-search-function' results match literals across soft wraps."
+  (with-temp-buffer
+    (setq major-mode 'ghostel-mode)
+    (setq-local parse-sexp-lookup-properties t)
+    (insert "foobarba"
+            (propertize "\n" 'ghostel-wrap t
+                        'syntax-table (string-to-syntax "'"))
+            "zqux")
+    (goto-char (point-min))
+    ;; Non-regexp search (isearch module's n/N path).
+    (should (funcall (evil-search-function t nil nil nil) "barbazqu" nil t))
+    (should (equal (match-string 0) "barba\nzqu"))
+    ;; Regexp search with a pure-literal string transforms too.
+    (goto-char (point-min))
+    (should (funcall (evil-search-function t t nil nil) "barbazqu" nil t))
+    ;; A real regexp keeps its meaning within a row.
+    (goto-char (point-min))
+    (should (funcall (evil-search-function t t nil nil) "f.obar" nil t))))
+
+(ert-deftest evil-ghostel-test-wrap-ex-search-finds-wrapped-match ()
+  "`evil-ex-search-find-next-pattern' matches across a soft wrap."
+  (with-temp-buffer
+    (setq major-mode 'ghostel-mode)
+    (setq-local parse-sexp-lookup-properties t)
+    (insert "foobarba"
+            (propertize "\n" 'ghostel-wrap t
+                        'syntax-table (string-to-syntax "'"))
+            "zqux\nplain")
+    (goto-char (point-min))
+    (should (evil-ex-search-find-next-pattern (list "barbazqu" nil t)
+                                              'forward))
+    (should (equal (match-string 0) "barba\nzqu"))
+    ;; Hard newlines still block matches.
+    (goto-char (point-min))
+    (should-not (evil-ex-search-find-next-pattern (list "zquxplain" nil t)
+                                                  'forward))))
+
 (defun evil-ghostel-test-run ()
   "Run all evil-ghostel tests.
 Most tests mock the native module; the few that drive a real terminal

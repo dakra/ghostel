@@ -899,14 +899,23 @@ fn flushSpan(self: *Self, env: emacs.Env) !void {
 
     try self.adjustGlyphs(env, span_start);
 
-    for (self.span.line_wraps.items) |offset| {
-        // Mark newlines from soft-wrapped rows so copy mode can filter them
-        _ = env.f("put-text-property", .{
-            span_start + offset,
-            span_start + offset + 1,
+    if (self.span.line_wraps.items.len > 0) {
+        // Mark newlines from soft-wrapped rows so copy mode can filter them.
+        // The expression-prefix syntax class makes them matchable as `\s'` in
+        // wrap-tolerant search regexps; no other buffer character carries it.
+        const wrap_props = env.list(.{
             emacs.sym.@"ghostel-wrap",
             env.t(),
+            emacs.sym.@"syntax-table",
+            env.f("string-to-syntax", .{"'"}),
         });
+        for (self.span.line_wraps.items) |offset| {
+            _ = env.f("add-text-properties", .{
+                span_start + offset,
+                span_start + offset + 1,
+                wrap_props,
+            });
+        }
     }
 
     if (self.span.cursor_char_pos) |pos| {
