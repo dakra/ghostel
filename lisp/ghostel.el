@@ -2489,6 +2489,12 @@ Tracks the mode the user was in immediately before the most
 recent read-only entry, so Emacs → copy → exit returns to Emacs
 mode and copy → Emacs → exit returns to copy.")
 
+(defvar-local ghostel--readonly-exit-function nil
+  "When non-nil, `ghostel-readonly-exit' calls this instead of the default restore.
+The function is responsible for the full post-exit state (input mode, keymap,
+read-only flag, mode line, redraw).  Set in compilation-style compile buffers,
+whose exit must restore the view keymap rather than a terminal input mode.")
+
 (defun ghostel--readonly-keymap ()
   "Return the keymap to use for the current read-only mode."
   (if ghostel-readonly-fast-exit
@@ -2626,16 +2632,18 @@ Add it to other jump commands as a hook or `:after' advice (see the README)."
   (when (memq ghostel--input-mode '(copy emacs))
     (let ((target (or ghostel--pre-readonly-mode 'semi-char)))
       (setq ghostel--pre-readonly-mode nil)
-      ;; Return to the live viewport before reenabling terminal input.
-      (goto-char (point-max))
-      (setq ghostel--force-next-redraw t)
-      (pcase target
-        ('char  (ghostel-char-mode))
-        ('emacs (ghostel-emacs-mode))
-        (_      (ghostel-semi-char-mode)))
-      (ghostel--adjust-size (selected-window) t)
-      (ghostel--anchor-window nil t)
-      (ghostel-force-redraw))
+      (if ghostel--readonly-exit-function
+          (funcall ghostel--readonly-exit-function)
+        ;; Return to the live viewport before reenabling terminal input.
+        (goto-char (point-max))
+        (setq ghostel--force-next-redraw t)
+        (pcase target
+          ('char  (ghostel-char-mode))
+          ('emacs (ghostel-emacs-mode))
+          (_      (ghostel-semi-char-mode)))
+        (ghostel--adjust-size (selected-window) t)
+        (ghostel--anchor-window nil t)
+        (ghostel-force-redraw)))
     (message "Read-only mode exited")))
 
 (defun ghostel-readonly-exit-and-clear ()
@@ -2649,9 +2657,11 @@ Add it to other jump commands as a hook or `:after' advice (see the README)."
 Only forwards the key when the mode we are returning to actually
 accepts terminal input (semi-char or char)."
   (interactive)
-  (let ((target (or ghostel--pre-readonly-mode 'semi-char)))
+  (let ((target (or ghostel--pre-readonly-mode 'semi-char))
+        (custom-exit ghostel--readonly-exit-function))
     (ghostel-readonly-exit)
-    (when (and ghostel--term (memq target '(semi-char char)))
+    (when (and ghostel--term (not custom-exit)
+               (memq target '(semi-char char)))
       (ghostel--self-insert))))
 
 (defun ghostel-readonly-RET-or-exit-and-send ()
@@ -2668,9 +2678,11 @@ press anywhere else exits and forwards a CR to the terminal."
       (progn
         (ghostel-readonly-exit)
         (ghostel--open-link url))
-    (let ((target (or ghostel--pre-readonly-mode 'semi-char)))
+    (let ((target (or ghostel--pre-readonly-mode 'semi-char))
+          (custom-exit ghostel--readonly-exit-function))
       (ghostel-readonly-exit)
-      (when (and ghostel--term (memq target '(semi-char char)))
+      (when (and ghostel--term (not custom-exit)
+                 (memq target '(semi-char char)))
         (ghostel--send-encoded "return" "")))))
 
 (defun ghostel--filter-soft-wraps (text)

@@ -2390,6 +2390,102 @@ mode-line indicator sticks forever."
         (ghostel--mark-activated)
         (should (eq ghostel--input-mode 'copy))))))
 
+(ert-deftest ghostel-test-compile-readonly-exit-restores-view-state ()
+  "Exiting copy mode in a compilation-style buffer restores the view state.
+The default exit installs `ghostel-semi-char-mode-map' and drops the
+read-only barrier; a compilation-style buffer must get its view
+keymap and read-only flag back instead."
+  (ghostel-test--with-compile-buffer buf
+    (ghostel-test--insert-rendered "output")
+    (setq-local ghostel--term 'fake)
+    (use-local-map ghostel-compile-view-mode-map)
+    (setq ghostel--inhibit-insert-forwarding t)
+    (setq ghostel--readonly-exit-function
+          #'ghostel-compile--restore-compilation-style)
+    (ghostel--sync-read-only)
+    (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+              ((symbol-function 'ghostel--anchor-window) #'ignore))
+      (let ((inhibit-message t))
+        (ghostel-copy-mode)
+        (should (eq ghostel--input-mode 'copy))
+        (ghostel-readonly-exit)
+        (should (eq ghostel--input-mode 'semi-char))
+        (should (eq (current-local-map) ghostel-compile-view-mode-map))
+        (should buffer-read-only)))))
+
+(ert-deftest ghostel-test-compile-readonly-exit-and-send-sends-nothing ()
+  "The exiting keypress must not reach the PTY in a compilation-style buffer."
+  (ghostel-test--with-compile-buffer buf
+    (ghostel-test--insert-rendered "output")
+    (setq-local ghostel--term 'fake)
+    (use-local-map ghostel-compile-view-mode-map)
+    (setq ghostel--inhibit-insert-forwarding t)
+    (setq ghostel--readonly-exit-function
+          #'ghostel-compile--restore-compilation-style)
+    (ghostel--sync-read-only)
+    (cl-letf* ((sent nil)
+               ((symbol-function 'ghostel--invalidate) #'ignore)
+               ((symbol-function 'ghostel--anchor-window) #'ignore)
+               ((symbol-function 'ghostel--self-insert)
+                (lambda (&rest _) (setq sent 'self-insert)))
+               ((symbol-function 'ghostel--send-encoded)
+                (lambda (&rest _) (setq sent 'encoded))))
+      (let ((inhibit-message t))
+        (ghostel-copy-mode)
+        (ghostel-readonly-exit-and-send)
+        (should-not sent)
+        (should (eq (current-local-map) ghostel-compile-view-mode-map))
+        (ghostel-copy-mode)
+        (ghostel-readonly-RET-or-exit-and-send)
+        (should-not sent)
+        (should (eq (current-local-map) ghostel-compile-view-mode-map))))))
+
+(ert-deftest ghostel-test-compile-copy-mode-exit-integration ()
+  "End-to-end: copy mode in a real compile run exits back to the view state.
+Goes through `ghostel-compile--start' so the production wiring (the
+inhibit flag and exit function installed by `--prepare-buffer') is
+what the exit exercises, not test-installed state."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let ((buf-name "*ghostel-test-copy-exit-integration*")
+        (compilation-in-progress nil)
+        (inhibit-message t)
+        (ghostel-compile-finished-major-mode nil))
+    (when (get-buffer buf-name)
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer buf-name)))
+    (unwind-protect
+        (let ((buf (ghostel-compile--start "sleep 30" buf-name
+                                           default-directory)))
+          (with-current-buffer buf
+            (ghostel-test--wait-for
+             ghostel--process
+             (lambda () (eq 'run (process-status ghostel--process))))
+            ;; Wiring installed by `--prepare-buffer'.
+            (should ghostel--inhibit-insert-forwarding)
+            (should (eq ghostel--readonly-exit-function
+                        #'ghostel-compile--restore-compilation-style))
+            (ghostel-copy-mode)
+            (should (eq ghostel--input-mode 'copy))
+            (ghostel-readonly-exit)
+            (should (eq ghostel--input-mode 'semi-char))
+            (should (eq (current-local-map) ghostel-compile-view-mode-map))
+            (should buffer-read-only)
+            ;; The ":run" indicator is back (batch `format-mode-line'
+            ;; renders "", so check the construct itself).
+            (should (member ":run" (flatten-tree mode-line-process)))
+            ;; Kill the sleep process so the test doesn't leak.
+            (let ((p ghostel--process))
+              (when (process-live-p p)
+                (set-process-sentinel p #'ignore)
+                (set-process-filter p #'ignore)
+                (setq compilation-in-progress
+                      (delq p compilation-in-progress))
+                (delete-process p)))))
+      (when (get-buffer buf-name)
+        (let ((kill-buffer-query-functions nil))
+          (kill-buffer buf-name))))))
+
 (ert-deftest ghostel-test-compile-kill-buffer-clears-in-progress ()
   "End-to-end: killing a live compile buffer clears the [Compiling] indicator."
   :tags '(native)

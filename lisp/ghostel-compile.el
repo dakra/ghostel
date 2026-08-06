@@ -765,7 +765,7 @@ the rendered buffer remains read-only in both cases."
         (use-local-map ghostel-compile-view-mode-map)
         (setq buffer-read-only t)
         ;; Compilation-style buffers keep the plain read-only barrier.
-        (setq ghostel--inhibit-insert-forwarding t))
+        (ghostel-compile--set-compilation-style-input t))
       ;; Enable the live toggle (`C-c C-j' / `C-c C-e') in compile
       ;; buffers, regardless of which run mode they're in.  The
       ;; minor-mode keymap takes precedence over the major-mode map
@@ -1046,6 +1046,31 @@ case \"$s\" in *-icanon*) ;; *) stty echo < %s 2>/dev/null ;; esac"
          (format "stty -echo < %s 2>/dev/null"
                  (shell-quote-argument tty)))))))
 
+(defun ghostel-compile--set-compilation-style-input (enable)
+  "Install (non-nil ENABLE) or clear the compilation-style input barrier.
+Sets `ghostel--inhibit-insert-forwarding' and `ghostel--readonly-exit-function'
+as a pair: the flag alone would leave copy-mode exits restoring the semi-char
+keymap over the view map."
+  (setq ghostel--inhibit-insert-forwarding (and enable t))
+  (setq ghostel--readonly-exit-function
+        (and enable #'ghostel-compile--restore-compilation-style)))
+
+(defun ghostel-compile--restore-compilation-style ()
+  "Restore compilation-style state after exiting copy or Emacs mode.
+Installed as `ghostel--readonly-exit-function' so leaving a
+read-only mode reinstates the view keymap and read-only barrier
+instead of a terminal input mode.  Point stays where the user left it."
+  (ghostel--leave-readonly-state)
+  (setq ghostel--input-mode 'semi-char)
+  (use-local-map ghostel-compile-view-mode-map)
+  (ghostel--sync-read-only)
+  (setq ghostel--mode-line-tag nil)
+  (ghostel--mode-line-refresh)
+  (when (process-live-p ghostel--process)
+    (ghostel-compile--set-mode-line-running)
+    (setq ghostel--force-next-redraw t)
+    (ghostel--invalidate)))
+
 (defun ghostel-compile-switch-to-interactive ()
   "Switch the current `ghostel-compile' run to interactive mode.
 `ghostel-semi-char-mode-map' is restored so keystrokes reach the running
@@ -1063,7 +1088,7 @@ Bound to \\[ghostel-compile-switch-to-interactive] in
       (message "ghostel-compile: already interactive")
     (setq ghostel-compile--interactive t)
     (use-local-map ghostel-semi-char-mode-map)
-    (setq ghostel--inhibit-insert-forwarding nil)
+    (ghostel-compile--set-compilation-style-input nil)
     (ghostel--sync-read-only)
     ;; Turn on PTY echo so input typed at a read prompt is visible.
     ;; Skipped when the cursor row looks like a password prompt: the
@@ -1102,7 +1127,7 @@ Bound to \\[ghostel-compile-switch-to-compilation-style] in
       (message "ghostel-compile: already compilation-style")
     (setq ghostel-compile--interactive nil)
     (use-local-map ghostel-compile-view-mode-map)
-    (setq ghostel--inhibit-insert-forwarding t)
+    (ghostel-compile--set-compilation-style-input t)
     (ghostel--sync-read-only)
     (ghostel-compile--set-pty-echo nil)
     (ghostel-compile--set-mode-line-running)
