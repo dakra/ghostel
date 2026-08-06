@@ -2355,6 +2355,41 @@ mode-line indicator sticks forever."
     ;; the list itself is the testable state).
     (should-not compilation-in-progress)))
 
+(ert-deftest ghostel-test-compile-point-leave-suppressed ()
+  "Point-leave must not enter copy mode in a compilation-style buffer."
+  (ghostel-test--with-compile-buffer buf
+    (ghostel-test--insert-rendered "output")
+    (setq-local ghostel--term 'fake)
+    (setq-local ghostel--cursor-char-pos (point-max))
+    (setq ghostel--inhibit-insert-forwarding t)
+    (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+              ((symbol-function 'ghostel--anchor-window) #'ignore))
+      (let ((ghostel-point-leave-input-mode 'copy))
+        (goto-char (point-min))
+        (ghostel-maybe-leave-input)
+        (should (eq ghostel--input-mode 'semi-char))
+        ;; Control: with the flag off the same state enters copy mode.
+        (setq ghostel--inhibit-insert-forwarding nil)
+        (ghostel-maybe-leave-input)
+        (should (eq ghostel--input-mode 'copy))))))
+
+(ert-deftest ghostel-test-compile-mark-activation-suppressed ()
+  "Mark activation must not enter copy mode in a compilation-style buffer."
+  (ghostel-test--with-compile-buffer buf
+    (ghostel-test--insert-rendered "output")
+    (setq-local ghostel--term 'fake)
+    (setq ghostel--inhibit-insert-forwarding t)
+    (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+              ((symbol-function 'ghostel--anchor-window) #'ignore))
+      (let ((ghostel-mark-activation-input-mode 'copy)
+            (this-command 'set-mark-command))
+        (ghostel--mark-activated)
+        (should (eq ghostel--input-mode 'semi-char))
+        ;; Control: with the flag off the same activation enters copy mode.
+        (setq ghostel--inhibit-insert-forwarding nil)
+        (ghostel--mark-activated)
+        (should (eq ghostel--input-mode 'copy))))))
+
 (ert-deftest ghostel-test-compile-kill-buffer-clears-in-progress ()
   "End-to-end: killing a live compile buffer clears the [Compiling] indicator."
   :tags '(native)

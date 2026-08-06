@@ -1671,7 +1671,8 @@ Detect that case via `this-command-keys-vector' and re-inject meta."
 ;;; Programmatic insert forwarding
 
 (defvar-local ghostel--inhibit-insert-forwarding nil
-  "Non-nil disables insert forwarding (e.g. compilation-style runs).")
+  "Non-nil disables insert forwarding (e.g. compilation-style runs).
+Also suppresses automatic input-mode switching (point-leave, mark-activation).")
 
 (defsubst ghostel--insert-forwarding-live-p ()
   "Non-nil in a terminal-input mode with a live process and forwarding on."
@@ -2599,7 +2600,8 @@ command set the region, so the selection survives the switch."
   (when (and (not (memq this-command '(ghostel-mouse-press-or-copy-mode
                                        ghostel-mouse-release-or-set-point
                                        ghostel-mouse-drag-or-set-region)))
-             (eq ghostel--input-mode 'semi-char))
+             (eq ghostel--input-mode 'semi-char)
+             (not ghostel--inhibit-insert-forwarding))
     (ghostel--enter-readonly-input-mode ghostel-mark-activation-input-mode)))
 
 (defun ghostel-maybe-leave-input (&rest _)
@@ -2610,6 +2612,7 @@ Add it to other jump commands as a hook or `:after' advice (see the README)."
   (interactive)
   (when (and ghostel-point-leave-input-mode
              (eq ghostel--input-mode 'semi-char)
+             (not ghostel--inhibit-insert-forwarding)
              ghostel--term
              ghostel--cursor-char-pos
              (not executing-kbd-macro)
