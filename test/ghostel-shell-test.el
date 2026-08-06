@@ -1788,6 +1788,15 @@ prompt line (no `ghostel-prompt' property exists after point)."
   (should (ghostel--local-host-p "localhost"))
   (should (ghostel--local-host-p (system-name)))
   (should (ghostel--local-host-p (car (split-string (system-name) "\\."))))
+  ;; mDNS drift: gethostname(2) may report NAME.local while
+  ;; `system-name' holds NAME.
+  (should (ghostel--local-host-p
+           (concat (car (split-string (system-name) "\\.")) ".local")))
+  (should (ghostel--local-host-p
+           (upcase (concat (car (split-string (system-name) "\\.")) ".local"))))
+  (should-not (ghostel--local-host-p "ghostel-other-machine.local"))
+  (should-not (ghostel--local-host-p
+               (concat (car (split-string (system-name) "\\.")) ".example.com")))
   (should-not (ghostel--local-host-p "remote-server.example.com")))
 
 

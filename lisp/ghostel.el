@@ -3655,14 +3655,20 @@ EVENT is the state-change description passed by Emacs."
      ((member base '("nu" "nushell")) 'nu))))
 
 (defun ghostel--local-host-p (host)
-  "Return non-nil if HOST refers to the local machine."
+  "Return non-nil if HOST refers to the local machine.
+A trailing \".local\" (mDNS) suffix on HOST is ignored: the macOS
+kernel hostname drifts between NAME and NAME.local with network state,
+while the function `system-name' keeps the value from Emacs startup."
   (or (null host)
       (string= host "")
-      (eq t (compare-strings host nil nil "localhost" nil nil t))
-      (eq t (compare-strings host nil nil (system-name) nil nil t))
-      (eq t (compare-strings
-             host nil nil
-             (car (split-string (system-name) "\\.")) nil nil t))))
+      (let ((host (if (string-suffix-p ".local" host t)
+                      (substring host 0 (- (length host) (length ".local")))
+                    host)))
+        (or (eq t (compare-strings host nil nil "localhost" nil nil t))
+            (eq t (compare-strings host nil nil (system-name) nil nil t))
+            (eq t (compare-strings
+                   host nil nil
+                   (car (split-string (system-name) "\\.")) nil nil t))))))
 
 (defun ghostel--tramp-shell-spec (method)
   "Return (PROGRAM . EXTRA-ARGS) for TRAMP METHOD from `ghostel-tramp-shells'.
