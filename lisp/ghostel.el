@@ -4250,7 +4250,11 @@ Run from `kill-buffer-hook' in native PTY buffers."
   ;; exited, matching Emacs process lifetime semantics.
   (when ghostel--process
     (set-process-buffer ghostel--process nil))
-  (ghostel--kill-native-process ghostel--term))
+  ;; A major-mode change after process exit wipes `ghostel--term'
+  ;; while the permanent-local `kill-buffer-hook' keeps this entry;
+  ;; nil means there is no native child to reap.
+  (when ghostel--term
+    (ghostel--kill-native-process ghostel--term)))
 
 (defun ghostel--start-process ()
   "Start the configured shell with a PTY.

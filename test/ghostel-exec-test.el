@@ -284,6 +284,31 @@ is nil, SIGHUP is ignored."
           (ghostel-test--cleanup-exec-buffer buf))
         (delete-directory dir t)))))
 
+(ert-deftest ghostel-test-exec-kill-buffer-after-mode-change-post-exit ()
+  "A buffer whose major mode changed after process exit can be killed.
+The mode change wipes `ghostel--term' while the permanent-local
+`kill-buffer-hook' keeps `ghostel--kill-native-process-hook'; the hook
+must treat the nil term as nothing-to-reap instead of signalling a
+type error that aborts `kill-buffer'."
+  :tags '(native posix)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let ((buf (generate-new-buffer " *ghostel-test-mode-change-kill*"))
+        proc)
+    (unwind-protect
+        (progn
+          (with-current-buffer buf
+            (let ((ghostel-kill-buffer-on-exit nil))
+              (setq proc (ghostel-exec buf "/bin/sh" '("-c" "exit 0")))
+              (ghostel-test--wait-until
+               (lambda () (not (process-live-p proc))) nil 5))
+            (should (buffer-live-p buf))
+            (fundamental-mode)
+            (should-not ghostel--term))
+          (kill-buffer buf)
+          (should-not (buffer-live-p buf)))
+      (when (buffer-live-p buf)
+        (ghostel-test--cleanup-exec-buffer buf)))))
+
 (ert-deftest ghostel-test-eshell-visual-command-mode-toggles-advice ()
   "Enabling/disabling the mode adds/removes the `eshell-exec-visual' advice."
   (let ((was-on ghostel-eshell-visual-command-mode))

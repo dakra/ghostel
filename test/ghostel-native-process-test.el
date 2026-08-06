@@ -100,6 +100,21 @@ bindings needed by the test."
             (should-not (process-buffer pipe))))
       (kill-buffer buffer))))
 
+(ert-deftest ghostel-test-native-kill-buffer-hook-tolerates-nil-term ()
+  "Native `kill-buffer' cleanup is a no-op when `ghostel--term' is nil.
+A major-mode change after process exit wipes the buffer-local term while
+the permanent-local `kill-buffer-hook' keeps the hook entry; the hook
+must not signal, or `kill-buffer' aborts and the buffer survives."
+  (let ((buffer (generate-new-buffer " *ghostel-test-native-nil-term*"))
+        called)
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'ghostel--kill-native-process)
+                     (lambda (_term) (setq called t))))
+            (ghostel--kill-native-process-hook))
+          (should-not called))
+      (kill-buffer buffer))))
+
 (ert-deftest ghostel-test-events-filter-multiple-events-per-chunk ()
   "Native process event filter evaluates multiple events in one chunk."
   (ghostel-test-native-process--with-events-filter
