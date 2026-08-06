@@ -2329,5 +2329,55 @@ ever, so that row would keep its link forever otherwise."
           (should (equal uri (get-text-property (1- (match-end 0))
                                                 'help-echo))))))))
 
+;;; Kill-buffer sentinel cleanup and copy-mode suppression
+
+(ert-deftest ghostel-test-compile-sentinel-cleans-up-dead-buffer ()
+  "Killing the compile buffer mid-run still drains `compilation-in-progress'.
+The buffer kill deletes the process and fires the sentinel with a
+dead buffer; the cleanup must run anyway or the global [Compiling]
+mode-line indicator sticks forever."
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let* ((compilation-in-progress nil)
+         (buf (generate-new-buffer " *ghostel-test-sentinel-cleanup*"))
+         (proc (make-process :name "ghostel-test-sentinel-cleanup"
+                             :buffer buf
+                             :command '("/bin/sh" "-c" "sleep 5")
+                             :sentinel #'ghostel-compile--sentinel)))
+    (push proc compilation-in-progress)
+    (when (fboundp 'compilation--update-in-progress-mode-line)
+      (compilation--update-in-progress-mode-line))
+    (let ((kill-buffer-query-functions nil))
+      (kill-buffer buf))
+    (ghostel-test--wait-for
+     proc (lambda () (not (memq proc compilation-in-progress))))
+    ;; The [Compiling] indicator is a mode-line construct conditional on
+    ;; `compilation-in-progress' (batch `format-mode-line' renders "" so
+    ;; the list itself is the testable state).
+    (should-not compilation-in-progress)))
+
+(ert-deftest ghostel-test-compile-kill-buffer-clears-in-progress ()
+  "End-to-end: killing a live compile buffer clears the [Compiling] indicator."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let ((buf-name "*ghostel-test-kill-in-progress*")
+        (compilation-in-progress nil)
+        (inhibit-message t)
+        (ghostel-compile-finished-major-mode nil))
+    (when (get-buffer buf-name)
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer buf-name)))
+    (let* ((buf (ghostel-compile--start "sleep 30" buf-name
+                                        default-directory))
+           (proc (buffer-local-value 'ghostel--process buf)))
+      (ghostel-test--wait-for
+       proc (lambda () (eq 'run (process-status proc))))
+      (should (memq proc compilation-in-progress))
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer buf))
+      (ghostel-test--wait-for
+       proc (lambda () (not (memq proc compilation-in-progress))))
+      ;; The [Compiling] indicator is conditional on this list.
+      (should-not compilation-in-progress))))
+
 (provide 'ghostel-compile-test)
 ;;; ghostel-compile-test.el ends here

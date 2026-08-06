@@ -562,29 +562,34 @@ destroys the grid, so commit it here or lose the output it holds."
 (defun ghostel-compile--sentinel (process _event)
   "Sentinel for the compile PROCESS: finalize the buffer on exit."
   (when (memq (process-status process) '(exit signal))
-    (let ((buffer (process-buffer process))
-          (exit (process-exit-status process)))
-      (when (buffer-live-p buffer)
-        (with-current-buffer buffer
-          (when ghostel-compile-debug
-            (message "ghostel-compile: sentinel exit=%S status=%S"
-                     exit (process-status process)))
-          ;; Cancel any scheduled redraw and commit the current terminal state
-          ;; to the buffer synchronously.  Without this, a short-lived
-          ;; command (`echo`, `false`, `exit 7`) finishes before the
-          ;; ~16 ms redraw timer fires and its output is lost when
-          ;; `--teardown-terminal' destroys the renderer.
-          (when ghostel--term
-            (when ghostel--redraw-timer
-              (cancel-timer ghostel--redraw-timer)
-              (setq ghostel--redraw-timer nil))
-            (ghostel--redraw-now buffer)
-            (ghostel-compile--commit-pending-frame buffer))
-          (setq compilation-in-progress
-                (delq process compilation-in-progress))
-          (when (fboundp 'compilation--update-in-progress-mode-line)
-            (compilation--update-in-progress-mode-line))
-          (ghostel-compile--finalize buffer exit (current-time)))))))
+    ;; The `compilation-in-progress' cleanup runs unconditionally: killing
+    ;; the buffer kills the process and fires this sentinel with a dead
+    ;; buffer, and the process must still leave the in-progress list or
+    ;; the global [Compiling] mode-line indicator sticks forever.
+    (unwind-protect
+        (let ((buffer (process-buffer process))
+              (exit (process-exit-status process)))
+          (when (buffer-live-p buffer)
+            (with-current-buffer buffer
+              (when ghostel-compile-debug
+                (message "ghostel-compile: sentinel exit=%S status=%S"
+                         exit (process-status process)))
+              ;; Cancel any scheduled redraw and commit the current terminal state
+              ;; to the buffer synchronously.  Without this, a short-lived
+              ;; command (`echo`, `false`, `exit 7`) finishes before the
+              ;; ~16 ms redraw timer fires and its output is lost when
+              ;; `--teardown-terminal' destroys the renderer.
+              (when ghostel--term
+                (when ghostel--redraw-timer
+                  (cancel-timer ghostel--redraw-timer)
+                  (setq ghostel--redraw-timer nil))
+                (ghostel--redraw-now buffer)
+                (ghostel-compile--commit-pending-frame buffer))
+              (ghostel-compile--finalize buffer exit (current-time)))))
+      (setq compilation-in-progress
+            (delq process compilation-in-progress))
+      (when (fboundp 'compilation--update-in-progress-mode-line)
+        (compilation--update-in-progress-mode-line)))))
 
 (defconst ghostel-compile--stty-flags
   (concat ghostel--default-stty " -echo")
