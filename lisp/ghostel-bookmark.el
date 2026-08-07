@@ -37,7 +37,7 @@ Notes the working directory and buffer name.
 See `ghostel--bookmark-handler' for how they are restored."
   `(nil
     (handler . ghostel--bookmark-handler)
-    (thisdir . ,default-directory)
+    (location . ,default-directory)
     (buf-name . ,(buffer-name))
     (defaults . nil)))
 
@@ -48,14 +48,14 @@ Reuse a live ghostel buffer of the bookmarked name, or create one with a shell
 started in the bookmarked directory.  When a reused buffer's directory differs
 and `ghostel-bookmark-check-dir' is non-nil, type a `cd' into the shell."
   (ghostel--load-module t)
-  (let* ((thisdir (bookmark-prop-get bmk 'thisdir))
+  (let* ((dir (bookmark-prop-get bmk 'location))
          (buf-name (bookmark-prop-get bmk 'buf-name))
          (buf (get-buffer buf-name))
          (mode (and buf (buffer-local-value 'major-mode buf))))
-    ;; Create branch: the shell starts directly in THISDIR (no `cd').
+    ;; Create branch: the shell starts directly in DIR (no `cd').
     (when (or (not buf) (not (eq mode 'ghostel-mode)))
       (let ((default-directory (if ghostel-bookmark-check-dir
-                                   thisdir
+                                   dir
                                  default-directory)))
         (setq buf (ghostel--create buf-name))
         (with-current-buffer buf
@@ -67,15 +67,18 @@ and `ghostel-bookmark-check-dir' is non-nil, type a `cd' into the shell."
     (with-current-buffer buf
       (when (and ghostel-bookmark-check-dir
                  ghostel--term
-                 (not (string-equal default-directory thisdir)))
+                 (not (string-equal default-directory dir)))
         (when (memq ghostel--input-mode '(copy emacs))
           (ghostel-readonly-exit))
         ;; Ghostel records remote dirs as TRAMP paths, so strip the TRAMP prefix
         ;; with `file-local-name', and quote so paths with spaces survive.
         (ghostel-send-string
-         (concat "cd " (shell-quote-argument (file-local-name thisdir))))
+         (concat "cd " (shell-quote-argument (file-local-name dir))))
         (ghostel-send-key "return")))
     (set-buffer buf)))
+
+;; Fills the Type column of `bookmark-bmenu-list' (Emacs 29+).
+(put 'ghostel--bookmark-handler 'bookmark-handler-type "Ghostel")
 
 (provide 'ghostel-bookmark)
 ;;; ghostel-bookmark.el ends here

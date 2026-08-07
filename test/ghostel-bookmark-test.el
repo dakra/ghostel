@@ -14,15 +14,27 @@
 (require 'ghostel-bookmark)
 
 (ert-deftest ghostel-test-bookmark-make-record ()
-  "`ghostel--bookmark-make-record' captures handler, dir, and buffer name."
+  "`ghostel--bookmark-make-record' captures handler, dir, and buffer name.
+The directory goes under `location' so `bookmark-bmenu-list' shows it
+instead of \"-- Unknown location --\"."
   (ghostel-test--with-compile-buffer buf
     (let* ((default-directory "/tmp/ghostel-bookmark-make-record/")
            (record (ghostel--bookmark-make-record)))
       (should (eq (bookmark-prop-get record 'handler)
                   'ghostel--bookmark-handler))
-      (should (equal (bookmark-prop-get record 'thisdir)
+      (should (equal (bookmark-prop-get record 'location)
                      "/tmp/ghostel-bookmark-make-record/"))
+      ;; `bookmark-location' is what the bmenu File column shows.  Point
+      ;; `bookmark-default-file' at nothing so it cannot load the user's.
+      (let ((bookmark-default-file "/nonexistent/ghostel-test-bookmarks"))
+        (should (equal (bookmark-location record)
+                       "/tmp/ghostel-bookmark-make-record/")))
       (should (equal (bookmark-prop-get record 'buf-name) (buffer-name))))))
+
+(ert-deftest ghostel-test-bookmark-handler-type ()
+  "The handler carries a `bookmark-handler-type' for the bmenu Type column."
+  (should (equal (get 'ghostel--bookmark-handler 'bookmark-handler-type)
+                 "Ghostel")))
 
 (ert-deftest ghostel-test-bookmark-mode-wires-record-function ()
   "`ghostel-mode' wires `bookmark-make-record-function'; the record round-trips.
@@ -35,11 +47,11 @@
                   'ghostel--bookmark-handler))
       (should (equal (bookmark-prop-get record 'buf-name) (buffer-name))))))
 
-(defun ghostel-test--bookmark-record (buf-name thisdir)
-  "Return a ghostel bookmark record for BUF-NAME pointing at THISDIR."
+(defun ghostel-test--bookmark-record (buf-name dir)
+  "Return a ghostel bookmark record for BUF-NAME pointing at DIR."
   `(,buf-name
     (handler . ghostel--bookmark-handler)
-    (thisdir . ,thisdir)
+    (location . ,dir)
     (buf-name . ,buf-name)
     (defaults . nil)))
 
