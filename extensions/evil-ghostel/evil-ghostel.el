@@ -903,6 +903,47 @@ to the shell; without the preview the chord still works via `read-event'."
             #'evil-ghostel--evil-escape-skip-insert)
 
 
+;; Wrap-tolerant search
+
+(defun evil-ghostel--wrap-search-pattern-args (args)
+  "Make a literal ex-search pattern in ARGS tolerant of soft wraps.
+Builds a fresh pattern list: the original object is shared global state
+\(`evil-ex-search-pattern', history, substitute reuse) and must not be mutated."
+  (let ((pattern (car args)))
+    (if (and (derived-mode-p 'ghostel-mode)
+             (consp pattern)
+             (stringp (nth 0 pattern))
+             (ghostel--wrap-literal-safe-p (nth 0 pattern)))
+        (cons (list (ghostel--wrap-tolerant-regexp (nth 0 pattern))
+                    (nth 1 pattern) (nth 2 pattern))
+              (cdr args))
+      args)))
+
+(advice-add 'evil-ex-search-find-next-pattern :filter-args
+            #'evil-ghostel--wrap-search-pattern-args)
+
+(defun evil-ghostel--wrap-search-function (orig &optional forward regexp-p
+                                                wrap predicate)
+  "Make search functions built by ORIG tolerant of soft wraps.
+In ghostel buffers, literal searches (REGEXP-P nil, or a regexp that
+is a pure literal) go through `ghostel--wrap-tolerant-regexp'.
+FORWARD, WRAP and PREDICATE pass through unchanged.  Covers both
+incremental search and its n/N repetition under the isearch module."
+  (if (not (derived-mode-p 'ghostel-mode))
+      (funcall orig forward regexp-p wrap predicate)
+    (let ((fun (funcall orig forward t wrap predicate)))
+      (lambda (string &optional bound noerror count)
+        (funcall fun
+                 (if (or (not regexp-p)
+                         (ghostel--wrap-literal-safe-p string))
+                     (ghostel--wrap-tolerant-regexp string)
+                   string)
+                 bound noerror count)))))
+
+(advice-add 'evil-search-function :around
+            #'evil-ghostel--wrap-search-function)
+
+
 ;; Minor mode
 
 (defun evil-ghostel--any-active-elsewhere-p (except-buffer)

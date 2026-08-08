@@ -101,6 +101,7 @@
 (require 'ghostel-links)
 (require 'ghostel-module-install)
 (require 'ghostel-prompt)
+(require 'ghostel-wrap)
 
 
 ;;; Customization
@@ -2685,37 +2686,6 @@ press anywhere else exits and forwards a CR to the terminal."
                  (memq target '(semi-char char)))
         (ghostel--send-encoded "return" "")))))
 
-(defun ghostel--filter-soft-wraps (text)
-  "Remove newlines from TEXT that were inserted by soft line wrapping.
-These are newlines with the `ghostel-wrap' text property."
-  (let ((chunks nil)
-        (chunk-start 0)
-        (pos 0)
-        (len (length text)))
-    (while (< pos len)
-      (when (and (eq (aref text pos) ?\n)
-                 (get-text-property pos 'ghostel-wrap text))
-        (when (< chunk-start pos)
-          (push (substring text chunk-start pos) chunks))
-        (setq chunk-start (1+ pos)))
-      (setq pos (1+ pos)))
-    (when (< chunk-start len)
-      (push (substring text chunk-start len) chunks))
-    (string-join (nreverse chunks))))
-
-(defun ghostel--clean-copy-text (text)
-  "Clean TEXT for copying: remove soft-wrap newlines, strip trailing whitespace."
-  (let* ((unwrapped (ghostel--filter-soft-wraps text))
-         (lines (split-string unwrapped "\n"))
-         (trimmed (mapcar (lambda (line) (string-trim-right line)) lines)))
-    (mapconcat #'identity trimmed "\n")))
-
-(defun ghostel--filter-buffer-substring (beg end delete)
-  "Filter Ghostel buffer text between BEG and END for copying.
-DELETE has the same meaning as in `filter-buffer-substring'."
-  (ghostel--clean-copy-text
-   (funcall (default-value 'filter-buffer-substring-function) beg end delete)))
-
 (defun ghostel-readonly-copy ()
   "Copy the selected region.
 Soft-wrapped newlines are removed and trailing whitespace is
@@ -5048,6 +5018,10 @@ may change freely (`ghostel-compile' finalize relies on this)."
   (setq-local list-buffers-directory (expand-file-name default-directory))
   ;; bookmark this buffer's cwd (loads ghostel-bookmark.el lazily on use)
   (setq-local bookmark-make-record-function #'ghostel--bookmark-make-record)
+  ;; Let regexp syntax atoms see the syntax-table property the renderer
+  ;; stamps on wrap newlines, so searches can cross soft-wrapped rows.
+  (setq-local parse-sexp-lookup-properties t)
+  (setq-local isearch-search-fun-function #'ghostel--isearch-search-fun)
   (setq ghostel--input-mode 'semi-char)
   (setq ghostel--scroll-intercept-active t)
   ;; Let C-g reach the keymap instead of triggering keyboard-quit.

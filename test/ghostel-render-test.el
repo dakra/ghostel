@@ -616,57 +616,6 @@ are retained — only unwritten padding cells are trimmed."
             (should (= 5 (current-column)))))
       (kill-buffer buf))))
 
-(ert-deftest ghostel-test-soft-wrap-copy ()
-  "Test that soft-wrapped newlines are filtered during copy."
-  :tags '(native)
-  (let ((buf (generate-new-buffer " *ghostel-test-wrap*")))
-    (unwind-protect
-        (with-current-buffer buf
-          (let* ((term (ghostel--new 5 20 100))
-                 (inhibit-read-only t))
-            ;; Write a line longer than 20 columns — should soft-wrap
-            (ghostel--write-vt term "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-            (ghostel--redraw term)
-            (let ((content (buffer-substring-no-properties (point-min) (point-max))))
-              (should (string-match-p "ABCDEFGHIJKLMNOPQRST\n" content))) ; wrapped content has newline
-            ;; The newline at the wrap point should have ghostel-wrap property
-            (goto-char (point-min))
-            (let ((nl-pos (search-forward "\n" nil t)))
-              (should nl-pos)                              ; wrap newline exists
-              (when nl-pos
-                (should (get-text-property (1- nl-pos) 'ghostel-wrap)))) ; ghostel-wrap property set
-            ;; Test the filter function
-            (let* ((raw (buffer-substring (point-min) (point-max)))
-                   (filtered (ghostel--filter-soft-wraps raw)))
-              (should-not (string-match-p "\n" (substring filtered 0 26)))))) ; filtered has no wrapped newline
-      (kill-buffer buf))))
-
-(ert-deftest ghostel-test-filter-soft-wraps ()
-  "Test the soft-wrap filter on synthetic propertized strings."
-  ;; String with a wrapped newline
-  (let ((s (concat "hello" (propertize "\n" 'ghostel-wrap t) "world")))
-    (should (equal "helloworld" (ghostel--filter-soft-wraps s)))) ; removes wrapped newline
-  ;; String with a real (non-wrapped) newline
-  (let ((s "hello\nworld"))
-    (should (equal "hello\nworld" (ghostel--filter-soft-wraps s)))) ; keeps real newline
-  ;; Mixed
-  (let ((s (concat "aaa" (propertize "\n" 'ghostel-wrap t) "bbb\nccc")))
-    (should (equal "aaabbb\nccc" (ghostel--filter-soft-wraps s)))))
-
-(ert-deftest ghostel-test-kill-ring-save-filters-soft-wraps ()
-  "Generic copy commands filter renderer-inserted soft-wrap newlines."
-  (let ((kill-ring nil)
-        (kill-ring-yank-pointer nil)
-        (interprogram-cut-function nil))
-    (with-temp-buffer
-      (ghostel-mode)
-      (let ((inhibit-read-only t))
-        (insert "hello")
-        (insert (propertize "\n" 'ghostel-wrap t))
-        (insert "world   "))
-      (kill-ring-save (point-min) (point-max))
-      (should (equal (car kill-ring) "helloworld")))))
-
 ;;; Palette, faces, and theme sync
 
 (ert-deftest ghostel-test-color-palette ()
