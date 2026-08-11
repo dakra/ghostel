@@ -31,6 +31,14 @@ All notable changes to this project will be documented in this file.
   t.  Fixes [#599](https://github.com/dakra/ghostel/issues/599).
 
 ### Fixed
+- `ghostel-project` and the project-scoped cycling commands no longer
+  conflate projects that share a directory name.  The identity used
+  for buffer reuse and for `identity`-scope matching was the
+  project-prefixed buffer name alone, so two projects both named e.g.
+  `website` shared buffers.  Buffers now record their project root at
+  creation (mirroring how magit keys buffers on the repository
+  toplevel rather than the buffer name).  Buffers from older sessions
+  (no recorded root) keep matching by name alone.
 - evil-ghostel: typing the first key of an `evil-escape` chord (e.g.
   `jk`) no longer doubles the character in the shell, and completing
   the chord no longer leaks it.  evil-escape previews the first key

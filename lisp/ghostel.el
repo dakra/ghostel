@@ -389,10 +389,12 @@ project:
   against the current project root.  Follows shell `cd'.
   A terminal that walked out of the project is excluded; a plain
   `ghostel' buffer that cd'd into the project is included.
-- `identity': match each buffer's `ghostel--buffer-identity'
-  against the name `ghostel-project' would use for the current project.
-  Stable across `cd', but only finds buffers originally
-  created via `ghostel-project'.
+- `identity': match buffers created via `ghostel-project' for this
+  project by their recorded project root, so equally named projects
+  stay separate and numbered instances are found.  Buffers without a
+  recorded root (older sessions) fall back to comparing
+  `ghostel--buffer-identity' against the project-prefixed name.
+  Stable across `cd'.
 - `both' (default): union of the two - `default-directory' first,
   then identity-matched buffers not already covered."
   :type '(choice (const :tag "Match by buffer default-directory" default-directory)
@@ -1072,6 +1074,13 @@ variable re-enables automatic renaming for the next title update.")
 Set at buffer creation to the value of `ghostel-buffer-name' (or its numbered
 variant) before any title-tracking renames.  Used so that `ghostel' can reuse
 an existing buffer even after `ghostel--set-title' has renamed it.")
+
+(defvar-local ghostel--buffer-project-root nil
+  "Project root recorded when this buffer was created via `ghostel-project'.
+Nil for buffers created outside a project context, or by versions that
+did not track the root.  Qualifies `ghostel--buffer-identity' matches so
+two projects that share a directory name, and hence a buffer name, are
+not conflated.")
 
 (defvar-local ghostel--prompt-positions nil
   "List of prompt positions as (buffer-line . exit-status) pairs.
@@ -5292,16 +5301,29 @@ or quit, the partially created buffer is killed before re-signaling."
          (kill-buffer buffer))
        (signal (car err) (cdr err))))))
 
+(defvar ghostel--project-root nil
+  "Project root for the `ghostel' call in flight, or nil.
+Bound by `ghostel-project' so buffer creation records the root in
+`ghostel--buffer-project-root' and buffer reuse requires it to match.")
+
 (defun ghostel--find-buffer-by-identity (identity &optional predicate)
   "Return the first live ghostel buffer whose identity equals IDENTITY, or nil.
 Identity is the `ghostel-buffer-name' (or numbered variant) recorded at
-buffer creation time.  See `ghostel--buffer-identity'.
+buffer creation time.  See `ghostel--buffer-identity'.  When both
+`ghostel--project-root' and the buffer's recorded project root are
+non-nil they must also match, so equally named projects do not share
+buffers; a nil on either side matches anything, preserving buffers
+created before the root was tracked.
 Non-nil PREDICATE further filters candidates (called with the buffer),
 so several buffers sharing IDENTITY cannot shadow one the caller wants."
   (seq-find (lambda (b)
               (and (buffer-live-p b)
                    (equal (buffer-local-value 'ghostel--buffer-identity b)
                           identity)
+                   (let ((root (buffer-local-value
+                                'ghostel--buffer-project-root b)))
+                     (or (null root) (null ghostel--project-root)
+                         (equal root ghostel--project-root)))
                    (if predicate (funcall predicate b) t)))
             (buffer-list)))
 
@@ -5344,6 +5366,7 @@ Returns the buffer."
       (with-current-buffer buffer
         (setq ghostel--managed-buffer-name (buffer-name))
         (setq ghostel--buffer-identity (or identity (buffer-name)))
+        (setq ghostel--buffer-project-root ghostel--project-root)
         (ghostel--start-process)
         (ghostel--apply-initial-input-mode)))
     buffer))
@@ -5403,8 +5426,10 @@ To add this to `project-switch-commands':
   (add-to-list \\='project-switch-commands \\='(ghostel-project \"Ghostel\") t)
 Returns the buffer."
   (interactive "P")
-  (let* ((default-directory (project-root (project-current t)))
-         (ghostel-buffer-name (ghostel--project-buffer-name default-directory)))
+  (let* ((root (project-root (project-current t)))
+         (default-directory root)
+         (ghostel-buffer-name (ghostel--project-buffer-name root))
+         (ghostel--project-root root))
     (ghostel arg)))
 
 (defun ghostel-other ()
@@ -5460,8 +5485,17 @@ synchronously on every cycle."
           (and (memq scope '(identity both))
                (cl-remove-if-not
                 (lambda (b)
-                  (equal (buffer-local-value 'ghostel--buffer-identity b)
-                         identity-prefix))
+                  ;; Use recorded project root to distinguish equally named
+                  ;; projects and match numbered instances ("*NAME-ghostel*<2>")
+                  ;; whose identity differs from the un-numbered prefix.
+                  (let ((broot (buffer-local-value
+                                'ghostel--buffer-project-root b)))
+                    (if broot
+                        (equal broot root)
+                      ;; Buffers without a recorded root (older sessions) fall
+                      ;; back to comparing identity by name.
+                      (equal (buffer-local-value 'ghostel--buffer-identity b)
+                             identity-prefix))))
                 all))))
     (sort (cl-delete-duplicates (append by-dir by-id) :test #'eq)
           (lambda (a b) (string< (buffer-name a) (buffer-name b))))))

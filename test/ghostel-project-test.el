@@ -27,6 +27,24 @@
       (should (string-match-p "ghostel" (cdr result)))
       (should-not (string-match-p "\\*\\*" (cdr result))))))
 
+(ert-deftest ghostel-test-project-binds-root ()
+  "`ghostel-project' binds `ghostel--project-root' around the `ghostel' call.
+The root is what creation records in `ghostel--buffer-project-root' and
+what reuse lookups match against."
+  (require 'project)
+  (let ((ghostel-buffer-name "*ghostel*")
+        captured)
+    (cl-letf (((symbol-function 'project-current)
+               (lambda (_maybe-prompt) '(transient . "/tmp/myproj/")))
+              ((symbol-function 'project-root)
+               (lambda (proj) (cdr proj)))
+              ((symbol-function 'project-prefixed-buffer-name)
+               (lambda (name) (format "*myproj-%s*" name)))
+              ((symbol-function 'ghostel)
+               (lambda (&optional _) (setq captured ghostel--project-root))))
+      (ghostel-project)
+      (should (equal "/tmp/myproj/" captured)))))
+
 (ert-deftest ghostel-test-project-universal-arg ()
   "`ghostel-project' forwards the prefix arg and binds `ghostel-buffer-name'."
   (require 'project)

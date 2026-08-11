@@ -9,17 +9,19 @@
 
 (require 'ghostel-test-helpers)
 
-(defun ghostel-buffers-test--make (name &optional dir identity)
+(defun ghostel-buffers-test--make (name &optional dir identity root)
   "Create a fake ghostel-mode buffer for tests.
-NAME is the buffer name.  Optional DIR sets `default-directory'
-and IDENTITY sets `ghostel--buffer-identity'.  The buffer claims
-`ghostel-mode' via `major-mode' without invoking the mode
-function (which would require the native module)."
+NAME is the buffer name.  Optional DIR sets `default-directory',
+IDENTITY sets `ghostel--buffer-identity', and ROOT sets
+`ghostel--buffer-project-root'.  The buffer claims `ghostel-mode' via
+`major-mode' without invoking the mode function (which would require
+the native module)."
   (let ((buf (generate-new-buffer name)))
     (with-current-buffer buf
       (setq major-mode 'ghostel-mode)
       (when dir (setq default-directory dir))
-      (when identity (setq-local ghostel--buffer-identity identity)))
+      (when identity (setq-local ghostel--buffer-identity identity))
+      (when root (setq-local ghostel--buffer-project-root root)))
     buf))
 
 (defmacro ghostel-buffers-test--with-bufs (bindings &rest body)
@@ -249,6 +251,71 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
           (let ((bufs (ghostel--project-buffers)))
             (should (memq tagged bufs))
             (should-not (memq untagged bufs))))))))
+
+(ert-deftest ghostel-test-project-buffers-identity-same-name-projects ()
+  "Scope `identity' separates equally named projects by recorded root.
+Buffers without a recorded root (older sessions) still match by
+identity alone."
+  (let* ((root (file-name-as-directory (make-temp-file "ghostel-myproj" t)))
+         (other-root (file-name-as-directory
+                      (make-temp-file "ghostel-twin" t)))
+         (ghostel-buffer-name "*ghostel*"))
+    (ghostel-buffers-test--with-bufs
+        ((ours "*ghostel-ours*" other-root "*myproj-ghostel*" root)
+         (twin "*ghostel-twin*" other-root "*myproj-ghostel*" other-root)
+         (legacy "*ghostel-legacy*" other-root "*myproj-ghostel*"))
+      (cl-letf (((symbol-function 'project-current)
+                 (ghostel-buffers-test--proj-stub root))
+                ((symbol-function 'project-root) (lambda (p) (cdr p)))
+                ((symbol-function 'project-prefixed-buffer-name)
+                 (lambda (name) (format "*myproj-%s*" name))))
+        (let ((default-directory root)
+              (ghostel-project-buffer-scope 'identity))
+          (let ((bufs (ghostel--project-buffers)))
+            (should (memq ours bufs))
+            (should-not (memq twin bufs))
+            (should (memq legacy bufs))))))))
+
+(ert-deftest ghostel-test-project-buffers-identity-root-primary ()
+  "Identity scope keys on the recorded root, not the buffer name.
+A numbered instance (\"*myproj-ghostel*<2>\") that cd'd out of the
+project is still found via its recorded root; a root-less buffer whose
+identity is not the project-prefixed name stays excluded."
+  (let* ((root (file-name-as-directory (make-temp-file "ghostel-myproj" t)))
+         (other-root (file-name-as-directory
+                      (make-temp-file "ghostel-other" t)))
+         (ghostel-buffer-name "*ghostel*"))
+    (ghostel-buffers-test--with-bufs
+        ((numbered "*ghostel-numbered*" other-root "*myproj-ghostel*<2>" root)
+         (plain "*ghostel-plain*" other-root "*ghostel*"))
+      (cl-letf (((symbol-function 'project-current)
+                 (ghostel-buffers-test--proj-stub root))
+                ((symbol-function 'project-root) (lambda (p) (cdr p)))
+                ((symbol-function 'project-prefixed-buffer-name)
+                 (lambda (name) (format "*myproj-%s*" name))))
+        (let ((default-directory root)
+              (ghostel-project-buffer-scope 'identity))
+          (let ((bufs (ghostel--project-buffers)))
+            (should (memq numbered bufs))
+            (should-not (memq plain bufs))))))))
+
+(ert-deftest ghostel-test-find-buffer-by-identity-root ()
+  "`ghostel--find-buffer-by-identity' honours `ghostel--project-root'.
+A bound root skips buffers recording a different root but accepts
+buffers with no recorded root; an unbound (nil) root matches any."
+  (ghostel-buffers-test--with-bufs
+      ((twin "*ghostel-twin*" nil "*myproj-ghostel*" "/tmp/b/myproj/"))
+    (let ((ghostel--project-root "/tmp/a/myproj/"))
+      (should-not (ghostel--find-buffer-by-identity "*myproj-ghostel*")))
+    (let ((ghostel--project-root "/tmp/b/myproj/"))
+      (should (eq twin (ghostel--find-buffer-by-identity "*myproj-ghostel*"))))
+    (let ((ghostel--project-root nil))
+      (should (eq twin (ghostel--find-buffer-by-identity "*myproj-ghostel*")))))
+  (ghostel-buffers-test--with-bufs
+      ((legacy "*ghostel-legacy*" nil "*myproj-ghostel*"))
+    (let ((ghostel--project-root "/tmp/a/myproj/"))
+      (should (eq legacy
+                  (ghostel--find-buffer-by-identity "*myproj-ghostel*"))))))
 
 (ert-deftest ghostel-test-project-buffers-both ()
   "Scope `both' unions `default-directory' and identity matches; no duplicates."
