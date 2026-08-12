@@ -434,5 +434,56 @@ project's terminal because both rendered the same buffer name."
                (when maybe-prompt (user-error "No project")))))
     (should-error (ghostel-project-next) :type 'user-error)))
 
+;;; ghostel-project-dwim
+
+(ert-deftest ghostel-test-project-dwim-no-buffers-creates ()
+  "With no project terminal, `ghostel-project-dwim' calls `ghostel-project'."
+  (let ((captured 'not-called))
+    (cl-letf (((symbol-function 'ghostel--project-buffers) #'ignore)
+              ((symbol-function 'ghostel-project)
+               (lambda (&optional arg) (setq captured arg))))
+      (ghostel-project-dwim))
+    (should-not captured)
+    (should-not (eq captured 'not-called))))
+
+(ert-deftest ghostel-test-project-dwim-single-buffer-switches ()
+  "With one project terminal, `ghostel-project-dwim' pops to it, no prompt."
+  (ghostel-buffers-test--with-bufs ((a "*ghostel-a*"))
+    (let (popped)
+      (cl-letf (((symbol-function 'ghostel--project-buffers)
+                 (lambda () (list a)))
+                ((symbol-function 'ghostel-project)
+                 (lambda (&optional _) (error "Should not create")))
+                ((symbol-function 'read-buffer)
+                 (lambda (&rest _) (error "Should not prompt")))
+                ((symbol-function 'pop-to-buffer)
+                 (lambda (buf &rest _) (setq popped buf))))
+        (should (eq (ghostel-project-dwim) a))
+        (should (eq popped a))))))
+
+(ert-deftest ghostel-test-project-dwim-multiple-buffers-prompts ()
+  "With several project terminals, `ghostel-project-dwim' picks via prompt."
+  (ghostel-buffers-test--with-bufs ((a "*ghostel-a*")
+                                    (b "*ghostel-b*"))
+    (let (popped)
+      (cl-letf (((symbol-function 'ghostel--project-buffers)
+                 (lambda () (list a b)))
+                ((symbol-function 'read-buffer)
+                 (lambda (&rest _) (buffer-name b)))
+                ((symbol-function 'pop-to-buffer)
+                 (lambda (buf &rest _) (setq popped buf))))
+        (should (eq (ghostel-project-dwim) b))
+        (should (eq popped b))))))
+
+(ert-deftest ghostel-test-project-dwim-prefix-arg-passes-through ()
+  "A prefix arg makes `ghostel-project-dwim' defer to `ghostel-project'."
+  (let ((captured 'not-called))
+    (cl-letf (((symbol-function 'ghostel--project-buffers)
+               (lambda () (error "Should not scan buffers")))
+              ((symbol-function 'ghostel-project)
+               (lambda (&optional arg) (setq captured arg))))
+      (ghostel-project-dwim '(4)))
+    (should (equal captured '(4)))))
+
 (provide 'ghostel-buffers-test)
 ;;; ghostel-buffers-test.el ends here

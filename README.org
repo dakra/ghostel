@@ -1824,6 +1824,7 @@ Enable it for any Emacs Lisp input method:
 |--------------------------------------+---------------------------------------------------------------------------|
 | =M-x ghostel=                          | Open a new terminal (create a new buffer with a prefix arg).              |
 | =M-x ghostel-project=                  | Open a terminal in the current project root (new buffer with prefix arg). |
+| =M-x ghostel-project-dwim=             | Project terminal: create if none, switch if one, pick if several.         |
 | =M-x ghostel-other=                    | Switch to the next terminal or create one.                                |
 | =M-x ghostel-next=                     | Cycle to the next ghostel buffer (sorted by name, wraps).                 |
 | =M-x ghostel-previous=                 | Cycle to the previous ghostel buffer.                                     |
