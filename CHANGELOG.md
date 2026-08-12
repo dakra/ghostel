@@ -10,6 +10,12 @@ All notable changes to this project will be documented in this file.
   `desktop-read` starts a fresh shell in that directory under the
   saved buffer name, so restored window configurations find the
   buffer.
+- The buffer pickers (`ghostel-list-buffers`, etc.) annotate each
+  candidate with its terminal title, so completion shows what every
+  terminal is running even though the stable buffer names no longer
+  carry it.  The title is capped at `ghostel-annotation-title-width`
+  columns (default 30, nil for the full title).  Marginalia users need
+  a small wrapper around `ghostel-annotate-buffer`, see the README.
 
 ### Changed
 - The bookmark functions are now public: `ghostel-bookmark-make-record`

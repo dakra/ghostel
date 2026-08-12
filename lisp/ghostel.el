@@ -440,6 +440,11 @@ Set to nil to leave `mode-line-buffer-identification' alone."
   :type '(choice (const :tag "Leave the mode line alone" nil)
                  (string :tag "Format string")))
 
+(defcustom ghostel-annotation-title-width 30
+  "Column cap for the title in the buffer pickers' completion annotations.
+nil annotates with the full title."
+  :type '(choice (natnum :tag "Columns") (const :tag "Full title" nil)))
+
 (defcustom ghostel-kill-buffer-on-exit t
   "Kill the buffer when the terminal process exits."
   :type 'boolean)
@@ -5725,6 +5730,17 @@ Project membership is determined by `ghostel-project-buffer-scope'."
                   "No ghostel buffers in this project"
                   "Only one ghostel buffer in this project"))
 
+(defun ghostel-annotate-buffer (name)
+  "Return a completion annotation for the ghostel buffer named NAME, or nil.
+The annotation is the terminal title, capped at
+`ghostel-annotation-title-width' columns."
+  (when-let* ((buffer (get-buffer name))
+              (title (buffer-local-value 'ghostel--title buffer)))
+    (concat "  " (if ghostel-annotation-title-width
+                     (truncate-string-to-width
+                      title ghostel-annotation-title-width nil nil t)
+                   title))))
+
 (defun ghostel--read-buffer (prompt bufs)
   "Prompt with PROMPT for one of BUFS via `read-buffer'.
 Default candidate is the buffer `ghostel-next' would land on, so RET
@@ -5738,6 +5754,8 @@ signals `user-error' if BUFS is empty."
          (default (cond
                    ((null idx) (car names))
                    (t (nth (mod (1+ idx) (length bufs)) names))))
+         (completion-extra-properties
+          (list :annotation-function #'ghostel-annotate-buffer))
          (chosen (read-buffer prompt default t
                               (lambda (cand)
                                 (let ((name (if (consp cand) (car cand) cand)))

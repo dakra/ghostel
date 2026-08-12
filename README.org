@@ -1338,6 +1338,7 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 | =ghostel-project-buffer-scope=         | =both=                                          | How project commands scope buffers: =default-directory=, =identity=, or =both=.                                                                                                                                |
 | =ghostel-buffer-name-function=         | =nil=                                           | Maps OSC 2 title + =default-directory= to a buffer name (nil return keeps it); nil (default) disables renaming.  =ghostel-buffer-name-by-title= and =ghostel-buffer-name-by-directory= are ready-made choices. |
 | =ghostel-buffer-identification-format= | ="%b (%.30t)"=                                  | =format-spec= string for =mode-line-buffer-identification=: =%b= buffer name, =%t= terminal title, =%d= abbreviated =default-directory=.  nil leaves the mode line alone.                                            |
+| =ghostel-annotation-title-width=       | =30=                                            | Column cap for the title in the buffer pickers' completion annotations; nil shows the full title.  See [[#picker-annotations][Picker annotations]].                                                                            |
 | =ghostel-kill-buffer-on-exit=          | =t=                                             | Kill the buffer when the shell process exits.                                                                                                                                                            |
 | =ghostel-query-before-killing=         | =auto=                                          | Confirm before killing a live buffer / exiting Emacs: =t=, =nil=, or =auto= (only while a command runs).                                                                                                       |
 | =ghostel-exit-functions=               | =nil=                                           | Hook run with =(BUFFER EVENT)= when the terminal process exits.                                                                                                                                            |
@@ -1827,7 +1828,7 @@ Enable it for any Emacs Lisp input method:
 | =M-x ghostel-other=                    | Switch to the next terminal or create one.                                |
 | =M-x ghostel-next=                     | Cycle to the next ghostel buffer (sorted by name, wraps).                 |
 | =M-x ghostel-previous=                 | Cycle to the previous ghostel buffer.                                     |
-| =M-x ghostel-list-buffers=             | Pick a ghostel buffer via =read-buffer=.                                    |
+| =M-x ghostel-list-buffers=             | Pick a ghostel buffer via =read-buffer= (candidates show the title).        |
 | =M-x ghostel-project-next=             | Cycle to the next ghostel buffer in the current project.                  |
 | =M-x ghostel-project-previous=         | Cycle to the previous ghostel buffer in the current project.              |
 | =M-x ghostel-project-list-buffers=     | Pick a project-scoped ghostel buffer.                                     |
@@ -1852,6 +1853,36 @@ Enable it for any Emacs Lisp input method:
 | =M-x ghostel-ssh-clear-terminfo-cache= | Clear the outbound-ssh terminfo install cache (force re-probe).           |
 | =M-x ghostel-download-module=          | Download the pre-built native module.                                     |
 | =M-x ghostel-module-compile=           | Compile the native module from source.                                    |
+
+** Picker annotations
+:properties:
+:custom_id: picker-annotations
+:end:
+#+findex: ghostel-annotate-buffer
+
+The buffer pickers (=ghostel-list-buffers= etc.) annotate each candidate with
+the terminal title, i.e. whatever the shell or a program set via OSC 2
+(typically the current command or working directory).  This makes same-named
+terminals like =*ghostel*= and =*ghostel*<2>= easy to tell apart.
+=ghostel-annotation-title-width= caps the title at 30 columns; set it to nil
+for the full title.
+
+[[https://github.com/minad/marginalia][Marginalia]] replaces annotations for the whole =buffer= category with its own,
+which hides the title.  You can prepend the title to marginalia's annotator to
+show it in every buffer prompt (=C-x b=, =consult-buffer=, and ghostel's own):
+
+#+begin_src emacs-lisp
+(with-eval-after-load 'marginalia
+  (defun ghostel-marginalia-annotate-buffer (cand)
+    "`marginalia-annotate-buffer', prefixed with the ghostel terminal title."
+    (concat (when-let* ((annotation (and (fboundp 'ghostel-annotate-buffer)
+                                         (ghostel-annotate-buffer cand))))
+              (propertize annotation 'face 'marginalia-value))
+            (marginalia-annotate-buffer cand)))
+  (dolist (category '(buffer project-buffer))
+    (cl-pushnew #'ghostel-marginalia-annotate-buffer
+                (alist-get category marginalia-annotators))))
+#+end_src
 
 ** Sending input from Lisp
 :properties:

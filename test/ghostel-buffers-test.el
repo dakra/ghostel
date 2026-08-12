@@ -198,6 +198,40 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
   "`ghostel-list-buffers' signals `user-error' when none exist."
   (should-error (ghostel-list-buffers) :type 'user-error))
 
+;;; Completion annotations
+
+(ert-deftest ghostel-test-annotate-buffer-title ()
+  "`ghostel-annotate-buffer' caps the title at `ghostel-annotation-title-width'."
+  (ghostel-buffers-test--with-bufs ((a "*ghostel-a*"))
+    (with-current-buffer a (setq-local ghostel--title "make test"))
+    (should (equal "  make test" (ghostel-annotate-buffer (buffer-name a))))
+    (with-current-buffer a (setq-local ghostel--title (make-string 60 ?x)))
+    (let* ((ghostel-annotation-title-width 30)
+           (annotation (ghostel-annotate-buffer (buffer-name a))))
+      (should (<= (string-width annotation) 32))
+      (should (string-suffix-p (truncate-string-ellipsis) annotation)))
+    (let* ((ghostel-annotation-title-width nil)
+           (annotation (ghostel-annotate-buffer (buffer-name a))))
+      (should (equal (concat "  " (make-string 60 ?x)) annotation)))))
+
+(ert-deftest ghostel-test-annotate-buffer-no-title ()
+  "`ghostel-annotate-buffer' returns nil without a title or buffer."
+  (ghostel-buffers-test--with-bufs ((a "*ghostel-a*"))
+    (should-not (ghostel-annotate-buffer (buffer-name a))))
+  (should-not (ghostel-annotate-buffer "*ghostel-no-such-buffer*")))
+
+(ert-deftest ghostel-test-read-buffer-annotates ()
+  "`ghostel--read-buffer' exposes `ghostel-annotate-buffer' to completion."
+  (ghostel-buffers-test--with-bufs ((a "*ghostel-a*"))
+    (let (captured)
+      (cl-letf (((symbol-function 'read-buffer)
+                 (lambda (_prompt default &rest _)
+                   (setq captured (plist-get completion-extra-properties
+                                             :annotation-function))
+                   default)))
+        (ghostel--read-buffer "Ghostel buffer: " (list a))
+        (should (eq captured #'ghostel-annotate-buffer))))))
+
 ;;; Project-scope helpers
 
 (defun ghostel-buffers-test--proj-stub (root)
