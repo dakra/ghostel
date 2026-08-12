@@ -5292,14 +5292,17 @@ or quit, the partially created buffer is killed before re-signaling."
          (kill-buffer buffer))
        (signal (car err) (cdr err))))))
 
-(defun ghostel--find-buffer-by-identity (identity)
-  "Return the live ghostel buffer whose identity equals IDENTITY, or nil.
+(defun ghostel--find-buffer-by-identity (identity &optional predicate)
+  "Return the first live ghostel buffer whose identity equals IDENTITY, or nil.
 Identity is the `ghostel-buffer-name' (or numbered variant) recorded at
-buffer creation time — see `ghostel--buffer-identity'."
+buffer creation time.  See `ghostel--buffer-identity'.
+Non-nil PREDICATE further filters candidates (called with the buffer),
+so several buffers sharing IDENTITY cannot shadow one the caller wants."
   (seq-find (lambda (b)
               (and (buffer-live-p b)
                    (equal (buffer-local-value 'ghostel--buffer-identity b)
-                          identity)))
+                          identity)
+                   (if predicate (funcall predicate b) t)))
             (buffer-list)))
 
 (defun ghostel--apply-initial-input-mode ()

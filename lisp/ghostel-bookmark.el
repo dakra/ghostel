@@ -7,9 +7,10 @@
 
 ;; Integrate ghostel buffers with Emacs's built-in bookmark facility
 ;; (`bookmark-set' / `bookmark-jump', i.e. `C-x r m' / `C-x r b').  A
-;; bookmark records the buffer's working directory and name; jumping to
-;; it reuses a live ghostel buffer of that name, or starts a fresh shell
-;; in the bookmarked directory when none exists.
+;; bookmark records the buffer's working directory, name, and identity
+;; (see `ghostel--buffer-identity'); jumping to it reuses a live ghostel
+;; buffer with that identity (or name, for records without one), or
+;; starts a fresh shell in the bookmarked directory when none exists.
 ;;
 ;; `ghostel-mode' wires up `bookmark-make-record-function' to point at
 ;; `ghostel--bookmark-make-record' (a quoted symbol, so ghostel.el needs
@@ -33,34 +34,47 @@ a `cd' to the bookmarked directory is typed into the shell."
 ;;;###autoload
 (defun ghostel--bookmark-make-record ()
   "Return a bookmark record for the current ghostel buffer.
-Notes the working directory and buffer name.
+Notes the working directory, buffer name, and buffer identity.
 See `ghostel--bookmark-handler' for how they are restored."
   `(nil
     (handler . ghostel--bookmark-handler)
     (location . ,default-directory)
     (buf-name . ,(buffer-name))
+    (identity . ,ghostel--buffer-identity)
     (defaults . nil)))
 
 ;;;###autoload
 (defun ghostel--bookmark-handler (bmk)
   "Restore the ghostel bookmark BMK.
-Reuse a live ghostel buffer of the bookmarked name, or create one with a shell
-started in the bookmarked directory.  When a reused buffer's directory differs
-and `ghostel-bookmark-check-dir' is non-nil, type a `cd' into the shell."
+Reuse a live ghostel buffer with the bookmarked identity (or name, for
+records without one; title tracking may have renamed the buffer since),
+or create one with a shell started in the bookmarked directory.
+When a reused buffer's directory differs and `ghostel-bookmark-check-dir'
+is non-nil, type a `cd' into the shell."
   (ghostel--load-module t)
   (let* ((dir (bookmark-prop-get bmk 'location))
          (buf-name (bookmark-prop-get bmk 'buf-name))
-         (buf (get-buffer buf-name))
-         (mode (and buf (buffer-local-value 'major-mode buf))))
+         (identity (bookmark-prop-get bmk 'identity))
+         (live-p (lambda (b)
+                   (let ((p (and b (buffer-local-value 'ghostel--process b))))
+                     (and p (process-live-p p) b))))
+         ;; Retained dead-shell buffers may share the identity; reuse only
+         ;; a live one.  The name lookup is for pre-identity records only.
+         (buf (if identity
+                  (ghostel--find-buffer-by-identity identity live-p)
+                (let ((b (get-buffer buf-name)))
+                  (and b
+                       (eq (buffer-local-value 'major-mode b) 'ghostel-mode)
+                       (funcall live-p b))))))
     ;; Create branch: the shell starts directly in DIR (no `cd').
-    (when (or (not buf) (not (eq mode 'ghostel-mode)))
+    (unless buf
       (let ((default-directory (if ghostel-bookmark-check-dir
                                    dir
                                  default-directory)))
         (setq buf (ghostel--create buf-name))
         (with-current-buffer buf
           (setq ghostel--managed-buffer-name (buffer-name)
-                ghostel--buffer-identity buf-name)
+                ghostel--buffer-identity (or identity buf-name))
           (ghostel--start-process)
           (ghostel--apply-initial-input-mode))))
     ;; Reuse branch: `cd' if the live buffer has wandered elsewhere.

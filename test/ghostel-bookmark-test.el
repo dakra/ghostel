@@ -3,10 +3,10 @@
 ;;; Commentary:
 
 ;; Emacs bookmark integration: the `bookmark-make-record-function' maker and
-;; the jump handler.  The maker tests are pure elisp (a `ghostel-mode' buffer
-;; spawns no process).  The handler tests need the native module: they spawn a
-;; real shell and observe OSC 7 directory tracking, so they are tagged
-;; `native'.
+;; the jump handler.  The maker tests and the stub-driven handler tests are
+;; pure elisp (a `ghostel-mode' buffer spawns no process; reuse tests attach
+;; a dummy pipe process so the handler's live-shell check passes).  Handler
+;; tests that spawn a real shell are tagged `native'.
 
 ;;; Code:
 
@@ -14,12 +14,15 @@
 (require 'ghostel-bookmark)
 
 (ert-deftest ghostel-test-bookmark-make-record ()
-  "`ghostel--bookmark-make-record' captures handler, dir, and buffer name.
+  "`ghostel--bookmark-make-record' captures handler, dir, name, and identity.
 The directory goes under `location' so `bookmark-bmenu-list' shows it
 instead of \"-- Unknown location --\"."
   (ghostel-test--with-compile-buffer buf
+    (setq ghostel--buffer-identity "bm-make-record-identity")
     (let* ((default-directory "/tmp/ghostel-bookmark-make-record/")
            (record (ghostel--bookmark-make-record)))
+      (should (equal (bookmark-prop-get record 'identity)
+                     "bm-make-record-identity"))
       (should (eq (bookmark-prop-get record 'handler)
                   'ghostel--bookmark-handler))
       (should (equal (bookmark-prop-get record 'location)
@@ -47,13 +50,182 @@ instead of \"-- Unknown location --\"."
                   'ghostel--bookmark-handler))
       (should (equal (bookmark-prop-get record 'buf-name) (buffer-name))))))
 
-(defun ghostel-test--bookmark-record (buf-name dir)
-  "Return a ghostel bookmark record for BUF-NAME pointing at DIR."
+(defun ghostel-test--bookmark-record (buf-name dir &optional identity)
+  "Return a ghostel bookmark record for BUF-NAME pointing at DIR.
+Non-nil IDENTITY adds an `identity' property; omitting it mimics a
+record saved before identities were recorded."
   `(,buf-name
     (handler . ghostel--bookmark-handler)
     (location . ,dir)
     (buf-name . ,buf-name)
+    ,@(and identity `((identity . ,identity)))
     (defaults . nil)))
+
+(ert-deftest ghostel-test-bookmark-handler-reuses-by-identity ()
+  "A renamed buffer is still reused when the record carries its identity.
+The default `ghostel-buffer-name-function' renames buffers from the
+terminal title, so the name recorded at `bookmark-set' time is usually
+stale by jump time; the rename-stable identity must find the buffer."
+  (ghostel-test--with-compile-buffer buf
+    (setq ghostel--buffer-identity "bm-reuse-identity"
+          default-directory "/tmp/ghostel-bm-reuse/")
+    (setq-local ghostel--process (ghostel-test--dummy-process "bm-reuse" nil))
+    (rename-buffer (generate-new-buffer-name " *ghostel-bm-renamed*"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--load-module) #'ignore)
+                  ((symbol-function 'ghostel--create)
+                   (lambda (&rest _)
+                     (ert-fail "Created a new buffer instead of reusing"))))
+          (with-temp-buffer
+            (ghostel--bookmark-handler
+             (ghostel-test--bookmark-record " *ghostel-bm-stale-name*"
+                                            "/tmp/ghostel-bm-reuse/"
+                                            "bm-reuse-identity"))
+            (should (eq (current-buffer) buf))))
+      (delete-process ghostel--process))))
+
+(ert-deftest ghostel-test-bookmark-handler-reuses-by-name-fallback ()
+  "A record without identity (saved before identities) reuses by name."
+  (ghostel-test--with-compile-buffer buf
+    (setq default-directory "/tmp/ghostel-bm-name/")
+    (setq-local ghostel--process (ghostel-test--dummy-process "bm-name" nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--load-module) #'ignore)
+                  ((symbol-function 'ghostel--create)
+                   (lambda (&rest _)
+                     (ert-fail "Created a new buffer instead of reusing"))))
+          (with-temp-buffer
+            (ghostel--bookmark-handler
+             (ghostel-test--bookmark-record (buffer-name buf)
+                                            "/tmp/ghostel-bm-name/"))
+            (should (eq (current-buffer) buf))))
+      (delete-process ghostel--process))))
+
+(ert-deftest ghostel-test-bookmark-handler-skips-dead-identity-holder ()
+  "A dead buffer sharing the identity must not shadow a live one.
+After a dead-shell fall-through both the retained buffer and its
+replacement carry the bookmarked identity; when the dead one ranks
+higher in `buffer-list' the handler must still reuse the live one."
+  (ghostel-test--with-compile-buffer dead
+    (setq ghostel--buffer-identity "bm-shadow-identity")
+    (let ((live (generate-new-buffer " *ghostel-bm-shadow-live*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer live
+              (ghostel-mode)
+              (setq ghostel--buffer-identity "bm-shadow-identity"
+                    default-directory "/tmp/ghostel-bm-shadow/")
+              (setq-local ghostel--process
+                          (ghostel-test--dummy-process "bm-shadow" nil)))
+            (bury-buffer live)
+            ;; Precondition: the dead buffer outranks the live one.
+            (should (eq (ghostel--find-buffer-by-identity
+                         "bm-shadow-identity")
+                        dead))
+            (cl-letf (((symbol-function 'ghostel--load-module) #'ignore)
+                      ((symbol-function 'ghostel--create)
+                       (lambda (&rest _)
+                         (ert-fail "Created a new buffer instead of reusing"))))
+              (with-temp-buffer
+                (ghostel--bookmark-handler
+                 (ghostel-test--bookmark-record " *ghostel-bm-shadow-stale*"
+                                                "/tmp/ghostel-bm-shadow/"
+                                                "bm-shadow-identity"))
+                (should (eq (current-buffer) live)))))
+        (let ((p (buffer-local-value 'ghostel--process live)))
+          (when (processp p) (delete-process p)))
+        (kill-buffer live)))))
+
+(ert-deftest ghostel-test-bookmark-handler-identity-record-skips-name ()
+  "An identity-bearing record must not reuse an unrelated name match.
+When the identity's buffer is gone, a live shell that merely holds the
+recorded (often generic) name must be left alone; the jump creates a
+fresh buffer instead of typing a `cd' into the unrelated one."
+  (ghostel-test--with-compile-buffer buf
+    (setq ghostel--buffer-identity "bm-other-identity")
+    (setq-local ghostel--process (ghostel-test--dummy-process "bm-other" nil))
+    (let ((created nil))
+      (unwind-protect
+          (cl-letf (((symbol-function 'ghostel--load-module) #'ignore)
+                    ((symbol-function 'ghostel--create)
+                     (lambda (name &rest _)
+                       (let ((b (generate-new-buffer name)))
+                         (with-current-buffer b (ghostel-mode))
+                         (setq created b)
+                         b)))
+                    ((symbol-function 'ghostel--start-process) #'ignore)
+                    ((symbol-function 'ghostel--apply-initial-input-mode)
+                     #'ignore))
+            (with-temp-buffer
+              (ghostel--bookmark-handler
+               (ghostel-test--bookmark-record (buffer-name buf)
+                                              "/tmp/ghostel-bm-other/"
+                                              "bm-vanished-identity"))
+              (should created)
+              (should (eq (current-buffer) created))))
+        (delete-process ghostel--process)
+        (when (buffer-live-p created) (kill-buffer created))))))
+
+(ert-deftest ghostel-test-bookmark-handler-dead-shell-creates-fresh ()
+  "A matched buffer whose shell has exited is not reused.
+With `ghostel-kill-buffer-on-exit' nil the buffer outlives its shell;
+typing a `cd' into the dead PTY would error mid-jump, so the handler
+must fall through to the create branch instead."
+  (ghostel-test--with-compile-buffer buf
+    (setq ghostel--buffer-identity "bm-dead-identity")
+    (let ((created nil))
+      (cl-letf (((symbol-function 'ghostel--load-module) #'ignore)
+                ((symbol-function 'ghostel--create)
+                 (lambda (name &rest _)
+                   (let ((b (generate-new-buffer name)))
+                     (with-current-buffer b (ghostel-mode))
+                     (setq created b)
+                     b)))
+                ((symbol-function 'ghostel--start-process) #'ignore)
+                ((symbol-function 'ghostel--apply-initial-input-mode)
+                 #'ignore))
+        (unwind-protect
+            (with-temp-buffer
+              (ghostel--bookmark-handler
+               (ghostel-test--bookmark-record (buffer-name buf)
+                                              "/tmp/ghostel-bm-dead/"
+                                              "bm-dead-identity"))
+              (should created)
+              (should (eq (current-buffer) created)))
+          (when (buffer-live-p created)
+            (kill-buffer created)))))))
+
+(ert-deftest ghostel-test-bookmark-handler-create-stamps-identity ()
+  "The create branch stamps the recorded identity, buffer name as fallback."
+  (let ((made nil))
+    (cl-letf (((symbol-function 'ghostel--load-module) #'ignore)
+              ((symbol-function 'ghostel--create)
+               (lambda (name &rest _)
+                 (let ((b (generate-new-buffer name)))
+                   (with-current-buffer b (ghostel-mode))
+                   (push b made)
+                   b)))
+              ((symbol-function 'ghostel--start-process) #'ignore)
+              ((symbol-function 'ghostel--apply-initial-input-mode) #'ignore))
+      (unwind-protect
+          (progn
+            (with-temp-buffer
+              (ghostel--bookmark-handler
+               (ghostel-test--bookmark-record " *ghostel-bm-new*"
+                                              "/tmp/ghostel-bm-create/"
+                                              "bm-create-identity")))
+            (should (equal (buffer-local-value 'ghostel--buffer-identity
+                                               (car made))
+                           "bm-create-identity"))
+            (with-temp-buffer
+              (ghostel--bookmark-handler
+               (ghostel-test--bookmark-record " *ghostel-bm-old*"
+                                              "/tmp/ghostel-bm-create/")))
+            (should (equal (buffer-local-value 'ghostel--buffer-identity
+                                               (car made))
+                           " *ghostel-bm-old*")))
+        (dolist (b made)
+          (when (buffer-live-p b) (kill-buffer b)))))))
 
 (ert-deftest ghostel-test-bookmark-handler-creates-buffer ()
   "Jumping to a bookmark with no live buffer starts a fresh shell in its dir."
@@ -85,8 +257,10 @@ too timing-sensitive to drive a real shell through here).  With
 `ghostel-bookmark-check-dir' nil, nothing is typed."
   :tags '(native)
   ;; `ghostel-test--with-terminal-buffer' gives a live `ghostel--term' (so the
-  ;; reuse-branch guard passes) without a process; we stub the send functions.
+  ;; reuse-branch guard passes); a dummy pipe process satisfies the handler's
+  ;; live-shell check, and the send functions are stubbed.
   (ghostel-test--with-terminal-buffer (buf term 24 80 1000)
+    (setq-local ghostel--process (ghostel-test--dummy-process "bm-cd" nil))
     (let ((sent nil)
           (default-directory "/tmp/ghostel-bm-here/")
           ;; A remote dir with a space exercises both departures from vterm:
