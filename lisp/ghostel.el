@@ -932,6 +932,10 @@ to nil to disable the regex fallback entirely (OSC 133 only)."
 (declare-function spinner-start "spinner")
 (declare-function spinner-stop "spinner")
 
+;; Emacs 29+; registration is `fboundp'-gated in `ghostel-mode'.
+(declare-function yank-media-handler "yank-media" (types handler))
+(defvar yank-media-preferred-types)     ; Emacs 31+
+
 ;; Lazily loaded on first bookmark use; see ghostel-bookmark.el.
 (declare-function ghostel--bookmark-make-record "ghostel-bookmark")
 
@@ -1937,6 +1941,23 @@ with ACTION instead."
            (ghostel--dnd-send-files (list file)))
           (t (dnd-open-local-file local action))))
   'private)
+
+(defun ghostel--yank-media-image (mimetype data)
+  "Write image DATA of MIMETYPE to a temp file and send its path.
+The file is created in the temp directory of the host the shell runs on.
+The shell receives the shell-quoted path followed by a space."
+  (unless (process-live-p ghostel--process)
+    (user-error "Terminal has no live process"))
+  (let* ((ext (pcase (cadr (split-string (symbol-name mimetype) "/"))
+                ("svg+xml" "svg")
+                (subtype subtype)))
+         (coding-system-for-write 'binary)
+         (temp (make-temp-file
+                (expand-file-name "ghostel-clipboard-"
+                                  (temporary-file-directory))
+                nil (concat "." ext) data)))
+    (ghostel--dnd-send-files
+     (list (or (file-remote-p temp 'localname) temp)))))
 
 (defun ghostel--drop (event)
   "Handle a drag-and-drop EVENT into the terminal.
@@ -5170,6 +5191,20 @@ may change freely (`ghostel-compile' finalize relies on this)."
                         ("^file://"  . ghostel--dnd-handle-file)
                         ("^file:"    . ghostel--dnd-handle-file))
                       dnd-protocol-alist))
+  ;; `yank-media' pastes a clipboard image as a temp-file path.
+  (when (fboundp 'yank-media-handler)   ; Emacs 29+
+    (yank-media-handler "image/.*" #'ghostel--yank-media-image))
+  ;; Accept any image flavor: stock autoselect only prefers png/jpeg,
+  ;; stranding e.g. TIFF-only clipboards (Qt apps on macOS).
+  (when (boundp 'yank-media-preferred-types)  ; Emacs 31+
+    (setq-local yank-media-preferred-types
+                (append yank-media-preferred-types
+                        (list (lambda (types)
+                                (seq-filter
+                                 (lambda (type)
+                                   (string-prefix-p "image/"
+                                                    (symbol-name type)))
+                                 types))))))
   (setq ghostel--input-mode 'semi-char)
   (setq ghostel--scroll-intercept-active t)
   ;; Let C-g reach the keymap instead of triggering keyboard-quit.
