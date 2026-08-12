@@ -31,14 +31,21 @@ All notable changes to this project will be documented in this file.
   t.  Fixes [#599](https://github.com/dakra/ghostel/issues/599).
 
 ### Fixed
+- An empty OSC 0/2 title (e.g. `printf '\e]2;\a'`) now clears the
+  terminal title instead of being ignored, matching how Ghostty and
+  iTerm2 treat it (reset to as if no title was ever set): the mode
+  line falls back to the plain buffer name, and a buffer renamed by
+  title tracking reverts to its original name (manual renames are
+  still respected).
+  Fixes [#619](https://github.com/dakra/ghostel/issues/619).
 - evil-ghostel: typing the first key of an `evil-escape` chord (e.g.
   `jk`) no longer doubles the character in the shell, and completing
   the chord no longer leaks it.  evil-escape previews the first key
   with a speculative insert it reverts moments later; since terminal
   buffers became writable (0.47.0) that preview was forwarded to the
   PTY where it could not be reverted.  The preview is now skipped in
-  ghostel buffers — the chord itself keeps working.  Fixes
-  [#597](https://github.com/dakra/ghostel/issues/597).
+  ghostel buffers — the chord itself keeps working.
+  Fixes [#597](https://github.com/dakra/ghostel/issues/597).
 
 ## [0.49.0] — 2026-08-02
 
@@ -55,8 +62,8 @@ All notable changes to this project will be documented in this file.
   command with no trailing newline gets its link once the prompt
   returns.  Soft-wrap joining also restarts its row limit at every
   hard newline; regions holding more than 50 wrapped lines used to
-  stop joining at each 50th, losing that line's link.  Fixes
-  [#582](https://github.com/dakra/ghostel/issues/582).
+  stop joining at each 50th, losing that line's link.
+  Fixes [#582](https://github.com/dakra/ghostel/issues/582).
 - Redraws that rebuild the whole buffer — changing `ghostel-bold-color`,
   the foreign-insert repair, line-mode teardown — no longer strip
   detected file/URL links for good; they queue a rescan of what they

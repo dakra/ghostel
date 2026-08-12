@@ -407,7 +407,9 @@ project:
 (defcustom ghostel-buffer-name-function nil
   "Function returning the ghostel buffer name, or nil to leave it unchanged.
 Called in the ghostel buffer with one argument, the terminal TITLE (the
-OSC 2 string; may be nil or empty), on both a title change and a `cd' \(OSC 7).
+OSC 2 string; nil when the terminal has no title), on both a title change
+and a `cd' \(OSC 7).  A title clear (empty OSC 0/2) reverts a
+title-derived name to the buffer's original name.
 Read `default-directory' for the current directory.
 Renames the buffer to the returned string, declining after a manual rename.
 The mode line shows the title independently of this variable;
@@ -1060,7 +1062,7 @@ local code should not assume it is signalable unless the process is local.")
   "Last known working directory from OSC 7, used for dedup.")
 
 (defvar-local ghostel--title nil
-  "Last terminal title reported by OSC 0/2.")
+  "Last terminal title reported by OSC 0/2; nil when unset or cleared.")
 
 (defvar-local ghostel--managed-buffer-name nil
   "Last buffer name managed by Ghostel title tracking.
@@ -3356,10 +3358,9 @@ PROGRESS is an integer 0-100 or nil."
                     (error-message-string err))))))))
 
 (defun ghostel-buffer-name-by-title (title)
-  "Return \"*ghostel: TITLE*\", or nil when TITLE is nil or empty.
+  "Return \"*ghostel: TITLE*\", or nil when TITLE is nil.
 A `ghostel-buffer-name-function' that names the buffer after the title."
-  (and title (not (string= "" title))
-       (format "*ghostel: %s*" title)))
+  (and title (format "*ghostel: %s*" title)))
 
 (defun ghostel-buffer-name-by-directory (_title)
   "Return \"*ghostel: DIR*\" from `default-directory', abbreviated.
@@ -3379,11 +3380,19 @@ Declines after a manual rename; a nil or unchanged NEW-NAME is a no-op."
 
 (defun ghostel--set-title (title)
   "Record a terminal TITLE report (OSC 0/2) and rename the buffer.
-Maps TITLE through `ghostel-buffer-name-function' and renames via
-`ghostel--rename-managed', which declines after a manual rename."
-  (setq ghostel--title title)
+A nil or empty TITLE clears the title and reverts a title-derived
+name to `ghostel--buffer-identity'.  Renames via
+`ghostel-buffer-name-function' and `ghostel--rename-managed', which
+declines after a manual rename."
+  (setq ghostel--title (and title (not (string= "" title)) title))
   (when ghostel-buffer-name-function
-    (ghostel--rename-managed (funcall ghostel-buffer-name-function title)))
+    (ghostel--rename-managed
+     (or (funcall ghostel-buffer-name-function ghostel--title)
+         ;; Revert only names title tracking has claimed; a clear must
+         ;; not rename a buffer it never touched.
+         (and (null ghostel--title)
+              ghostel--managed-buffer-name
+              ghostel--buffer-identity))))
   (ghostel--buffer-identification-update))
 
 (defun ghostel--buffer-identification (format)
@@ -3391,7 +3400,7 @@ Maps TITLE through `ghostel-buffer-name-function' and renames via
 See `ghostel-buffer-identification-format' for the specs.
 %b stays a live mode-line construct.
 A FORMAT with %t returns the plain buffer name while the terminal has no title."
-  (if (and (or (null ghostel--title) (string= "" ghostel--title))
+  (if (and (null ghostel--title)
            ;; Skip quoted percents so e.g. "50%%tests" is not read as a
            ;; title reference.
            (string-match-p "%[ 0<>^_-]*[0-9]*\\(?:\\.[0-9]+\\)?t"
@@ -5241,6 +5250,10 @@ spawn after initialization."
           ghostel--cursor-pos nil
           ghostel--cursor-char-pos nil
           ghostel--repainted-region nil)
+    ;; `ghostel-exec'-created buffers need an identity as the revert
+    ;; target for a title clear.
+    (unless ghostel--buffer-identity
+      (setq ghostel--buffer-identity (buffer-name)))
     ;; Reused buffers hold the previous session's title; drop it from
     ;; the mode line along with the buffer-local reset above.
     (ghostel--buffer-identification-update)

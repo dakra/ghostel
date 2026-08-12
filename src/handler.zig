@@ -109,13 +109,12 @@ pub fn GhostelHandler(Context: type) type {
             };
         }
 
-        /// Called when the terminal title changes.
+        /// Called when the terminal title changes.  A cleared title (empty
+        /// OSC 0/2) reads back as null and is forwarded as "".
         fn titleChangedCallback(handler: *gt.TerminalStream.Handler) void {
             const self: *Self = @fieldParentPtr("inner", handler);
-            const title = handler.terminal.getTitle();
-            if (title) |t| {
-                self.context.effect("ghostel--set-title", .{t});
-            }
+            const title = handler.terminal.getTitle() orelse "";
+            self.context.effect("ghostel--set-title", .{title});
         }
 
         // ---------------------------------------------------------------------------

@@ -291,7 +291,7 @@ same name must get separate buffers."
             (should (eq ghostel--term 'fake-term))
             (should-not ghostel--term-rows)
             (should-not ghostel--term-cols)
-            (should-not ghostel--buffer-identity)))
+            (should (equal (buffer-name) ghostel--buffer-identity))))
       (when (buffer-live-p buf)
         (kill-buffer buf)))))
 

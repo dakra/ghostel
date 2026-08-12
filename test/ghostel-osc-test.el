@@ -61,6 +61,29 @@
           (should (equal title ghostel--title))
           (should (equal expected (buffer-name))))))))
 
+(ert-deftest ghostel-test-osc2-empty-title-clears ()
+  "An empty OSC 0/2 clears the title and reverts the tracked buffer name.
+Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
+  :tags '(native)
+  (let ((ghostel-buffer-name-function #'ghostel-buffer-name-by-title))
+    (ghostel-test--with-pty-matrix backend
+      (ghostel-test--with-raw-echo-buffer (buf proc)
+        (let ((identity ghostel--buffer-identity)
+              (round 0))
+          (dolist (clear '("\e]2;\e\\" "\e]2;\a" "\e]0;\a"))
+            (let ((title (format "Clear Me %S %d" backend
+                                 (setq round (1+ round)))))
+              (ghostel--write-pty ghostel--term (format "\e]2;%s\e\\" title))
+              (ghostel-test--wait-until
+               (lambda () (equal title ghostel--title)) proc 5)
+              (should (equal (format "*ghostel: %s*" title) (buffer-name)))
+              (ghostel--write-pty ghostel--term clear)
+              (ghostel-test--wait-until
+               (lambda () (null ghostel--title)) proc 5)
+              (should (null ghostel--title))
+              (should (equal identity (buffer-name)))
+              (should (equal identity ghostel--managed-buffer-name)))))))))
+
 (ert-deftest ghostel-test-osc9-notification ()
   "OSC 9 iTerm2-style notifications reach `ghostel-notification-function'."
   :tags '(native)

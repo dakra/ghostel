@@ -15,13 +15,12 @@
 ;;; Pure formatters
 
 (ert-deftest ghostel-test-buffer-name-by-title-is-pure ()
-  "`ghostel-buffer-name-by-title' maps TITLE to a name; nil/empty give nil."
+  "`ghostel-buffer-name-by-title' maps TITLE to a name; nil gives nil."
   (with-temp-buffer
     (let ((name (buffer-name)))
       (should (equal "*ghostel: My Title*"
                      (ghostel-buffer-name-by-title "My Title")))
       (should (null (ghostel-buffer-name-by-title nil)))
-      (should (null (ghostel-buffer-name-by-title "")))
       ;; Pure: computing the name must not rename the current buffer.
       (should (equal name (buffer-name))))))
 
@@ -139,6 +138,91 @@
               (should (equal "*ghostel*" ghostel--managed-buffer-name)))))
       (when (buffer-live-p buf) (kill-buffer buf)))))
 
+(ert-deftest ghostel-test-set-title-clear-reverts-name ()
+  "An empty or nil title clears `ghostel--title' and reverts the name."
+  (let (buf)
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--new)
+                   (lambda (&rest _args) 'fake-term))
+                  ((symbol-function 'ghostel--set-size) #'ignore)
+                  ((symbol-function 'ghostel--apply-palette)
+                   (lambda (&rest _args) nil))
+                  ((symbol-function 'ghostel--start-process)
+                   (lambda () nil)))
+          (let ((ghostel-buffer-name-function #'ghostel-buffer-name-by-title))
+            (ghostel)
+            (setq buf (current-buffer))
+            (with-current-buffer buf
+              (ghostel--set-title "Title A")
+              (should (equal "*ghostel: Title A*" (buffer-name)))
+              (ghostel--set-title "")
+              (should (null ghostel--title))
+              (should (equal ghostel--buffer-identity (buffer-name)))
+              (should (equal ghostel--buffer-identity
+                             ghostel--managed-buffer-name))
+              (ghostel--set-title "Title B")
+              (should (equal "*ghostel: Title B*" (buffer-name)))
+              (ghostel--set-title nil)
+              (should (null ghostel--title))
+              (should (equal ghostel--buffer-identity (buffer-name))))))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-set-title-clear-respects-manual ()
+  "A title clear declines to rename after a manual rename."
+  (let (buf)
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--new)
+                   (lambda (&rest _args) 'fake-term))
+                  ((symbol-function 'ghostel--set-size) #'ignore)
+                  ((symbol-function 'ghostel--apply-palette)
+                   (lambda (&rest _args) nil))
+                  ((symbol-function 'ghostel--start-process)
+                   (lambda () nil)))
+          (let ((ghostel-buffer-name-function #'ghostel-buffer-name-by-title))
+            (ghostel)
+            (setq buf (current-buffer))
+            (with-current-buffer buf
+              (ghostel--set-title "Title A")
+              (rename-buffer "manual title" t)
+              (ghostel--set-title "")
+              (should (null ghostel--title))
+              (should (equal "manual title" (buffer-name))))))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-set-title-clear-unclaimed-keeps-name ()
+  "A clear does not rename a buffer title tracking never renamed."
+  (with-temp-buffer
+    (setq-local ghostel--buffer-identity "*ghostel-orig*")
+    (let ((ghostel-buffer-name-function #'ghostel-buffer-name-by-title)
+          (name (buffer-name)))
+      (ghostel--set-title "")
+      (should (null ghostel--title))
+      (should (equal name (buffer-name))))))
+
+(ert-deftest ghostel-test-set-title-clear-by-directory-keeps-name ()
+  "A title clear leaves a by-directory name alone."
+  (let (buf)
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--new)
+                   (lambda (&rest _args) 'fake-term))
+                  ((symbol-function 'ghostel--set-size) #'ignore)
+                  ((symbol-function 'ghostel--apply-palette)
+                   (lambda (&rest _args) nil))
+                  ((symbol-function 'ghostel--start-process)
+                   (lambda () nil)))
+          (let ((ghostel-buffer-name-function
+                 #'ghostel-buffer-name-by-directory))
+            (ghostel)
+            (setq buf (current-buffer))
+            (with-current-buffer buf
+              (let ((expected (ghostel-buffer-name-by-directory nil)))
+                (ghostel--set-title "ignored")
+                (should (equal expected (buffer-name)))
+                (ghostel--set-title "")
+                (should (null ghostel--title))
+                (should (equal expected (buffer-name)))))))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
 ;;; Directory path (OSC 7) and combination -- native term
 
 (ert-deftest ghostel-test-directory-rename-by-directory ()
@@ -252,10 +336,9 @@ Guards against renaming to \"*ghostel: nil*\" before a title is set."
 (ert-deftest ghostel-test-buffer-identification-empty-title-fallback ()
   "A format referencing %t collapses to the buffer name without a title."
   (with-temp-buffer
-    (dolist (title '(nil ""))
-      (setq-local ghostel--title title)
-      (should (equal '("%b")
-                     (ghostel--buffer-identification "%b (%.30t)"))))))
+    (setq-local ghostel--title nil)
+    (should (equal '("%b")
+                   (ghostel--buffer-identification "%b (%.30t)")))))
 
 (ert-deftest ghostel-test-buffer-identification-no-title-spec-renders ()
   "A format without %t renders even when the terminal has no title."
