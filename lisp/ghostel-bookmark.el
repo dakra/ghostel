@@ -35,6 +35,8 @@ a `cd' to the bookmarked directory is typed into the shell."
 (defun ghostel--bookmark-make-record ()
   "Return a bookmark record for the current ghostel buffer.
 Notes the working directory, buffer name, and buffer identity.
+An identity `command' key (an exec'd program and its arguments) is
+saved to the bookmark file in plaintext.
 See `ghostel--bookmark-handler' for how they are restored."
   `(nil
     (handler . ghostel--bookmark-handler)
@@ -46,48 +48,82 @@ See `ghostel--bookmark-handler' for how they are restored."
 ;;;###autoload
 (defun ghostel--bookmark-handler (bmk)
   "Restore the ghostel bookmark BMK.
-Reuse a live ghostel buffer with the bookmarked slot identity (or
-name, for records without one; title tracking may have renamed the
-buffer since), or create one with a shell started in the bookmarked
-directory.
-When a reused buffer's directory differs and `ghostel-bookmark-check-dir'
-is non-nil, type a `cd' into the shell."
+Reuse a live ghostel buffer: slot identities match whole, command
+records match a live buffer running the recorded command, other
+records match by name (title tracking may have renamed the buffer).
+Otherwise create one in the bookmarked directory, respawning the
+recorded `command' or starting a shell.  Respawned buffers are plain
+`ghostel-exec' buffers; kind-specific setup (e.g. eshell's
+visual-command exit behavior) is not restored.
+When a reused shell's directory differs and `ghostel-bookmark-check-dir'
+is non-nil, a `cd' is typed into it; command buffers are left alone."
   (ghostel--load-module t)
   (let* ((dir (bookmark-prop-get bmk 'location))
          (buf-name (bookmark-prop-get bmk 'buf-name))
-         ;; Pre-structured records hold a name string; treat as identity-less.
+         ;; Bookmark files are external data; treat a non-alist identity
+         ;; as absent.
          (identity (let ((id (bookmark-prop-get bmk 'identity)))
                      (and (consp id) id)))
+         (command (alist-get 'command identity))
          (live-p (lambda (b)
                    (let ((p (and b (buffer-local-value 'ghostel--process b))))
                      (and p (process-live-p p) b))))
          ;; Retained dead-shell buffers may share the identity; reuse only
-         ;; a live one.  Kind-only identities (no `instance') are not
-         ;; unique, so those records reuse by name.
-         (buf (if (alist-get 'instance identity)
-                  (ghostel--find-buffer-by-identity identity live-p)
+         ;; a live one.  Slot identities (with an `instance') are unique;
+         ;; command records reattach to a live buffer running the same
+         ;; command (its name may have been uniquified); the rest reuse
+         ;; by name.
+         (buf (cond
+               ((alist-get 'instance identity)
+                (ghostel--find-buffer-by-identity identity live-p))
+               (command
+                (let ((match-p
+                       (lambda (b)
+                         (and (with-current-buffer b
+                                (and (derived-mode-p 'ghostel-mode)
+                                     (ghostel-identity-match-p
+                                      `((command . ,command))
+                                      ghostel-identity)))
+                              (funcall live-p b)))))
+                  ;; Prefer the recorded name so several buffers running
+                  ;; the same command each reattach to their own bookmark.
+                  (or (when-let* ((b (get-buffer buf-name)))
+                        (funcall match-p b))
+                      (seq-find match-p (buffer-list)))))
+               (t
                 (let ((b (get-buffer buf-name)))
                   (and b
                        (eq (buffer-local-value 'major-mode b) 'ghostel-mode)
-                       (funcall live-p b))))))
-    ;; Create branch: the shell starts directly in DIR (no `cd').
+                       (funcall live-p b)))))))
+    ;; Create branch: the program starts directly in DIR (no `cd').  A
+    ;; failed spawn kills the partially created buffer and re-signals.
     (unless buf
       (let ((default-directory (if ghostel-bookmark-check-dir
                                    dir
                                  default-directory)))
-        (setq buf (ghostel--create buf-name))
-        (with-current-buffer buf
-          ;; Legacy records stay identity-less; a fabricated slot would
-          ;; let plain `ghostel' claim this buffer.
-          (setq ghostel--managed-buffer-name (buffer-name)
-                ghostel--initial-name (buffer-name)
-                ghostel-identity identity)
-          (ghostel--start-process)
-          (ghostel--apply-initial-input-mode))))
-    ;; Reuse branch: `cd' if the live buffer has wandered elsewhere.
+        (condition-case err
+            (if command
+                (progn
+                  (setq buf (generate-new-buffer buf-name))
+                  (ghostel-exec buf (car command) (cdr command) identity))
+              (setq buf (ghostel--create buf-name))
+              (with-current-buffer buf
+                ;; A nil identity stays nil: a fabricated slot would let
+                ;; plain `ghostel' claim this buffer.
+                (setq ghostel--managed-buffer-name (buffer-name)
+                      ghostel--initial-name (buffer-name)
+                      ghostel-identity identity)
+                (ghostel--start-process)
+                (ghostel--apply-initial-input-mode)))
+          ((error quit)
+           (when (buffer-live-p buf) (kill-buffer buf))
+           (signal (car err) (cdr err))))))
+    ;; Reuse branch: `cd' if the live shell has wandered elsewhere.  A
+    ;; typed `cd' only makes sense in a shell, not in a command buffer.
     (with-current-buffer buf
       (when (and ghostel-bookmark-check-dir
                  ghostel--term
+                 (not (alist-get 'command ghostel-identity))
                  (not (string-equal default-directory dir)))
         (when (memq ghostel--input-mode '(copy emacs))
           (ghostel-readonly-exit))

@@ -20,7 +20,14 @@ All notable changes to this project will be documented in this file.
   identity; bookmarks saved by older versions still restore but spawn
   a fresh terminal instead of reusing a live one.  A numeric prefix
   of 1 now selects the default terminal (formerly a separate
-  `*ghostel*<1>` buffer).
+  `*ghostel*<1>` buffer).  `ghostel-exec` and eshell visual-command
+  buffers record their program and arguments in the identity's
+  `command` key; jumping to their bookmark reattaches to a live
+  buffer running the recorded command, or respawns it instead of a
+  plain shell.  Restored buffers are plain `ghostel-exec` buffers
+  without kind-specific wiring (such as eshell's visual exit
+  behavior), and the argv is saved to the bookmark file in
+  plaintext.
 
 ### Changed
 - Terminal buffers keep a stable name; the terminal title moves to the

@@ -264,6 +264,140 @@ be hijacked; the jump creates a fresh buffer instead."
         (delete-process ghostel--process)
         (when (buffer-live-p created) (kill-buffer created))))))
 
+(ert-deftest ghostel-test-bookmark-handler-reattaches-by-command ()
+  "A command record reattaches to the live buffer running that command.
+The buffer's (possibly uniquified) name is irrelevant; a different
+command does not match; no `cd' is typed into a command buffer."
+  (ghostel-test--with-compile-buffer running
+    (rename-buffer " *ghostel-bm-vim*<2>" t)
+    (setq ghostel-identity '((kind . eshell) (command . ("vim" "notes"))))
+    (setq-local ghostel--term 'fake-term)
+    (setq default-directory "/tmp/ghostel-bm-a/")
+    (setq-local ghostel--process (ghostel-test--dummy-process "bm-vim" nil))
+    (let (sent created)
+      (unwind-protect
+          (cl-letf (((symbol-function 'ghostel--load-module) #'ignore)
+                    ((symbol-function 'ghostel-send-string)
+                     (lambda (s) (push s sent)))
+                    ((symbol-function 'ghostel-send-key)
+                     (lambda (&rest _) (push 'key sent)))
+                    ((symbol-function 'ghostel-exec)
+                     (lambda (buffer &rest _)
+                       (setq created buffer)
+                       (with-current-buffer buffer
+                         (setq major-mode 'ghostel-mode))
+                       'fake-proc)))
+            (with-temp-buffer
+              (ghostel--bookmark-handler
+               (ghostel-test--bookmark-record
+                " *ghostel-bm-vim*" "/tmp/ghostel-bm-b/"
+                '((kind . eshell) (command . ("vim" "notes")))))
+              (should (eq (current-buffer) running)))
+            (should-not sent)
+            (should-not created)
+            (with-temp-buffer
+              (ghostel--bookmark-handler
+               (ghostel-test--bookmark-record
+                " *ghostel-bm-vim*" "/tmp/ghostel-bm-b/"
+                '((kind . eshell) (command . ("vim" "other"))))))
+            (should created))
+        (delete-process ghostel--process)
+        (when (buffer-live-p created) (kill-buffer created))))))
+
+(ert-deftest ghostel-test-bookmark-handler-command-reattach-prefers-name ()
+  "The recorded name picks among several buffers running the same command.
+A stale recorded name falls back to any live command match."
+  (ghostel-test--with-compile-buffer first
+    (rename-buffer " *ghostel-bm-top*" t)
+    (setq ghostel-identity '((kind . eshell) (command . ("top"))))
+    (setq-local ghostel--process (ghostel-test--dummy-process "bm-top-a" nil))
+    (let ((first-proc ghostel--process))
+      (unwind-protect
+          (ghostel-test--with-compile-buffer second
+            (rename-buffer " *ghostel-bm-top*<2>" t)
+            (setq ghostel-identity '((kind . eshell) (command . ("top"))))
+            (setq-local ghostel--process
+                        (ghostel-test--dummy-process "bm-top-b" nil))
+            (unwind-protect
+                (cl-letf (((symbol-function 'ghostel--load-module) #'ignore))
+                  (with-temp-buffer
+                    (ghostel--bookmark-handler
+                     (ghostel-test--bookmark-record
+                      " *ghostel-bm-top*<2>" "/tmp/ghostel-bm-t/"
+                      '((kind . eshell) (command . ("top")))))
+                    (should (eq (current-buffer) second)))
+                  (with-temp-buffer
+                    (ghostel--bookmark-handler
+                     (ghostel-test--bookmark-record
+                      " *ghostel-bm-top*" "/tmp/ghostel-bm-t/"
+                      '((kind . eshell) (command . ("top")))))
+                    (should (eq (current-buffer) first)))
+                  (with-temp-buffer
+                    (ghostel--bookmark-handler
+                     (ghostel-test--bookmark-record
+                      " *ghostel-bm-top-gone*" "/tmp/ghostel-bm-t/"
+                      '((kind . eshell) (command . ("top")))))
+                    (should (memq (current-buffer) (list first second)))))
+              (delete-process ghostel--process)))
+        (delete-process first-proc)))))
+
+(ert-deftest ghostel-test-bookmark-handler-respawn-failure-cleans-up ()
+  "A failing spawn kills the partially created buffer and re-signals.
+Covers both the command respawn and the shell branch."
+  (cl-letf (((symbol-function 'ghostel--load-module) #'ignore)
+            ((symbol-function 'ghostel-exec)
+             (lambda (&rest _) (error "Spawn failed"))))
+    (should-error
+     (ghostel--bookmark-handler
+      (ghostel-test--bookmark-record " *ghostel-bm-fail*"
+                                     "/tmp/ghostel-bm-f/"
+                                     '((kind . exec) (command . ("nope"))))))
+    (should-not (get-buffer " *ghostel-bm-fail*")))
+  (cl-letf (((symbol-function 'ghostel--load-module) #'ignore)
+            ((symbol-function 'ghostel--create)
+             (lambda (name &rest _)
+               (let ((b (generate-new-buffer name)))
+                 (with-current-buffer b (ghostel-mode))
+                 b)))
+            ((symbol-function 'ghostel--start-process)
+             (lambda () (error "Spawn failed"))))
+    (should-error
+     (ghostel--bookmark-handler
+      (ghostel-test--bookmark-record " *ghostel-bm-fail-sh*"
+                                     "/tmp/ghostel-bm-f/")))
+    (should-not (get-buffer " *ghostel-bm-fail-sh*"))))
+
+(ert-deftest ghostel-test-bookmark-handler-respawns-command ()
+  "A command-bearing identity respawns the program instead of a shell."
+  (let ((exec-calls nil)
+        (shell-started nil))
+    (cl-letf (((symbol-function 'ghostel--load-module) #'ignore)
+              ((symbol-function 'ghostel-exec)
+               (lambda (buffer program &optional args identity)
+                 (push (list buffer program args identity) exec-calls)
+                 (with-current-buffer buffer
+                   (setq major-mode 'ghostel-mode)
+                   (setq-local ghostel-identity identity))
+                 'fake-proc))
+              ((symbol-function 'ghostel--start-process)
+               (lambda () (setq shell-started t))))
+      (unwind-protect
+          (progn
+            (with-temp-buffer
+              (ghostel--bookmark-handler
+               (ghostel-test--bookmark-record
+                " *ghostel-bm-htop*" "/tmp/ghostel-bm-cmd/"
+                '((kind . exec) (command . ("htop" "-d" "10"))))))
+            (should-not shell-started)
+            (should (= 1 (length exec-calls)))
+            (pcase-let ((`(,b ,prog ,args ,id) (car exec-calls)))
+              (should (equal (buffer-name b) " *ghostel-bm-htop*"))
+              (should (equal prog "htop"))
+              (should (equal args '("-d" "10")))
+              (should (equal (alist-get 'command id) '("htop" "-d" "10")))))
+        (when-let* ((b (get-buffer " *ghostel-bm-htop*")))
+          (kill-buffer b))))))
+
 (ert-deftest ghostel-test-bookmark-handler-creates-buffer ()
   "Jumping to a bookmark with no live buffer starts a fresh shell in its dir."
   :tags '(native)

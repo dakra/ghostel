@@ -85,11 +85,12 @@ buffer eventually shows up."
                     ((symbol-function 'ghostel--apply-bold-config) #'ignore)
                     ((symbol-function 'ghostel--spawn-pty)
                      (lambda (&rest _) 'fake-proc)))
-            (ghostel-exec buf "ls" nil)
+            (ghostel-exec buf "ls" '("-l"))
             (with-current-buffer buf
               (should (equal ghostel--managed-buffer-name "managed"))
               (should (equal ghostel--initial-name (buffer-name)))
-              (should (equal ghostel-identity '((kind . exec)))))
+              (should (equal ghostel-identity
+                             '((kind . exec) (command . ("ls" "-l"))))))
             (ghostel-exec buf "ls" nil '((kind . snowflake) (repl . "a")))
             (with-current-buffer buf
               (should (equal ghostel-identity

@@ -1077,7 +1077,8 @@ variable re-enables automatic renaming for the next title update.")
 `kind' (mandatory) says what created the buffer: `term', `compile',
 `exec', `eshell', or a third-party symbol.  Scope keys like
 `project-root' or the plain-terminal `name' attach it to a context
-and may be combined; `instance' (an integer) marks a reusable slot.
+and may be combined; `command' records an exec'd (PROGRAM . ARGS);
+`instance' (an integer) marks a reusable slot.
 Slot reuse compares whole identities, so cosmetic keys must stay off slots;
 scoped listings match subsets with `ghostel-identity-match-p'.")
 (put 'ghostel-identity 'permanent-local t)
@@ -5422,11 +5423,12 @@ window, or 80x24 if BUFFER is not displayed.  PROGRAM and ARGS are
 passed as distinct argv entries, so shell metacharacters are not
 interpreted.  Shell integration is not applied.
 
-IDENTITY, when non-nil, is stored as the buffer's `ghostel-identity';
-it defaults to ((kind . exec)).
+IDENTITY, when non-nil, is stored verbatim as the buffer's
+`ghostel-identity'; include a `command' key to make bookmarks respawn the
+program.  It defaults to \((kind . exec) (command . (PROGRAM . ARGS))).
 
-Returns the lifecycle process object.  Signals `user-error' if BUFFER
-already has a live ghostel process."
+Returns the lifecycle process object.
+Signals `user-error' if BUFFER already has a live ghostel process."
   (ghostel--load-module t)
   (when (with-current-buffer buffer
           (process-live-p ghostel--process))
@@ -5446,7 +5448,11 @@ already has a live ghostel process."
     (with-current-buffer buffer
       (ghostel--init-buffer buffer height width)
       (setq ghostel--initial-name (buffer-name)
-            ghostel-identity (or identity '((kind . exec))))
+            ghostel-identity
+            (or identity
+                ;; Copy ARGS so a caller reusing its list cannot mutate
+                ;; the identity in place.
+                `((kind . exec) (command . (,program . ,(copy-sequence args))))))
       (let ((remote-p (file-remote-p default-directory)))
         (ghostel--spawn-pty program args nil remote-p)))))
 
