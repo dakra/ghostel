@@ -112,7 +112,11 @@
   :group 'terminals
   :prefix "ghostel-")
 
-(defcustom ghostel-shell (or (getenv "SHELL") "/bin/sh")
+(defcustom ghostel-shell
+  ;; Read past any buffer-local `process-environment' (e.g. envrc, buffer-env)
+  (or (let ((process-environment (default-value 'process-environment)))
+        (getenv "SHELL"))
+      "/bin/sh")
   "Shell program to run in the terminal.
 
 Either a string (just the executable path) or a list whose first

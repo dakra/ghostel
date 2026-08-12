@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- The default of `ghostel-shell` reads `$SHELL` from the global
+  environment instead of the current buffer's. Ghostel is normally
+  autoloaded by the first terminal, so a buffer-local
+  `process-environment` — as bound by, for example `buffer-env`,
+  `envrc` or `mise.el` — used to decide which shell every terminal
+  ran. A nix devshell exports a `$SHELL` built without readline, which
+  prints the `\[` / `\]` zero-width markers of the user's prompt
+  literally.
+
 ## [0.50.0] — 2026-08-13
 
 ### Added
