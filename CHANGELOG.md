@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- Terminal buffers keep a stable name; the terminal title moves to the
+  mode line.  `ghostel-buffer-name-function` now defaults to nil, so
+  OSC 2 titles and OSC 7 `cd`s no longer rename the buffer — names like
+  `*ghostel*` stay valid for `switch-to-buffer` history,
+  `display-buffer-alist` rules, bookmarks, and desktop restore, and
+  buffer lists still disambiguate terminals by directory (buffer-menu,
+  ibuffer, and marginalia show each terminal's cwd).  The title is
+  instead shown in `mode-line-buffer-identification`, controlled by the
+  new `ghostel-buffer-identification-format` — a `format-spec` string
+  (default `"%b (%.30t)"`) with `%b` = buffer name, `%t` = title
+  (capped at 30 columns by default, full title in the tooltip), and
+  `%d` = abbreviated `default-directory`; when a format uses `%t` and
+  the terminal has no title, only the buffer name is shown, and nil
+  leaves the mode line untouched.  To restore the previous behavior:
+  `(setq ghostel-buffer-name-function #'ghostel-buffer-name-by-title)`.
 - `ghostel-compile` now honours `compilation-scroll-output` instead of
   always scrolling.  With the default nil, compilation-style runs keep
   the window at the top of the output like `M-x compile`; any non-nil

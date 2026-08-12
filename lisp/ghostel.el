@@ -89,6 +89,7 @@
 (require 'cl-lib)
 (require 'comint)
 (require 'compat)
+(require 'format-spec)
 (require 'project)
 (require 'shell)
 (require 'text-property-search)
@@ -403,19 +404,34 @@ project:
 (define-obsolete-variable-alias 'ghostel-set-title-function
   'ghostel-buffer-name-function "0.32.0")
 
-(defcustom ghostel-buffer-name-function #'ghostel-buffer-name-by-title
+(defcustom ghostel-buffer-name-function nil
   "Function returning the ghostel buffer name, or nil to leave it unchanged.
 Called in the ghostel buffer with one argument, the terminal TITLE (the
 OSC 2 string; may be nil or empty), on both a title change and a `cd' \(OSC 7).
 Read `default-directory' for the current directory.
 Renames the buffer to the returned string, declining after a manual rename.
-Set to nil to disable renaming entirely."
+The mode line shows the title independently of this variable;
+see `ghostel-buffer-identification-format'."
   :type '(choice (const :tag "Disabled" nil)
                  (function-item :tag "By title — *ghostel: TITLE*"
                                 ghostel-buffer-name-by-title)
                  (function-item :tag "By directory — *ghostel: DIR*"
                                 ghostel-buffer-name-by-directory)
                  (function :tag "Custom function")))
+
+(defcustom ghostel-buffer-identification-format "%b (%.30t)"
+  "Format for `mode-line-buffer-identification' in ghostel buffers.
+A `format-spec' string with these specs:
+  %b  buffer name (stays live across renames)
+  %t  terminal title (OSC 0/2)
+  %d  abbreviated `default-directory'
+`format-spec' width and truncation modifiers apply to %t and %d (the
+default caps the title at 30 columns) but are ignored on %b.
+When the format references %t and the terminal has no title,
+only the buffer name is shown.
+Set to nil to leave `mode-line-buffer-identification' alone."
+  :type '(choice (const :tag "Leave the mode line alone" nil)
+                 (string :tag "Format string")))
 
 (defcustom ghostel-kill-buffer-on-exit t
   "Kill the buffer when the terminal process exits."
@@ -3367,7 +3383,51 @@ Maps TITLE through `ghostel-buffer-name-function' and renames via
 `ghostel--rename-managed', which declines after a manual rename."
   (setq ghostel--title title)
   (when ghostel-buffer-name-function
-    (ghostel--rename-managed (funcall ghostel-buffer-name-function title))))
+    (ghostel--rename-managed (funcall ghostel-buffer-name-function title)))
+  (ghostel--buffer-identification-update))
+
+(defun ghostel--buffer-identification (format)
+  "Return a `mode-line-buffer-identification' value built from FORMAT.
+See `ghostel-buffer-identification-format' for the specs.
+%b stays a live mode-line construct.
+A FORMAT with %t returns the plain buffer name while the terminal has no title."
+  (if (and (or (null ghostel--title) (string= "" ghostel--title))
+           ;; Skip quoted percents so e.g. "50%%tests" is not read as a
+           ;; title reference.
+           (string-match-p "%[ 0<>^_-]*[0-9]*\\(?:\\.[0-9]+\\)?t"
+                           (string-replace "%%" "" format)))
+      (propertized-buffer-identification "%b")
+    (let* ((expanded
+            ;; %b is passed through to the mode line, where `format-spec'
+            ;; modifiers have no meaning; drop them so they cannot pad or
+            ;; truncate the placeholder instead of the buffer name.
+            (format-spec (replace-regexp-in-string
+                          "%[ 0<>^_-]*[0-9]*\\(?:\\.[0-9]+\\)?b" "%b" format)
+                         `((?b . "\0")
+                           (?t . ,(propertize (or ghostel--title "")
+                                              'help-echo ghostel--title))
+                           (?d . ,(abbreviate-file-name
+                                   (directory-file-name default-directory))))
+                         'ignore))
+           (name (propertized-buffer-identification "%b"))
+           (parts (split-string expanded "\0"))
+           (construct (list (string-replace "%" "%%" (car parts)))))
+      (dolist (part (cdr parts))
+        (push name construct)
+        (push (string-replace "%" "%%" part) construct))
+      (nreverse construct))))
+
+(defun ghostel--buffer-identification-update ()
+  "Recompute `mode-line-buffer-identification' from the configured format.
+No-op when `ghostel-buffer-identification-format' is nil."
+  (when ghostel-buffer-identification-format
+    (let ((new (ghostel--buffer-identification
+                ghostel-buffer-identification-format)))
+      ;; Property-aware comparison: a truncated %t can render identically
+      ;; for different titles while the help-echo differs.
+      (unless (equal-including-properties new mode-line-buffer-identification)
+        (setq-local mode-line-buffer-identification new)
+        (force-mode-line-update)))))
 
 (defun ghostel--cursor-blink-stop ()
   "Cancel the blink timer, restore the cursor, and remove the blink hooks.
@@ -3481,7 +3541,8 @@ file:// URL does not match the local machine, construct a TRAMP path."
                   list-buffers-directory default-directory))))
       (when ghostel-buffer-name-function
         (ghostel--rename-managed
-         (funcall ghostel-buffer-name-function ghostel--title))))))
+         (funcall ghostel-buffer-name-function ghostel--title)))
+      (ghostel--buffer-identification-update))))
 
 
 ;;; Palette
@@ -5046,6 +5107,7 @@ may change freely (`ghostel-compile' finalize relies on this)."
   (setq-local filter-buffer-substring-function #'ghostel--filter-buffer-substring)
   ;; expose cwd to buffer-menu/ibuffer
   (setq-local list-buffers-directory (expand-file-name default-directory))
+  (ghostel--buffer-identification-update)
   ;; bookmark this buffer's cwd (loads ghostel-bookmark.el lazily on use)
   (setq-local bookmark-make-record-function #'ghostel--bookmark-make-record)
   (setq ghostel--input-mode 'semi-char)
@@ -5168,6 +5230,9 @@ spawn after initialization."
           ghostel--cursor-pos nil
           ghostel--cursor-char-pos nil
           ghostel--repainted-region nil)
+    ;; Reused buffers hold the previous session's title; drop it from
+    ;; the mode line along with the buffer-local reset above.
+    (ghostel--buffer-identification-update)
     (let* ((w (or (get-buffer-window buffer t) (selected-window)))
            (height (max 1 (or rows
                               (if (window-live-p w)

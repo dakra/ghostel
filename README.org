@@ -821,8 +821,9 @@ TRAMP-aware =auth-source-pick-first-password= example.
   TRAMP-aware for remote hosts).
 - *OSC 133* - semantic prompt markers, enabling prompt-to-prompt navigation with
   =C-c M-n= / =C-c M-p=.
-- *OSC 2* - title tracking (the buffer is renamed from the terminal title; see
-  =ghostel-buffer-name-function=).
+- *OSC 2* - title tracking (the title is shown in the mode line; see
+  =ghostel-buffer-identification-format=.  Set =ghostel-buffer-name-function= to
+  rename the buffer from the title instead).
 - *OSC 52;e* - call whitelisted Emacs functions from shell scripts (see [[#calling-elisp-from-the-shell][Calling
   Elisp from the Shell]]).
 - *OSC 52* - clipboard support (opt-in, for remote sessions).
@@ -1304,23 +1305,24 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 
 ** Process and environment
 
-| Variable                         | Default                                       | Description                                                                                                   |
-|----------------------------------+-----------------------------------------------+---------------------------------------------------------------------------------------------------------------|
-| =ghostel-shell=                    | =$SHELL= (else =/bin/sh=)                         | Shell program to run.  A string, or a list of executable + args.                                              |
-| =ghostel-use-native-pty=           | =t=                                             | Use the native PTY reader for local buffers.  Remote TRAMP buffers always use Emacs processes.                |
-| =ghostel-term=                     | ="xterm-ghostty"=                               | Value of =TERM=.  Advertises the bundled terminfo's full capability set.  Set to ="xterm-256color"= to fall back. |
-| =ghostel-environment=              | =nil=                                           | Extra env vars (list of ="KEY=VALUE"= strings; bare ="KEY"= unsets).  Honored via dir-locals.                     |
-| =ghostel-macos-login-shell=        | =t= on macOS                                    | Wrap the shell via =login(1)= so it starts as a login shell (matches Terminal.app / Ghostty).                   |
-| =ghostel-pre-spawn-hook=           | =nil=                                           | Hook run just before =make-process=; =process-environment= is bound for last-minute env tweaks.                   |
-| =ghostel-buffer-name=              | ="*ghostel*"=                                     | Default buffer name.                                                                                          |
-| =ghostel-project-buffer-scope=     | =both=                                          | How project commands scope buffers: =default-directory=, =identity=, or =both=.                                     |
-| =ghostel-buffer-name-function=     | =ghostel-buffer-name-by-title=                  | Maps OSC 2 title + =default-directory= to a buffer name (nil return keeps it); nil disables.                    |
-| =ghostel-kill-buffer-on-exit=      | =t=                                             | Kill the buffer when the shell process exits.                                                                 |
-| =ghostel-query-before-killing=     | =auto=                                          | Confirm before killing a live buffer / exiting Emacs: =t=, =nil=, or =auto= (only while a command runs).            |
-| =ghostel-exit-functions=           | =nil=                                           | Hook run with =(BUFFER EVENT)= when the terminal process exits.                                                 |
-| =ghostel-command-start-functions=  | =(ghostel--query-before-killing-on-cmd-start)=  | Hook run with =(BUFFER)= on OSC 133 C (command start).                                                          |
-| =ghostel-command-finish-functions= | =(ghostel--query-before-killing-on-cmd-finish)= | Hook run with =(BUFFER EXIT-STATUS)= on OSC 133 D (command finish).                                             |
-| =ghostel-bookmark-check-dir=       | =t=                                             | Restore the working directory when jumping to a ghostel [[#bookmarks][bookmark]] (=cd= into a reused buffer that moved).      |
+| Variable                             | Default                                       | Description                                                                                                                                                                                              |
+|--------------------------------------+-----------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| =ghostel-shell=                        | =$SHELL= (else =/bin/sh=)                         | Shell program to run.  A string, or a list of executable + args.                                                                                                                                         |
+| =ghostel-use-native-pty=               | =t=                                             | Use the native PTY reader for local buffers.  Remote TRAMP buffers always use Emacs processes.                                                                                                           |
+| =ghostel-term=                         | ="xterm-ghostty"=                               | Value of =TERM=.  Advertises the bundled terminfo's full capability set.  Set to ="xterm-256color"= to fall back.                                                                                            |
+| =ghostel-environment=                  | =nil=                                           | Extra env vars (list of ="KEY=VALUE"= strings; bare ="KEY"= unsets).  Honored via dir-locals.                                                                                                                |
+| =ghostel-macos-login-shell=            | =t= on macOS                                    | Wrap the shell via =login(1)= so it starts as a login shell (matches Terminal.app / Ghostty).                                                                                                              |
+| =ghostel-pre-spawn-hook=               | =nil=                                           | Hook run just before =make-process=; =process-environment= is bound for last-minute env tweaks.                                                                                                              |
+| =ghostel-buffer-name=                  | ="*ghostel*"=                                     | Default buffer name.                                                                                                                                                                                     |
+| =ghostel-project-buffer-scope=         | =both=                                          | How project commands scope buffers: =default-directory=, =identity=, or =both=.                                                                                                                                |
+| =ghostel-buffer-name-function=         | =nil=                                           | Maps OSC 2 title + =default-directory= to a buffer name (nil return keeps it); nil (default) disables renaming.  =ghostel-buffer-name-by-title= and =ghostel-buffer-name-by-directory= are ready-made choices. |
+| =ghostel-buffer-identification-format= | ="%b (%.30t)"=                                  | =format-spec= string for =mode-line-buffer-identification=: =%b= buffer name, =%t= terminal title, =%d= abbreviated =default-directory=.  nil leaves the mode line alone.                                            |
+| =ghostel-kill-buffer-on-exit=          | =t=                                             | Kill the buffer when the shell process exits.                                                                                                                                                            |
+| =ghostel-query-before-killing=         | =auto=                                          | Confirm before killing a live buffer / exiting Emacs: =t=, =nil=, or =auto= (only while a command runs).                                                                                                       |
+| =ghostel-exit-functions=               | =nil=                                           | Hook run with =(BUFFER EVENT)= when the terminal process exits.                                                                                                                                            |
+| =ghostel-command-start-functions=      | =(ghostel--query-before-killing-on-cmd-start)=  | Hook run with =(BUFFER)= on OSC 133 C (command start).                                                                                                                                                     |
+| =ghostel-command-finish-functions=     | =(ghostel--query-before-killing-on-cmd-finish)= | Hook run with =(BUFFER EXIT-STATUS)= on OSC 133 D (command finish).                                                                                                                                        |
+| =ghostel-bookmark-check-dir=           | =t=                                             | Restore the working directory when jumping to a ghostel [[#bookmarks][bookmark]] (=cd= into a reused buffer that moved).                                                                                                   |
 
 ** Native module
 

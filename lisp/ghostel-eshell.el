@@ -42,8 +42,7 @@
   "Whether to let visual-command buffers rename themselves via OSC titles.
 When nil (the default), the visual-command buffer keeps its initial
 name (e.g. \"*vim*\") for the duration of the program.  When non-nil,
-the terminal program may rename the buffer via OSC 0/2 title escapes
-the same way a regular ghostel terminal does."
+OSC 0/2 title escapes rename the buffer via `ghostel-buffer-name-by-title'."
   :type 'boolean
   :group 'ghostel)
 
@@ -89,8 +88,9 @@ eshell."
       (with-current-buffer buf
         (setq-local ghostel-kill-buffer-on-exit
                     (bound-and-true-p eshell-destroy-buffer-when-process-dies))
-        (unless ghostel-eshell-track-title
-          (setq-local ghostel-buffer-name-function nil))
+        (setq-local ghostel-buffer-name-function
+                    (and ghostel-eshell-track-title
+                         #'ghostel-buffer-name-by-title))
         (add-hook 'ghostel-exit-functions
                   #'ghostel-eshell--visual-exit nil t))
       nil)))

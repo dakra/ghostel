@@ -46,7 +46,7 @@
 ;;; Title path (OSC 2) -- pure elisp
 
 (ert-deftest ghostel-test-set-title-renames-and-respects-manual ()
-  "An OSC 2 title renames via the default function; a manual rename wins."
+  "An OSC 2 title renames via the by-title function; a manual rename wins."
   (let (buf)
     (unwind-protect
         (cl-letf (((symbol-function 'ghostel--new)
@@ -56,21 +56,22 @@
                    (lambda (&rest _args) nil))
                   ((symbol-function 'ghostel--start-process)
                    (lambda () nil)))
-          (ghostel)
-          (setq buf (current-buffer))
-          (with-current-buffer buf
-            (should (equal "*ghostel*" (buffer-name)))
-            (should (equal "*ghostel*" ghostel--managed-buffer-name))
-            (ghostel--set-title "Title A")
-            (should (equal "Title A" ghostel--title))
-            (should (equal "*ghostel: Title A*" (buffer-name)))
-            (should (equal "*ghostel: Title A*" ghostel--managed-buffer-name))
-            (ghostel--set-title "Title A2")
-            (should (equal "*ghostel: Title A2*" (buffer-name)))
-            (rename-buffer "manual title" t)
-            (ghostel--set-title "Title B")
-            (should (equal "manual title" (buffer-name)))
-            (should (equal "*ghostel: Title A2*" ghostel--managed-buffer-name))))
+          (let ((ghostel-buffer-name-function #'ghostel-buffer-name-by-title))
+            (ghostel)
+            (setq buf (current-buffer))
+            (with-current-buffer buf
+              (should (equal "*ghostel*" (buffer-name)))
+              (should (equal "*ghostel*" ghostel--managed-buffer-name))
+              (ghostel--set-title "Title A")
+              (should (equal "Title A" ghostel--title))
+              (should (equal "*ghostel: Title A*" (buffer-name)))
+              (should (equal "*ghostel: Title A*" ghostel--managed-buffer-name))
+              (ghostel--set-title "Title A2")
+              (should (equal "*ghostel: Title A2*" (buffer-name)))
+              (rename-buffer "manual title" t)
+              (ghostel--set-title "Title B")
+              (should (equal "manual title" (buffer-name)))
+              (should (equal "*ghostel: Title A2*" ghostel--managed-buffer-name)))))
       (when (buffer-live-p buf) (kill-buffer buf)))))
 
 (ert-deftest ghostel-test-buffer-name-disabled ()
@@ -214,6 +215,164 @@ Guards against renaming to \"*ghostel: nil*\" before a title is set."
             (ghostel--update-directory dir)
             (should (equal before (buffer-name)))
             (should (equal dir default-directory))))
+      (delete-directory dir))))
+
+;;; Mode-line buffer identification
+
+(ert-deftest ghostel-test-buffer-name-function-default-nil ()
+  "Renaming is off by default; the title lives in the mode line instead."
+  (should (null (default-value 'ghostel-buffer-name-function))))
+
+;; `format-mode-line' renders as "" in batch Emacs, so these tests
+;; assert on the mode-line construct itself.  `equal' ignores text
+;; properties: ("%b") is the live buffer-name construct returned by
+;; `propertized-buffer-identification'.
+
+(ert-deftest ghostel-test-buffer-identification-title-and-dir ()
+  "%t and %d substitute; %b stays a live mode-line construct."
+  (with-temp-buffer
+    (setq-local ghostel--title "vim main.c")
+    (let ((default-directory "/tmp/some/dir/"))
+      (should (equal `("" ("%b") ,(format " (vim main.c) [%s]"
+                                          (abbreviate-file-name
+                                           "/tmp/some/dir")))
+                     (ghostel--buffer-identification "%b (%t) [%d]"))))))
+
+(ert-deftest ghostel-test-buffer-identification-truncates-title ()
+  "A precision modifier caps the title; `help-echo' keeps the full title."
+  (with-temp-buffer
+    (setq-local ghostel--title "abcdefgh")
+    (let* ((construct (ghostel--buffer-identification "%b %.5t"))
+           (seg (car (last construct))))
+      (should (equal '("" ("%b") " abcde") construct))
+      (should (equal "abcdefgh"
+                     (get-text-property (string-search "abcde" seg) 'help-echo
+                                        seg))))))
+
+(ert-deftest ghostel-test-buffer-identification-empty-title-fallback ()
+  "A format referencing %t collapses to the buffer name without a title."
+  (with-temp-buffer
+    (dolist (title '(nil ""))
+      (setq-local ghostel--title title)
+      (should (equal '("%b")
+                     (ghostel--buffer-identification "%b (%.30t)"))))))
+
+(ert-deftest ghostel-test-buffer-identification-no-title-spec-renders ()
+  "A format without %t renders even when the terminal has no title."
+  (with-temp-buffer
+    (setq-local ghostel--title nil)
+    (let ((default-directory "/tmp/some/dir/"))
+      (should (equal `("" ("%b") ,(format " [%s]"
+                                          (abbreviate-file-name
+                                           "/tmp/some/dir")))
+                     (ghostel--buffer-identification "%b [%d]"))))))
+
+(ert-deftest ghostel-test-buffer-identification-escapes-percent ()
+  "A % in the title is escaped instead of parsed as a mode-line construct."
+  (with-temp-buffer
+    (setq-local ghostel--title "100% done")
+    (should (equal '("" ("%b") " (100%% done)")
+                   (ghostel--buffer-identification "%b (%t)")))))
+
+(ert-deftest ghostel-test-buffer-identification-b-ignores-modifiers ()
+  "Width/precision modifiers on %b are dropped, not applied to the placeholder."
+  (with-temp-buffer
+    (setq-local ghostel--title "title")
+    (dolist (fmt '("%-10b (%t)" "%12b (%t)" "%.0b (%t)"))
+      (should (equal '("" ("%b") " (title)")
+                     (ghostel--buffer-identification fmt))))))
+
+(ert-deftest ghostel-test-buffer-identification-quoted-percent-not-title ()
+  "A quoted %% before t is not read as a %t reference."
+  (with-temp-buffer
+    (setq-local ghostel--title nil)
+    ;; No fallback: the format does not reference the title.
+    (should (equal '("" ("%b") " 50%%tests")
+                   (ghostel--buffer-identification "%b 50%%tests")))))
+
+(ert-deftest ghostel-test-buffer-identification-help-echo-tracks-title ()
+  "Titles sharing a truncated prefix still refresh the `help-echo'."
+  (with-temp-buffer
+    (let ((ghostel-buffer-identification-format "%b %.5t"))
+      (setq-local ghostel--title "abcdeXX")
+      (ghostel--buffer-identification-update)
+      (setq-local ghostel--title "abcdeYY")
+      (ghostel--buffer-identification-update)
+      (let ((seg (car (last mode-line-buffer-identification))))
+        (should (equal "abcdeYY"
+                       (get-text-property (string-search "abcde" seg)
+                                          'help-echo seg)))))))
+
+(ert-deftest ghostel-test-buffer-identification-b-stays-live ()
+  "%b expands to the live construct, never a frozen buffer name."
+  (with-temp-buffer
+    (setq-local ghostel--title "title")
+    (let ((construct (ghostel--buffer-identification "%b (%t)")))
+      (should (equal '("%b") (nth 1 construct)))
+      ;; No segment carries a snapshot of the current buffer name.
+      (dolist (part construct)
+        (when (stringp part)
+          (should-not (string-search (buffer-name) part)))))))
+
+(ert-deftest ghostel-test-buffer-identification-nil-format-leaves-mode-line ()
+  "A nil `ghostel-buffer-identification-format' leaves the mode line alone."
+  (with-temp-buffer
+    (setq-local ghostel--title "title")
+    (let ((before mode-line-buffer-identification)
+          (ghostel-buffer-identification-format nil))
+      (ghostel--buffer-identification-update)
+      (should (eq before mode-line-buffer-identification)))))
+
+(ert-deftest ghostel-test-set-title-updates-identification ()
+  "An OSC 2 title lands in the mode line; the buffer name stays put."
+  (let (buf)
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--new)
+                   (lambda (&rest _args) 'fake-term))
+                  ((symbol-function 'ghostel--set-size) #'ignore)
+                  ((symbol-function 'ghostel--apply-palette)
+                   (lambda (&rest _args) nil))
+                  ((symbol-function 'ghostel--start-process)
+                   (lambda () nil)))
+          (ghostel)
+          (setq buf (current-buffer))
+          (with-current-buffer buf
+            ;; No title yet: identification is the plain buffer name.
+            (should (equal '("%b") mode-line-buffer-identification))
+            (ghostel--set-title "Hello")
+            ;; Default `ghostel-buffer-name-function' nil: no rename.
+            (should (equal "*ghostel*" (buffer-name)))
+            (should (equal '("" ("%b") " (Hello)")
+                           mode-line-buffer-identification))
+            ;; Reinitializing a reused buffer drops the stale title.
+            (ghostel--init-buffer buf)
+            (should (null ghostel--title))
+            (should (equal '("%b") mode-line-buffer-identification))))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-update-directory-updates-identification ()
+  "An OSC 7 `cd' recomputes a %d identification."
+  (let ((dir (file-name-as-directory (make-temp-file "ghostel-cd" t)))
+        (ghostel-buffer-identification-format "%b [%d]")
+        buf)
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--new)
+                   (lambda (&rest _args) 'fake-term))
+                  ((symbol-function 'ghostel--set-size) #'ignore)
+                  ((symbol-function 'ghostel--apply-palette)
+                   (lambda (&rest _args) nil))
+                  ((symbol-function 'ghostel--start-process)
+                   (lambda () nil)))
+          (ghostel)
+          (setq buf (current-buffer))
+          (with-current-buffer buf
+            (ghostel--update-directory dir)
+            (should (equal dir default-directory))
+            (should (equal `("" ("%b") ,(format " [%s]"
+                                                (abbreviate-file-name
+                                                 (directory-file-name dir))))
+                           mode-line-buffer-identification))))
+      (when (buffer-live-p buf) (kill-buffer buf))
       (delete-directory dir))))
 
 (provide 'ghostel-buffer-name-test)
