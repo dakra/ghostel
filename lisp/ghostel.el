@@ -89,6 +89,7 @@
 (require 'cl-lib)
 (require 'comint)
 (require 'compat)
+(require 'dnd)
 (require 'format-spec)
 (require 'project)
 (require 'shell)
@@ -1915,6 +1916,28 @@ parity with `xterm-paste'."
 
 ;;; Drag and drop
 
+(defun ghostel--dnd-send-files (files)
+  "Send FILES to the terminal as shell-quoted paths, followed by a space."
+  (ghostel-send-string
+   (concat (mapconcat #'shell-quote-argument files " ") " ")))
+
+(defun ghostel--dnd-handle-file (uri action)
+  "Send the local file named by URI to the terminal, shell-quoted.
+Handles `dnd-protocol-alist' file drops on the ports that dispatch
+drops through `special-event-map' (X11, pgtk).  A non-local URI is
+ignored with a message; a drop into a dead terminal opens the file
+with ACTION instead."
+  (let* ((local (if (string-match-p "\\`file://[^/]" uri)
+                    (dnd-get-local-file-uri uri)
+                  uri))
+         (file (and local (dnd-get-local-file-name local))))
+    (cond ((null file)
+           (message "ghostel: ignoring dropped %s (not a local file)" uri))
+          ((process-live-p ghostel--process)
+           (ghostel--dnd-send-files (list file)))
+          (t (dnd-open-local-file local action))))
+  'private)
+
 (defun ghostel--drop (event)
   "Handle a drag-and-drop EVENT into the terminal.
 Dropped files insert their path (shell-quoted); dropped text is
@@ -1927,10 +1950,9 @@ pasted using bracketed paste."
     (when (and arg (not (eq arg 'lambda)))
       (let ((type (car arg))
             (objects (cddr arg)))
-        (ghostel--on-user-input)
         (if (eq type 'file)
-            (ghostel--send-string
-             (mapconcat #'shell-quote-argument objects " "))
+            (ghostel--dnd-send-files objects)
+          (ghostel--on-user-input)
           (ghostel--paste-text
            (mapconcat #'identity objects "\n")))))))
 
@@ -5138,6 +5160,16 @@ may change freely (`ghostel-compile' finalize relies on this)."
   (ghostel--buffer-identification-update)
   ;; bookmark this buffer's cwd (loads ghostel-bookmark.el lazily on use)
   (setq-local bookmark-make-record-function #'ghostel--bookmark-make-record)
+  ;; X11 and pgtk deliver drops through `special-event-map' and the
+  ;; `dnd-protocol-alist' machinery, so the `<drag-n-drop>' binding in
+  ;; `ghostel-mode-map' is never consulted there; intercept file drops
+  ;; buffer-locally instead.  NS and w32 bind `[drag-n-drop]' in the
+  ;; global map, which the keymap binding shadows.
+  (setq-local dnd-protocol-alist
+              (append '(("^file:///" . ghostel--dnd-handle-file)
+                        ("^file://"  . ghostel--dnd-handle-file)
+                        ("^file:"    . ghostel--dnd-handle-file))
+                      dnd-protocol-alist))
   (setq ghostel--input-mode 'semi-char)
   (setq ghostel--scroll-intercept-active t)
   ;; Let C-g reach the keymap instead of triggering keyboard-quit.
