@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Ghostel buffers survive `desktop-save-mode` restarts.  A saved
+  terminal records its working directory and identity and
+  `desktop-read` starts a fresh shell in that directory under the
+  saved buffer name, so restored window configurations find the
+  buffer.
+
 ### Changed
 - The bookmark functions are now public: `ghostel-bookmark-make-record`
   and `ghostel-bookmark-handler`.  Bookmarks saved under the old

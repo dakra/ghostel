@@ -726,6 +726,27 @@ fresh buffer starts its shell in the bookmarked directory, and a reused buffer
 that has since moved elsewhere gets a =cd= typed into its shell.  Set it to =nil=
 to leave the directory alone.
 
+** Desktop
+:properties:
+:custom_id: desktop
+:end:
+
+Ghostel integrates with desktop.el to restore terminal buffers on restart.  As
+with bookmarks, only the directory and identity are saved and restored, not
+scrollback or session contents.
+
+Some saved terminals are skipped at restore time (reported in =*Messages*=).
+Terminals that were running a program (=ghostel-exec=, =ghostel-compile=,
+eshell visual commands) are not respawned to avoid re-running a saved command
+(e.g. a build).  Remote (TRAMP) terminals are skipped for the same reason:
+spawning their shells would open connections, possibly prompting for
+credentials.  Terminals whose saved directory no longer exists are skipped as
+well.  Terminals whose shell already exited are not saved in the first place.
+
+Restored terminals spawn real shells, which can be a lot when restarting.
+The =desktop-restore-eager= option limits how many buffers are restored
+during =desktop-read= itself, deferring the rest to idle time.
+
 ** Links and file detection
 :properties:
 :custom_id: links-and-file-detection
@@ -2046,6 +2067,7 @@ while ghostel and vterm trade a compile step for a C/Zig engine.
 | TRAMP remote terminals        | POSIX   | ✅       | ✅       |
 | Eshell integration            | ✅      | ❌       | ✅       |
 | Bookmark support              | ✅      | ✅       | ❌       |
+| Desktop (session) restore     | ✅      | ❌       | ❌       |
 |-------------------------------+---------+----------+----------|
 | Input modes (char/semi/emacs) | ✅      | partial  | ✅       |
 | Line mode (local editing)     | ✅      | ❌       | ✅       |

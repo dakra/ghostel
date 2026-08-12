@@ -940,8 +940,16 @@ to nil to disable the regex fallback entirely (OSC 133 only)."
 (declare-function yank-media-handler "yank-media" (types handler))
 (defvar yank-media-preferred-types)     ; Emacs 31+
 
-;; Lazily loaded on first bookmark use; see ghostel-bookmark.el.
-(declare-function ghostel-bookmark-make-record "ghostel-bookmark")
+;; Explicit autoloads: plain `load-path' installs have no autoloads file.
+(autoload 'ghostel-bookmark-make-record "ghostel-bookmark")
+(autoload 'ghostel-bookmark-handler "ghostel-bookmark")
+(autoload 'ghostel--bookmark-handler "ghostel-bookmark")
+(autoload 'ghostel-desktop-save-buffer "ghostel-desktop")
+(autoload 'ghostel-desktop-restore-buffer "ghostel-desktop")
+
+;; Restore desktop-saved terminals; loads ghostel-desktop.el lazily on use.
+(add-to-list 'desktop-buffer-mode-handlers
+             '(ghostel-mode . ghostel-desktop-restore-buffer))
 
 
 ;;; Native module loading
@@ -3783,6 +3791,9 @@ EVENT is the state-change description passed by Emacs."
         (run-hook-with-args 'ghostel-exit-functions buf event)
         ;; Dead terminal: restore the plain read-only barrier.
         (ghostel--sync-read-only)
+        ;; Only a live shell restores usefully.
+        ;; Drop the buffer from future desktop saves.
+        (setq desktop-save-buffer nil)
         (if ghostel-kill-buffer-on-exit
             (kill-buffer buf)
           (let ((inhibit-read-only t))
@@ -5217,6 +5228,8 @@ may change freely (`ghostel-compile' finalize relies on this)."
                                   types)
                                  (and (memq 'application/pdf types)
                                       '(application/pdf))))))))
+  ;; Save this buffer's dir + identity in the desktop file
+  (setq-local desktop-save-buffer #'ghostel-desktop-save-buffer)
   (setq ghostel--input-mode 'semi-char)
   (setq ghostel--scroll-intercept-active t)
   ;; Let C-g reach the keymap instead of triggering keyboard-quit.
