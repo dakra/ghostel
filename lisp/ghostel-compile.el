@@ -641,6 +641,7 @@ Returns the process."
                   (ghostel--terminal-env)
                   ;; Defeat pagers (git grep, etc.).
                   (list "PAGER=")
+                  (ghostel--logical-pwd-env remote-p)
                   (copy-sequence process-environment)))
          ;; See `ghostel--spawn-pty' for why these are set.
          (process-adaptive-read-buffering nil)

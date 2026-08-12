@@ -162,7 +162,7 @@ A list of \"KEY=VALUE\" strings, prepended to `process-environment'
 before spawning the shell.  A bare \"KEY\" (no `=') unsets the variable.
 
 For local spawns, entries here take precedence over ghostel's own
-variables (TERM, INSIDE_EMACS, EMACS_GHOSTEL_PATH,
+variables (TERM, INSIDE_EMACS, PWD, EMACS_GHOSTEL_PATH,
 shell-integration vars), so a user who sets TERM here wins — which
 will also disable ghostel's shell integration if the chosen TERM
 breaks its assumptions.
@@ -4185,6 +4185,16 @@ verbatim.  `COLORTERM=truecolor' is exported unconditionally."
     (concat "TERM=" (shell-quote-argument ghostel-term)
             "; COLORTERM=truecolor; export TERM COLORTERM; "))))
 
+(defun ghostel--logical-pwd-env (remote-p)
+  "Return a PWD env entry naming the logical `default-directory', as a list.
+Nil when REMOTE-P.  Shells keep an inherited PWD that names the cwd
+\(same inode) and otherwise reset it from getcwd(), which resolves symlinks.
+Without this entry a shell started in a symlinked directory shows the
+physical path in its prompt and OSC 7."
+  (unless remote-p
+    (list (format "PWD=%s"
+                  (directory-file-name (expand-file-name default-directory))))))
+
 (defun ghostel--spawn-pty (program program-args extra-env &optional remote-p)
   "Spawn PROGRAM with PROGRAM-ARGS as a PTY-backed process in the current buffer.
 
@@ -4209,6 +4219,7 @@ for the native child process."
                  ;; terminfo(5)) makes ncurses ignore system entries.
                  (if remote-p '() (ghostel--terminal-env)))
            extra-env
+           (ghostel--logical-pwd-env remote-p)
            process-environment))
          ;; Large TUI redraws (Claude Code, pi on resize) can emit
          ;; hundreds of KB in one write.  Before Emacs 31,

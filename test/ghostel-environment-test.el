@@ -127,6 +127,102 @@ returns the first match) resolves to the user's value."
       (should-not (ghostel-test--terminal-text-line-p
                    "TERM=xterm-ghostty" text)))))
 
+(ert-deftest ghostel-test-spawn-env-injects-logical-pwd ()
+  "Local spawns carry a PWD entry naming the logical `default-directory'.
+Shells keep an inherited PWD that names the cwd (same inode) and
+otherwise reset it from getcwd(), which resolves symlinks — with a
+stale or missing PWD, a shell started in a symlinked directory shows
+the physical path in its prompt and OSC 7.  The injected entry must
+override a stale inherited PWD, while a user PWD in
+`ghostel-environment' must win over the injected one."
+  (let* ((captured nil)
+         (ghostel-shell "/bin/sh")
+         (ghostel-shell-integration nil)
+         (ghostel-macos-login-shell nil)
+         (default-directory (ghostel-test--temp-directory))
+         (process-environment (cons "PWD=/ghostel/stale"
+                                    process-environment))
+         (ghostel-pre-spawn-hook
+          (list (lambda () (setq captured (getenv "PWD"))))))
+    (cl-letf (((symbol-function 'ghostel--spawn-process)
+               (lambda (&rest _) nil)))
+      (ghostel--start-process)
+      (should (equal captured
+                     (directory-file-name
+                      (expand-file-name default-directory))))
+      (let ((ghostel-environment '("PWD=/ghostel/user-override")))
+        (ghostel--start-process))
+      (should (equal captured "/ghostel/user-override")))))
+
+(ert-deftest ghostel-test-spawn-symlinked-dir-child-sees-logical-pwd ()
+  "A child spawned in a symlinked directory sees the logical path in PWD.
+End-to-end over both PTY backends: the injected PWD overrides a stale
+inherited one, survives the spawn and the shell's same-inode
+validation, and an OSC 7 report built from the child's $PWD keeps
+`default-directory' on the logical path instead of the
+getcwd()-resolved physical one."
+  :tags '(native posix)
+  (ghostel-test--with-pty-matrix backend
+    (let* ((target (make-temp-file "ghostel-pwd-target" t))
+           (link (make-temp-name
+                  (expand-file-name "ghostel-pwd-link"
+                                    (ghostel-test--temp-directory)))))
+      (unwind-protect
+          (progn
+            (make-symbolic-link target link)
+            (let* ((process-environment
+                    (cons "PWD=/ghostel/stale-physical"
+                          (ghostel-test--base-process-environment)))
+                   (ghostel-shell
+                    '("/bin/sh" "-c"
+                      "printf '\\033]7;file://%s\\033\\\\' \"$PWD\"; \
+env; printf GHOSTEL_ENV_DONE"))
+                   (ghostel-shell-integration nil)
+                   (ghostel-macos-login-shell nil)
+                   (ghostel-kill-buffer-on-exit nil)
+                   (default-directory (file-name-as-directory link)))
+              (ghostel-test--with-terminal-buffer (buf _term 25 200 1000)
+                (let ((proc (ghostel--start-process)))
+                  ;; Sentinel: the buffer inherits the link path at
+                  ;; creation, so the OSC 7 wait below would otherwise be
+                  ;; satisfied before any report arrives.  Safe to set
+                  ;; here — filters only run inside
+                  ;; `accept-process-output', so no output has been
+                  ;; processed yet.
+                  (setq default-directory "/")
+                  (ghostel-test--wait-for-text "GHOSTEL_ENV_DONE" proc 5)
+                  (should (ghostel-test--terminal-text-line-p
+                           (format "PWD=%s" link)))
+                  ;; OSC events can trail the text on the native backend.
+                  (ghostel-test--wait-until
+                   (lambda () (equal default-directory
+                                     (file-name-as-directory link)))
+                   proc 5)))))
+        (ignore-errors (delete-file link))
+        (ignore-errors (delete-directory target t))))))
+
+(ert-deftest ghostel-test-compile-spawn-env-injects-logical-pwd ()
+  "`ghostel-compile--spawn' children also get the logical PWD entry."
+  (let ((captured 'unset)
+        (buf (generate-new-buffer " *ghostel-compile-pwd*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((default-directory (ghostel-test--temp-directory))
+                (process-environment (cons "PWD=/ghostel/stale"
+                                           process-environment)))
+            (cl-letf (((symbol-function 'make-process)
+                       (lambda (&rest _)
+                         (setq captured (getenv "PWD"))
+                         (ghostel-test--dummy-process "compile-pwd" nil)))
+                      ((symbol-function 'set-process-window-size) #'ignore))
+              (ghostel-compile--spawn "true" buf 24 80))
+            (should (equal captured
+                           (directory-file-name
+                            (expand-file-name default-directory))))))
+      (let ((proc (buffer-local-value 'ghostel--process buf)))
+        (when (processp proc) (delete-process proc)))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-environment-honors-dir-locals ()
   "End-to-end: a real `.dir-locals.el' populates `ghostel-environment'.
 Covers the whole pipeline (`hack-dir-local-variables' reading the
