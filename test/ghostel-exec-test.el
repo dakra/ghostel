@@ -69,15 +69,14 @@ buffer eventually shows up."
                                  (ghostel--kitty-mediums-bits))))))
       (kill-buffer buf))))
 
-(ert-deftest ghostel-test-exec-preserves-identity-bookkeeping ()
-  "`ghostel-exec' does not clobber buffer identity bookkeeping vars."
+(ert-deftest ghostel-test-exec-sets-identity ()
+  "`ghostel-exec' stamps the IDENTITY argument, defaulting to exec kind."
   (let ((buf (generate-new-buffer " *ghostel-exec-identity*")))
     (unwind-protect
         (progn
           (with-current-buffer buf
             (ghostel-mode)
-            (setq-local ghostel--managed-buffer-name "managed")
-            (setq-local ghostel--buffer-identity "identity"))
+            (setq-local ghostel--managed-buffer-name "managed"))
           (cl-letf (((symbol-function 'ghostel--load-module) #'ignore)
                     ((symbol-function 'ghostel--new)
                      (lambda (&rest _) 'fake-term))
@@ -89,7 +88,12 @@ buffer eventually shows up."
             (ghostel-exec buf "ls" nil)
             (with-current-buffer buf
               (should (equal ghostel--managed-buffer-name "managed"))
-              (should (equal ghostel--buffer-identity "identity")))))
+              (should (equal ghostel--initial-name (buffer-name)))
+              (should (equal ghostel-identity '((kind . exec)))))
+            (ghostel-exec buf "ls" nil '((kind . snowflake) (repl . "a")))
+            (with-current-buffer buf
+              (should (equal ghostel-identity
+                             '((kind . snowflake) (repl . "a")))))))
       (kill-buffer buf))))
 
 (defun ghostel-test-exec--pid-live-p (pid)

@@ -12,14 +12,14 @@
 (defun ghostel-buffers-test--make (name &optional dir identity)
   "Create a fake ghostel-mode buffer for tests.
 NAME is the buffer name.  Optional DIR sets `default-directory'
-and IDENTITY sets `ghostel--buffer-identity'.  The buffer claims
+and IDENTITY sets `ghostel-identity'.  The buffer claims
 `ghostel-mode' via `major-mode' without invoking the mode
 function (which would require the native module)."
   (let ((buf (generate-new-buffer name)))
     (with-current-buffer buf
       (setq major-mode 'ghostel-mode)
       (when dir (setq default-directory dir))
-      (when identity (setq-local ghostel--buffer-identity identity)))
+      (when identity (setq-local ghostel-identity identity)))
     buf))
 
 (defmacro ghostel-buffers-test--with-bufs (bindings &rest body)
@@ -230,20 +230,21 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
             (should-not (memq outside bufs))))))))
 
 (ert-deftest ghostel-test-project-buffers-identity ()
-  "Scope `identity' matches buffers whose identity is the project-prefixed name."
+  "Scope `identity' matches term slots tagged with the project root."
   (let* ((root (make-temp-file "ghostel-myproj" t))
          (root (file-name-as-directory root))
          (outside-root (file-name-as-directory
                         (make-temp-file "ghostel-other" t)))
          (ghostel-buffer-name "*ghostel*"))
     (ghostel-buffers-test--with-bufs
-        ((tagged "*ghostel-tagged*" outside-root "*myproj-ghostel*")
+        ((tagged "*ghostel-tagged*" outside-root
+                 `((kind . term)
+                   (project-root . ,(ghostel--normalize-root root))
+                   (instance . 1)))
          (untagged "*ghostel-untag*" root nil))
       (cl-letf (((symbol-function 'project-current)
                  (ghostel-buffers-test--proj-stub root))
-                ((symbol-function 'project-root) (lambda (p) (cdr p)))
-                ((symbol-function 'project-prefixed-buffer-name)
-                 (lambda (name) (format "*myproj-%s*" name))))
+                ((symbol-function 'project-root) (lambda (p) (cdr p))))
         (let ((default-directory root)
               (ghostel-project-buffer-scope 'identity))
           (let ((bufs (ghostel--project-buffers)))
@@ -259,14 +260,18 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
          (ghostel-buffer-name "*ghostel*"))
     (ghostel-buffers-test--with-bufs
         ((by-dir "*ghostel-d*" root nil)
-         (by-id "*ghostel-i*" outside-root "*myproj-ghostel*")
-         (both "*ghostel-b*" (expand-file-name "sub/" root) "*myproj-ghostel*")
+         (by-id "*ghostel-i*" outside-root
+                `((kind . term)
+                  (project-root . ,(ghostel--normalize-root root))
+                  (instance . 1)))
+         (both "*ghostel-b*" (expand-file-name "sub/" root)
+               `((kind . term)
+                 (project-root . ,(ghostel--normalize-root root))
+                 (instance . 2)))
          (neither "*ghostel-n*" outside-root nil))
       (cl-letf (((symbol-function 'project-current)
                  (ghostel-buffers-test--proj-stub root))
-                ((symbol-function 'project-root) (lambda (p) (cdr p)))
-                ((symbol-function 'project-prefixed-buffer-name)
-                 (lambda (name) (format "*myproj-%s*" name))))
+                ((symbol-function 'project-root) (lambda (p) (cdr p))))
         (let ((default-directory root)
               (ghostel-project-buffer-scope 'both))
           (let ((bufs (ghostel--project-buffers)))
@@ -275,6 +280,152 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
             (should (memq both bufs))
             (should-not (memq neither bufs))
             (should (= 1 (cl-count both bufs)))))))))
+
+;;; Structured identity
+
+(ert-deftest ghostel-test-identity-equal-order-insensitive ()
+  "`ghostel--identity-equal' ignores pair order but not content."
+  (should (ghostel--identity-equal
+           '((kind . term) (instance . 1))
+           '((instance . 1) (kind . term))))
+  (should-not (ghostel--identity-equal
+               '((kind . term) (instance . 1))
+               '((kind . term) (instance . 2))))
+  (should-not (ghostel--identity-equal
+               '((kind . term) (instance . 1))
+               '((kind . term) (instance . 1) (project-root . "~/a/b/")))))
+
+(ert-deftest ghostel-test-identity-match-p-subset ()
+  "`ghostel-identity-match-p' matches subsets, including composed contexts."
+  (let ((id '((kind . term) (project-root . "~/d/b/") (instance . 3))))
+    (should (ghostel-identity-match-p '((kind . term)) id))
+    (should (ghostel-identity-match-p '((project-root . "~/d/b/")) id))
+    (should (ghostel-identity-match-p
+             '((kind . term) (project-root . "~/d/b/")) id))
+    (should (ghostel-identity-match-p nil id))
+    (should-not (ghostel-identity-match-p '((project-root . "~/a/b/")) id))
+    (should-not (ghostel-identity-match-p '((kind . compile)) id))
+    (should-not (ghostel-identity-match-p '((kind . term)) nil))))
+
+(ert-deftest ghostel-test-project-buffers-same-name-projects-distinct ()
+  "Two projects sharing a directory basename do not conflate.
+This is the bug class where `ghostel-project' reused another
+project's terminal because both rendered the same buffer name."
+  (let* ((parent-a (file-name-as-directory (make-temp-file "ghostel-pa" t)))
+         (parent-b (file-name-as-directory (make-temp-file "ghostel-pb" t)))
+         (root-a (file-name-as-directory (expand-file-name "b" parent-a)))
+         (root-b (file-name-as-directory (expand-file-name "b" parent-b))))
+    (make-directory root-a)
+    (make-directory root-b)
+    (ghostel-buffers-test--with-bufs
+        ((in-a "*b-ghostel*"
+               root-a
+               `((kind . term)
+                 (project-root . ,(ghostel--normalize-root root-a))
+                 (instance . 1)))
+         (in-b "*b-ghostel*"
+               root-b
+               `((kind . term)
+                 (project-root . ,(ghostel--normalize-root root-b))
+                 (instance . 1))))
+      ;; Slot reuse: each root finds exactly its own buffer.
+      (should (eq in-a (ghostel--find-buffer-by-identity
+                        (buffer-local-value 'ghostel-identity in-a))))
+      (should (eq in-b (ghostel--find-buffer-by-identity
+                        (buffer-local-value 'ghostel-identity in-b))))
+      ;; Identity scope from project A sees only A's terminal.
+      (cl-letf (((symbol-function 'project-current)
+                 (ghostel-buffers-test--proj-stub root-a))
+                ((symbol-function 'project-root) (lambda (p) (cdr p))))
+        (let ((default-directory root-a)
+              (ghostel-project-buffer-scope 'identity))
+          (let ((bufs (ghostel--project-buffers)))
+            (should (memq in-a bufs))
+            (should-not (memq in-b bufs))))))))
+
+(ert-deftest ghostel-test-project-buffers-identity-includes-numbered ()
+  "Identity scope includes numbered instances of the project's slots."
+  (let* ((root (file-name-as-directory (make-temp-file "ghostel-num" t))))
+    (ghostel-buffers-test--with-bufs
+        ((first "*num-ghostel*" root
+                `((kind . term)
+                  (project-root . ,(ghostel--normalize-root root))
+                  (instance . 1)))
+         (second "*num-ghostel*<2>" root
+                 `((kind . term)
+                   (project-root . ,(ghostel--normalize-root root))
+                   (instance . 2))))
+      (cl-letf (((symbol-function 'project-current)
+                 (ghostel-buffers-test--proj-stub root))
+                ((symbol-function 'project-root) (lambda (p) (cdr p))))
+        (let ((default-directory root)
+              (ghostel-project-buffer-scope 'identity))
+          (let ((bufs (ghostel--project-buffers)))
+            (should (memq first bufs))
+            (should (memq second bufs))))))))
+
+(ert-deftest ghostel-test-project-buffers-identity-excludes-other-kinds ()
+  "Identity scope skips non-term kinds tagged with the same project."
+  (let* ((root (file-name-as-directory (make-temp-file "ghostel-kind" t))))
+    (ghostel-buffers-test--with-bufs
+        ((term "*kind-ghostel*" root
+               `((kind . term)
+                 (project-root . ,(ghostel--normalize-root root))
+                 (instance . 1)))
+         (compile "*kind-compile*" root
+                  `((kind . compile)
+                    (project-root . ,(ghostel--normalize-root root)))))
+      (cl-letf (((symbol-function 'project-current)
+                 (ghostel-buffers-test--proj-stub root))
+                ((symbol-function 'project-root) (lambda (p) (cdr p))))
+        (let ((default-directory root)
+              (ghostel-project-buffer-scope 'identity))
+          (let ((bufs (ghostel--project-buffers)))
+            (should (memq term bufs))
+            (should-not (memq compile bufs))))))))
+
+(ert-deftest ghostel-test-normalize-root-remote-unchanged ()
+  "Remote roots are not expanded or abbreviated during normalization."
+  (should (equal "/ssh:user@host:/tmp/proj/"
+                 (ghostel--normalize-root "/ssh:user@host:/tmp/proj/")))
+  (should (equal "/ssh:user@host:/tmp/proj/"
+                 (ghostel--normalize-root "/ssh:user@host:/tmp/proj"))))
+
+(ert-deftest ghostel-test-find-buffer-skips-non-ghostel-mode ()
+  "A slot identity surviving a major-mode change no longer claims the slot."
+  (let ((buf (generate-new-buffer "*ghostel-was*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf
+            (setq major-mode 'ghostel-mode)
+            (setq-local ghostel-identity '((kind . term) (instance . 1))))
+          (should (eq (ghostel--find-buffer-by-identity
+                       '((kind . term) (instance . 1)))
+                      buf))
+          (with-current-buffer buf (fundamental-mode))
+          ;; The permanent-local identity survives the mode change ...
+          (should (equal (buffer-local-value 'ghostel-identity buf)
+                         '((kind . term) (instance . 1))))
+          ;; ... but the buffer no longer claims the slot.
+          (should-not (ghostel--find-buffer-by-identity
+                       '((kind . term) (instance . 1)))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-next-instance ()
+  "`ghostel--next-instance' returns 1 + the highest instance per context."
+  (should (= 1 (ghostel--next-instance '((kind . term)))))
+  (ghostel-buffers-test--with-bufs
+      ((_a "*ghostel*" nil '((kind . term) (instance . 1)))
+       (_b "*ghostel*<3>" nil '((kind . term) (instance . 3)))
+       (_c "*p-ghostel*" nil '((kind . term)
+                               (project-root . "~/p/")
+                               (instance . 7))))
+    ;; Global slots and project slots are separate contexts.
+    (should (= 4 (ghostel--next-instance '((kind . term)))))
+    (should (= 8 (ghostel--next-instance
+                  '((kind . term) (project-root . "~/p/")))))
+    (should (= 1 (ghostel--next-instance
+                  '((kind . term) (project-root . "~/q/")))))))
 
 (ert-deftest ghostel-test-project-next-without-project-errors ()
   "`ghostel-project-next' errors when there is no current project."

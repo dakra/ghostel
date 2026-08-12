@@ -9,7 +9,7 @@
 (require 'ghostel-test-helpers)
 
 (ert-deftest ghostel-test-project-buffer-name ()
-  "Test that `ghostel-project' derives the buffer name correctly."
+  "`ghostel-project' derives the slot context and buffer name from the root."
   (require 'project)
   (let ((ghostel-buffer-name "*ghostel*")
         result)
@@ -19,47 +19,36 @@
                (lambda (proj) (cdr proj)))
               ((symbol-function 'project-prefixed-buffer-name)
                (lambda (name) (format "*myproj-%s*" name)))
-              ((symbol-function 'ghostel)
-               (lambda (&optional _)
-                 (setq result (cons default-directory ghostel-buffer-name)))))
+              ((symbol-function 'ghostel--start)
+               (lambda (context name &optional _arg)
+                 (setq result (list default-directory context name)))))
       (ghostel-project)
-      (should (equal "/tmp/myproj/" (car result)))
-      (should (string-match-p "ghostel" (cdr result)))
-      (should-not (string-match-p "\\*\\*" (cdr result))))))
+      (should (equal "/tmp/myproj/" (nth 0 result)))
+      (should (equal `((kind . term)
+                       (project-root . ,(ghostel--normalize-root
+                                         "/tmp/myproj/")))
+                     (nth 1 result)))
+      (should (string-match-p "ghostel" (nth 2 result)))
+      (should-not (string-match-p "\\*\\*" (nth 2 result))))))
 
 (ert-deftest ghostel-test-project-universal-arg ()
-  "`ghostel-project' forwards the prefix arg and binds `ghostel-buffer-name'."
+  "`ghostel-project' forwards the prefix arg to the slot core."
   (require 'project)
-  ;; Numeric prefix arg (C-5 M-x ghostel-project)
-  (let ((ghostel-buffer-name "*ghostel*")
-        captured)
-    (cl-letf (((symbol-function 'project-current)
-               (lambda (_maybe-prompt) '(transient . "/tmp/myproj/")))
-              ((symbol-function 'project-root)
-               (lambda (proj) (cdr proj)))
-              ((symbol-function 'project-prefixed-buffer-name)
-               (lambda (name) (format "*myproj-%s*" name)))
-              ((symbol-function 'ghostel)
-               (lambda (&optional arg)
-                 (setq captured (cons arg ghostel-buffer-name)))))
-      (ghostel-project 4)
-      (should (equal (car captured) 4))
-      (should (equal (cdr captured) "*myproj-ghostel*"))))
-  ;; Universal prefix arg (C-u M-x ghostel-project)
-  (let ((ghostel-buffer-name "*ghostel*")
-        captured)
-    (cl-letf (((symbol-function 'project-current)
-               (lambda (_maybe-prompt) '(transient . "/tmp/myproj/")))
-              ((symbol-function 'project-root)
-               (lambda (proj) (cdr proj)))
-              ((symbol-function 'project-prefixed-buffer-name)
-               (lambda (name) (format "*myproj-%s*" name)))
-              ((symbol-function 'ghostel)
-               (lambda (&optional arg)
-                 (setq captured (cons arg ghostel-buffer-name)))))
-      (ghostel-project '(4))
-      (should (equal (car captured) '(4)))
-      (should (equal (cdr captured) "*myproj-ghostel*")))))
+  (dolist (arg '(4 (4)))
+    (let ((ghostel-buffer-name "*ghostel*")
+          captured)
+      (cl-letf (((symbol-function 'project-current)
+                 (lambda (_maybe-prompt) '(transient . "/tmp/myproj/")))
+                ((symbol-function 'project-root)
+                 (lambda (proj) (cdr proj)))
+                ((symbol-function 'project-prefixed-buffer-name)
+                 (lambda (name) (format "*myproj-%s*" name)))
+                ((symbol-function 'ghostel--start)
+                 (lambda (_context name &optional a)
+                   (setq captured (cons a name)))))
+        (ghostel-project arg)
+        (should (equal (car captured) arg))
+        (should (equal (cdr captured) "*myproj-ghostel*"))))))
 
 (ert-deftest ghostel-test-project-buffer-name-remote ()
   "`ghostel--project-buffer-name' host-qualifies remote roots (bug #344)."
@@ -86,7 +75,11 @@ same name must get separate buffers."
         (progn
           (with-current-buffer local
             (ghostel-mode)
-            (setq-local ghostel--buffer-identity "*myproj-ghostel*")
+            (setq-local ghostel-identity
+                        `((kind . term)
+                          (project-root . ,(ghostel--normalize-root
+                                            "/tmp/myproj/"))
+                          (instance . 1)))
             (setq-local ghostel--term 'fake-term))
           (cl-letf (((symbol-function 'project-current)
                      (lambda (&rest _)
@@ -103,8 +96,12 @@ same name must get separate buffers."
             (setq result (ghostel-project)))
           (should (eq result created))
           (with-current-buffer created
-            (should (equal ghostel--buffer-identity
-                           "*myproj-ghostel@ssh:user@host*"))))
+            (should (ghostel--identity-equal
+                     ghostel-identity
+                     `((kind . term)
+                       (project-root . ,(ghostel--normalize-root
+                                         "/ssh:user@host:/tmp/myproj/"))
+                       (instance . 1))))))
       (dolist (b (list local created))
         (when (buffer-live-p b) (kill-buffer b))))))
 
@@ -119,8 +116,11 @@ same name must get separate buffers."
         (progn
           (with-current-buffer existing
             (ghostel-mode)
-            (setq-local ghostel--buffer-identity
-                        "*myproj-ghostel@ssh:user@host*")
+            (setq-local ghostel-identity
+                        `((kind . term)
+                          (project-root . ,(ghostel--normalize-root
+                                            "/ssh:user@host:/tmp/myproj/"))
+                          (instance . 1)))
             (setq-local ghostel--term 'fake-term))
           (cl-letf (((symbol-function 'project-current)
                      (lambda (&rest _)
@@ -149,14 +149,19 @@ same name must get separate buffers."
         (progn
           (with-current-buffer local
             (ghostel-mode)
-            (setq-local ghostel--buffer-identity "*myproj-ghostel*"))
+            (setq-local ghostel-identity
+                        `((kind . term)
+                          (project-root . ,(ghostel--normalize-root
+                                            "/tmp/myproj/"))
+                          (instance . 1))))
           (with-current-buffer remote
             (ghostel-mode)
-            (setq-local ghostel--buffer-identity
-                        "*myproj-ghostel@ssh:user@host*"))
-          (cl-letf (((symbol-function 'project-prefixed-buffer-name)
-                     (lambda (name) (format "*myproj-%s*" name)))
-                    ((symbol-function 'project-root)
+            (setq-local ghostel-identity
+                        `((kind . term)
+                          (project-root . ,(ghostel--normalize-root
+                                            "/ssh:user@host:/tmp/myproj/"))
+                          (instance . 1))))
+          (cl-letf (((symbol-function 'project-root)
                      (lambda (proj) (cdr proj))))
             (cl-letf (((symbol-function 'project-current)
                        (lambda (&rest _) '(transient . "/tmp/myproj/"))))
@@ -178,7 +183,8 @@ same name must get separate buffers."
         (progn
           (with-current-buffer existing
             (ghostel-mode)
-            (setq-local ghostel--buffer-identity "*ghostel*")
+            (setq-local ghostel-identity
+                        '((kind . term) (name . "*ghostel*") (instance . 1)))
             (setq-local ghostel--term 'fake-term))
           (with-current-buffer existing (rename-buffer "*ghostel: zsh*"))
           (cl-letf (((symbol-function 'ghostel--load-module) (lambda (&rest _) nil))
@@ -203,7 +209,11 @@ same name must get separate buffers."
         (progn
           (with-current-buffer existing
             (ghostel-mode)
-            (setq-local ghostel--buffer-identity project-name)
+            (setq-local ghostel-identity
+                        `((kind . term)
+                          (project-root . ,(ghostel--normalize-root
+                                            "/tmp/myproj/"))
+                          (instance . 1)))
             (setq-local ghostel--term 'fake-term))
           (with-current-buffer existing (rename-buffer "*ghostel: zsh*"))
           (cl-letf (((symbol-function 'project-current)
@@ -232,10 +242,43 @@ same name must get separate buffers."
                   ((symbol-function 'ghostel--start-process) #'ignore))
           (should (eq (ghostel) created))
           (with-current-buffer created
-            (should (equal ghostel--buffer-identity ghostel-buffer-name))
-            (should (equal ghostel--managed-buffer-name (buffer-name)))))
+            (should (ghostel--identity-equal
+                     ghostel-identity '((kind . term)
+                                        (name . "*ghostel-identity-test*")
+                                        (instance . 1))))
+            (should (equal ghostel--managed-buffer-name (buffer-name)))
+            (should (equal ghostel--initial-name (buffer-name)))))
       (when (buffer-live-p created)
         (kill-buffer created)))))
+
+(ert-deftest ghostel-test-let-bound-buffer-name-gets-own-slot ()
+  "A non-default `ghostel-buffer-name' keys its own slot family."
+  (let ((created (generate-new-buffer "*scratch-term*"))
+        (other nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--load-module) (lambda (&rest _) nil))
+                  ((symbol-function 'ghostel--create)
+                   (lambda (&rest _)
+                     (with-current-buffer created
+                       (setq major-mode 'ghostel-mode)
+                       (setq-local ghostel--term 'fake-term))
+                     created))
+                  ((symbol-function 'ghostel--start-process) #'ignore))
+          (let ((ghostel-buffer-name "*scratch-term*"))
+            (should (eq (ghostel) created)))
+          (with-current-buffer created
+            (should (equal (alist-get 'name ghostel-identity)
+                           "*scratch-term*")))
+          ;; A default-named `ghostel' must not reuse the named slot.
+          (setq other (generate-new-buffer "*ghostel*"))
+          (cl-letf (((symbol-function 'ghostel--create) (lambda (&rest _) other)))
+            (let ((ghostel-buffer-name "*ghostel*"))
+              (should (eq (ghostel) other)))
+            (with-current-buffer other
+              (should (equal (alist-get 'name ghostel-identity)
+                             "*ghostel*")))))
+      (dolist (b (list created other))
+        (when (buffer-live-p b) (kill-buffer b))))))
 
 (ert-deftest ghostel-test-init-buffer-clears-buffer ()
   "`ghostel--init-buffer' clears existing buffer contents."
@@ -264,7 +307,7 @@ same name must get separate buffers."
             (setq-local ghostel--term-rows 1)
             (setq-local ghostel--term-cols 2)
             (setq-local ghostel--managed-buffer-name "managed")
-            (setq-local ghostel--buffer-identity "identity"))
+            (setq-local ghostel-identity '((kind . exec))))
           (cl-letf (((symbol-function 'ghostel--new) (lambda (&rest _) 'new-term))
                     ((symbol-function 'ghostel--set-size) #'ignore)
                     ((symbol-function 'ghostel--apply-palette) #'ignore))
@@ -274,7 +317,7 @@ same name must get separate buffers."
             (should-not ghostel--term-rows)
             (should-not ghostel--term-cols)
             (should (equal ghostel--managed-buffer-name "managed"))
-            (should (equal ghostel--buffer-identity "identity"))))
+            (should (equal ghostel-identity '((kind . exec))))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-create-initializes-buffer ()
@@ -291,7 +334,8 @@ same name must get separate buffers."
             (should (eq ghostel--term 'fake-term))
             (should-not ghostel--term-rows)
             (should-not ghostel--term-cols)
-            (should (equal (buffer-name) ghostel--buffer-identity))))
+            ;; Identity is assigned by the caller, never by creation.
+            (should-not ghostel-identity)))
       (when (buffer-live-p buf)
         (kill-buffer buf)))))
 

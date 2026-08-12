@@ -68,8 +68,9 @@ Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
   (let ((ghostel-buffer-name-function #'ghostel-buffer-name-by-title))
     (ghostel-test--with-pty-matrix backend
       (ghostel-test--with-raw-echo-buffer (buf proc)
-        (let ((identity ghostel--buffer-identity)
+        (let ((expected ghostel--initial-name)
               (round 0))
+          (should (equal expected (buffer-name)))
           (dolist (clear '("\e]2;\e\\" "\e]2;\a" "\e]0;\a"))
             (let ((title (format "Clear Me %S %d" backend
                                  (setq round (1+ round)))))
@@ -81,8 +82,8 @@ Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
               (ghostel-test--wait-until
                (lambda () (null ghostel--title)) proc 5)
               (should (null ghostel--title))
-              (should (equal identity (buffer-name)))
-              (should (equal identity ghostel--managed-buffer-name)))))))))
+              (should (equal expected (buffer-name)))
+              (should (equal expected ghostel--managed-buffer-name)))))))))
 
 (ert-deftest ghostel-test-osc9-notification ()
   "OSC 9 iTerm2-style notifications reach `ghostel-notification-function'."

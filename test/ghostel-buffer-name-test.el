@@ -157,14 +157,13 @@
               (should (equal "*ghostel: Title A*" (buffer-name)))
               (ghostel--set-title "")
               (should (null ghostel--title))
-              (should (equal ghostel--buffer-identity (buffer-name)))
-              (should (equal ghostel--buffer-identity
-                             ghostel--managed-buffer-name))
+              (should (equal "*ghostel*" (buffer-name)))
+              (should (equal "*ghostel*" ghostel--managed-buffer-name))
               (ghostel--set-title "Title B")
               (should (equal "*ghostel: Title B*" (buffer-name)))
               (ghostel--set-title nil)
               (should (null ghostel--title))
-              (should (equal ghostel--buffer-identity (buffer-name))))))
+              (should (equal "*ghostel*" (buffer-name))))))
       (when (buffer-live-p buf) (kill-buffer buf)))))
 
 (ert-deftest ghostel-test-set-title-clear-respects-manual ()
@@ -192,7 +191,7 @@
 (ert-deftest ghostel-test-set-title-clear-unclaimed-keeps-name ()
   "A clear does not rename a buffer title tracking never renamed."
   (with-temp-buffer
-    (setq-local ghostel--buffer-identity "*ghostel-orig*")
+    (setq-local ghostel--initial-name "*ghostel-orig*")
     (let ((ghostel-buffer-name-function #'ghostel-buffer-name-by-title)
           (name (buffer-name)))
       (ghostel--set-title "")

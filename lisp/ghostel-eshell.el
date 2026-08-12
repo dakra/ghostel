@@ -84,7 +84,7 @@ eshell."
            (buf (generate-new-buffer
                  (concat "*" (file-name-nondirectory program) "*"))))
       (switch-to-buffer buf)
-      (ghostel-exec buf program prog-args)
+      (ghostel-exec buf program prog-args '((kind . eshell)))
       (with-current-buffer buf
         (setq-local ghostel-kill-buffer-on-exit
                     (bound-and-true-p eshell-destroy-buffer-when-process-dies))

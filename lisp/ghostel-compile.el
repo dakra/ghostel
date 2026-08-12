@@ -750,6 +750,13 @@ the rendered buffer remains read-only in both cases."
       ;; also fired, but also made state-reset implicit; make it
       ;; explicit here so this helper doesn't have two code paths.
       (ghostel-mode)
+      (setq ghostel-identity
+            (if-let* ((proj (and (not (file-remote-p dir))
+                                 (project-current nil))))
+                `((kind . compile)
+                  (project-root . ,(ghostel--normalize-root
+                                    (project-root proj))))
+              '((kind . compile))))
       ;; Wire up `next-error' so `\\[next-error]' / `M-g n' work as soon
       ;; as errors land, including in the interactive variant.
       (setq-local next-error-function #'compilation-next-error-function)

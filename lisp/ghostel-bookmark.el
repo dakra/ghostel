@@ -8,7 +8,7 @@
 ;; Integrate ghostel buffers with Emacs's built-in bookmark facility
 ;; (`bookmark-set' / `bookmark-jump', i.e. `C-x r m' / `C-x r b').  A
 ;; bookmark records the buffer's working directory, name, and identity
-;; (see `ghostel--buffer-identity'); jumping to it reuses a live ghostel
+;; (see `ghostel-identity'); jumping to it reuses a live ghostel
 ;; buffer with that identity (or name, for records without one), or
 ;; starts a fresh shell in the bookmarked directory when none exists.
 ;;
@@ -40,27 +40,31 @@ See `ghostel--bookmark-handler' for how they are restored."
     (handler . ghostel--bookmark-handler)
     (location . ,default-directory)
     (buf-name . ,(buffer-name))
-    (identity . ,ghostel--buffer-identity)
+    (identity . ,ghostel-identity)
     (defaults . nil)))
 
 ;;;###autoload
 (defun ghostel--bookmark-handler (bmk)
   "Restore the ghostel bookmark BMK.
-Reuse a live ghostel buffer with the bookmarked identity (or name, for
-records without one; title tracking may have renamed the buffer since),
-or create one with a shell started in the bookmarked directory.
+Reuse a live ghostel buffer with the bookmarked slot identity (or
+name, for records without one; title tracking may have renamed the
+buffer since), or create one with a shell started in the bookmarked
+directory.
 When a reused buffer's directory differs and `ghostel-bookmark-check-dir'
 is non-nil, type a `cd' into the shell."
   (ghostel--load-module t)
   (let* ((dir (bookmark-prop-get bmk 'location))
          (buf-name (bookmark-prop-get bmk 'buf-name))
-         (identity (bookmark-prop-get bmk 'identity))
+         ;; Pre-structured records hold a name string; treat as identity-less.
+         (identity (let ((id (bookmark-prop-get bmk 'identity)))
+                     (and (consp id) id)))
          (live-p (lambda (b)
                    (let ((p (and b (buffer-local-value 'ghostel--process b))))
                      (and p (process-live-p p) b))))
          ;; Retained dead-shell buffers may share the identity; reuse only
-         ;; a live one.  The name lookup is for pre-identity records only.
-         (buf (if identity
+         ;; a live one.  Kind-only identities (no `instance') are not
+         ;; unique, so those records reuse by name.
+         (buf (if (alist-get 'instance identity)
                   (ghostel--find-buffer-by-identity identity live-p)
                 (let ((b (get-buffer buf-name)))
                   (and b
@@ -73,8 +77,11 @@ is non-nil, type a `cd' into the shell."
                                  default-directory)))
         (setq buf (ghostel--create buf-name))
         (with-current-buffer buf
+          ;; Legacy records stay identity-less; a fabricated slot would
+          ;; let plain `ghostel' claim this buffer.
           (setq ghostel--managed-buffer-name (buffer-name)
-                ghostel--buffer-identity (or identity buf-name))
+                ghostel--initial-name (buffer-name)
+                ghostel-identity identity)
           (ghostel--start-process)
           (ghostel--apply-initial-input-mode))))
     ;; Reuse branch: `cd' if the live buffer has wandered elsewhere.

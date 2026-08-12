@@ -389,8 +389,8 @@ project:
   against the current project root.  Follows shell `cd'.
   A terminal that walked out of the project is excluded; a plain
   `ghostel' buffer that cd'd into the project is included.
-- `identity': match each buffer's `ghostel--buffer-identity'
-  against the name `ghostel-project' would use for the current project.
+- `identity': match each buffer's `ghostel-identity' against the
+  current project root, for interactive terminals only.
   Stable across `cd', but only finds buffers originally
   created via `ghostel-project'.
 - `both' (default): union of the two - `default-directory' first,
@@ -1069,11 +1069,18 @@ local code should not assume it is signalable unless the process is local.")
 Nil means title tracking has not claimed the buffer yet.  Clearing this
 variable re-enables automatic renaming for the next title update.")
 
-(defvar-local ghostel--buffer-identity nil
-  "Canonical buffer name used to find this buffer on subsequent `ghostel' calls.
-Set at buffer creation to the value of `ghostel-buffer-name' (or its numbered
-variant) before any title-tracking renames.  Used so that `ghostel' can reuse
-an existing buffer even after `ghostel--set-title' has renamed it.")
+(defvar-local ghostel--initial-name nil
+  "Buffer name at creation time; the revert target when a title clears.")
+
+(defvar-local ghostel-identity nil
+  "Structured identity of this ghostel buffer, as an alist.
+`kind' (mandatory) says what created the buffer: `term', `compile',
+`exec', `eshell', or a third-party symbol.  Scope keys like
+`project-root' or the plain-terminal `name' attach it to a context
+and may be combined; `instance' (an integer) marks a reusable slot.
+Slot reuse compares whole identities, so cosmetic keys must stay off slots;
+scoped listings match subsets with `ghostel-identity-match-p'.")
+(put 'ghostel-identity 'permanent-local t)
 
 (defvar-local ghostel--prompt-positions nil
   "List of prompt positions as (buffer-line . exit-status) pairs.
@@ -3381,7 +3388,7 @@ Declines after a manual rename; a nil or unchanged NEW-NAME is a no-op."
 (defun ghostel--set-title (title)
   "Record a terminal TITLE report (OSC 0/2) and rename the buffer.
 A nil or empty TITLE clears the title and reverts a title-derived
-name to `ghostel--buffer-identity'.  Renames via
+name to the slot's creation-style name.  Renames via
 `ghostel-buffer-name-function' and `ghostel--rename-managed', which
 declines after a manual rename."
   (setq ghostel--title (and title (not (string= "" title)) title))
@@ -3392,7 +3399,7 @@ declines after a manual rename."
          ;; not rename a buffer it never touched.
          (and (null ghostel--title)
               ghostel--managed-buffer-name
-              ghostel--buffer-identity))))
+              ghostel--initial-name))))
   (ghostel--buffer-identification-update))
 
 (defun ghostel--buffer-identification (format)
@@ -5250,10 +5257,6 @@ spawn after initialization."
           ghostel--cursor-pos nil
           ghostel--cursor-char-pos nil
           ghostel--repainted-region nil)
-    ;; `ghostel-exec'-created buffers need an identity as the revert
-    ;; target for a title clear.
-    (unless ghostel--buffer-identity
-      (setq ghostel--buffer-identity (buffer-name)))
     ;; Reused buffers hold the previous session's title; drop it from
     ;; the mode line along with the buffer-local reset above.
     (ghostel--buffer-identification-update)
@@ -5305,16 +5308,54 @@ or quit, the partially created buffer is killed before re-signaling."
          (kill-buffer buffer))
        (signal (car err) (cdr err))))))
 
+(defun ghostel--identity-normalize (identity)
+  "Return a copy of IDENTITY with its pairs sorted by key name."
+  (sort (copy-sequence identity)
+        (lambda (a b) (string< (symbol-name (car a)) (symbol-name (car b))))))
+
+(defun ghostel--identity-equal (a b)
+  "Return non-nil when identities A and B contain the same pairs."
+  (equal (ghostel--identity-normalize a) (ghostel--identity-normalize b)))
+
+(defun ghostel-identity-match-p (pattern identity)
+  "Return non-nil when every (KEY . VALUE) pair of PATTERN is in IDENTITY.
+PATTERN and IDENTITY are `ghostel-identity' alists."
+  (seq-every-p (lambda (pair)
+                 (equal (alist-get (car pair) identity) (cdr pair)))
+               pattern))
+
+(defun ghostel--normalize-root (root)
+  "Return ROOT as a normalized directory path for `project-root' keys.
+Remote ROOTs are used as-is; TRAMP expansion and abbreviation
+depend on connection state and would make the key unstable."
+  (if (file-remote-p root)
+      (file-name-as-directory root)
+    (abbreviate-file-name (file-name-as-directory (expand-file-name root)))))
+
+(defun ghostel--next-instance (context)
+  "Return 1 + the highest slot instance in use for CONTEXT.
+CONTEXT is an identity alist without its `instance' pair."
+  (let ((max 0))
+    (dolist (b (buffer-list))
+      (let ((id (buffer-local-value 'ghostel-identity b)))
+        (when (and id
+                   (ghostel--identity-equal
+                    context (assq-delete-all 'instance (copy-alist id))))
+          (setq max (max max (or (alist-get 'instance id) 0))))))
+    (1+ max)))
+
 (defun ghostel--find-buffer-by-identity (identity &optional predicate)
   "Return the first live ghostel buffer whose identity equals IDENTITY, or nil.
-Identity is the `ghostel-buffer-name' (or numbered variant) recorded at
-buffer creation time.  See `ghostel--buffer-identity'.
+Only `ghostel-mode' buffers are considered: the permanent-local
+identity outlives a major-mode change, but the slot claim must not.
 Non-nil PREDICATE further filters candidates (called with the buffer),
 so several buffers sharing IDENTITY cannot shadow one the caller wants."
   (seq-find (lambda (b)
               (and (buffer-live-p b)
-                   (equal (buffer-local-value 'ghostel--buffer-identity b)
-                          identity)
+                   (with-current-buffer b
+                     (and (derived-mode-p 'ghostel-mode)
+                          (ghostel--identity-equal ghostel-identity
+                                                   identity)))
                    (if predicate (funcall predicate b) t)))
             (buffer-list)))
 
@@ -5326,6 +5367,39 @@ so several buffers sharing IDENTITY cannot shadow one the caller wants."
     ('char (ghostel-char-mode))
     ('line (setq ghostel--pending-initial-line-mode t))))
 
+(defun ghostel--start (context name &optional arg)
+  "Find or create the ghostel slot for CONTEXT and pop to it.
+CONTEXT is an identity alist without its `instance' pair; NAME is
+the buffer name for a new instance-1 buffer.  ARG follows
+`ghostel''s prefix conventions: a number selects that instance, any
+other non-nil value creates the next free instance.  Returns the
+buffer."
+  (ghostel--load-module t)
+  (let* ((fresh (and arg (not (numberp arg))))
+         (instance (cond ((numberp arg) arg)
+                         (fresh (ghostel--next-instance context))
+                         (t 1)))
+         (identity (append context `((instance . ,instance))))
+         (buf-name (if (> instance 1) (format "%s<%d>" name instance) name))
+         (display-action (append display-buffer--same-window-action
+                                 '((category . comint))))
+         (existing (and (not fresh)
+                        (ghostel--find-buffer-by-identity identity)))
+         (buffer (or existing (ghostel--create buf-name display-action))))
+    (if existing
+        (progn
+          (unless (buffer-local-value 'ghostel--term existing)
+            (user-error "Ghostel buffer %s has no terminal"
+                        (buffer-name existing)))
+          (pop-to-buffer existing display-action))
+      (with-current-buffer buffer
+        (setq ghostel--managed-buffer-name (buffer-name)
+              ghostel--initial-name (buffer-name)
+              ghostel-identity identity)
+        (ghostel--start-process)
+        (ghostel--apply-initial-input-mode)))
+    buffer))
+
 ;;;###autoload
 (defun ghostel (&optional arg)
   "Start a new Ghostel terminal.  If the buffer already exists, switch to it.
@@ -5335,39 +5409,21 @@ create it if it doesn't exist yet.
 The name of the buffer is determined by the value of `ghostel-buffer-name'.
 Returns the buffer."
   (interactive "P")
-  (ghostel--load-module t)
-  (let* ((fresh (and arg (not (numberp arg))))
-         (identity (cond (fresh nil)
-                         ((numberp arg)
-                          (format "%s<%d>" ghostel-buffer-name arg))
-                         (t ghostel-buffer-name)))
-         (display-action (append display-buffer--same-window-action
-                                 '((category . comint))))
-         (existing (and (not fresh)
-                        (ghostel--find-buffer-by-identity identity)))
-         (buffer (or existing
-                     (ghostel--create (or identity ghostel-buffer-name)
-                                      display-action))))
-    (if existing
-        (progn
-          (unless (buffer-local-value 'ghostel--term existing)
-            (user-error "Ghostel buffer %s has no terminal"
-                        (buffer-name existing)))
-          (pop-to-buffer existing display-action))
-      (with-current-buffer buffer
-        (setq ghostel--managed-buffer-name (buffer-name))
-        (setq ghostel--buffer-identity (or identity (buffer-name)))
-        (ghostel--start-process)
-        (ghostel--apply-initial-input-mode)))
-    buffer))
+  ;; The configured name is part of the plain-terminal slot key, so
+  ;; wrappers that let-bind `ghostel-buffer-name' get their own slots.
+  (ghostel--start `((kind . term) (name . ,ghostel-buffer-name))
+                  ghostel-buffer-name arg))
 
-(defun ghostel-exec (buffer program &optional args)
+(defun ghostel-exec (buffer program &optional args identity)
   "Run PROGRAM with ARGS as a ghostel terminal in BUFFER.
 
 BUFFER is switched into `ghostel-mode' and sized to its displayed
 window, or 80x24 if BUFFER is not displayed.  PROGRAM and ARGS are
 passed as distinct argv entries, so shell metacharacters are not
 interpreted.  Shell integration is not applied.
+
+IDENTITY, when non-nil, is stored as the buffer's `ghostel-identity';
+it defaults to ((kind . exec)).
 
 Returns the lifecycle process object.  Signals `user-error' if BUFFER
 already has a live ghostel process."
@@ -5389,6 +5445,8 @@ already has a live ghostel process."
                   80)))
     (with-current-buffer buffer
       (ghostel--init-buffer buffer height width)
+      (setq ghostel--initial-name (buffer-name)
+            ghostel-identity (or identity '((kind . exec))))
       (let ((remote-p (file-remote-p default-directory)))
         (ghostel--spawn-pty program args nil remote-p)))))
 
@@ -5416,9 +5474,12 @@ To add this to `project-switch-commands':
   (add-to-list \\='project-switch-commands \\='(ghostel-project \"Ghostel\") t)
 Returns the buffer."
   (interactive "P")
-  (let* ((default-directory (project-root (project-current t)))
-         (ghostel-buffer-name (ghostel--project-buffer-name default-directory)))
-    (ghostel arg)))
+  (let ((default-directory (project-root (project-current t))))
+    (ghostel--start `((kind . term)
+                      (project-root . ,(ghostel--normalize-root
+                                        default-directory)))
+                    (ghostel--project-buffer-name default-directory)
+                    arg)))
 
 (defun ghostel-other ()
   "Switch to the next ghostel terminal buffer, or create one."
@@ -5455,7 +5516,6 @@ against a TRAMP path would walk the remote filesystem
 synchronously on every cycle."
   (let* ((proj (project-current t))
          (root (project-root proj))
-         (identity-prefix (ghostel--project-buffer-name root))
          (scope ghostel-project-buffer-scope)
          (all (ghostel--all-buffers))
          (by-dir
@@ -5471,11 +5531,14 @@ synchronously on every cycle."
                 all)))
          (by-id
           (and (memq scope '(identity both))
-               (cl-remove-if-not
-                (lambda (b)
-                  (equal (buffer-local-value 'ghostel--buffer-identity b)
-                         identity-prefix))
-                all))))
+               (let ((pattern `((kind . term)
+                                (project-root . ,(ghostel--normalize-root
+                                                  root)))))
+                 (cl-remove-if-not
+                  (lambda (b)
+                    (ghostel-identity-match-p
+                     pattern (buffer-local-value 'ghostel-identity b)))
+                  all)))))
     (sort (cl-delete-duplicates (append by-dir by-id) :test #'eq)
           (lambda (a b) (string< (buffer-name a) (buffer-name b))))))
 

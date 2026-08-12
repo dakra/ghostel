@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- `ghostel-project` no longer conflates same-named projects in
+  different directories.  Buffers now carry a structured identity (the
+  new buffer-local `ghostel-identity` alist: a mandatory `kind` plus
+  scope keys like `project-root` and an `instance` number for reusable
+  slots) instead of being matched by buffer name, so two projects that
+  share a directory basename get separate terminals, and the
+  `identity` scope of `ghostel-project-next`/`-previous`/
+  `-list-buffers` includes numbered instances and excludes
+  non-terminal buffers (e.g. a running `ghostel-compile`).  Third
+  parties can tag their own buffers (e.g. `(kind . my-repl)`) via the
+  new optional IDENTITY argument of `ghostel-exec` and filter them
+  with `ghostel-identity-match-p`.  Bookmarks store the structured
+  identity; bookmarks saved by older versions still restore but spawn
+  a fresh terminal instead of reusing a live one.  A numeric prefix
+  of 1 now selects the default terminal (formerly a separate
+  `*ghostel*<1>` buffer).
+
 ### Changed
 - Terminal buffers keep a stable name; the terminal title moves to the
   mode line.  `ghostel-buffer-name-function` now defaults to nil, so
