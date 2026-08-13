@@ -2695,9 +2695,17 @@ command set the region, so the selection survives the switch."
              (not ghostel--inhibit-insert-forwarding))
     (ghostel--enter-readonly-input-mode ghostel-mark-activation-input-mode)))
 
+(defun ghostel--pos-on-cursor-p (pos)
+  "Non-nil if POS rides the live terminal cursor: on it, or at `point-max'.
+Positions between the cursor and `point-max' do not count."
+  (and ghostel--cursor-char-pos
+       (or (= pos ghostel--cursor-char-pos)
+           (= pos (point-max)))))
+
 (defun ghostel-maybe-leave-input (&rest _)
   "Leave semi-char for `ghostel-point-leave-input-mode' if point left the input.
-A no-op unless, in semi-char mode, point has moved off the live terminal cursor.
+A no-op unless, in semi-char mode, point has moved off the live terminal
+cursor (`ghostel--pos-on-cursor-p', so `point-max' counts as on it).
 Wired into `isearch-mode-end-hook' and `minibuffer-exit-hook'.
 Add it to other jump commands as a hook or `:after' advice (see the README)."
   (interactive)
@@ -2707,7 +2715,7 @@ Add it to other jump commands as a hook or `:after' advice (see the README)."
              ghostel--term
              ghostel--cursor-char-pos
              (not executing-kbd-macro)
-             (/= (point) ghostel--cursor-char-pos))
+             (not (ghostel--pos-on-cursor-p (point))))
     (ghostel--enter-readonly-input-mode ghostel-point-leave-input-mode)))
 
 (defun ghostel-readonly-exit ()
@@ -4635,16 +4643,14 @@ Windows on the daemon's dummy initial frame are excluded."
 
 (defun ghostel--window-on-cursor-p (window)
   "Non-nil if WINDOW's point rides the live terminal cursor.
-WINDOW's buffer must be current.  Riding means point exactly on the cursor or
-at `point-max'; positions between the two do not count.  An active region vetoes
-the ride, except in a non-selected window showing the selected window's buffer."
-  (and ghostel--cursor-char-pos
-       (not (and (region-active-p)
+WINDOW's buffer must be current.  Riding is `ghostel--pos-on-cursor-p'.
+An active region vetoes the ride, except in a non-selected window showing
+the selected window's buffer."
+  (and (not (and (region-active-p)
                  (or (eq window (selected-window))
                      (not (eq (window-buffer (selected-window))
                               (current-buffer))))))
-       (or (= (window-point window) ghostel--cursor-char-pos)
-           (= (window-point window) (point-max)))))
+       (ghostel--pos-on-cursor-p (window-point window))))
 
 (defun ghostel--window-follows-p (window)
   "Non-nil if WINDOW's point lets it follow live terminal output.
@@ -5120,14 +5126,20 @@ a Ghostel window making it lose its anchoring."
 
 (defun ghostel--minibuffer-exit-maybe-leave ()
   "Run `ghostel-maybe-leave-input' after a minibuffer command, deferred.
-Covers minibuffer-driven navigation such as `consult-line', whose marker-based
-point landing can lag minibuffer teardown.  Deferred so the originating window
-and point settle first.  See `ghostel-point-leave-input-mode'."
-  (run-at-time 0 nil
-               (lambda ()
-                 (when-let* ((buf (window-buffer (selected-window))))
-                   (with-current-buffer buf
-                     (when (derived-mode-p 'ghostel-mode)
+Deferred so the originating window and point settle first (`consult-line's
+marker-based point landing can lag minibuffer teardown).  Only fires in the
+buffer the minibuffer was entered from: switching to a ghostel buffer via
+the minibuffer is an arrival, often with a stale restored point, not point
+leaving the input.  See `ghostel-point-leave-input-mode'."
+  (when-let* ((win (minibuffer-selected-window))
+              (origin (window-buffer win))
+              ((provided-mode-derived-p
+                (buffer-local-value 'major-mode origin) 'ghostel-mode)))
+    (run-at-time 0 nil
+                 (lambda ()
+                   (when (and (buffer-live-p origin)
+                              (eq (window-buffer (selected-window)) origin))
+                     (with-current-buffer origin
                        (ghostel-maybe-leave-input)))))))
 
 (defun ghostel--kill-buffer-query ()

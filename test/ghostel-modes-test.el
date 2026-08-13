@@ -1403,6 +1403,79 @@ so copy/Emacs mode entry runs without a live terminal or window."
                         (buffer-local-value 'isearch-mode-end-hook buf))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-auto-leave-point-max-counts-as-on-cursor ()
+  "Point at `point-max' with the cursor elsewhere stays in semi-char.
+Buffer end counts as riding the live output, not navigating away."
+  (ghostel-test--with-auto-leave-buffer
+    (let ((ghostel-point-leave-input-mode 'copy))
+      (setq-local ghostel--cursor-char-pos 3)
+      (goto-char (point-max))
+      (ghostel-maybe-leave-input)
+      (should (eq ghostel--input-mode 'semi-char)))))
+
+(defun ghostel-test--minibuffer-exit-leave-deferred ()
+  "Run the exit check with the selected window as the minibuffer origin.
+Return the deferred check as a closure, or nil when the origin gate
+skipped scheduling one."
+  (let (deferred)
+    (cl-letf (((symbol-function 'minibuffer-selected-window)
+               (lambda () (selected-window)))
+              ((symbol-function 'run-at-time)
+               (lambda (_time _repeat fn &rest args)
+                 (setq deferred (lambda () (apply fn args)))
+                 nil)))
+      (ghostel--minibuffer-exit-maybe-leave))
+    deferred))
+
+(ert-deftest ghostel-test-minibuffer-leave-skips-arrival ()
+  "A minibuffer exit landing in a foreign ghostel buffer is an arrival.
+No auto-switch, even with point off the cursor."
+  (ghostel-test--with-auto-leave-buffer
+    (let ((previous-buffer (window-buffer (selected-window)))
+          (origin (generate-new-buffer " *ghostel-test-mb-origin*"))
+          (ghostel-point-leave-input-mode 'copy))
+      (unwind-protect
+          (progn
+            (with-current-buffer origin (ghostel-mode))
+            (set-window-buffer (selected-window) origin)
+            (let ((check (ghostel-test--minibuffer-exit-leave-deferred)))
+              (should check)
+              ;; The minibuffer command lands in BUF, not in ORIGIN.
+              (set-window-buffer (selected-window) buf)
+              (goto-char (point-min))
+              (funcall check))
+            (should (eq ghostel--input-mode 'semi-char)))
+        (set-window-buffer (selected-window) previous-buffer)
+        (kill-buffer origin)))))
+
+(ert-deftest ghostel-test-minibuffer-leave-fires-from-origin ()
+  "A minibuffer entered from the ghostel buffer still auto-switches.
+This is the `consult-line' navigation case the hook exists for."
+  (ghostel-test--with-auto-leave-buffer
+    (let ((previous-buffer (window-buffer (selected-window)))
+          (ghostel-point-leave-input-mode 'copy))
+      (unwind-protect
+          (progn
+            (set-window-buffer (selected-window) buf)
+            (let ((check (ghostel-test--minibuffer-exit-leave-deferred)))
+              (should check)
+              (goto-char (point-min))
+              (funcall check))
+            (should (eq ghostel--input-mode 'copy)))
+        (set-window-buffer (selected-window) previous-buffer)))))
+
+(ert-deftest ghostel-test-minibuffer-leave-skips-non-ghostel-origin ()
+  "No deferred check is scheduled for a minibuffer entered elsewhere."
+  (ghostel-test--with-auto-leave-buffer
+    (let ((previous-buffer (window-buffer (selected-window)))
+          (origin (generate-new-buffer " *ghostel-test-mb-plain*")))
+      (unwind-protect
+          (progn
+            (set-window-buffer (selected-window) origin)
+            (should-not (ghostel-test--minibuffer-exit-leave-deferred)))
+        (set-window-buffer (selected-window) previous-buffer)
+        (kill-buffer origin)))))
+
 (defmacro ghostel-test--with-anchor-window-buffer (&rest body)
   "Run BODY in the selected window showing a fresh ghostel buffer.
 The buffer holds more rows than fit in the window, so a bottom-aligned
