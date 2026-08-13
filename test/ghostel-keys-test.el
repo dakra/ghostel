@@ -433,6 +433,28 @@ SETUP, when non-nil, is called before sending the paste."
   ;; C-@ should also be bound (sends NUL).
   (should (commandp (lookup-key ghostel-semi-char-mode-map (kbd "C-@")))))
 
+(ert-deftest ghostel-test-c-q-send-next-key ()
+  "Semi-char binds \\`C-q' to `ghostel-send-next-key'; char mode sends it raw.
+The two-key alias in `ghostel-mode-map' stays bound.  Listing the
+key in `ghostel-keymap-exceptions' unbinds it so the global
+`quoted-insert' takes over."
+  (should (eq (lookup-key ghostel-semi-char-mode-map (kbd "C-q"))
+              #'ghostel-send-next-key))
+  (should (eq (lookup-key ghostel-char-mode-map (kbd "C-q"))
+              #'ghostel--send-event))
+  (should (eq (lookup-key ghostel-mode-map (kbd "C-c C-q"))
+              #'ghostel-send-next-key))
+  (let ((orig (default-value 'ghostel-keymap-exceptions)))
+    (unwind-protect
+        (progn
+          (customize-set-variable 'ghostel-keymap-exceptions
+                                  (cons "C-q" orig))
+          (should-not (lookup-key ghostel-semi-char-mode-map (kbd "C-q"))))
+      (customize-set-variable 'ghostel-keymap-exceptions orig))
+    ;; Restored: C-q is bound again.
+    (should (eq (lookup-key ghostel-semi-char-mode-map (kbd "C-q"))
+                #'ghostel-send-next-key))))
+
 (ert-deftest ghostel-test-c-g-binding ()
   "`ghostel-mode-map' binds the quit key to a dedicated send handler."
   (should (eq (lookup-key ghostel-mode-map (kbd "C-g"))

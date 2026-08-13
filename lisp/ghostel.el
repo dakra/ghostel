@@ -55,7 +55,7 @@
 ;;   C-c C-c   Interrupt          C-c C-z   Suspend
 ;;   C-c C-d   EOF                C-c C-\   Quit
 ;;   C-c C-t   Copy mode          C-c C-y   Paste
-;;   C-c C-l   Clear scrollback   C-c C-q   Send next key literally
+;;   C-c M-l   Clear scrollback   C-q       Send next key literally
 ;;   C-c M-w   Copy scrollback    C-y / M-y Yank / yank-pop
 ;;   C-c C-n / C-c C-p            Next/previous hyperlink
 ;;   C-c M-n / C-c M-p            Next/previous prompt (OSC 133)
@@ -1386,6 +1386,10 @@ reference to it picks up the new bindings."
       "S-<insert>"     #'ghostel-yank
       "<remap> <yank>" #'ghostel-yank
       "M-y"            #'ghostel-yank-pop)
+    ;; C-q quotes the next key to the terminal (`quoted-insert' mnemonic).
+    ;; Listing "C-q" in the exceptions lets it fall through to Emacs instead.
+    (unless (member "C-q" ghostel-keymap-exceptions)
+      (define-key fresh (kbd "C-q") #'ghostel-send-next-key))
     (setcdr ghostel-semi-char-mode-map (cdr fresh)))
   ;; C-g honors the exception list: bound to nil (unbound) when excepted.
   (define-key ghostel-mode-map (kbd "C-g")

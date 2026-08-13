@@ -432,25 +432,25 @@ Available from every mode except char mode:
 Most keys are sent to the terminal.  Keys in =ghostel-keymap-exceptions=
 (default: =C-c=, =C-x=, =C-u=, =C-h=, =M-x=, =M-:=, =C-\=) pass through to Emacs.
 
-| Key         | Action                                     |
-|-------------+--------------------------------------------|
-| Most keys   | Sent directly to the terminal              |
-| =C-c C-c=     | Send interrupt (C-c)                       |
-| =C-c C-z=     | Send suspend (C-z)                         |
-| =C-c C-d=     | Send EOF (C-d)                             |
-| =C-c C-\=     | Send quit (C-\)                            |
-| =C-c M-w=     | Copy entire scrollback to kill ring        |
-| =C-y=         | Yank from kill ring (bracketed paste)      |
-| =M-y=         | Yank-pop (cycle through kill ring)         |
-| =C-c C-y=     | Paste from kill ring                       |
-| =C-c M-l=     | Clear scrollback                           |
-| =C-c C-n=     | Jump to next hyperlink                     |
-| =C-c C-p=     | Jump to previous hyperlink                 |
-| =C-c M-n=     | Enter read-only mode, jump to next prompt  |
-| =C-c M-p=     | Enter read-only mode, jump to prev. prompt |
-| =C-x C-q=     | Enter =ghostel-readonly-default-mode=        |
-| =C-c C-q=     | Send next key literally (escape hatch)     |
-| Mouse wheel | Scroll through scrollback                  |
+| Key                | Action                                     |
+|--------------------+--------------------------------------------|
+| Most keys          | Sent directly to the terminal              |
+| =C-c C-c=            | Send interrupt (C-c)                       |
+| =C-c C-z=            | Send suspend (C-z)                         |
+| =C-c C-d=            | Send EOF (C-d)                             |
+| =C-c C-\=            | Send quit (C-\)                            |
+| =C-c M-w=            | Copy entire scrollback to kill ring        |
+| =C-y=                | Yank from kill ring (bracketed paste)      |
+| =M-y=                | Yank-pop (cycle through kill ring)         |
+| =C-c C-y=            | Paste from kill ring                       |
+| =C-c M-l=            | Clear scrollback                           |
+| =C-c C-n=            | Jump to next hyperlink                     |
+| =C-c C-p=            | Jump to previous hyperlink                 |
+| =C-c M-n=            | Enter read-only mode, jump to next prompt  |
+| =C-c M-p=            | Enter read-only mode, jump to prev. prompt |
+| =C-x C-q=            | Enter =ghostel-readonly-default-mode=        |
+| =C-q= (also =C-c C-q=) | Send next key literally (escape hatch)     |
+| Mouse wheel        | Scroll through scrollback                  |
 
 ** Char mode
 :properties:
