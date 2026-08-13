@@ -42,7 +42,9 @@ shell quoting itself is covered by the dnd tests."
     (ghostel-mode)
     (should (local-variable-p 'yank-media--registered-handlers))
     (should (eq (cdr (assoc "image/.*" yank-media--registered-handlers))
-                'ghostel--yank-media-image))
+                'ghostel--yank-media-data))
+    (should (eq (cdr (assoc 'application/pdf yank-media--registered-handlers))
+                'ghostel--yank-media-data))
     (should-not (assoc "image/.*"
                        (default-value 'yank-media--registered-handlers)))))
 
@@ -55,7 +57,7 @@ shell quoting itself is covered by the dnd tests."
                                 (number-sequence 0 255))))
            ;; A dos-EOL write default must not corrupt the bytes.
            (buffer-file-coding-system 'utf-8-dos)
-           (path (progn (ghostel--yank-media-image 'image/png data)
+           (path (progn (ghostel--yank-media-data 'image/png data)
                         (car sent-files))))
       (unwind-protect
           (progn
@@ -73,11 +75,30 @@ shell quoting itself is covered by the dnd tests."
   "The temp-file extension follows the MIME subtype."
   (skip-unless (fboundp 'yank-media-handler))
   (ghostel-yank-media-test--with-mode-buffer
-    (let ((path (progn (ghostel--yank-media-image
+    (let ((path (progn (ghostel--yank-media-data
                         'image/jpeg (unibyte-string #xff #xd8))
                        (car sent-files))))
       (unwind-protect
           (should (string-match-p "\\.jpe?g\\'" path))
+        (when (and path (file-exists-p path))
+          (delete-file path))))))
+
+(ert-deftest ghostel-test-yank-media-pdf-round-trip ()
+  "PDF bytes are written raw to a .pdf temp file and its path sent."
+  (skip-unless (fboundp 'yank-media-handler))
+  (ghostel-yank-media-test--with-mode-buffer
+    (let* ((data (apply #'unibyte-string
+                        (append (string-to-list "%PDF-1.4\n")
+                                '(0 #xff #x80 #x0a) '(?% ?% ?E ?O ?F))))
+           (path (progn (ghostel--yank-media-data 'application/pdf data)
+                        (car sent-files))))
+      (unwind-protect
+          (progn
+            (should (string-suffix-p ".pdf" path))
+            (with-temp-buffer
+              (set-buffer-multibyte nil)
+              (insert-file-contents-literally path)
+              (should (equal (buffer-string) data))))
         (when (and path (file-exists-p path))
           (delete-file path))))))
 
@@ -87,7 +108,7 @@ shell quoting itself is covered by the dnd tests."
   (ghostel-yank-media-test--with-mode-buffer
     (cl-letf (((symbol-function 'make-temp-file)
                (lambda (&rest _) "/ssh:host:/tmp/ghostel-clipboard-x.png")))
-      (ghostel--yank-media-image 'image/png (unibyte-string 1 2)))
+      (ghostel--yank-media-data 'image/png (unibyte-string 1 2)))
     (should (equal sent-files '("/tmp/ghostel-clipboard-x.png")))))
 
 (ert-deftest ghostel-test-yank-media-autoselect-any-image ()
@@ -103,6 +124,12 @@ shell quoting itself is covered by the dnd tests."
     ;; Stock priorities still win when several flavors are offered.
     (should (equal (yank-media-autoselect-function '(image/tiff image/png))
                    '(image/png)))
+    ;; PDF autoselects alone, images beat it when both are offered.
+    (should (equal (yank-media-autoselect-function '(application/pdf))
+                   '(application/pdf)))
+    (should (equal (yank-media-autoselect-function
+                    '(application/pdf image/tiff))
+                   '(image/tiff application/pdf)))
     ;; The catch-all is buffer-local; other modes keep stock behavior.
     (should (> (length yank-media-preferred-types)
                (length (default-value 'yank-media-preferred-types))))))
@@ -112,7 +139,7 @@ shell quoting itself is covered by the dnd tests."
   (skip-unless (fboundp 'yank-media-handler))
   (ghostel-yank-media-test--with-mode-buffer
     (delete-process ghostel--process)
-    (should-error (ghostel--yank-media-image 'image/png (unibyte-string 1 2))
+    (should-error (ghostel--yank-media-data 'image/png (unibyte-string 1 2))
                   :type 'user-error)
     (should-not sent-files)))
 
