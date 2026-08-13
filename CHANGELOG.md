@@ -4,30 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Fixed
-- `ghostel-project` no longer conflates same-named projects in
-  different directories.  Buffers now carry a structured identity (the
-  new buffer-local `ghostel-identity` alist: a mandatory `kind` plus
-  scope keys like `project-root` and an `instance` number for reusable
-  slots) instead of being matched by buffer name, so two projects that
-  share a directory basename get separate terminals, and the
-  `identity` scope of `ghostel-project-next`/`-previous`/
-  `-list-buffers` includes numbered instances and excludes
-  non-terminal buffers (e.g. a running `ghostel-compile`).  Third
-  parties can tag their own buffers (e.g. `(kind . my-repl)`) via the
-  new optional IDENTITY argument of `ghostel-exec` and filter them
-  with `ghostel-identity-match-p`.  Bookmarks store the structured
-  identity; bookmarks saved by older versions still restore but spawn
-  a fresh terminal instead of reusing a live one.  A numeric prefix
-  of 1 now selects the default terminal (formerly a separate
-  `*ghostel*<1>` buffer).  `ghostel-exec` and eshell visual-command
-  buffers record their program and arguments in the identity's
-  `command` key; jumping to their bookmark reattaches to a live
-  buffer running the recorded command, or respawns it instead of a
-  plain shell.  Restored buffers are plain `ghostel-exec` buffers
-  without kind-specific wiring (such as eshell's visual exit
-  behavior), and the argv is saved to the bookmark file in
-  plaintext.
+## [0.50.0] — 2026-08-13
+
+### Added
+- `C-q` in semi-char mode now sends the next key to the terminal
+  (`ghostel-send-next-key`), matching the quoted-insert mnemonic and
+  eat's convention; `C-q C-q` sends a literal `C-q`.  `C-c C-q` stays
+  as an alias, char mode keeps forwarding `C-q` raw, and listing
+  `"C-q"` in `ghostel-keymap-exceptions` leaves it to the global
+  `quoted-insert`.
+- Clipboard images and PDFs can be pasted into a terminal with
+  `yank-media` (Emacs 29+).  A PTY has no inbound image channel, so
+  the clipboard bytes are written to a temp file — created in the
+  temp directory of the host the shell runs on, so TRAMP terminals
+  receive a valid host-side path — and the file's shell-quoted path
+  is typed into the terminal, sharing the send path with
+  drag-and-drop.
 
 ### Changed
 - Terminal buffers keep a stable name; the terminal title moves to the
@@ -54,8 +46,64 @@ All notable changes to this project will be documented in this file.
   M-x ghostel-compile`) always follow the live cursor.  To keep the
   previous always-scroll behavior, set `compilation-scroll-output` to
   t.  Fixes [#599](https://github.com/dakra/ghostel/issues/599).
+- Jumping to a ghostel bookmark finds the terminal by its recorded
+  identity instead of the buffer name recorded at `bookmark-set` time,
+  so a rename in between (a customized `ghostel-buffer-name-function`,
+  a manual rename) no longer breaks reuse and spawns another shell in
+  a fresh buffer.  Reuse also requires a live shell: with
+  `ghostel-kill-buffer-on-exit` nil, a retained buffer whose shell
+  exited is skipped instead of getting a `cd` typed into a dead PTY.
+  Fixes [#618](https://github.com/dakra/ghostel/issues/618).
+- The bookmark list (`M-x list-bookmarks`) now shows "Ghostel" in the
+  Type column and the terminal's directory as the location instead of
+  a blank type and "-- Unknown location --".  Bookmark records saved
+  by earlier versions no longer restore.
+  Fixes [#613](https://github.com/dakra/ghostel/issues/613).
+- Local shells started in a symlinked directory now show the logical
+  path in their prompt, title, and OSC 7 report instead of the
+  symlink-resolved physical path (which then flowed back into
+  `default-directory`).  Local spawns inherit a
+  `PWD=<default-directory>` environment entry, which POSIX shells
+  keep when it names the current directory; `ghostel-environment`
+  and `ghostel-pre-spawn-hook` still take precedence.  Remote spawns
+  are unchanged.
+- An OSC 7 host of `NAME.local` is now recognized as the local
+  machine.  The macOS kernel hostname drifts between `NAME` and
+  `NAME.local` with network state, and the mismatch made directory
+  tracking fabricate a TRAMP path for a purely local shell, which
+  also disabled file linkification in that buffer.
+- Compilation-style `ghostel-compile` buffers no longer auto-enter
+  copy mode when point sits away from the terminal cursor or the mark
+  activates — e.g. popper selecting the freshly created popup froze
+  the terminal in copy mode before any output rendered.  Exiting copy
+  or Emacs mode in such a buffer restores the compile view keymap,
+  the read-only barrier, and the run indicator instead of a terminal
+  input mode whose keys would be sent to the PTY.
 
 ### Fixed
+- `ghostel-project` no longer conflates same-named projects in
+  different directories.  Buffers now carry a structured identity (the
+  new buffer-local `ghostel-identity` alist: a mandatory `kind` plus
+  scope keys like `project-root` and an `instance` number for reusable
+  slots) instead of being matched by buffer name, so two projects that
+  share a directory basename get separate terminals, and the
+  `identity` scope of `ghostel-project-next`/`-previous`/
+  `-list-buffers` includes numbered instances and excludes
+  non-terminal buffers (e.g. a running `ghostel-compile`).  Third
+  parties can tag their own buffers (e.g. `(kind . my-repl)`) via the
+  new optional IDENTITY argument of `ghostel-exec` and filter them
+  with `ghostel-identity-match-p`.  Bookmarks store the structured
+  identity; bookmarks saved by older versions still restore but spawn
+  a fresh terminal instead of reusing a live one.  A numeric prefix
+  of 1 now selects the default terminal (formerly a separate
+  `*ghostel*<1>` buffer).  `ghostel-exec` and eshell visual-command
+  buffers record their program and arguments in the identity's
+  `command` key; jumping to their bookmark reattaches to a live
+  buffer running the recorded command, or respawns it instead of a
+  plain shell.  Restored buffers are plain `ghostel-exec` buffers
+  without kind-specific wiring (such as eshell's visual exit
+  behavior), and the argv is saved to the bookmark file in
+  plaintext.
 - An empty OSC 0/2 title (e.g. `printf '\e]2;\a'`) now clears the
   terminal title instead of being ignored, matching how Ghostty and
   iTerm2 treat it (reset to as if no title was ever set): the mode
@@ -71,6 +119,46 @@ All notable changes to this project will be documented in this file.
   PTY where it could not be reverted.  The preview is now skipped in
   ghostel buffers — the chord itself keeps working.
   Fixes [#597](https://github.com/dakra/ghostel/issues/597).
+- On text terminals a lone ESC now reaches the terminal as the escape
+  key instead of pending forever as a meta prefix.  A terminal-local
+  `input-decode-map` filter yields the escape event when no follow-up
+  byte arrives within the new `ghostel-tty-escape-delay`; escape
+  sequences and ESC-as-meta decoding stay intact, and the filter
+  composes with other packages' filters such as evil's.  A fast
+  double-tap ESC ESC is sent as alt+escape instead of pending on the
+  global `keyboard-escape-quit` prefix.
+  Fixes [#592](https://github.com/dakra/ghostel/issues/592).
+- `ghostel-send-next-key` now routes the quoted key through the key
+  encoder instead of writing raw bytes, so a child that enabled the
+  kitty keyboard protocol receives the negotiated encoding (e.g.
+  CSI 27u for ESC) rather than bytes outside it.  Legacy children see
+  byte-identical output for unmodified and ctrl-chord C0/ASCII input;
+  the rescue commands (`ghostel-send-C-c` and friends) intentionally
+  keep sending raw bytes.
+- Dropping a file onto a terminal on X11 and pgtk now types its
+  shell-quoted path instead of opening the file with `find-file`:
+  those ports dispatch drops through `dnd-protocol-alist`, bypassing
+  the `<drag-n-drop>` keymap binding.  File drops end with a
+  separating space on all ports, and a drop into a terminal with no
+  live process falls back to opening the file.
+- Killing a compile buffer mid-run no longer leaves the global
+  `[Compiling]` mode-line indicator stuck forever.
+- A `compilation-finish-functions` entry or mode hook that kills the
+  compile buffer mid-finalize no longer makes `ghostel-compile`
+  operate on an unrelated buffer (switching its major mode and
+  inserting the compilation footer into it) before signaling "No such
+  live buffer".
+- Killing a terminal buffer whose buffer-locals were wiped by a
+  major-mode change after process exit no longer aborts with a
+  wrong-type-argument from the native kill primitive, which left the
+  buffer alive with its event pipe already detached.
+  Fixes [#606](https://github.com/dakra/ghostel/issues/606).
+- Killing a remote session buffer whose TRAMP connection is already
+  gone (e.g. after `tramp-cleanup-all-connections` or a network drop)
+  no longer prompts for the SSH password just to delete
+  shell-integration temp files: the deletions refuse to reconnect,
+  and dead-connection temp files are left behind in the remote /tmp.
+  Fixes [#602](https://github.com/dakra/ghostel/issues/602).
 
 ## [0.49.0] — 2026-08-02
 
