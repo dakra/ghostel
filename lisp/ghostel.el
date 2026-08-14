@@ -2720,7 +2720,7 @@ Add it to other jump commands as a hook or `:after' advice (see the README)."
           (_      (ghostel-semi-char-mode)))
         (ghostel--adjust-size (selected-window) t)
         (ghostel--anchor-window nil t)
-        (ghostel-force-redraw)))
+        (ghostel--redraw-now (current-buffer) t)))
     (message "Read-only mode exited")))
 
 (defun ghostel-readonly-exit-and-clear ()
@@ -4809,14 +4809,17 @@ for BUFFER; return nil to let the redraw proceed."
                           #'ghostel--redraw-now buffer))
     t))
 
-(defun ghostel--redraw-now (buffer &optional force)
+(defun ghostel--redraw-now (buffer &optional force full)
   "Attempt to redraw BUFFER and retain the request until it succeeds.
 The renderer preserves buffer positions while applying terminal mutations;
 this function anchors windows that were following the live viewport.
 
 With FORCE non-nil, redraw even while synchronized output (mode 2026)
 is open.  Normal redraws remain pending when the native renderer declines
-them during synchronized output or when BUFFER has no render window."
+them during synchronized output or when BUFFER has no render window.
+
+With FULL non-nil, rebuild every line rather than the dirty rows alone.
+Unlike FORCE it applies to this call only; a deferred redraw drops it."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (setq ghostel--pending-redraw t)
@@ -4845,7 +4848,7 @@ them during synchronized output or when BUFFER has no render window."
                   (with-selected-window render-win
                     ;; FULL and FORCE-SYNC are separate native policies.
                     (ghostel--redraw ghostel--term
-                                     (eq ghostel--input-mode 'line)
+                                     (or full (eq ghostel--input-mode 'line))
                                      ghostel--force-next-redraw))))
             (when rendered
               (setq ghostel--pending-redraw nil
@@ -4873,12 +4876,13 @@ them during synchronized output or when BUFFER has no render window."
             (ghostel--detect-password-prompt)))))))
 
 (defun ghostel-force-redraw ()
-  "Force an immediate terminal redraw, bypassing synchronized-output batching.
-Repaints now even while the terminal program holds mode 2026 open, so a
-buffer left showing stale content (e.g. revealed mid-frame) recovers.
+  "Rebuild the whole buffer from the terminal's own state, immediately.
+Every line is rewritten, not just the rows the terminal reports dirty,
+and synchronized output (mode 2026) does not hold the repaint back, so
+a buffer showing stale content recovers either way.
 Requires the buffer to be visible in a window; has no effect otherwise."
   (interactive)
-  (ghostel--redraw-now (current-buffer) t))
+  (ghostel--redraw-now (current-buffer) t t))
 
 
 ;;; Window resize

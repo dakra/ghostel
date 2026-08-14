@@ -40,6 +40,16 @@ rendered_cursor: ?gt.Pin,
 /// Number of libghostty rows already materialized into the Emacs buffer.
 rows_in_buffer: usize = 0,
 
+/// Terminal geometry at the last render.  A mismatch at redraw start means a
+/// VT sequence (DECCOLM) reflowed the grid without going through
+/// `pending_resize`.  Zero demands a full repaint; no real size is zero.
+rendered_cols: u16 = 0,
+rendered_rows: u16 = 0,
+
+/// Set when the color configuration changed under already-rendered text,
+/// whose faces carry the colors resolved when they were written.
+faces_stale: bool = false,
+
 /// Any pending resize as `.{cols, rows}`. Resizes are committed on next redraw.
 pending_resize: ?ViewportSize = null,
 
@@ -152,9 +162,30 @@ pub fn redraw(self: *Self, env: emacs.Env, force_full: bool, force_sync: bool) !
 
     self.repainted = null;
 
+    // A failed render leaves the buffer partly rewritten while the row
+    // accounting still describes what it meant to write.
+    errdefer self.demandFullRepaint();
+
     const screen = self.term.screens.active;
     try self.saved_markers.save(self.alloc, env);
     defer self.saved_markers.restoreAndClear(screen, env);
+
+    // Faces bake in their colors, so a palette change leaves every rendered
+    // line stale while the terminal still reports its rows clean.
+    const colors_changed = self.faces_stale or self.term.flags.dirty.palette;
+    self.faces_stale = false;
+    self.term.flags.dirty.palette = false;
+
+    // Clear before the eviction below: its row arithmetic, like `render`'s,
+    // assumes the geometry still matches the buffer's last render.  An
+    // uncommitted change means a VT sequence reflowed the grid.
+    if (force_full or
+        colors_changed or
+        self.term.cols != self.rendered_cols or
+        self.term.rows != self.rendered_rows)
+    {
+        try self.clear(env);
+    }
 
     // Evict before anything mutates the terminal-side geometry: the row
     // arithmetic needs the pin, the page list, and `term.rows` exactly as
@@ -162,7 +193,6 @@ pub fn redraw(self: *Self, env: emacs.Env, force_full: bool, force_sync: bool) !
     self.evictScrollback(env);
     self.gotoActiveStart(env);
 
-    if (force_full) try self.clear(env);
     try self.updateFontInfo(env);
     try self.commitResize(env);
     if (!std.meta.eql(self.rendered_screen, currentScreenId(self.term))) {
@@ -187,11 +217,17 @@ pub fn redraw(self: *Self, env: emacs.Env, force_full: bool, force_sync: bool) !
     else
         screen.pages.total_rows;
 
+    self.noteRenderedSize(env);
+
     if (self.repainted) |r| {
         env.set("ghostel--repainted-region", env.cons(r.min, r.max));
     } else {
         env.set("ghostel--repainted-region", env.nil());
     }
+
+    // A non-local exit — a hook signalling, or C-g — abandons the render with
+    // no Zig error: later `env` calls no-op, so the buffer stops short.
+    if (env.nonLocalExitCheck() != .normal) self.demandFullRepaint();
     return true;
 }
 
@@ -1023,8 +1059,7 @@ fn commitResize(self: *Self, env: emacs.Env) !void {
         });
         self.pending_resize = null;
 
-        env.set("ghostel--term-rows", self.term.rows);
-        env.set("ghostel--term-cols", self.term.cols);
+        self.noteRenderedSize(env);
 
         const total_rows_changed = self.rows_in_buffer != self.term.screens.active.pages.total_rows;
         if (cols_changed or
@@ -1034,6 +1069,30 @@ fn commitResize(self: *Self, env: emacs.Env) !void {
             try self.clear(env);
         }
     }
+}
+
+/// Make the next redraw rebuild the buffer from scratch.
+fn demandFullRepaint(self: *Self) void {
+    self.rendered_cols = 0;
+    self.rendered_rows = 0;
+}
+
+/// Change the bold coloring, repainting if it alters faces already written.
+pub fn setBoldConfig(self: *Self, config: ?gt.Style.BoldColor) void {
+    if (std.meta.eql(self.bold_config, config)) return;
+    self.bold_config = config;
+    self.faces_stale = true;
+}
+
+/// Record the geometry the buffer now reflects, publishing it to elisp on a
+/// change.  The redraw tail calls it too: an in-band resize (DECCOLM) never
+/// reaches `commitResize`, so that is where elisp learns the new size.
+fn noteRenderedSize(self: *Self, env: emacs.Env) void {
+    if (self.rendered_cols == self.term.cols and self.rendered_rows == self.term.rows) return;
+    self.rendered_cols = self.term.cols;
+    self.rendered_rows = self.term.rows;
+    env.set("ghostel--term-rows", self.term.rows);
+    env.set("ghostel--term-cols", self.term.cols);
 }
 
 /// Position the Emacs point at the start of the active area: `self.term.rows`

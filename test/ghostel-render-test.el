@@ -525,6 +525,120 @@ that for the page being evicted from the terminal."
             (should (ghostel-test--buffer-covers-terminal-p term))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-deccolm-resize-repaints-buffer ()
+  "An in-band DECCOLM resize forces a full repaint on the next redraw.
+`CSI ?3h'/`CSI ?3l' reflow the grid without going through the renderer's
+resize path, leaving eviction and reuse working from stale geometry."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-deccolm*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((term (ghostel--new 24 80 (* 5 1024 1024)))
+                (inhibit-read-only t))
+            (ghostel--redraw term)
+            (dotimes (i 100)
+              (ghostel--write-vt
+               term (format "line-%03d-%s\r\n" i (make-string 91 ?x))))
+            (ghostel--redraw term)
+            ;; Allow DECCOLM, then switch to 132 columns in-band.
+            (ghostel--write-vt term "\e[?40h\e[?3h")
+            (ghostel--redraw term)
+            (should (= ghostel--term-cols 132))
+            (should (string-match-p "^line-000" (buffer-string)))
+            (should (ghostel-test--buffer-matches-terminal-p term))
+            (dotimes (i 10)
+              (ghostel--write-vt term (format "after-%02d\r\n" i)))
+            (ghostel--redraw term)
+            (should (string-match-p "^after-09" (buffer-string)))
+            (should (ghostel-test--buffer-matches-terminal-p term))
+            ;; And back to 80 columns.
+            (ghostel--write-vt term "\e[?3l")
+            (ghostel--redraw term)
+            (should (= ghostel--term-cols 80))
+            (should (string-match-p "^line-000" (buffer-string)))
+            (dotimes (i 10)
+              (ghostel--write-vt term (format "narrow-%02d\r\n" i)))
+            (ghostel--redraw term)
+            (should (string-match-p "^narrow-09" (buffer-string)))
+            (should (ghostel-test--buffer-matches-terminal-p term))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-deccolm-round-trip-between-redraws-repaints ()
+  "A DECCOLM switch and its undo between two redraws still force a repaint.
+The grid reflows twice while the geometry the redraw sees is the one it
+last rendered, so comparing sizes cannot detect it."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-deccolm-round-trip*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((term (ghostel--new 24 80 (* 5 1024 1024)))
+                (inhibit-read-only t))
+            (ghostel--redraw term)
+            (dotimes (i 100)
+              (ghostel--write-vt
+               term (format "line-%03d-%s\r\n" i (make-string 91 ?x))))
+            (ghostel--redraw term)
+            (ghostel--write-vt term "\e[?40h\e[?3h\e[?3l")
+            (ghostel--redraw term)
+            (should (= ghostel--term-cols 80))
+            (should (string-match-p "^line-000" (buffer-string)))
+            (should (ghostel-test--buffer-matches-terminal-p term))
+            (dotimes (i 10)
+              (ghostel--write-vt term (format "post-%02d\r\n" i)))
+            (ghostel--redraw term)
+            (should (string-match-p "^post-09" (buffer-string)))
+            (should (ghostel-test--buffer-matches-terminal-p term))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-deccolm-resizes-pty ()
+  "A child's DECCOLM switch reaches the PTY, so it sees the new width.
+Nothing else tells the PTY: the grid is already reflowed by the time
+the redraw runs, so its own before/after comparison sees no change."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buf term 24 80 1000)
+    (let* ((proc (ghostel-test--dummy-process "ghostel-test-size" buf))
+           (sizes nil)
+           (inhibit-read-only t))
+      (unwind-protect
+          (cl-letf (((symbol-function 'set-process-window-size)
+                     (lambda (_proc rows cols) (push (list rows cols) sizes))))
+            (setq ghostel--process proc)
+            (ghostel--redraw term)
+            (setq sizes nil)
+            (ghostel--write-vt term "\e[?40h\e[?3h")
+            (ghostel--redraw term)
+            (should (equal sizes '((24 132))))
+            ;; And the undo, which leaves the size it last reported.
+            (setq sizes nil)
+            (ghostel--write-vt term "\e[?3l")
+            (ghostel--redraw term)
+            (should (equal sizes '((24 80)))))
+        (delete-process proc)))))
+
+(ert-deftest ghostel-test-deccolm-resize-with-pruned-scrollback ()
+  "DECCOLM reflow stays consistent when scrollback was already pruned."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-deccolm-pruned*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((term (ghostel--new 6 80 4096))
+                (inhibit-read-only t))
+            (ghostel--redraw term)
+            (dotimes (i 1200)
+              (ghostel--write-vt
+               term (format "flood-%04d-%s\r\n" i (make-string 90 ?x))))
+            (ghostel--redraw term)
+            (ghostel--write-vt term "\e[?40h\e[?3h")
+            (ghostel--redraw term)
+            (should (= ghostel--term-cols 132))
+            (should (ghostel-test--buffer-matches-terminal-p term))
+            (dotimes (i 10)
+              (ghostel--write-vt term (format "after-%02d\r\n" i)))
+            (ghostel--redraw term)
+            (should (string-match-p "^after-09" (buffer-string)))
+            (should (ghostel-test--buffer-matches-terminal-p term))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-partial-prune-keeps-buffer-and-terminal-equal ()
   "A prune that drops the tracked pin's own page repaints from scratch.
 libghostty lands such a pin on the screen's top-left, where its row no
@@ -546,6 +660,136 @@ strands pruned rows and drops as many live ones, line counts matching."
               (ghostel--redraw term))
             (should (ghostel-test--buffer-matches-terminal-p term))))
       (kill-buffer buf))))
+
+(ert-deftest ghostel-test-palette-change-repaints-rendered-lines ()
+  "A palette change repaints lines already written, scrollback included.
+Faces resolve their colors when a line is written, so rows the terminal
+still considers clean would otherwise keep the old palette's colors."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-palette-repaint*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((term (ghostel--new 24 80 (* 1024 1024)))
+                (inhibit-read-only t))
+            (ghostel--redraw term)
+            ;; Enough rows that the first ones sit above the viewport.
+            (dotimes (i 40)
+              (ghostel--write-vt term (format "\e[31mred-%03d\e[0m\r\n" i)))
+            (ghostel--redraw term)
+            (cl-flet ((face-at (regex)
+                        (save-excursion
+                          (goto-char (point-min))
+                          (re-search-forward regex)
+                          (get-text-property (match-beginning 0) 'face))))
+              (let ((before (face-at "red-000")))
+                (should before)
+                (ghostel--set-palette
+                 term (mapconcat (lambda (i) (if (= i 1) "#00ff00" "#123456"))
+                                 (number-sequence 0 255) ""))
+                ;; An ordinary redraw, not a forced full one.
+                (ghostel--redraw term)
+                (should-not (equal before (face-at "red-000")))
+                (should (equal '(:foreground "#00ff00") (face-at "red-000")))
+                (should (equal '(:foreground "#00ff00")
+                               (face-at "red-039")))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-aborted-render-resyncs-on-next-redraw ()
+  "A render abandoned partway repaints from scratch on the next redraw.
+A modification hook signalling — or \\[keyboard-quit] — unwinds it with the
+buffer half-rewritten while the row accounting says otherwise."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-aborted-render*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((term (ghostel--new 24 80 (* 1024 1024)))
+                (inhibit-read-only t)
+                (boom nil))
+            (ghostel--redraw term)
+            (dotimes (i 300)
+              (ghostel--write-vt term (format "line-%04d\r\n" i)))
+            (ghostel--redraw term)
+            (should (ghostel-test--buffer-matches-terminal-p term))
+            (dotimes (i 100)
+              (ghostel--write-vt term (format "post-%04d\r\n" i)))
+            (setq boom t)
+            (let ((after-change-functions
+                   (list (lambda (&rest _)
+                           (when boom
+                             (setq boom nil)
+                             (error "Aborted mid-render"))))))
+              (should-error (ghostel--redraw term)))
+            (should-not (ghostel-test--buffer-matches-terminal-p term))
+            (ghostel--write-vt term "after-abort\r\n")
+            (ghostel--redraw term)
+            (should (ghostel-test--buffer-matches-terminal-p term))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-force-redraw-requests-full-repaint ()
+  "`ghostel-force-redraw' asks the renderer to rebuild every line."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buf term 24 80 1000)
+    (let ((calls nil))
+      (set-window-buffer (selected-window) buf)
+      (ghostel--write-vt term "hello\r\n")
+      (cl-letf (((symbol-function 'ghostel--redraw)
+                 (lambda (_term &optional full force-sync)
+                   (push (list full force-sync) calls)
+                   t)))
+        (ghostel--redraw-now buf)
+        (should (equal (car calls) '(nil nil)))
+        (ghostel-force-redraw)
+        (should (equal (car calls) '(t t)))
+        ;; It applies to that redraw alone, not the ones after it.
+        (ghostel--redraw-now buf)
+        (should (equal (car calls) '(nil nil)))))))
+
+(ert-deftest ghostel-test-full-reset-drops-stale-rows ()
+  "RIS repaints: it blanks rows without marking them dirty.
+`reset' is what a user runs on a garbled terminal, so an incremental
+redraw must not leave the erased rows behind.  `CSI 2J' and friends do
+mark theirs, and must stay incremental."
+  :tags '(native)
+  ;; Only RIS discards the scrollback; the erase sequences keep it, so just
+  ;; the buffer/terminal agreement is asserted for those.
+  (dolist (entry '(("\ec" . t) ("\e[2J" . nil) ("\e[3J" . nil) ("\e[!p" . nil)))
+    (let ((buf (generate-new-buffer " *ghostel-test-full-reset*")))
+      (unwind-protect
+          (with-current-buffer buf
+            (let ((term (ghostel--new 24 80 (* 1024 1024)))
+                  (inhibit-read-only t))
+              (ghostel--redraw term)
+              (dotimes (i 10)
+                (ghostel--write-vt term (format "old-%03d\r\n" i)))
+              (ghostel--redraw term)
+              (ghostel--write-vt term (car entry))
+              (dotimes (i 3)
+                (ghostel--write-vt term (format "new-%03d\r\n" i)))
+              (ghostel--redraw term)
+              (ert-info ((format "sequence %S" (car entry)))
+                (should (ghostel-test--buffer-matches-terminal-p term))
+                (when (cdr entry)
+                  (should-not (string-match-p "old-" (buffer-string)))))))
+        (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-readonly-exit-redraws-incrementally ()
+  "Leaving copy mode redraws past mode 2026 without rebuilding the buffer.
+A rebuild would republish the whole buffer as the repainted region, so
+every exit would rescan all of scrollback for links."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buf term 24 80 1000)
+    (let ((calls nil))
+      (set-window-buffer (selected-window) buf)
+      (ghostel--write-vt term "hello\r\n")
+      (ghostel--redraw-now buf)
+      (ghostel-copy-mode)
+      (cl-letf (((symbol-function 'ghostel--redraw)
+                 (lambda (_term &optional full force-sync)
+                   (push (list full force-sync) calls)
+                   t)))
+        (ghostel-readonly-exit))
+      (should calls)
+      (should (equal (car calls) '(nil t))))))
 
 (ert-deftest ghostel-test-cross-page-span-resolves-styles-per-page ()
   "Faces of rows in one page are not resolved against another page.

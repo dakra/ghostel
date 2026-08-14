@@ -647,18 +647,20 @@ delta in the phase timings section."
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-debug-redraw-advices-tolerate-force ()
-  "Debug redraw/latency advices accept and forward `ghostel--redraw-now's FORCE.
-Regression: adding the optional FORCE argument made the :around log
-advice and the :after latency advice receive an extra argument.  Both
-must tolerate it without `wrong-number-of-arguments', and the :around
-must forward FORCE to the real redraw."
+  "Debug advices accept and forward `ghostel--redraw-now's optional arguments.
+Regression: each optional argument added to `ghostel--redraw-now' — FORCE,
+then FULL — reaches the :around log advice and the :after latency advice.
+Both must tolerate them without `wrong-number-of-arguments', and the
+:around must forward them, or the real redraw silently loses them
+whenever debug logging is on."
   (let ((log-buf (generate-new-buffer " *ghostel-test-redraw-advice*"))
         (recorded nil))
     (unwind-protect
         (let ((ghostel-debug--log-buffer log-buf)
               (ghostel-debug--latency-active nil))
           (cl-letf* (((symbol-function 'ghostel--redraw-now)
-                      (lambda (_buffer &optional force) (push force recorded)))
+                      (lambda (_buffer &optional force full)
+                        (push (list force full) recorded)))
                      ;; Stub the snapshot so the log body needs no live terminal.
                      ((symbol-function 'ghostel-debug--snapshot)
                       (lambda (_buffer)
@@ -669,10 +671,11 @@ must forward FORCE to the real redraw."
             (advice-add 'ghostel--redraw-now :after #'ghostel-debug--latency-on-render)
             (with-temp-buffer
               (ghostel--redraw-now (current-buffer) t)
+              (ghostel--redraw-now (current-buffer) t t)
               (ghostel--redraw-now (current-buffer)))
-            ;; Both calls returned without an arity error, and FORCE was
-            ;; forwarded: newest-first push records the bare then forced call.
-            (should (equal recorded '(nil t)))))
+            ;; No arity error, and both arguments came through: the push is
+            ;; newest-first, so this is the bare, full, then forced call.
+            (should (equal recorded '((nil nil) (t t) (t nil))))))
       (advice-remove 'ghostel--redraw-now #'ghostel-debug--log-redraw)
       (advice-remove 'ghostel--redraw-now #'ghostel-debug--latency-on-render)
       (kill-buffer log-buf))))

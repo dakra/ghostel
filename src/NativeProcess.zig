@@ -41,6 +41,13 @@ term_mutex: RecursiveMutex = .{},
 term: *gt.Terminal,
 stream: gt.Stream(GhostelHandler(*Self)),
 
+/// Set when a VT sequence resized the terminal.  Written on the reader thread
+/// and read by the redraw, both under `term_mutex`; `GhostelTerm` consumes it.
+inband_resize: bool = false,
+
+/// Set when a VT sequence invalidated the rendered text.  Same locking.
+repaint_needed: bool = false,
+
 quit: bool = false,
 thread: std.Thread,
 
@@ -122,6 +129,16 @@ pub fn ptyWrite(self: *Self, env: emacs.Env, data: []const u8) !void {
             .interrupted => return,
         }
     }
+}
+
+/// Called from the VT handler when a mode change resized the terminal.
+pub fn noteInbandResize(self: *Self) void {
+    self.inband_resize = true;
+}
+
+/// Called from the VT handler when a sequence invalidated the rendered text.
+pub fn noteRepaintNeeded(self: *Self) void {
+    self.repaint_needed = true;
 }
 
 pub fn ptyWriteFromTerminal(self: *Self, data: []const u8) void {

@@ -30,6 +30,14 @@ string_buffer: ?[]u8 = null,
 renderer: Renderer,
 process: ?*NativeProcess = null,
 
+/// Set when a VT sequence resized the terminal: the next redraw repaints and
+/// tells the PTY the size the grid already has.
+inband_resize: bool = false,
+
+/// Set when a VT sequence replaced screen content without marking the rows it
+/// touched dirty.
+repaint_needed: bool = false,
+
 /// Create a new terminal with the given dimensions and scrollback.
 pub fn init(
     alloc: Allocator,
@@ -82,13 +90,17 @@ pub fn redraw(self: *Self, force_full: bool, force_sync: bool) !bool {
 
     const env = emacs.current_env orelse return false;
     const pre_size = .{ self.terminal.cols, self.terminal.rows };
-    if (!try self.renderer.redraw(env, force_full, force_sync)) return false;
+    const inband_resize = self.inbandResizePending();
+    const repaint = inband_resize or self.repaintPending();
+    if (!try self.renderer.redraw(env, force_full or repaint, force_sync)) return false;
 
     _ = env.f("ghostel--kitty-clear", .{});
     try kitty_graphics.emitPlacements(env, self);
     const post_size = .{ self.terminal.cols, self.terminal.rows };
 
-    if (!std.meta.eql(pre_size, post_size)) {
+    // An in-band resize beat the redraw to the grid, so the sizes above match
+    // while the PTY still carries the old geometry.
+    if (inband_resize or !std.meta.eql(pre_size, post_size)) {
         if (self.process) |proc| {
             try proc.resizePty(post_size[0], post_size[1]);
         } else {
@@ -98,7 +110,46 @@ pub fn redraw(self: *Self, force_full: bool, force_sync: bool) !bool {
             }
         }
     }
+
+    // Clear only once every consequence is carried out: a non-local exit
+    // no-ops the calls above, and the next redraw must then retry them.
+    if (env.nonLocalExitCheck() == .normal) self.clearRedrawFlags();
     return true;
+}
+
+/// Called from the VT handler when a mode change resized the terminal.
+pub fn noteInbandResize(self: *Self) void {
+    self.inband_resize = true;
+}
+
+/// Called from the VT handler when a sequence invalidated the rendered text.
+pub fn noteRepaintNeeded(self: *Self) void {
+    self.repaint_needed = true;
+}
+
+/// A native process parses VT on its reader thread and carries its own flags;
+/// both sides are read under the terminal lock.
+fn inbandResizePending(self: *Self) bool {
+    if (self.process) |process| {
+        if (process.inband_resize) return true;
+    }
+    return self.inband_resize;
+}
+
+fn repaintPending(self: *Self) bool {
+    if (self.process) |process| {
+        if (process.repaint_needed) return true;
+    }
+    return self.repaint_needed;
+}
+
+fn clearRedrawFlags(self: *Self) void {
+    if (self.process) |process| {
+        process.inband_resize = false;
+        process.repaint_needed = false;
+    }
+    self.inband_resize = false;
+    self.repaint_needed = false;
 }
 
 /// Set the color palette (256 entries).
@@ -681,13 +732,13 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
                 const val = args[1];
                 if (env.isNil(val)) {
-                    term.renderer.bold_config = null;
+                    term.renderer.setBoldConfig(null);
                 } else if (env.eq(val, emacs.sym.bright)) {
-                    term.renderer.bold_config = .bright;
+                    term.renderer.setBoldConfig(.bright);
                 } else {
                     var hex_buf: [16]u8 = undefined;
                     const hex = try env.extractString(val, &hex_buf);
-                    term.renderer.bold_config = .{ .color = try gt.color.RGB.parse(hex) };
+                    term.renderer.setBoldConfig(.{ .color = try gt.color.RGB.parse(hex) });
                 }
                 return env.t();
             }
