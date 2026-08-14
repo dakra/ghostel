@@ -10,14 +10,6 @@ MELPAZOID_DIR  ?= $(XDG_CACHE_HOME)/melpazoid
 EVIL_DIR       ?= $(XDG_CACHE_HOME)/evil
 LINT_ELPA_DIR  ?= $(XDG_CACHE_HOME)/ghostel-lint-elpa
 LINT_DEPS_STAMP := $(LINT_ELPA_DIR)/.deps-installed
-# Pinned purcell/package-lint revision: a red lint gate then always
-# means the repo changed, not the linter.  Bump to a newer commit SHA
-# deliberately.  (The tagged 0.26 release is too old: it predates the
-# `eshell/' prefix allowance.)  The checkout lives outside
-# LINT_ELPA_DIR so `package-initialize' never scans it.
-PACKAGE_LINT_REV ?= 87bf02ca387a37094e1a0057adefa9735d880cec
-PACKAGE_LINT_DIR := $(XDG_CACHE_HOME)/ghostel-package-lint/$(PACKAGE_LINT_REV)
-PACKAGE_LINT_EL := $(PACKAGE_LINT_DIR)/package-lint.el
 DOC_ELPA_DIR   ?= $(XDG_CACHE_HOME)/ghostel-doc-elpa
 DOC_DEPS_STAMP := $(DOC_ELPA_DIR)/.deps-installed
 
@@ -28,9 +20,10 @@ CORE_PACKAGE_FILE := $(firstword $(filter lisp/%,$(PACKAGE_FILES)))
 ELISP := $(CORE_PACKAGE_FILE) $(filter-out $(CORE_PACKAGE_FILE),$(ELISP_FILES))
 ELC := $(patsubst %.el,%.elc,$(ELISP))
 
-CHECKDOC_FILES = $(ELISP) $(sort $(wildcard test/*-test-helpers.el)) $(TEST_FILES)
-DOCQUOTE_FILES = $(ELISP)
-elisp-string-list = $(foreach f,$(1),\"$(f)\")
+LINT_HELPERS := tools/ghostel-lint.el
+TOOLS_ELISP := $(sort $(wildcard tools/*.el))
+CHECKDOC_FILES = $(ELISP) $(TOOLS_ELISP) $(sort $(wildcard test/*-test-helpers.el)) $(TEST_FILES)
+DOCQUOTE_FILES = $(ELISP) $(TOOLS_ELISP)
 
 # Native module artifact (kept in sync with `clean').  Listed as a real
 # file so the per-test stamp rules depend on its mtime instead of on the
@@ -61,7 +54,7 @@ ZIG_BUILD_FLAGS := --prefix . -Doptimize=ReleaseFast -Dcpu=baseline $(ZIG_TARGET
 ZIG_SOURCES := $(wildcard src/*.zig src/*.c build.zig build.zig.zon symbols.map) \
                $(wildcard vendor/*.h)
 
-.PHONY: all build test test-native test-zig test-hypothesis test-hypothesis-cases test-all test-evil lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel byte-compile docquotes bench bench-quick bench-e2e bench-tui-partial html clean regen-terminfo
+.PHONY: all build test test-native test-zig test-hypothesis test-hypothesis-cases test-all test-evil lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel byte-compile checkdoc docquotes package-lint bench bench-quick bench-e2e bench-tui-partial html clean regen-terminfo
 
 # Recommended invocation: `make -j$(nproc) all' on Linux,
 # `make -j$(sysctl -n hw.ncpu) all' on macOS.  GNU make 4+ also accepts
@@ -145,39 +138,31 @@ byte-compile: $(ELC)
 
 lint: byte-compile package-lint checkdoc docquotes
 
-# `package-lint' needs a resolvable `ghostel' package (for evil-ghostel's
-# dependency check) that isn't in any default package archive.  Provision
-# it into an isolated `package-user-dir' so `make package-lint' runs
-# standalone.
-$(LINT_DEPS_STAMP): $(CORE_PACKAGE_FILE)
+# Two things the default archives don't provide: the linter (NonGNU ELPA
+# has only 0.26, predating the `eshell/' prefix allowance) and a ghostel
+# package for evil-ghostel's dependency check -- MELPA's ghostel cannot
+# serve, as the lint runs below leave MELPA out of `package-archives'.
+# An isolated `package-user-dir' keeps `make package-lint' standalone.
+$(LINT_DEPS_STAMP): $(CORE_PACKAGE_FILE) Makefile
 	$(EMACS) --batch $(EMACSFLAGS) -Q \
+		--eval "(require 'package)" \
 		--eval "(setq package-user-dir \"$(LINT_ELPA_DIR)\")" \
+		--eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\") t)" \
 		--eval "(package-initialize)" \
 		--eval "(package-refresh-contents)" \
+		--eval "(package-install 'package-lint)" \
 		--eval "(package-install-file (expand-file-name \"$(CORE_PACKAGE_FILE)\"))"
 	@touch $@
 
-# Fetch the whole tree at the pinned revision: the linter loads its
-# symbol databases from data/ relative to its own file.  Extract to a
-# temp dir and move into place last, so an interrupted download never
-# leaves a half-written tree that satisfies this target.
-$(PACKAGE_LINT_EL):
-	rm -rf $(PACKAGE_LINT_DIR) $(PACKAGE_LINT_DIR).tmp
-	mkdir -p $(PACKAGE_LINT_DIR).tmp
-	curl -fsSL https://github.com/purcell/package-lint/archive/$(PACKAGE_LINT_REV).tar.gz \
-		| tar -xz -C $(PACKAGE_LINT_DIR).tmp --strip-components=1
-	mv $(PACKAGE_LINT_DIR).tmp $(PACKAGE_LINT_DIR)
-
 # All package files are linted, not just the main ones; sub-files need
 # `package-lint-main-file' so per-package header checks stay on the main
-# file.  `require' loads the pinned linter by filename so an installed
-# package-lint in `package-user-dir' cannot shadow it.
+# file.
 # $(1): the package's main file; $(2): all of the package's files.
 define run-package-lint
 $(EMACS) --batch $(EMACSFLAGS) -Q -L lisp \
 	--eval "(setq package-user-dir \"$(LINT_ELPA_DIR)\")" \
 	--eval "(package-initialize)" \
-	--eval "(require 'package-lint \"$(PACKAGE_LINT_EL)\")" \
+	--eval "(require 'package-lint)" \
 	--eval "(setq package-lint-main-file \"$(1)\")" \
 	-f package-lint-batch-and-exit $(2)
 endef
@@ -193,69 +178,40 @@ package-lint: $(LINT_STAMPS)
 $(LINT_STAMPS_DIR):
 	@mkdir -p $@
 
-$(LINT_STAMPS_DIR)/ghostel.ok: $(filter lisp/%,$(ELISP)) $(PACKAGE_LINT_EL) $(LINT_DEPS_STAMP) | $(LINT_STAMPS_DIR)
+$(LINT_STAMPS_DIR)/ghostel.ok: $(filter lisp/%,$(ELISP)) $(LINT_DEPS_STAMP) Makefile | $(LINT_STAMPS_DIR)
 	@printf '  PKGLINT %s\n' ghostel
 	@$(call run-package-lint,$(CORE_PACKAGE_FILE),$(filter lisp/%,$(ELISP)))
 	@touch $@
 
-# Each extensions/<pkg>/ is an independent package with main file
-# extensions/<pkg>/<pkg>.el.
-$(LINT_STAMPS_DIR)/%.ok: $(ELISP) $(PACKAGE_LINT_EL) $(LINT_DEPS_STAMP) | $(LINT_STAMPS_DIR)
+# Each extensions/<pkg>/ is its own package, main file <pkg>/<pkg>.el.
+$(LINT_STAMPS_DIR)/%.ok: $(ELISP) $(LINT_DEPS_STAMP) Makefile | $(LINT_STAMPS_DIR)
 	@printf '  PKGLINT %s\n' $*
 	@$(call run-package-lint,extensions/$*/$*.el,$(filter extensions/$*/%,$(ELISP)))
 	@touch $@
 
 checkdoc: $(CHECKDOC_FILES)
-	$(EMACS) --batch $(EMACSFLAGS) -Q \
-		--eval "(require 'checkdoc)" \
-		--eval "(let ((sentence-end-double-space nil) \
-		              (checkdoc-proper-noun-list nil) \
-		              (checkdoc-verb-check-experimental-flag nil) \
-		              (ok t)) \
-		  (dolist (f '($(call elisp-string-list,$(CHECKDOC_FILES)))) \
-		    (ignore-errors (kill-buffer \"*Warnings*\")) \
-		    (let ((inhibit-message t)) \
-		      (checkdoc-file f)) \
-		    (when (get-buffer \"*Warnings*\") \
-		      (setq ok nil) \
-		      (with-current-buffer \"*Warnings*\" \
-		        (message \"%s\" (buffer-string))))) \
-		  (unless ok (kill-emacs 1)))"
+	$(EMACS) --batch $(EMACSFLAGS) -Q -l $(LINT_HELPERS) \
+		-f ghostel-lint-checkdoc $(CHECKDOC_FILES)
 
 # Mirrors melpazoid's "Only use back/front quotes to link to top-level
 # elisp symbols" check, widened to also catch identifiers with
 # underscores like INSIDE_EMACS — env-var and macro-style names that
 # melpazoid's stricter [A-Z]+ regex skips.
 docquotes: $(DOCQUOTE_FILES)
-	$(EMACS) --batch $(EMACSFLAGS) -Q \
-		--eval "(let ((ok t)) \
-		  (dolist (f '($(call elisp-string-list,$(DOCQUOTE_FILES)))) \
-		    (with-temp-buffer \
-		      (insert-file-contents f) \
-		      (setq case-fold-search nil) \
-		      (goto-char (point-min)) \
-		      (while (re-search-forward \"\`[A-Z_]+'\" nil t) \
-		        (setq ok nil) \
-		        (message \"%s:%d:%d: Only use back/front quotes to link to top-level elisp symbols (%s)\" \
-		                 f (line-number-at-pos) \
-		                 (1+ (- (match-beginning 0) (line-beginning-position))) \
-		                 (match-string 0))))) \
-		  (unless ok (kill-emacs 1)))"
+	$(EMACS) --batch $(EMACSFLAGS) -Q -l $(LINT_HELPERS) \
+		-f ghostel-lint-docquotes $(DOCQUOTE_FILES)
 
 melpazoid: melpazoid-ghostel melpazoid-evil-ghostel
 
-melpazoid-ghostel:
-	@if [ ! -d "$(MELPAZOID_DIR)" ]; then \
-		git clone https://github.com/riscy/melpazoid.git "$(MELPAZOID_DIR)"; \
-	fi
+$(MELPAZOID_DIR):
+	git clone https://github.com/riscy/melpazoid.git "$@"
+
+melpazoid-ghostel: | $(MELPAZOID_DIR)
 	RECIPE='(ghostel :fetcher github :repo "dakra/ghostel" :files (:defaults "etc" "src" "vendor" "build.zig" "build.zig.zon" "symbols.map"))' \
 		LOCAL_REPO=$(CURDIR) \
 		make -C "$(MELPAZOID_DIR)"
 
-melpazoid-evil-ghostel:
-	@if [ ! -d "$(MELPAZOID_DIR)" ]; then \
-		git clone https://github.com/riscy/melpazoid.git "$(MELPAZOID_DIR)"; \
-	fi
+melpazoid-evil-ghostel: | $(MELPAZOID_DIR)
 	RECIPE='(evil-ghostel :fetcher github :repo "dakra/ghostel" :files ("extensions/evil-ghostel/evil-ghostel.el"))' \
 		LOCAL_REPO=$(CURDIR) \
 		make -C "$(MELPAZOID_DIR)"

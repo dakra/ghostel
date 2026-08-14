@@ -101,14 +101,14 @@ Set to nil to skip automatic compilation."
 
 (defun ghostel-dape--evil-checkout-dir ()
   "Return the vendored evil checkout directory, mirroring `make test-evil'.
-`EVIL_DIR ?= $(XDG_CACHE_HOME)/evil' in the Makefile, defaulting to
-~/.cache/evil when `XDG_CACHE_HOME' is unset."
+EVIL_DIR ?= $(XDG_CACHE_HOME)/evil in the Makefile, defaulting to
+~/.cache/evil when XDG_CACHE_HOME is unset."
   (expand-file-name "evil"
                     (or (getenv "XDG_CACHE_HOME")
                         (expand-file-name "~/.cache"))))
 
 (defun ghostel-dape--evil-p (file)
-  "Return non-nil if FILE is an evil-ghostel test needing evil on load-path."
+  "Return non-nil if FILE is an evil-ghostel test needing evil on `load-path'."
   (and file
        (string-match-p "evil-ghostel" (file-name-nondirectory file))))
 
