@@ -725,6 +725,25 @@ buffer half-rewritten while the row accounting says otherwise."
             (should (ghostel-test--buffer-matches-terminal-p term))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-force-redraw-requests-full-repaint ()
+  "`ghostel-force-redraw' asks the renderer to rebuild every line."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buf term 24 80 1000)
+    (let ((calls nil))
+      (set-window-buffer (selected-window) buf)
+      (ghostel--write-vt term "hello\r\n")
+      (cl-letf (((symbol-function 'ghostel--redraw)
+                 (lambda (_term &optional full force-sync)
+                   (push (list full force-sync) calls)
+                   t)))
+        (ghostel--redraw-now buf)
+        (should (equal (car calls) '(nil nil)))
+        (ghostel-force-redraw)
+        (should (equal (car calls) '(t t)))
+        ;; It applies to that redraw alone, not the ones after it.
+        (ghostel--redraw-now buf)
+        (should (equal (car calls) '(nil nil)))))))
+
 (ert-deftest ghostel-test-full-reset-drops-stale-rows ()
   "RIS repaints: it blanks rows without marking them dirty.
 `reset' is what a user runs on a garbled terminal, so an incremental
@@ -752,6 +771,25 @@ mark theirs, and must stay incremental."
                 (when (cdr entry)
                   (should-not (string-match-p "old-" (buffer-string)))))))
         (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-readonly-exit-redraws-incrementally ()
+  "Leaving copy mode redraws past mode 2026 without rebuilding the buffer.
+A rebuild would republish the whole buffer as the repainted region, so
+every exit would rescan all of scrollback for links."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buf term 24 80 1000)
+    (let ((calls nil))
+      (set-window-buffer (selected-window) buf)
+      (ghostel--write-vt term "hello\r\n")
+      (ghostel--redraw-now buf)
+      (ghostel-copy-mode)
+      (cl-letf (((symbol-function 'ghostel--redraw)
+                 (lambda (_term &optional full force-sync)
+                   (push (list full force-sync) calls)
+                   t)))
+        (ghostel-readonly-exit))
+      (should calls)
+      (should (equal (car calls) '(nil t))))))
 
 (ert-deftest ghostel-test-cross-page-span-resolves-styles-per-page ()
   "Faces of rows in one page are not resolved against another page.

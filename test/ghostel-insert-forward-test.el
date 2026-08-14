@@ -156,7 +156,7 @@ Sent raw, a \\r would execute the pending input in the shell."
   (ghostel-insert-forward-test--with-live-buffer
     (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
               ((symbol-function 'ghostel--anchor-window) #'ignore)
-              ((symbol-function 'ghostel-force-redraw) #'ignore)
+              ((symbol-function 'ghostel--redraw-now) #'ignore)
               ((symbol-function 'ghostel--adjust-size) #'ignore))
       (ghostel-copy-mode)
       (should-error (insert "x") :type 'buffer-read-only)
@@ -194,7 +194,7 @@ writes to other read-only buffers made from inside the let."
   (ghostel-insert-forward-test--with-live-buffer
     (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
               ((symbol-function 'ghostel--anchor-window) #'ignore)
-              ((symbol-function 'ghostel-force-redraw) #'ignore)
+              ((symbol-function 'ghostel--redraw-now) #'ignore)
               ((symbol-function 'ghostel--adjust-size) #'ignore))
       (should-not (local-variable-p 'inhibit-read-only))
       (ghostel-char-mode)

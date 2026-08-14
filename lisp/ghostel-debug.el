@@ -340,17 +340,18 @@ computed viewport-start, and per-window ws/we/wp/body-height."
                        (plist-get w :wp) (plist-get w :body)))
    wins " | "))
 
-(defun ghostel-debug--log-redraw (orig-fn buffer &optional force)
+(defun ghostel-debug--log-redraw (orig-fn buffer &optional force full)
   "Log redraw decisions: skip vs execute, DEC 2026 state, timing.
 ORIG-FN is `ghostel--redraw-now', BUFFER is the target buffer, FORCE is
-its optional force-past-synchronized-output argument (forwarded)."
+its optional force-past-synchronized-output argument and FULL its
+rebuild-every-line argument (both forwarded)."
   (when ghostel-debug--log-buffer
     (let* ((before (ghostel-debug--snapshot buffer))
            ;; `force' set via the snapshotted buffer-local flag OR passed as
            ;; an argument both bypass the DEC 2026 skip in `ghostel--redraw-now'.
            (force-in (or (plist-get before :force) force))
            (t0 (current-time)))
-      (funcall orig-fn buffer force)
+      (funcall orig-fn buffer force full)
       (let* ((elapsed (* 1000 (float-time (time-subtract (current-time) t0))))
              (after (ghostel-debug--snapshot buffer)))
         (with-current-buffer ghostel-debug--log-buffer
