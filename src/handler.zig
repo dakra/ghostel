@@ -45,6 +45,20 @@ pub fn GhostelHandler(Context: type) type {
                     self.handleSemanticPrompt(value);
                 },
 
+                // DECCOLM resizes and reflows the grid mid-stream, bypassing
+                // the renderer's resize path.  Comparing geometry across the
+                // handler catches it however the mode was applied.
+                .set_mode, .reset_mode, .restore_mode => {
+                    const cols = self.inner.terminal.cols;
+                    const rows = self.inner.terminal.rows;
+                    self.inner.vt(action, value);
+                    if (self.inner.terminal.cols != cols or
+                        self.inner.terminal.rows != rows)
+                    {
+                        self.context.noteInbandResize();
+                    }
+                },
+
                 // For these, the standard handler is a no-op (see
                 // `stream_terminal.zig` — they are listed in the "no
                 // terminal-modifying effect" arm), so we handle them
