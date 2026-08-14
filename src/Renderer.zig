@@ -40,9 +40,6 @@ rendered_cursor: ?gt.Pin,
 /// Number of libghostty rows already materialized into the Emacs buffer.
 rows_in_buffer: usize = 0,
 
-/// List of pages materialized in buffer
-pages_in_buffer: std.DoublyLinkedList = .{},
-
 /// Any pending resize as `.{cols, rows}`. Resizes are committed on next redraw.
 pending_resize: ?ViewportSize = null,
 
@@ -64,8 +61,6 @@ saved_markers: SavedBufferMarkers = .{},
 /// painted nothing yet. Published so elisp can scan exactly what changed.
 repainted: ?BufferRegion = null,
 
-const PageSerial = @FieldType(gt.PageList.List.Node, "serial");
-
 const BufferRegion = struct {
     min: usize,
     max: usize,
@@ -74,19 +69,6 @@ const BufferRegion = struct {
 const ScreenId = struct {
     key: gt.ScreenSet.Key,
     generation: usize,
-};
-
-const MaterializedPage = struct {
-    node: std.DoublyLinkedList.Node = .{},
-    serial: PageSerial,
-    len: usize = 0,
-
-    pub fn next(self: *@This()) ?*@This() {
-        return if (self.node.next) |n|
-            @fieldParentPtr("node", n)
-        else
-            null;
-    }
 };
 
 const FontInfo = struct {
@@ -129,7 +111,6 @@ pub fn init(alloc: Allocator, env: emacs.Env, term: *gt.Terminal) !Self {
 pub fn deinit(self: *Self) void {
     self.saved_markers.deinit(self.alloc);
     self.span.deinit();
-    self.clearPages();
     self.untrackActivePinIfLive();
     if (self.font_info) |*fi| fi.deinit(self.alloc);
 }
@@ -175,6 +156,10 @@ pub fn redraw(self: *Self, env: emacs.Env, force_full: bool, force_sync: bool) !
     try self.saved_markers.save(self.alloc, env);
     defer self.saved_markers.restoreAndClear(screen, env);
 
+    // Evict before anything mutates the terminal-side geometry: the row
+    // arithmetic needs the pin, the page list, and `term.rows` exactly as
+    // they were when the buffer was last rendered.
+    self.evictScrollback(env);
     self.gotoActiveStart(env);
 
     if (force_full) try self.clear(env);
@@ -184,7 +169,6 @@ pub fn redraw(self: *Self, env: emacs.Env, force_full: bool, force_sync: bool) !
         try self.clear(env);
     }
     try self.invalidate(env);
-    self.evictScrollback(env);
 
     try self.render(
         env,
@@ -943,13 +927,6 @@ fn render(
     env: emacs.Env,
     start_pin: gt.Pin,
 ) !void {
-    const term = self.term;
-
-    var materialized_page = if (term.screens.active.no_scrollback)
-        null
-    else
-        try self.getOrAddPage(start_pin.node.serial);
-
     var eob = false;
     var current_span: ?struct {
         start_val: emacs.Value,
@@ -962,16 +939,11 @@ fn render(
         const row = row_pin.rowAndCell().row;
         eob = eob or env.isNotNil(env.f("eobp", .{}));
 
-        if (materialized_page) |p| {
-            if (p.serial != row_pin.node.serial) {
-                materialized_page = p.next() orelse try self.addPage(row_pin.node.serial);
-                std.debug.assert(materialized_page != null);
-                std.debug.assert(materialized_page.?.serial == row_pin.node.serial);
-            }
-        }
-
         const clean = !eob and !self.isRowDirty(row_pin);
         if (current_span) |*span| {
+            // Style and hyperlink ids are page-local, and flushSpan
+            // resolves a span's ids against a single page, so a span
+            // must never cross a page boundary.
             if (clean or span.node != row_pin.node) {
                 _ = env.f("delete-region", .{ span.start_val, env.f("point", .{}) });
                 try self.flushSpan(env);
@@ -1003,11 +975,6 @@ fn render(
                     new_line_len,
                 );
                 current_span.?.adjusted_line_start += new_line_len;
-            }
-
-            if (materialized_page) |p| {
-                p.len -|= old_line_len;
-                p.len += new_line_len;
             }
         }
 
@@ -1076,27 +1043,9 @@ fn gotoActiveStart(self: *Self, env: emacs.Env) void {
     _ = env.f("forward-line", .{-@as(i64, @intCast(self.term.rows))});
 }
 
-fn getOrAddPage(self: *Self, serial: PageSerial) !*MaterializedPage {
-    var node = self.pages_in_buffer.last;
-    while (node) |n| : (node = n.prev) {
-        const page: *MaterializedPage = @fieldParentPtr("node", n);
-        if (page.serial == serial) return page;
-    }
-
-    return self.addPage(serial);
-}
-
-fn addPage(self: *Self, serial: PageSerial) !*MaterializedPage {
-    const page = try self.alloc.create(MaterializedPage);
-    page.* = .{ .serial = serial };
-    self.pages_in_buffer.append(&page.node);
-    return page;
-}
-
 fn clear(self: *Self, env: emacs.Env) !void {
     _ = env.f("erase-buffer", .{});
     self.rows_in_buffer = 0;
-    self.clearPages();
 
     const screen = self.term.screens.active;
     const active_pin = try screen.pages.trackPin(screen.pages.getTopLeft(.screen));
@@ -1106,31 +1055,34 @@ fn clear(self: *Self, env: emacs.Env) !void {
     self.rendered_screen = currentScreenId(self.term);
 }
 
-fn clearPages(self: *Self) void {
-    while (self.pages_in_buffer.pop()) |n| {
-        self.alloc.destroy(@as(*MaterializedPage, @fieldParentPtr("node", n)));
-    }
-}
-
 fn evictScrollback(self: *Self, env: emacs.Env) void {
-    var evicted_chars: usize = 0;
+    const screen = self.term.screens.active;
+    if (screen.no_scrollback) return;
+    if (!std.meta.eql(self.rendered_screen, currentScreenId(self.term))) return;
+    if (self.rows_in_buffer <= self.term.rows) return;
 
-    // Only evict whole pages. libghostty can erase partial pages when clearing
-    // the scrollback, but we handle that by detecting clearing specifically and
-    // clearing the whole screen instead.
-    const term_first_page = self.term.screens.active.pages.pages.first.?;
-    while (self.pages_in_buffer.first) |n| {
-        const first_page: *MaterializedPage = @fieldParentPtr("node", n);
-        if (first_page.serial == term_first_page.serial) break;
+    // The pin only reached the top-left by pruning, so its row no longer
+    // measures the stale front.  Trimming on it strands rows that `render`
+    // will not revisit; leave the state for `invalidate` to repaint.
+    if (self.active_pin.eql(screen.pages.getTopLeft(.screen))) return;
 
-        evicted_chars += first_page.len;
+    // Rows above `active_pin` are frozen scrollback: libghostty removes
+    // them only by dropping whole leading pages, and doing so shifts
+    // tracked pins down in screen coordinates by exactly the dropped row
+    // count.  The buffer's trailing `term.rows` lines form the rewrite
+    // region and the pin's screen row counts the leading lines that are
+    // still valid; lines between the two are stale.
+    const pin_point = screen.pages.pointFromPin(.screen, self.active_pin.*) orelse return;
+    const keep = @as(usize, pin_point.screen.y) + self.term.rows;
+    if (self.rows_in_buffer <= keep) return;
+    const stale = self.rows_in_buffer - keep;
 
-        _ = self.pages_in_buffer.popFirst();
-        self.alloc.destroy(first_page);
+    _ = env.f("goto-char", .{1});
+    _ = env.f("forward-line", .{stale});
+    const end = env.cast(usize, env.f("point", .{}));
+    if (end > 1) {
+        _ = env.f("delete-region", .{ 1, end });
+        self.saved_markers.adjustRegion(1, end - 1, 0);
     }
-
-    if (evicted_chars > 0) {
-        _ = env.f("delete-region", .{ 1, 1 + evicted_chars });
-        self.saved_markers.adjustRegion(1, evicted_chars, 0);
-    }
+    self.rows_in_buffer -= stale;
 }

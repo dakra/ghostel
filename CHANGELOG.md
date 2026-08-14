@@ -10,6 +10,16 @@ All notable changes to this project will be documented in this file.
   private handler name keep working through an obsolete alias.
 
 ### Fixed
+- Scrolling a top-anchored partial scroll region — how TUIs like
+  Claude Code scroll their transcript above a pinned input box — no
+  longer wipes the materialized scrollback from the buffer.  The
+  renderer treated libghostty's page layout serial as a page identity
+  and mistook the serial bump from the region scroll's row rotation
+  for the page having left the terminal, deleting every scrollback
+  line from the buffer while the terminal still held them: copy mode
+  could only reach the viewport even though `ghostel-copy-all`
+  returned the full history.  Scrollback eviction now uses tracked-pin
+  row arithmetic instead of page identity bookkeeping.
 - The default of `ghostel-shell` reads `$SHELL` from the global
   environment instead of the current buffer's. Ghostel is normally
   autoloaded by the first terminal, so a buffer-local

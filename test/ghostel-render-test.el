@@ -400,6 +400,184 @@ with TERM and must write MARK_TARGET, POINT_TARGET, and START_TARGET."
      (should (< (point-min) old-start)))))
 
 
+;;; Scrollback materialization completeness
+
+(defun ghostel-test--native-line-count (term)
+  "Return the number of terminal rows reported by copy-all for TERM."
+  (with-temp-buffer
+    (insert (ghostel--copy-all-text term))
+    (count-lines (point-min) (point-max))))
+
+(defun ghostel-test--buffer-rows-text ()
+  "Return the buffer's text with soft-wrap newlines removed."
+  (let ((text (buffer-substring-no-properties (point-min) (point-max)))
+        (offsets nil)
+        (pos (point-min)))
+    (while (setq pos (text-property-not-all pos (point-max) 'ghostel-wrap nil))
+      (push (- pos (point-min)) offsets)
+      (setq pos (1+ pos)))
+    ;; Highest offset first, so the earlier ones stay valid.
+    (dolist (off offsets)
+      (setq text (concat (substring text 0 off) (substring text (1+ off)))))
+    text))
+
+(defun ghostel-test--trim-rows (text)
+  "Return TEXT with trailing blanks stripped from each row and the end."
+  (string-trim-right
+   (mapconcat #'string-trim-right (split-string text "\n") "\n")))
+
+(defun ghostel-test--buffer-matches-terminal-p (term)
+  "Return non-nil when the buffer holds exactly TERM's own text.
+`ghostel--copy-all-text' joins soft-wrapped rows and trims the trailing
+blank rows the buffer materializes, so both sides are normalized."
+  (equal (ghostel-test--trim-rows (ghostel-test--buffer-rows-text))
+         (ghostel-test--trim-rows (ghostel--copy-all-text term))))
+
+(defun ghostel-test--buffer-covers-terminal-p (term)
+  "Return non-nil if the buffer holds one line per terminal row of TERM.
+Soft-wrapped rows are joined before counting, matching the logical
+lines `ghostel--copy-all-text' produces.  The buffer's trailing
+newline leaves it exactly one line ahead of the terminal."
+  (let ((buffer-lines (count-lines (point-min) (point-max)))
+        (wraps 0)
+        (pos (point-min))
+        (native-lines (ghostel-test--native-line-count term)))
+    (while (setq pos (text-property-not-all pos (point-max) 'ghostel-wrap nil))
+      (setq wraps (1+ wraps)
+            pos (1+ pos)))
+    (= (- buffer-lines wraps native-lines) 1)))
+
+(ert-deftest ghostel-test-region-scroll-keeps-materialized-scrollback ()
+  "Materialized scrollback survives a top-anchored scroll-region scroll.
+Scrolling a top-anchored partial region rotates rows within the page
+and changes the page's layout serial; the renderer must not mistake
+that for the page being evicted from the terminal."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-region-scroll*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((term (ghostel--new 24 80 (* 5 1024 1024)))
+                (inhibit-read-only t))
+            (ghostel--redraw term)
+            (dotimes (i 100)
+              (ghostel--write-vt term (format "line-%03d\r\n" i)))
+            (ghostel--redraw term)
+            (ghostel--write-vt term "\e[1;20r\e[20;1Hin-region\r\n\e[r")
+            (ghostel--redraw term)
+            (should (string-match-p "^line-000" (buffer-string)))
+            (should (ghostel-test--buffer-covers-terminal-p term))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-region-scroll-repeated-redraws-keep-scrollback ()
+  "Repeated region scrolls interleaved with redraws keep scrollback intact."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-region-scroll-repeat*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((term (ghostel--new 24 80 (* 5 1024 1024)))
+                (inhibit-read-only t))
+            (ghostel--redraw term)
+            (dotimes (i 100)
+              (ghostel--write-vt term (format "line-%03d\r\n" i)))
+            (ghostel--redraw term)
+            (ghostel--write-vt term "\e[1;20r")
+            (dotimes (round 5)
+              (dotimes (i 10)
+                (ghostel--write-vt
+                 term (format "round-%d-%02d\r\n" round i)))
+              (ghostel--redraw term))
+            (ghostel--write-vt term "\e[r")
+            (ghostel--redraw term)
+            (should (string-match-p "^line-000" (buffer-string)))
+            (should (string-match-p "^round-0-00" (buffer-string)))
+            (should (ghostel-test--buffer-covers-terminal-p term))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-scrollback-eviction-trims-buffer-front ()
+  "Terminal-side scrollback pruning removes the same rows from the buffer."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-eviction-content*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((term (ghostel--new 6 80 4096))
+                (inhibit-read-only t))
+            (ghostel--redraw term)
+            (dotimes (i 1800)
+              (ghostel--write-vt term (format "initial-%04d content\r\n" i)))
+            (ghostel--redraw term)
+            (dotimes (i 1200)
+              (ghostel--write-vt term (format "later-%04d content\r\n" i)))
+            (ghostel--redraw term)
+            (let ((native (ghostel--copy-all-text term))
+                  (text (buffer-string)))
+              ;; The terminal pruned the earliest rows; the buffer must
+              ;; agree with the terminal on both edges of the history.
+              (should-not (string-match-p "^initial-0000 " native))
+              (should-not (string-match-p "^initial-0000 " text))
+              (should (string-match-p "^later-1199 " native))
+              (should (string-match-p "^later-1199 " text))
+              ;; The oldest surviving terminal row heads the buffer too.
+              (let ((first-native (car (split-string native "\n"))))
+                (should (string-prefix-p
+                         (string-trim-right first-native)
+                         (buffer-substring (point-min)
+                                           (line-end-position 1))))))
+            (should (ghostel-test--buffer-covers-terminal-p term))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-partial-prune-keeps-buffer-and-terminal-equal ()
+  "A prune that drops the tracked pin's own page repaints from scratch.
+libghostty lands such a pin on the screen's top-left, where its row no
+longer says how much of the buffer front is stale.  Trimming on it
+strands pruned rows and drops as many live ones, line counts matching."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-partial-prune*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((term (ghostel--new 24 80 4096))
+                (inhibit-read-only t)
+                (n 0))
+            (ghostel--redraw term)
+            (dotimes (_ 2)
+              (dotimes (_ 600)
+                (setq n (1+ n))
+                (ghostel--write-vt
+                 term (format "row-%05d-%s\r\n" n (make-string 59 ?x))))
+              (ghostel--redraw term))
+            (should (ghostel-test--buffer-matches-terminal-p term))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-cross-page-span-resolves-styles-per-page ()
+  "Faces of rows in one page are not resolved against another page.
+Style ids are page-local, so rows in the first page must not pick up
+the style table of a later page when a single redraw renders rows from
+several pages.  Page one holds only red styling and later pages only
+green, so an id collision across pages is visible as the wrong color."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-cross-page-styles*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((term (ghostel--new 24 80 (* 50 1024 1024)))
+                (inhibit-read-only t))
+            (dotimes (i 800)
+              (ghostel--write-vt term (format "\e[31mred-%04d\e[0m\r\n" i)))
+            (dotimes (i 3000)
+              (ghostel--write-vt term (format "\e[32mgreen-%04d\e[0m\r\n" i)))
+            (ghostel--redraw term)
+            (cl-flet ((face-at (regex)
+                        (save-excursion
+                          (goto-char (point-min))
+                          (re-search-forward regex)
+                          (get-text-property (match-beginning 0) 'face))))
+              (let ((red (face-at "red-0100"))
+                    (green (face-at "green-2900")))
+                (should red)
+                (should green)
+                (should-not (equal red green))
+                (should (equal red (face-at "red-0790")))))))
+      (kill-buffer buf))))
+
+
 
 ;;; Cell and row rendering basics
 
@@ -1964,17 +2142,12 @@ When the buffer reappears, it is immediately redrawn."
     (buffer-string)))
 
 (ert-deftest ghostel-test-page-eviction-before-redraw ()
-  "Regression: page-serial underflow when initial active area scrolls off entirely.
-Scenario (from Hypothesis failure): 1×136 terminal, render once while
-empty (seeds pages_in_buffer with the initial blank page serial), then
-write 231 lines of 273 bytes each — each line wraps to 3 visual rows,
-so 693 total rows cross the libghostty page boundary and force the
-active row onto a fresh internal page.  The second redraw must be
-incremental (no force-full) so the buffer is not cleared: the renderer
-then has existing buffer content to replace rather than append, and
-without evicting stale pages_in_buffer entries before rendering it
-subtracts old_line_len from the newly-created page whose char_len is
-0, causing integer underflow at Renderer.zig:654."
+  "A flood across a page boundary between incremental redraws renders cleanly.
+On a 1×136 terminal rendered once while empty, 231 lines of 273 bytes
+each wrap to three visual rows apiece, scrolling the whole previously
+rendered active area off across a libghostty page boundary.  The
+second redraw is incremental, so it replaces the existing buffer
+content rather than appending, and must complete without error."
   :tags '(native)
   (let ((buf (generate-new-buffer " *ghostel-test-page-evict*")))
     (unwind-protect
@@ -1986,17 +2159,13 @@ subtracts old_line_len from the newly-created page whose char_len is
                  ;; which exceeds the libghostty page capacity and
                  ;; forces allocation of a new internal page.
                  (line (concat (make-string 273 ?x) "\r\n")))
-            ;; Render once while empty — seeds pages_in_buffer with
-            ;; the initial (blank) page serial.
+            ;; Render once while empty so the incremental redraw below
+            ;; has buffer content to replace rather than append.
             (ghostel--redraw term t)
             ;; Write enough wrapped lines to push the active row onto
             ;; a new libghostty page.
             (dotimes (_ 231)
               (ghostel--write-vt term line))
-            ;; Incremental redraw (no force-full): the buffer retains
-            ;; the content from the first render, so the renderer takes
-            ;; the replace path.  Without the fix it underflows
-            ;; char_len, signalling an error from the native module.
             (ghostel--redraw term)
             ;; Sanity: the active row content is present in the buffer.
             (should (string-match-p "x"
@@ -2005,10 +2174,9 @@ subtracts old_line_len from the newly-created page whose char_len is
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-resize-eviction-char-count-stays-in-buffer-bounds ()
-  "Regression: resizing must not stale scrollback char counts.
-A row-count resize between materialized scrollback and later eviction
-left page character accounting larger than the actual buffer, so the
-next eviction called `delete-region' beyond `point-max'."
+  "Row resizes around materialized scrollback keep eviction in bounds.
+Two row-count resizes around a materialized flood, followed by a
+pruning flood, must redraw without eviction deleting past `point-max'."
   :tags '(native)
   (let ((buf (generate-new-buffer " *ghostel-test-resize-evict*")))
     (unwind-protect
