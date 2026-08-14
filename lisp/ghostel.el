@@ -941,7 +941,7 @@ to nil to disable the regex fallback entirely (OSC 133 only)."
 (defvar yank-media-preferred-types)     ; Emacs 31+
 
 ;; Lazily loaded on first bookmark use; see ghostel-bookmark.el.
-(declare-function ghostel--bookmark-make-record "ghostel-bookmark")
+(declare-function ghostel-bookmark-make-record "ghostel-bookmark")
 
 
 ;;; Native module loading
@@ -5188,7 +5188,7 @@ may change freely (`ghostel-compile' finalize relies on this)."
   (setq-local list-buffers-directory (expand-file-name default-directory))
   (ghostel--buffer-identification-update)
   ;; bookmark this buffer's cwd (loads ghostel-bookmark.el lazily on use)
-  (setq-local bookmark-make-record-function #'ghostel--bookmark-make-record)
+  (setq-local bookmark-make-record-function #'ghostel-bookmark-make-record)
   ;; X11 and pgtk deliver drops through `special-event-map' and the
   ;; `dnd-protocol-alist' machinery, so the `<drag-n-drop>' binding in
   ;; `ghostel-mode-map' is never consulted there; intercept file drops

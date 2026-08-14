@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- The bookmark functions are now public: `ghostel-bookmark-make-record`
+  and `ghostel-bookmark-handler`.  Bookmarks saved under the old
+  private handler name keep working through an obsolete alias.
+
 ### Fixed
 - The default of `ghostel-shell` reads `$SHELL` from the global
   environment instead of the current buffer's. Ghostel is normally

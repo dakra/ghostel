@@ -13,7 +13,7 @@
 ;; starts a fresh shell in the bookmarked directory when none exists.
 ;;
 ;; `ghostel-mode' wires up `bookmark-make-record-function' to point at
-;; `ghostel--bookmark-make-record' (a quoted symbol, so ghostel.el needs
+;; `ghostel-bookmark-make-record' (a quoted symbol, so ghostel.el needs
 ;; no load-time dependency on this file).  Both the record maker and the
 ;; handler are autoloaded, so a bookmark saved in one session restores in
 ;; a fresh Emacs the first time it is used.
@@ -32,21 +32,21 @@ a `cd' to the bookmarked directory is typed into the shell."
   :group 'ghostel)
 
 ;;;###autoload
-(defun ghostel--bookmark-make-record ()
+(defun ghostel-bookmark-make-record ()
   "Return a bookmark record for the current ghostel buffer.
 Notes the working directory, buffer name, and buffer identity.
 An identity `command' key (an exec'd program and its arguments) is
 saved to the bookmark file in plaintext.
-See `ghostel--bookmark-handler' for how they are restored."
+See `ghostel-bookmark-handler' for how they are restored."
   `(nil
-    (handler . ghostel--bookmark-handler)
+    (handler . ghostel-bookmark-handler)
     (location . ,default-directory)
     (buf-name . ,(buffer-name))
     (identity . ,ghostel-identity)
     (defaults . nil)))
 
 ;;;###autoload
-(defun ghostel--bookmark-handler (bmk)
+(defun ghostel-bookmark-handler (bmk)
   "Restore the ghostel bookmark BMK.
 Reuse a live ghostel buffer: slot identities match whole, command
 records match a live buffer running the recorded command, other
@@ -135,6 +135,16 @@ is non-nil, a `cd' is typed into it; command buffers are left alone."
     (set-buffer buf)))
 
 ;; Fills the Type column of `bookmark-bmenu-list' (Emacs 29+).
+(put 'ghostel-bookmark-handler 'bookmark-handler-type "Ghostel")
+
+;; Bookmarks saved by older versions name the handler
+;; `ghostel--bookmark-handler'; keep that symbol autoloadable so they
+;; still restore.  (Standalone cookie: package-lint warns when a cookie
+;; directly precedes a private-named definition.)
+;;;###autoload (autoload 'ghostel--bookmark-handler "ghostel-bookmark")
+
+(define-obsolete-function-alias 'ghostel--bookmark-handler
+  #'ghostel-bookmark-handler "0.51.0")
 (put 'ghostel--bookmark-handler 'bookmark-handler-type "Ghostel")
 
 (provide 'ghostel-bookmark)

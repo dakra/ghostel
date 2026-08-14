@@ -14,17 +14,17 @@
 (require 'ghostel-bookmark)
 
 (ert-deftest ghostel-test-bookmark-make-record ()
-  "`ghostel--bookmark-make-record' captures handler, dir, name, and identity.
+  "`ghostel-bookmark-make-record' captures handler, dir, name, and identity.
 The directory goes under `location' so `bookmark-bmenu-list' shows it
 instead of \"-- Unknown location --\"."
   (ghostel-test--with-compile-buffer buf
     (setq ghostel-identity '((kind . term) (instance . 42)))
     (let* ((default-directory "/tmp/ghostel-bookmark-make-record/")
-           (record (ghostel--bookmark-make-record)))
+           (record (ghostel-bookmark-make-record)))
       (should (equal (bookmark-prop-get record 'identity)
                      '((kind . term) (instance . 42))))
       (should (eq (bookmark-prop-get record 'handler)
-                  'ghostel--bookmark-handler))
+                  'ghostel-bookmark-handler))
       (should (equal (bookmark-prop-get record 'location)
                      "/tmp/ghostel-bookmark-make-record/"))
       ;; `bookmark-location' is what the bmenu File column shows.  Point
@@ -36,6 +36,15 @@ instead of \"-- Unknown location --\"."
 
 (ert-deftest ghostel-test-bookmark-handler-type ()
   "The handler carries a `bookmark-handler-type' for the bmenu Type column."
+  (should (equal (get 'ghostel-bookmark-handler 'bookmark-handler-type)
+                 "Ghostel")))
+
+(ert-deftest ghostel-test-bookmark-old-handler-name-restores ()
+  "Records naming the pre-rename private handler still restore.
+Bookmark files persist the handler symbol, so the old name must stay
+funcall-able and carry the bmenu Type property."
+  (should (eq (indirect-function 'ghostel--bookmark-handler)
+              (indirect-function 'ghostel-bookmark-handler)))
   (should (equal (get 'ghostel--bookmark-handler 'bookmark-handler-type)
                  "Ghostel")))
 
@@ -44,10 +53,10 @@ instead of \"-- Unknown location --\"."
 `bookmark-make-record' is the entry point bookmark.el itself uses on
 `bookmark-set'; the handler and buffer name must survive its post-processing."
   (ghostel-test--with-compile-buffer buf
-    (should (eq bookmark-make-record-function #'ghostel--bookmark-make-record))
+    (should (eq bookmark-make-record-function #'ghostel-bookmark-make-record))
     (let ((record (bookmark-make-record)))
       (should (eq (bookmark-prop-get record 'handler)
-                  'ghostel--bookmark-handler))
+                  'ghostel-bookmark-handler))
       (should (equal (bookmark-prop-get record 'buf-name) (buffer-name))))))
 
 (defun ghostel-test--bookmark-record (buf-name dir &optional identity)
@@ -55,7 +64,7 @@ instead of \"-- Unknown location --\"."
 Non-nil IDENTITY adds an `identity' property; omitting it mimics a
 record saved before identities were recorded."
   `(,buf-name
-    (handler . ghostel--bookmark-handler)
+    (handler . ghostel-bookmark-handler)
     (location . ,dir)
     (buf-name . ,buf-name)
     ,@(and identity `((identity . ,identity)))
@@ -78,7 +87,7 @@ stale by jump time; the rename-stable identity must find the buffer."
                      (lambda (&rest _)
                        (ert-fail "Created a new buffer instead of reusing"))))
             (with-temp-buffer
-              (ghostel--bookmark-handler
+              (ghostel-bookmark-handler
                (ghostel-test--bookmark-record " *ghostel-bm-stale-name*"
                                               "/tmp/ghostel-bm-reuse/"
                                               id))
@@ -96,7 +105,7 @@ stale by jump time; the rename-stable identity must find the buffer."
                    (lambda (&rest _)
                      (ert-fail "Created a new buffer instead of reusing"))))
           (with-temp-buffer
-            (ghostel--bookmark-handler
+            (ghostel-bookmark-handler
              (ghostel-test--bookmark-record (buffer-name buf)
                                             "/tmp/ghostel-bm-name/"))
             (should (eq (current-buffer) buf))))
@@ -127,7 +136,7 @@ higher in `buffer-list' the handler must still reuse the live one."
                          (lambda (&rest _)
                            (ert-fail "Created a new buffer instead of reusing"))))
                 (with-temp-buffer
-                  (ghostel--bookmark-handler
+                  (ghostel-bookmark-handler
                    (ghostel-test--bookmark-record " *ghostel-bm-shadow-stale*"
                                                   "/tmp/ghostel-bm-shadow/"
                                                   id))
@@ -157,7 +166,7 @@ fresh buffer instead of typing a `cd' into the unrelated one."
                     ((symbol-function 'ghostel--apply-initial-input-mode)
                      #'ignore))
             (with-temp-buffer
-              (ghostel--bookmark-handler
+              (ghostel-bookmark-handler
                (ghostel-test--bookmark-record (buffer-name buf)
                                               "/tmp/ghostel-bm-other/"
                                               '((kind . term)
@@ -187,7 +196,7 @@ must fall through to the create branch instead."
                  #'ignore))
         (unwind-protect
             (with-temp-buffer
-              (ghostel--bookmark-handler
+              (ghostel-bookmark-handler
                (ghostel-test--bookmark-record (buffer-name buf)
                                               "/tmp/ghostel-bm-dead/"
                                               '((kind . term)
@@ -215,7 +224,7 @@ restored buffer."
       (unwind-protect
           (progn
             (with-temp-buffer
-              (ghostel--bookmark-handler
+              (ghostel-bookmark-handler
                (ghostel-test--bookmark-record " *ghostel-bm-new*"
                                               "/tmp/ghostel-bm-create/"
                                               '((kind . term)
@@ -227,7 +236,7 @@ restored buffer."
                              (instance . 2))))
             ;; Legacy record: a string identity is treated as absent.
             (with-temp-buffer
-              (ghostel--bookmark-handler
+              (ghostel-bookmark-handler
                (ghostel-test--bookmark-record " *ghostel-bm-old*"
                                               "/tmp/ghostel-bm-create/"
                                               "bm-legacy-name")))
@@ -255,7 +264,7 @@ be hijacked; the jump creates a fresh buffer instead."
                     ((symbol-function 'ghostel--apply-initial-input-mode)
                      #'ignore))
             (with-temp-buffer
-              (ghostel--bookmark-handler
+              (ghostel-bookmark-handler
                (ghostel-test--bookmark-record " *ghostel-bm-kind-stale*"
                                               "/tmp/ghostel-bm-kind/"
                                               '((kind . eshell))))
@@ -288,7 +297,7 @@ command does not match; no `cd' is typed into a command buffer."
                          (setq major-mode 'ghostel-mode))
                        'fake-proc)))
             (with-temp-buffer
-              (ghostel--bookmark-handler
+              (ghostel-bookmark-handler
                (ghostel-test--bookmark-record
                 " *ghostel-bm-vim*" "/tmp/ghostel-bm-b/"
                 '((kind . eshell) (command . ("vim" "notes")))))
@@ -296,7 +305,7 @@ command does not match; no `cd' is typed into a command buffer."
             (should-not sent)
             (should-not created)
             (with-temp-buffer
-              (ghostel--bookmark-handler
+              (ghostel-bookmark-handler
                (ghostel-test--bookmark-record
                 " *ghostel-bm-vim*" "/tmp/ghostel-bm-b/"
                 '((kind . eshell) (command . ("vim" "other"))))))
@@ -321,19 +330,19 @@ A stale recorded name falls back to any live command match."
             (unwind-protect
                 (cl-letf (((symbol-function 'ghostel--load-module) #'ignore))
                   (with-temp-buffer
-                    (ghostel--bookmark-handler
+                    (ghostel-bookmark-handler
                      (ghostel-test--bookmark-record
                       " *ghostel-bm-top*<2>" "/tmp/ghostel-bm-t/"
                       '((kind . eshell) (command . ("top")))))
                     (should (eq (current-buffer) second)))
                   (with-temp-buffer
-                    (ghostel--bookmark-handler
+                    (ghostel-bookmark-handler
                      (ghostel-test--bookmark-record
                       " *ghostel-bm-top*" "/tmp/ghostel-bm-t/"
                       '((kind . eshell) (command . ("top")))))
                     (should (eq (current-buffer) first)))
                   (with-temp-buffer
-                    (ghostel--bookmark-handler
+                    (ghostel-bookmark-handler
                      (ghostel-test--bookmark-record
                       " *ghostel-bm-top-gone*" "/tmp/ghostel-bm-t/"
                       '((kind . eshell) (command . ("top")))))
@@ -348,7 +357,7 @@ Covers both the command respawn and the shell branch."
             ((symbol-function 'ghostel-exec)
              (lambda (&rest _) (error "Spawn failed"))))
     (should-error
-     (ghostel--bookmark-handler
+     (ghostel-bookmark-handler
       (ghostel-test--bookmark-record " *ghostel-bm-fail*"
                                      "/tmp/ghostel-bm-f/"
                                      '((kind . exec) (command . ("nope"))))))
@@ -362,7 +371,7 @@ Covers both the command respawn and the shell branch."
             ((symbol-function 'ghostel--start-process)
              (lambda () (error "Spawn failed"))))
     (should-error
-     (ghostel--bookmark-handler
+     (ghostel-bookmark-handler
       (ghostel-test--bookmark-record " *ghostel-bm-fail-sh*"
                                      "/tmp/ghostel-bm-f/")))
     (should-not (get-buffer " *ghostel-bm-fail-sh*"))))
@@ -384,7 +393,7 @@ Covers both the command respawn and the shell branch."
       (unwind-protect
           (progn
             (with-temp-buffer
-              (ghostel--bookmark-handler
+              (ghostel-bookmark-handler
                (ghostel-test--bookmark-record
                 " *ghostel-bm-htop*" "/tmp/ghostel-bm-cmd/"
                 '((kind . exec) (command . ("htop" "-d" "10"))))))
@@ -407,7 +416,7 @@ Covers both the command respawn and the shell branch."
          (buf nil))
     (unwind-protect
         (progn
-          (ghostel--bookmark-handler
+          (ghostel-bookmark-handler
            (ghostel-test--bookmark-record buf-name dir))
           (setq buf (get-buffer buf-name))
           (should (buffer-live-p buf))
@@ -442,7 +451,7 @@ too timing-sensitive to drive a real shell through here).  With
                 ((symbol-function 'ghostel-send-key)
                  (lambda (k &rest _) (push (cons 'key k) sent))))
         ;; Enabled + differing dir: a quoted `cd' with the TRAMP prefix stripped.
-        (ghostel--bookmark-handler
+        (ghostel-bookmark-handler
          (ghostel-test--bookmark-record (buffer-name) remote))
         (should (equal (nreverse sent)
                        `((string . ,(concat "cd " (shell-quote-argument
@@ -451,7 +460,7 @@ too timing-sensitive to drive a real shell through here).  With
         ;; Disabled: nothing is typed even though the dirs differ.
         (setq sent nil)
         (let ((ghostel-bookmark-check-dir nil))
-          (ghostel--bookmark-handler
+          (ghostel-bookmark-handler
            (ghostel-test--bookmark-record (buffer-name) "/tmp/elsewhere/")))
         (should-not sent)))))
 
