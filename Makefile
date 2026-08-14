@@ -10,6 +10,14 @@ MELPAZOID_DIR  ?= $(XDG_CACHE_HOME)/melpazoid
 EVIL_DIR       ?= $(XDG_CACHE_HOME)/evil
 LINT_ELPA_DIR  ?= $(XDG_CACHE_HOME)/ghostel-lint-elpa
 LINT_DEPS_STAMP := $(LINT_ELPA_DIR)/.deps-installed
+# Pinned purcell/package-lint revision: a red lint gate then always
+# means the repo changed, not the linter.  Bump to a newer commit SHA
+# deliberately.  (The tagged 0.26 release is too old: it predates the
+# `eshell/' prefix allowance.)  The checkout lives outside
+# LINT_ELPA_DIR so `package-initialize' never scans it.
+PACKAGE_LINT_REV ?= 87bf02ca387a37094e1a0057adefa9735d880cec
+PACKAGE_LINT_DIR := $(XDG_CACHE_HOME)/ghostel-package-lint/$(PACKAGE_LINT_REV)
+PACKAGE_LINT_EL := $(PACKAGE_LINT_DIR)/package-lint.el
 DOC_ELPA_DIR   ?= $(XDG_CACHE_HOME)/ghostel-doc-elpa
 DOC_DEPS_STAMP := $(DOC_ELPA_DIR)/.deps-installed
 
@@ -137,26 +145,65 @@ byte-compile: $(ELC)
 
 lint: byte-compile package-lint checkdoc docquotes
 
-# `package-lint' needs two things present that aren't on any default load path:
-# the linter itself, and a resolvable `ghostel' package.
-# Provision both into an isolated `package-user-dir'
-# so `make package-lint' runs standalone.
+# `package-lint' needs a resolvable `ghostel' package (for evil-ghostel's
+# dependency check) that isn't in any default package archive.  Provision
+# it into an isolated `package-user-dir' so `make package-lint' runs
+# standalone.
 $(LINT_DEPS_STAMP): $(CORE_PACKAGE_FILE)
 	$(EMACS) --batch $(EMACSFLAGS) -Q \
 		--eval "(setq package-user-dir \"$(LINT_ELPA_DIR)\")" \
 		--eval "(package-initialize)" \
 		--eval "(package-refresh-contents)" \
-		--eval "(package-install 'package-lint)" \
 		--eval "(package-install-file (expand-file-name \"$(CORE_PACKAGE_FILE)\"))"
 	@touch $@
 
-package-lint: $(LINT_DEPS_STAMP) $(PACKAGE_FILES)
-	$(EMACS) --batch $(EMACSFLAGS) -Q -L lisp \
-		--eval "(setq package-user-dir \"$(LINT_ELPA_DIR)\")" \
-		--eval "(package-initialize)" \
-		--eval "(require 'package-lint)" \
-		-f package-lint-batch-and-exit \
-		$(PACKAGE_FILES)
+# Fetch the whole tree at the pinned revision: the linter loads its
+# symbol databases from data/ relative to its own file.  Extract to a
+# temp dir and move into place last, so an interrupted download never
+# leaves a half-written tree that satisfies this target.
+$(PACKAGE_LINT_EL):
+	rm -rf $(PACKAGE_LINT_DIR) $(PACKAGE_LINT_DIR).tmp
+	mkdir -p $(PACKAGE_LINT_DIR).tmp
+	curl -fsSL https://github.com/purcell/package-lint/archive/$(PACKAGE_LINT_REV).tar.gz \
+		| tar -xz -C $(PACKAGE_LINT_DIR).tmp --strip-components=1
+	mv $(PACKAGE_LINT_DIR).tmp $(PACKAGE_LINT_DIR)
+
+# All package files are linted, not just the main ones; sub-files need
+# `package-lint-main-file' so per-package header checks stay on the main
+# file.  `require' loads the pinned linter by filename so an installed
+# package-lint in `package-user-dir' cannot shadow it.
+# $(1): the package's main file; $(2): all of the package's files.
+define run-package-lint
+$(EMACS) --batch $(EMACSFLAGS) -Q -L lisp \
+	--eval "(setq package-user-dir \"$(LINT_ELPA_DIR)\")" \
+	--eval "(package-initialize)" \
+	--eval "(require 'package-lint \"$(PACKAGE_LINT_EL)\")" \
+	--eval "(setq package-lint-main-file \"$(1)\")" \
+	-f package-lint-batch-and-exit $(2)
+endef
+
+# One stamp per package (`ghostel' + each extensions/<pkg>), so repeat
+# lints with nothing changed are free.
+LINT_STAMPS_DIR := .build/lint
+LINT_PACKAGES := ghostel $(notdir $(wildcard extensions/*))
+LINT_STAMPS := $(patsubst %,$(LINT_STAMPS_DIR)/%.ok,$(LINT_PACKAGES))
+
+package-lint: $(LINT_STAMPS)
+
+$(LINT_STAMPS_DIR):
+	@mkdir -p $@
+
+$(LINT_STAMPS_DIR)/ghostel.ok: $(filter lisp/%,$(ELISP)) $(PACKAGE_LINT_EL) $(LINT_DEPS_STAMP) | $(LINT_STAMPS_DIR)
+	@printf '  PKGLINT %s\n' ghostel
+	@$(call run-package-lint,$(CORE_PACKAGE_FILE),$(filter lisp/%,$(ELISP)))
+	@touch $@
+
+# Each extensions/<pkg>/ is an independent package with main file
+# extensions/<pkg>/<pkg>.el.
+$(LINT_STAMPS_DIR)/%.ok: $(ELISP) $(PACKAGE_LINT_EL) $(LINT_DEPS_STAMP) | $(LINT_STAMPS_DIR)
+	@printf '  PKGLINT %s\n' $*
+	@$(call run-package-lint,extensions/$*/$*.el,$(filter extensions/$*/%,$(ELISP)))
+	@touch $@
 
 checkdoc: $(CHECKDOC_FILES)
 	$(EMACS) --batch $(EMACSFLAGS) -Q \
