@@ -725,6 +725,34 @@ buffer half-rewritten while the row accounting says otherwise."
             (should (ghostel-test--buffer-matches-terminal-p term))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-full-reset-drops-stale-rows ()
+  "RIS repaints: it blanks rows without marking them dirty.
+`reset' is what a user runs on a garbled terminal, so an incremental
+redraw must not leave the erased rows behind.  `CSI 2J' and friends do
+mark theirs, and must stay incremental."
+  :tags '(native)
+  ;; Only RIS discards the scrollback; the erase sequences keep it, so just
+  ;; the buffer/terminal agreement is asserted for those.
+  (dolist (entry '(("\ec" . t) ("\e[2J" . nil) ("\e[3J" . nil) ("\e[!p" . nil)))
+    (let ((buf (generate-new-buffer " *ghostel-test-full-reset*")))
+      (unwind-protect
+          (with-current-buffer buf
+            (let ((term (ghostel--new 24 80 (* 1024 1024)))
+                  (inhibit-read-only t))
+              (ghostel--redraw term)
+              (dotimes (i 10)
+                (ghostel--write-vt term (format "old-%03d\r\n" i)))
+              (ghostel--redraw term)
+              (ghostel--write-vt term (car entry))
+              (dotimes (i 3)
+                (ghostel--write-vt term (format "new-%03d\r\n" i)))
+              (ghostel--redraw term)
+              (ert-info ((format "sequence %S" (car entry)))
+                (should (ghostel-test--buffer-matches-terminal-p term))
+                (when (cdr entry)
+                  (should-not (string-match-p "old-" (buffer-string)))))))
+        (kill-buffer buf)))))
+
 (ert-deftest ghostel-test-cross-page-span-resolves-styles-per-page ()
   "Faces of rows in one page are not resolved against another page.
 Style ids are page-local, so rows in the first page must not pick up

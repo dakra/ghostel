@@ -59,6 +59,14 @@ pub fn GhostelHandler(Context: type) type {
                     }
                 },
 
+                // RIS blanks rows without marking them dirty, so an
+                // incremental redraw would keep the old text.  `CSI 2J` and
+                // friends do mark theirs, and stay incremental.
+                .full_reset => {
+                    self.inner.vt(action, value);
+                    self.context.noteRepaintNeeded();
+                },
+
                 // For these, the standard handler is a no-op (see
                 // `stream_terminal.zig` — they are listed in the "no
                 // terminal-modifying effect" arm), so we handle them
