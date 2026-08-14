@@ -23,6 +23,8 @@ All notable changes to this project will be documented in this file.
   private handler name keep working through an obsolete alias.
 
 ### Fixed
+- Top-anchored partial scroll regions no longer remove valid scrollback
+  from the buffer, so copy mode retains the full terminal history.
 - The default of `ghostel-shell` reads `$SHELL` from the global
   environment instead of the current buffer's. Ghostel is normally
   autoloaded by the first terminal, so a buffer-local
