@@ -85,6 +85,43 @@ Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
               (should (equal expected (buffer-name)))
               (should (equal expected ghostel--managed-buffer-name)))))))))
 
+(ert-deftest ghostel-test-full-reset-clears-title ()
+  "RIS (ESC c) clears the title and reverts the tracked buffer name."
+  :tags '(native)
+  (let ((ghostel-buffer-name-function #'ghostel-buffer-name-by-title))
+    (ghostel-test--with-pty-matrix backend
+      (ghostel-test--with-raw-echo-buffer (buf proc)
+        (let ((expected ghostel--initial-name)
+              (title (format "RIS Stale %S" backend)))
+          (ghostel--write-vt ghostel--term (format "\e]2;%s\e\\" title))
+          (ghostel-test--wait-until
+           (lambda () (equal title ghostel--title)) proc 5)
+          (should (equal (format "*ghostel: %s*" title) (buffer-name)))
+          (ghostel--write-vt ghostel--term "\ec")
+          (ghostel-test--wait-until
+           (lambda () (null ghostel--title)) proc 5)
+          (should (equal expected (buffer-name)))
+          (should (equal expected ghostel--managed-buffer-name)))))))
+
+(ert-deftest ghostel-test-full-reset-without-title-skips-callback ()
+  "RIS with no title ever set does not invoke `ghostel--set-title'.
+Callbacks defer FIFO, so once the sentinel's callback lands, a
+spurious RIS callback would already have landed — a plain text
+drain would return first and prove nothing."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-echo-buffer (buf proc)
+      (let* ((calls 0)
+             (orig (symbol-function 'ghostel--set-title)))
+        (cl-letf (((symbol-function 'ghostel--set-title)
+                   (lambda (title)
+                     (setq calls (1+ calls))
+                     (funcall orig title))))
+          (ghostel--write-vt ghostel--term "\ec\e]2;SENTINEL\e\\")
+          (ghostel-test--wait-until
+           (lambda () (equal "SENTINEL" ghostel--title)) proc 5)
+          (should (equal 1 calls)))))))
+
 (ert-deftest ghostel-test-osc9-notification ()
   "OSC 9 iTerm2-style notifications reach `ghostel-notification-function'."
   :tags '(native)
