@@ -55,11 +55,12 @@ pub fn GhostelHandler(Context: type) type {
                 .progress_report => self.handleProgressReport(value),
 
                 // RIS clears the stored title, so anything displaying it
-                // must hear about it.
+                // must hear about it.  Progress state lives only in elisp.
                 .full_reset => {
                     const had_title = self.inner.terminal.getTitle() != null;
                     self.inner.vt(action, value);
                     if (had_title) titleChangedCallback(&self.inner);
+                    self.handleProgressReport(.{ .state = .remove });
                 },
 
                 else => self.inner.vt(action, value),
