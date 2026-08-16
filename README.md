@@ -115,6 +115,19 @@ other Quail-based method), add Ghostel support:
   :hook (ghostel-mode . ghostel-ime-mode))
 ```
 
+## Consult
+Pick a Ghostel terminal via [consult](https://github.com/minad/consult) with live
+preview (and create-on-miss) with the [consult-ghostel](https://melpa.org/#/consult-ghostel) extension;
+with a prefix argument the pickers behave like `ghostel` / `ghostel-project`
+(`C-u` creates a new terminal):
+
+```emacs-lisp
+(use-package consult-ghostel
+  :after (ghostel consult)
+  :bind (:map ghostel-semi-char-mode-map
+         ("C-c M" . consult-ghostel-project)))
+```
+
 ## Evil
 If you're an evil user you can install the [evil-ghostel](https://melpa.org/#/evil-ghostel) extension:
 

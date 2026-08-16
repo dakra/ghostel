@@ -67,3 +67,30 @@ jobs:
           EXIST_OK: false
           WARN_IS_ERROR: true
         run: make -C ~/melpazoid
+
+  build-consult:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with: { python-version: '3.10' }
+      - name: Install
+        run: |
+          sudo apt-get install emacs && emacs --version
+          git clone https://github.com/riscy/melpazoid.git ~/melpazoid
+      - name: Install dependencies
+        run: |
+          emacs --batch -Q \
+            --eval "(require 'package)" \
+            --eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\") t)" \
+            --eval "(package-initialize)" \
+            --eval "(package-refresh-contents)" \
+            --eval "(package-install 'consult)"
+      - name: Run
+        env:
+          LOCAL_REPO: ${{ github.workspace }}
+          RECIPE: (consult-ghostel :fetcher github :repo "dakra/ghostel" :files ("extensions/consult-ghostel/consult-ghostel.el"))
+          EXIST_OK: false
+          WARN_IS_ERROR: true
+        run: make -C ~/melpazoid
