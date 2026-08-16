@@ -70,7 +70,7 @@ pub fn init(
     var event_writer = try EventWriter.init(event_fd);
     errdefer event_writer.close();
 
-    var stream: @TypeOf(self.stream) = .initAlloc(alloc, .init(self, term));
+    var stream: @TypeOf(self.stream) = .initAlloc(alloc, .init(alloc, self, term));
     errdefer stream.deinit();
 
     const replica_name = try alloc.dupeZ(u8, backend.replicaName());
