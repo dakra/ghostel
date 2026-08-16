@@ -270,6 +270,22 @@ ConEmu's CWD-reporting alias uses the same callback as OSC 7, so
           (ghostel-test--wait-until (lambda () calls) proc 5)
           (should (equal (list expected) calls)))))))
 
+(ert-deftest ghostel-test-full-reset-clears-progress ()
+  "RIS (ESC c) dispatches a progress remove so no stale indicator survives."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-echo-buffer (buf proc)
+      (let* ((calls nil)
+             (ghostel-progress-function
+              (lambda (state progress) (push (list state progress) calls))))
+        (ghostel--write-vt ghostel--term "\e]9;4;1;50\e\\")
+        (ghostel-test--wait-until (lambda () calls) proc 5)
+        (should (equal '((set 50)) calls))
+        (setq calls nil)
+        (ghostel--write-vt ghostel--term "\ec")
+        (ghostel-test--wait-until (lambda () calls) proc 5)
+        (should (equal '((remove nil)) calls))))))
+
 (ert-deftest ghostel-test-osc-progress-dispatch ()
   "`ghostel--osc-progress' converts the state string to a symbol."
   (let ((calls nil))
