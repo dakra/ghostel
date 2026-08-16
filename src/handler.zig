@@ -54,6 +54,14 @@ pub fn GhostelHandler(Context: type) type {
                 .show_desktop_notification => self.handleNotification(value),
                 .progress_report => self.handleProgressReport(value),
 
+                // RIS clears the stored title, so anything displaying it
+                // must hear about it.
+                .full_reset => {
+                    const had_title = self.inner.terminal.getTitle() != null;
+                    self.inner.vt(action, value);
+                    if (had_title) titleChangedCallback(&self.inner);
+                },
+
                 else => self.inner.vt(action, value),
             }
         }
