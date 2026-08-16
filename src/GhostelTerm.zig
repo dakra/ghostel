@@ -54,7 +54,7 @@ pub fn init(
     };
     errdefer term.terminal.deinit(alloc);
 
-    term.stream = .initAlloc(alloc, .init(term, &term.terminal));
+    term.stream = .initAlloc(alloc, .init(alloc, term, &term.terminal));
     errdefer term.stream.deinit();
 
     term.renderer = try .init(alloc, env, &term.terminal);

@@ -86,7 +86,7 @@ Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
               (should (equal expected ghostel--managed-buffer-name)))))))))
 
 (ert-deftest ghostel-test-full-reset-clears-title ()
-  "RIS (ESC c) clears the title and reverts the tracked buffer name."
+  "RIS clears the title and reverts the tracked buffer name."
   :tags '(native)
   (let ((ghostel-buffer-name-function #'ghostel-buffer-name-by-title))
     (ghostel-test--with-pty-matrix backend
@@ -104,10 +104,7 @@ Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
           (should (equal expected ghostel--managed-buffer-name)))))))
 
 (ert-deftest ghostel-test-full-reset-without-title-skips-callback ()
-  "RIS with no title ever set does not invoke `ghostel--set-title'.
-Callbacks defer FIFO, so once the sentinel's callback lands, a
-spurious RIS callback would already have landed — a plain text
-drain would return first and prove nothing."
+  "RIS with no title does not invoke `ghostel--set-title'."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
     (ghostel-test--with-raw-echo-buffer (buf proc)
@@ -118,9 +115,105 @@ drain would return first and prove nothing."
                      (setq calls (1+ calls))
                      (funcall orig title))))
           (ghostel--write-vt ghostel--term "\ec\e]2;SENTINEL\e\\")
+          ;; Effects are FIFO, so observing SENTINEL drains any RIS callback.
           (ghostel-test--wait-until
            (lambda () (equal "SENTINEL" ghostel--title)) proc 5)
           (should (equal 1 calls)))))))
+
+(ert-deftest ghostel-test-title-stack-restores-title ()
+  "CSI 22/23 t saves and restores the window title."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-echo-buffer (buf proc)
+      (let ((outer (format "Outer %S" backend))
+            (inner (format "Inner %S" backend)))
+        (ghostel--write-vt ghostel--term (format "\e]2;%s\e\\" outer))
+        (ghostel-test--wait-until
+         (lambda () (equal outer ghostel--title)) proc 5)
+        (ghostel--write-vt ghostel--term
+                           (format "\e[22;0t\e]2;%s\e\\" inner))
+        (ghostel-test--wait-until
+         (lambda () (equal inner ghostel--title)) proc 5)
+        (ghostel--write-vt ghostel--term "\e[23;0t")
+        (ghostel-test--wait-until
+         (lambda () (equal outer ghostel--title)) proc 5)
+        ;; Push again to verify that pop restored terminal state as well as Elisp state.
+        (ghostel--write-vt ghostel--term "\e[22;0t\e]2;transient\e\\\e[23;0t")
+        (ghostel-test--wait-until
+         (lambda () (equal outer ghostel--title)) proc 5)))))
+
+(ert-deftest ghostel-test-title-stack-drops-push-when-full ()
+  "Pushes beyond xterm's 10-entry title stack limit are dropped."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-echo-buffer (buf proc)
+      ;; The 11th push exceeds the limit.
+      (dotimes (i 11)
+        (ghostel--write-vt ghostel--term
+                           (format "\e]2;T%d\e\\\e[22;0t" i)))
+      (ghostel--write-vt ghostel--term "\e]2;final\e\\\e[23;0t")
+      (ghostel-test--wait-until
+       (lambda () (equal "T9" ghostel--title)) proc 5)
+      (dotimes (_ 9)
+        (ghostel--write-vt ghostel--term "\e[23;0t"))
+      (ghostel-test--wait-until
+       (lambda () (equal "T0" ghostel--title)) proc 5))))
+
+(ert-deftest ghostel-test-title-stack-restores-no-title ()
+  "Vim's push/set/pop sequence restores an unset title."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-echo-buffer (buf proc)
+      ;; Vim also saves the icon title; the parser drops those forms.
+      (ghostel--write-vt ghostel--term
+                         (concat "\e[22;2t\e[22;1t"
+                                 "\e]2;file +  - VIM\a"
+                                 "\e]2;Thanks for flying Vim\a"))
+      (ghostel-test--wait-until
+       (lambda () (equal "Thanks for flying Vim" ghostel--title)) proc 5)
+      (ghostel--write-vt ghostel--term "\e[23;2t\e[23;1t")
+      (ghostel-test--wait-until
+       (lambda () (null ghostel--title)) proc 5))))
+
+(ert-deftest ghostel-test-title-stack-empty-pop-is-no-op ()
+  "Popping an empty title stack leaves the title unchanged."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-echo-buffer (buf proc)
+      (ghostel--write-vt ghostel--term "\e]2;KEEP\e\\\e[23;0t")
+      (ghostel-test--wait-until
+       (lambda () (equal "KEEP" ghostel--title)) proc 5))))
+
+(ert-deftest ghostel-test-title-stack-indexed-operations-are-no-ops ()
+  "Indexed title stack operations leave the default stack unchanged."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-echo-buffer (buf proc)
+      ;; Try indexed push 5, set the title to IDX, then perform a default pop.
+      ;; Since the indexed push is ignored, the pop has nothing to restore.
+      (ghostel--write-vt ghostel--term "\e[22;0;5t\e]2;IDX\e\\\e[23;0t")
+      (ghostel-test--wait-until
+       (lambda () (equal "IDX" ghostel--title)) proc 5)
+      ;; Push IDX onto the default stack, set the title to AFTER, then try
+      ;; indexed pop 5.  The indexed pop leaves AFTER displayed and IDX saved.
+      (ghostel--write-vt ghostel--term
+                         "\e[22;0t\e]2;AFTER\e\\\e[23;0;5t")
+      (ghostel-test--wait-until
+       (lambda () (equal "AFTER" ghostel--title)) proc 5)
+      ;; A default pop restores IDX, proving that indexed pop 5 did not consume it.
+      (ghostel--write-vt ghostel--term "\e[23;0t")
+      (ghostel-test--wait-until
+       (lambda () (equal "IDX" ghostel--title)) proc 5))))
+
+(ert-deftest ghostel-test-full-reset-clears-title-stack ()
+  "RIS discards saved title stack entries."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-echo-buffer (buf proc)
+      (ghostel--write-vt ghostel--term
+                         "\e]2;BEFORE\e\\\e[22;0t\ec\e]2;AFTER\e\\\e[23;0t")
+      (ghostel-test--wait-until
+       (lambda () (equal "AFTER" ghostel--title)) proc 5))))
 
 (ert-deftest ghostel-test-osc9-notification ()
   "OSC 9 iTerm2-style notifications reach `ghostel-notification-function'."
@@ -271,7 +364,7 @@ ConEmu's CWD-reporting alias uses the same callback as OSC 7, so
           (should (equal (list expected) calls)))))))
 
 (ert-deftest ghostel-test-full-reset-clears-progress ()
-  "RIS (ESC c) dispatches a progress remove so no stale indicator survives."
+  "RIS dispatches a progress removal."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
     (ghostel-test--with-raw-echo-buffer (buf proc)
