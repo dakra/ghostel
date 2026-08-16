@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Public Lisp API for external integrations: `ghostel-create` creates and
+  spawns an interactive shell terminal (reading `default-directory`, with an
+  optional identity for later lookup), and `ghostel-buffer-list` /
+  `ghostel-project-buffer-list` return the live ghostel buffers (all /
+  project-scoped).  These join the existing public `ghostel-exec` (run a
+  specific program in a TTY) and `ghostel-send-string` / `ghostel-send-key`.
+
 ## [0.51.0] — 2026-08-20
 
 ### Added

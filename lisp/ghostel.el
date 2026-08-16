@@ -5502,7 +5502,6 @@ the buffer name for a new instance-1 buffer.  ARG follows
 `ghostel''s prefix conventions: a number selects that instance, any
 other non-nil value creates the next free instance.  Returns the
 buffer."
-  (ghostel--load-module t)
   (let* ((fresh (and arg (not (numberp arg))))
          (instance (cond ((numberp arg) arg)
                          (fresh (ghostel--next-instance context))
@@ -5512,21 +5511,15 @@ buffer."
          (display-action (append display-buffer--same-window-action
                                  '((category . comint))))
          (existing (and (not fresh)
-                        (ghostel--find-buffer-by-identity identity)))
-         (buffer (or existing (ghostel--create buf-name display-action))))
+                        (ghostel--find-buffer-by-identity identity))))
     (if existing
         (progn
           (unless (buffer-local-value 'ghostel--term existing)
             (user-error "Ghostel buffer %s has no terminal"
                         (buffer-name existing)))
-          (pop-to-buffer existing display-action))
-      (with-current-buffer buffer
-        (setq ghostel--managed-buffer-name (buffer-name)
-              ghostel--initial-name (buffer-name)
-              ghostel-identity identity)
-        (ghostel--start-process)
-        (ghostel--apply-initial-input-mode)))
-    buffer))
+          (pop-to-buffer existing display-action)
+          existing)
+      (ghostel-create buf-name display-action identity))))
 
 ;;;###autoload
 (defun ghostel (&optional arg)
@@ -5583,6 +5576,43 @@ Signals `user-error' if BUFFER already has a live ghostel process."
       (let ((remote-p (file-remote-p default-directory)))
         (ghostel--spawn-pty program args nil remote-p)))))
 
+(defun ghostel-create (&optional name display identity)
+  "Create and return a new ghostel terminal running `ghostel-shell'.
+
+NAME is the buffer name (default `ghostel-buffer-name'), uniquified
+when already taken.  DISPLAY, when non-nil, is a `display-buffer'
+ACTION used to show the buffer.  The terminal starts in
+`default-directory'.
+
+Always creates a fresh terminal; reuse is the caller's job.
+IDENTITY, when non-nil, is stored verbatim as the buffer's `ghostel-identity';
+it defaults to the plain-terminal slot identity for NAME with the next free
+instance - the same slot `ghostel' would allocate.
+To run a specific program instead of a shell, see `ghostel-exec'."
+  (ghostel--load-module t)
+  ;; An empty name (a create-on-miss minibuffer submission) would make
+  ;; `generate-new-buffer' signal; treat it as nil.
+  (let* ((name (if (and name (not (string= name ""))) name
+                 ghostel-buffer-name))
+         (buf-name name))
+    (unless identity
+      (let* ((context `((kind . term) (name . ,name)))
+             (instance (ghostel--next-instance context)))
+        (setq identity `(,@context (instance . ,instance)))
+        ;; Keep `ghostel--start's NAME<N> = instance N convention, so the
+        ;; name suffix and the slot number cannot drift apart after a
+        ;; kill-then-create.
+        (when (> instance 1)
+          (setq buf-name (format "%s<%d>" name instance)))))
+    (let ((buffer (ghostel--create buf-name display)))
+      (with-current-buffer buffer
+        (setq ghostel--managed-buffer-name (buffer-name)
+              ghostel--initial-name (buffer-name)
+              ghostel-identity identity)
+        (ghostel--start-process)
+        (ghostel--apply-initial-input-mode))
+      buffer)))
+
 (defun ghostel--project-buffer-name (root)
   "Return the project-prefixed ghostel buffer name for project ROOT.
 For remote ROOTs the TRAMP prefix is folded into the name so a local
@@ -5629,7 +5659,7 @@ Returns the buffer."
                                             '((category . comint))))
       (ghostel (and bufs t)))))
 
-(defun ghostel--all-buffers ()
+(defun ghostel-buffer-list ()
   "Return all live `ghostel-mode' buffers, sorted alphabetically by name.
 Sorted (not `buffer-list' order) so cycle commands advance through
 the same sequence regardless of recent buffer-switch history."
@@ -5638,10 +5668,10 @@ the same sequence regardless of recent buffer-switch history."
          (buffer-list))
         (lambda (a b) (string< (buffer-name a) (buffer-name b)))))
 
-(defun ghostel--project-buffers ()
+(defun ghostel-project-buffer-list ()
   "Return ghostel buffers belonging to the current project, sorted by name.
-Scoping is controlled by `ghostel-project-buffer-scope'.  Signals
-`user-error' if there is no current project.
+Scoping is controlled by `ghostel-project-buffer-scope'.
+Prompts to choose a project when there is none.
 
 Buffers whose `default-directory' is remote are skipped in the
 `default-directory' scope branch — querying `project-current'
@@ -5650,7 +5680,7 @@ synchronously on every cycle."
   (let* ((proj (project-current t))
          (root (project-root proj))
          (scope ghostel-project-buffer-scope)
-         (all (ghostel--all-buffers))
+         (all (ghostel-buffer-list))
          (by-dir
           (and (memq scope '(default-directory both))
                (cl-remove-if-not
@@ -5700,7 +5730,7 @@ the first or last entry depending on DIRECTION."
 (defun ghostel-next ()
   "Switch to the next ghostel buffer (sorted by name, wraps around)."
   (interactive)
-  (ghostel--cycle (ghostel--all-buffers) +1
+  (ghostel--cycle (ghostel-buffer-list) +1
                   "No ghostel buffers"
                   "Only one ghostel buffer"))
 
@@ -5708,7 +5738,7 @@ the first or last entry depending on DIRECTION."
 (defun ghostel-previous ()
   "Switch to the previous ghostel buffer (sorted by name, wraps around)."
   (interactive)
-  (ghostel--cycle (ghostel--all-buffers) -1
+  (ghostel--cycle (ghostel-buffer-list) -1
                   "No ghostel buffers"
                   "Only one ghostel buffer"))
 
@@ -5717,7 +5747,7 @@ the first or last entry depending on DIRECTION."
   "Switch to the next ghostel buffer in the current project (wraps around).
 Project membership is determined by `ghostel-project-buffer-scope'."
   (interactive)
-  (ghostel--cycle (ghostel--project-buffers) +1
+  (ghostel--cycle (ghostel-project-buffer-list) +1
                   "No ghostel buffers in this project"
                   "Only one ghostel buffer in this project"))
 
@@ -5726,7 +5756,7 @@ Project membership is determined by `ghostel-project-buffer-scope'."
   "Switch to the previous ghostel buffer in the current project (wraps around).
 Project membership is determined by `ghostel-project-buffer-scope'."
   (interactive)
-  (ghostel--cycle (ghostel--project-buffers) -1
+  (ghostel--cycle (ghostel-project-buffer-list) -1
                   "No ghostel buffers in this project"
                   "Only one ghostel buffer in this project"))
 
@@ -5766,7 +5796,7 @@ signals `user-error' if BUFS is empty."
 (defun ghostel-list-buffers ()
   "Pick a ghostel buffer to switch to via `read-buffer'."
   (interactive)
-  (pop-to-buffer (ghostel--read-buffer "Ghostel buffer: " (ghostel--all-buffers))
+  (pop-to-buffer (ghostel--read-buffer "Ghostel buffer: " (ghostel-buffer-list))
                  (append display-buffer--same-window-action
                          '((category . comint)))))
 
@@ -5776,7 +5806,7 @@ signals `user-error' if BUFS is empty."
 Project membership is determined by `ghostel-project-buffer-scope'."
   (interactive)
   (pop-to-buffer (ghostel--read-buffer "Project ghostel buffer: "
-                                       (ghostel--project-buffers))
+                                       (ghostel-project-buffer-list))
                  (append display-buffer--same-window-action
                          '((category . comint)))))
 

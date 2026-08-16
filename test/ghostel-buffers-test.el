@@ -2,7 +2,8 @@
 
 ;;; Commentary:
 
-;; Cycle commands, list pickers, and project-scoped variants.
+;; Cycle commands, list pickers, project-scoped variants, and the
+;; public `ghostel-create' API.
 ;; All tests are pure elisp — no native module required.
 
 ;;; Code:
@@ -35,20 +36,20 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
                  bindings))))
 
 (ert-deftest ghostel-test-all-buffers-sorted ()
-  "`ghostel--all-buffers' returns ghostel buffers sorted by name."
+  "`ghostel-buffer-list' returns ghostel buffers sorted by name."
   (ghostel-buffers-test--with-bufs ((c "*ghostel-c*")
                                     (a "*ghostel-a*")
                                     (b "*ghostel-b*"))
-    (let ((bufs (ghostel--all-buffers)))
+    (let ((bufs (ghostel-buffer-list)))
       (should (equal (mapcar #'buffer-name bufs)
                      '("*ghostel-a*" "*ghostel-b*" "*ghostel-c*"))))))
 
 (ert-deftest ghostel-test-all-buffers-excludes-non-ghostel ()
-  "`ghostel--all-buffers' skips buffers without `ghostel-mode'."
+  "`ghostel-buffer-list' skips buffers without `ghostel-mode'."
   (ghostel-buffers-test--with-bufs ((g "*ghostel-x*"))
     (let ((other (generate-new-buffer "*not-ghostel*")))
       (unwind-protect
-          (let ((bufs (ghostel--all-buffers)))
+          (let ((bufs (ghostel-buffer-list)))
             (should (memq g bufs))
             (should-not (memq other bufs)))
         (kill-buffer other)))))
@@ -258,7 +259,7 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
                  (lambda (name) (format "*myproj-%s*" name))))
         (let ((default-directory root)
               (ghostel-project-buffer-scope 'default-directory))
-          (let ((bufs (ghostel--project-buffers)))
+          (let ((bufs (ghostel-project-buffer-list)))
             (should (memq inside bufs))
             (should (memq also-in bufs))
             (should-not (memq outside bufs))))))))
@@ -281,7 +282,7 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
                 ((symbol-function 'project-root) (lambda (p) (cdr p))))
         (let ((default-directory root)
               (ghostel-project-buffer-scope 'identity))
-          (let ((bufs (ghostel--project-buffers)))
+          (let ((bufs (ghostel-project-buffer-list)))
             (should (memq tagged bufs))
             (should-not (memq untagged bufs))))))))
 
@@ -308,7 +309,7 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
                 ((symbol-function 'project-root) (lambda (p) (cdr p))))
         (let ((default-directory root)
               (ghostel-project-buffer-scope 'both))
-          (let ((bufs (ghostel--project-buffers)))
+          (let ((bufs (ghostel-project-buffer-list)))
             (should (memq by-dir bufs))
             (should (memq by-id bufs))
             (should (memq both bufs))
@@ -373,7 +374,7 @@ project's terminal because both rendered the same buffer name."
                 ((symbol-function 'project-root) (lambda (p) (cdr p))))
         (let ((default-directory root-a)
               (ghostel-project-buffer-scope 'identity))
-          (let ((bufs (ghostel--project-buffers)))
+          (let ((bufs (ghostel-project-buffer-list)))
             (should (memq in-a bufs))
             (should-not (memq in-b bufs))))))))
 
@@ -394,7 +395,7 @@ project's terminal because both rendered the same buffer name."
                 ((symbol-function 'project-root) (lambda (p) (cdr p))))
         (let ((default-directory root)
               (ghostel-project-buffer-scope 'identity))
-          (let ((bufs (ghostel--project-buffers)))
+          (let ((bufs (ghostel-project-buffer-list)))
             (should (memq first bufs))
             (should (memq second bufs))))))))
 
@@ -414,7 +415,7 @@ project's terminal because both rendered the same buffer name."
                 ((symbol-function 'project-root) (lambda (p) (cdr p))))
         (let ((default-directory root)
               (ghostel-project-buffer-scope 'identity))
-          (let ((bufs (ghostel--project-buffers)))
+          (let ((bufs (ghostel-project-buffer-list)))
             (should (memq term bufs))
             (should-not (memq compile bufs))))))))
 
@@ -467,6 +468,102 @@ project's terminal because both rendered the same buffer name."
              (lambda (&optional maybe-prompt &rest _)
                (when maybe-prompt (user-error "No project")))))
     (should-error (ghostel-project-next) :type 'user-error)))
+
+;;; Public create API
+
+(defmacro ghostel-buffers-test--with-create-stubs (&rest body)
+  "Run BODY with the native entry points and process spawn stubbed.
+Same stub set as the buffer-naming tests: `ghostel-create' runs its
+full buffer setup, but no module or process is involved."
+  (declare (indent 0))
+  `(cl-letf (((symbol-function 'ghostel--new)
+              (lambda (&rest _args) 'fake-term))
+             ((symbol-function 'ghostel--set-size) #'ignore)
+             ((symbol-function 'ghostel--apply-palette)
+              (lambda (&rest _args) nil))
+             ((symbol-function 'ghostel--start-process)
+              (lambda () nil)))
+     ,@body))
+
+(ert-deftest ghostel-test-create-default-name-and-identity ()
+  "`ghostel-create' defaults NAME and keys the identity to it."
+  (ghostel-buffers-test--with-create-stubs
+    (let ((ghostel-buffer-name "*ghostel-create-default*")
+          buf)
+      (unwind-protect
+          (progn
+            (setq buf (ghostel-create))
+            (should (equal (buffer-name buf) ghostel-buffer-name))
+            (should (equal (buffer-local-value 'ghostel-identity buf)
+                           '((kind . term)
+                             (name . "*ghostel-create-default*")
+                             (instance . 1)))))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest ghostel-test-create-always-fresh-uniquified ()
+  "`ghostel-create' never reuses; the second buffer gets the next slot.
+The default identity keys the requested NAME with the next free
+instance, so `ghostel''s slot arithmetic can find the buffer."
+  (ghostel-buffers-test--with-create-stubs
+    (let (a b)
+      (unwind-protect
+          (progn
+            (setq a (ghostel-create "*ghostel-fresh*")
+                  b (ghostel-create "*ghostel-fresh*"))
+            (should-not (eq a b))
+            (should (equal (buffer-name b) "*ghostel-fresh*<2>"))
+            (should (equal (buffer-local-value 'ghostel-identity b)
+                           '((kind . term)
+                             (name . "*ghostel-fresh*")
+                             (instance . 2))))
+            (should (eq b (ghostel--find-buffer-by-identity
+                           '((kind . term)
+                             (name . "*ghostel-fresh*")
+                             (instance . 2))))))
+        (dolist (buf (list a b))
+          (when (buffer-live-p buf) (kill-buffer buf)))))))
+
+(ert-deftest ghostel-test-create-identity-override-verbatim ()
+  "A non-nil IDENTITY is stored verbatim, like `ghostel-exec's."
+  (ghostel-buffers-test--with-create-stubs
+    (let ((identity '((kind . term) (tab . "work") (instance . 1)))
+          buf)
+      (unwind-protect
+          (progn
+            (setq buf (ghostel-create "*ghostel-tab*" nil identity))
+            (should (eq (buffer-local-value 'ghostel-identity buf) identity)))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest ghostel-test-create-suffix-matches-instance-after-kill ()
+  "The NAME<N> suffix follows the allocated instance, not name collisions.
+After killing instance 1 its plain name is free again, but the next
+slot is 3; the new buffer must be named for its instance so `ghostel'
+still reaches every slot by number."
+  (ghostel-buffers-test--with-create-stubs
+    (let (a b c)
+      (unwind-protect
+          (progn
+            (setq a (ghostel-create "*ghostel-refill*")
+                  b (ghostel-create "*ghostel-refill*"))
+            (kill-buffer a)
+            (setq c (ghostel-create "*ghostel-refill*"))
+            (should (equal (buffer-name c) "*ghostel-refill*<3>"))
+            (should (equal (alist-get 'instance
+                                      (buffer-local-value 'ghostel-identity c))
+                           3)))
+        (dolist (buf (list a b c))
+          (when (buffer-live-p buf) (kill-buffer buf)))))))
+
+(ert-deftest ghostel-test-create-empty-name-uses-default ()
+  "An empty NAME falls back to `ghostel-buffer-name'."
+  (ghostel-buffers-test--with-create-stubs
+    (let ((ghostel-buffer-name "*ghostel-create-empty*")
+          buf)
+      (unwind-protect
+          (progn
+            (setq buf (ghostel-create ""))
+            (should (equal (buffer-name buf) ghostel-buffer-name)))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
 
 (provide 'ghostel-buffers-test)
 ;;; ghostel-buffers-test.el ends here
