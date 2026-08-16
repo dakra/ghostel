@@ -1176,8 +1176,18 @@ is non-nil."
   "<wheel-up>"   #'ghostel--scroll-intercept-up
   "<wheel-down>" #'ghostel--scroll-intercept-down)
 
+(defvar-keymap ghostel--dnd-area-map
+  :doc "Keymap for drops on a terminal window's decorations.
+Mode-line `local-map' text properties shadow the buffer's local map,
+so these bindings must live in an emulation map."
+  "<mode-line> <drag-n-drop>"    #'ghostel--drop
+  "<header-line> <drag-n-drop>"  #'ghostel--drop
+  "<left-fringe> <drag-n-drop>"  #'ghostel--drop
+  "<right-fringe> <drag-n-drop>" #'ghostel--drop)
+
 (defvar ghostel--emulation-alist
-  `((ghostel--scroll-intercept-active . ,ghostel--scroll-intercept-map))
+  `((ghostel--scroll-intercept-active . ,ghostel--scroll-intercept-map)
+    (ghostel--term . ,ghostel--dnd-area-map))
   "Alist for `emulation-mode-map-alists'.")
 
 (unless (memq 'ghostel--emulation-alist emulation-mode-map-alists)
@@ -1432,6 +1442,8 @@ back to semi-char mode.")
   "<drag-mouse-1>"   #'ghostel--mouse-drag
   "<drag-mouse-2>"   #'ghostel--mouse-drag
   "<drag-mouse-3>"   #'ghostel--mouse-drag
+  ;; Drag and drop (no parent to fall back on)
+  "<drag-n-drop>"    #'ghostel--drop
   ;; Sole escape hatch: exit char mode.  Graphical Emacs sends
   ;; M-RET as the `<M-return>' symbol, terminal Emacs as the
   ;; `\M-\r' character, and C-M-m is a synonym; bind all three
@@ -1937,12 +1949,12 @@ parity with `xterm-paste'."
 ;;; Drag and drop
 
 (defun ghostel--dnd-send-files (files)
-  "Send FILES to the terminal as shell-quoted paths, followed by a space."
-  (ghostel-send-string
+  "Paste FILES into the terminal as shell-quoted paths, followed by a space."
+  (ghostel-paste-string
    (concat (mapconcat #'shell-quote-argument files " ") " ")))
 
 (defun ghostel--dnd-handle-file (uri action)
-  "Send the local file named by URI to the terminal, shell-quoted.
+  "Paste the local file named by URI into the terminal, shell-quoted.
 Handles `dnd-protocol-alist' file drops on the ports that dispatch
 drops through `special-event-map' (X11, pgtk).  A non-local URI is
 ignored with a message; a drop into a dead terminal opens the file
@@ -1959,7 +1971,7 @@ with ACTION instead."
   'private)
 
 (defun ghostel--yank-media-data (mimetype data)
-  "Write clipboard DATA of MIMETYPE to a temp file and send its path.
+  "Write clipboard DATA of MIMETYPE to a temp file and paste its path.
 The file is created in the temp directory of the host the shell runs on.
 The shell receives the shell-quoted path followed by a space."
   (unless (process-live-p ghostel--process)
@@ -1977,21 +1989,26 @@ The shell receives the shell-quoted path followed by a space."
 
 (defun ghostel--drop (event)
   "Handle a drag-and-drop EVENT into the terminal.
-Dropped files insert their path (shell-quoted); dropped text is
-pasted using bracketed paste."
+File drops paste their shell-quoted paths, text drops paste as-is,
+into the terminal shown in the event's window."
   (interactive "e")
   ;; On macOS (NS port) the event structure is:
   ;;   (drag-n-drop POSN (TYPE OPERATIONS . OBJECTS))
   ;; where (nth 2 event) carries the drop data, not the position.
-  (let ((arg (nth 2 event)))
+  ;; Not `event-start': its posn-at-point fallback would invent a
+  ;; selected-window position for a posn-less synthetic event.
+  (let ((arg (nth 2 event))
+        (window (posn-window (nth 1 event))))
     (when (and arg (not (eq arg 'lambda)))
       (let ((type (car arg))
             (objects (cddr arg)))
-        (if (eq type 'file)
-            (ghostel--dnd-send-files objects)
-          (ghostel--on-user-input)
-          (ghostel--paste-text
-           (mapconcat #'identity objects "\n")))))))
+        ;; Drop events arrive with the selected window's buffer current.
+        (with-current-buffer (if (windowp window)
+                                 (window-buffer window)
+                               (current-buffer))
+          (if (eq type 'file)
+              (ghostel--dnd-send-files objects)
+            (ghostel-paste-string (mapconcat #'identity objects "\n"))))))))
 
 
 ;;; Scrollback / clearing

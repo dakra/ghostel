@@ -25,6 +25,15 @@ All notable changes to this project will be documented in this file.
   ran. A nix devshell exports a `$SHELL` built without readline, which
   prints the `\[` / `\]` zero-width markers of the user's prompt
   literally.
+- Dropped files now go through the paste encoder like dropped text
+  does, so a program that enabled bracketed paste sees the
+  shell-quoted path arrive as a paste — matching other terminals.
+  TUIs that special-case pasted paths (e.g. Claude Code attaching a
+  dragged image) recognize drops again.
+- File and text drops now land in the terminal shown in the window
+  under the pointer; previously the drop acted on the selected window's
+  buffer, so dropping onto an unselected terminal window went to the
+  wrong buffer or nowhere.  Char mode accepts drag-and-drop now as well.
 
 ## [0.50.0] — 2026-08-13
 
