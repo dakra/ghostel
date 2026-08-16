@@ -1527,6 +1527,7 @@ keyboard protocol receives the protocol-correct sequence."
   (interactive)
   (let* ((event (read-event "Send key: "))
          (spec (ghostel--event-key-spec event)))
+    (ghostel--on-user-input)
     (cond
      (spec
       (ghostel--send-encoded (car spec) (cdr spec)))

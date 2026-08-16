@@ -938,6 +938,32 @@ inject raw bytes a kitty-protocol child cannot parse."
       (should (equal "up" captured-key))
       (should (equal "" captured-mods)))))
 
+(ert-deftest ghostel-test-send-next-key-fast-exits-before-sending ()
+  "Send-next-key exits copy/Emacs mode before forwarding the key."
+  (let ((call-order nil)
+        (ghostel--input-mode 'copy)
+        (ghostel-readonly-fast-exit t))
+    (cl-letf (((symbol-function 'ghostel-readonly-exit)
+               (lambda () (push 'exit call-order)))
+              ((symbol-function 'ghostel--send-encoded)
+               (lambda (_key _mods &optional _utf8)
+                 (push 'send call-order))))
+      (let ((unread-command-events (list ?\C-x)))
+        (ghostel-send-next-key))
+      (should (equal '(send exit) call-order)))))
+
+(ert-deftest ghostel-test-send-next-key-no-fast-exit-stays-readonly ()
+  "Send-next-key stays in copy/Emacs mode when fast exit is off."
+  (let ((exit-called nil)
+        (ghostel--input-mode 'copy)
+        (ghostel-readonly-fast-exit nil))
+    (cl-letf (((symbol-function 'ghostel-readonly-exit)
+               (lambda () (setq exit-called t)))
+              ((symbol-function 'ghostel--send-encoded) #'ignore))
+      (let ((unread-command-events (list ?\C-x)))
+        (ghostel-send-next-key))
+      (should-not exit-called))))
+
 (ert-deftest ghostel-test-send-string-routes-to-send-string ()
   "`ghostel-send-string' forwards its argument to `ghostel--send-string'."
   (with-temp-buffer
