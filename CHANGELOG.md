@@ -10,6 +10,9 @@ All notable changes to this project will be documented in this file.
   `desktop-read` starts a fresh shell in that directory under the
   saved buffer name, so restored window configurations find the
   buffer.
+- New command `ghostel-project-dwim`.  It creates a terminal when the
+  project has none, switches to it when there is exactly one, and
+  prompts via `read-buffer` when there are several.
 
 ### Changed
 - The bookmark functions are now public: `ghostel-bookmark-make-record`

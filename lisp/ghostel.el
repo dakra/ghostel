@@ -38,6 +38,7 @@
 ;;
 ;;   M-x ghostel               Open a new terminal
 ;;   M-x ghostel-project       Open a terminal in the current project root
+;;   M-x ghostel-project-dwim  Project terminal: create, switch, or pick
 ;;   M-x ghostel-other         Switch to next terminal or create one
 ;;   M-x ghostel-next / ghostel-previous
 ;;                             Cycle through all ghostel buffers
@@ -5743,6 +5744,26 @@ Project membership is determined by `ghostel-project-buffer-scope'."
                                        (ghostel--project-buffers))
                  (append display-buffer--same-window-action
                          '((category . comint)))))
+
+;;;###autoload
+(defun ghostel-project-dwim (&optional arg)
+  "Switch to the current project's Ghostel terminal, creating or picking one.
+With no project terminal open, create one via `ghostel-project'.
+With exactly one open, switch to it.  With several open, pick one
+via `read-buffer'.  Membership is determined by
+`ghostel-project-buffer-scope'.  With prefix ARG, skip the
+selection and call `ghostel-project' with the prefix, so
+\\[universal-argument] still forces a new terminal.  Returns the buffer."
+  (interactive "P")
+  (let ((bufs (unless arg (ghostel--project-buffers))))
+    (if (or arg (null bufs))
+        (ghostel-project arg)
+      (let ((buffer (if (cdr bufs)
+                        (ghostel--read-buffer "Project ghostel buffer: " bufs)
+                      (car bufs))))
+        (pop-to-buffer buffer (append display-buffer--same-window-action
+                                      '((category . comint))))
+        buffer))))
 
 (provide 'ghostel)
 
