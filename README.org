@@ -1907,6 +1907,38 @@ Both operate on the current buffer; wrap in =with-current-buffer= when driving
 another ghostel buffer.  Calling either outside a ghostel buffer signals a
 =user-error=.
 
+** Creating and listing terminals from Lisp
+:properties:
+:custom_id: creating-terminals-from-lisp
+:end:
+#+findex: ghostel-create
+#+findex: ghostel-exec
+#+findex: ghostel-buffer-list
+#+findex: ghostel-project-buffer-list
+
+For packages that build on ghostel, a small public API creates and enumerates
+terminals without reaching into internals:
+
+#+begin_src emacs-lisp
+(ghostel-create)                      ; new interactive shell terminal, returns its buffer
+(ghostel-create "*build*")            ; ... with a specific buffer name
+(let ((default-directory "/tmp/"))    ; ... in a specific directory
+  (ghostel-create "*scratch-sh*"))
+
+(ghostel-exec (get-buffer-create "*tig*") "tig")  ; run one program in a TTY instead of a shell
+
+(ghostel-buffer-list)                 ; all live ghostel buffers
+(ghostel-project-buffer-list)         ; ghostel buffers in the current project
+#+end_src
+
+=ghostel-create= runs =ghostel-shell= with shell integration, like =M-x ghostel=
+but always creating a fresh terminal; =ghostel-exec= runs a single program in
+a real TTY with no shell integration.  Both read =default-directory=, and both
+accept an optional IDENTITY alist stored as the buffer's =ghostel-identity=
+for later lookup.
+=ghostel-project-buffer-list= prompts to choose a project when there is no
+current one.
+
 ** Project integration
 :properties:
 :custom_id: project-integration

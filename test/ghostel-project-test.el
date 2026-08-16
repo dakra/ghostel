@@ -165,11 +165,11 @@ same name must get separate buffers."
                      (lambda (proj) (cdr proj))))
             (cl-letf (((symbol-function 'project-current)
                        (lambda (&rest _) '(transient . "/tmp/myproj/"))))
-              (should (equal (ghostel--project-buffers) (list local))))
+              (should (equal (ghostel-project-buffer-list) (list local))))
             (cl-letf (((symbol-function 'project-current)
                        (lambda (&rest _)
                          '(transient . "/ssh:user@host:/tmp/myproj/"))))
-              (should (equal (ghostel--project-buffers) (list remote))))))
+              (should (equal (ghostel-project-buffer-list) (list remote))))))
       (dolist (b (list local remote))
         (when (buffer-live-p b) (kill-buffer b))))))
 
