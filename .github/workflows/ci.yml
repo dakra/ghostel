@@ -149,6 +149,42 @@ jobs:
             -l test/evil-ghostel-test.el \
             -f evil-ghostel-test-run
 
+  test-consult:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs_version:
+          - '29.4'
+          - 'snapshot'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+
+      - name: Install pinned Emacs
+        env:
+          EMACS_VERSION: ${{ matrix.emacs_version }}
+        run: bash .github/scripts/install-emacs.sh
+
+      - name: Install consult
+        run: |
+          git clone --depth 1 https://github.com/minad/consult.git /tmp/consult
+
+      - name: Install marginalia
+        run: git clone --depth 1 https://github.com/minad/marginalia.git /tmp/marginalia
+
+      - name: Install compat
+        run: git clone --depth 1 https://github.com/emacs-compat/compat.git /tmp/compat
+
+      - name: Run consult-ghostel tests
+        run: |
+          emacs --batch -Q -L /tmp/compat -L /tmp/consult -L /tmp/marginalia -L lisp -L extensions/consult-ghostel \
+            -l ert \
+            -l test/consult-ghostel-test.el \
+            -f consult-ghostel-test-run
+
   build-native:
     strategy:
       fail-fast: false

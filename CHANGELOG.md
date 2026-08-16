@@ -18,6 +18,22 @@ All notable changes to this project will be documented in this file.
   whose literal name looks percent-encoded still resolves via a
   raw-spelling fallback; remote (TRAMP) reports of such names need
   the updated scripts.
+
+### Added
+- New `consult-ghostel` extension package (under
+  `extensions/consult-ghostel/`): `M-x consult-ghostel` and
+  `M-x consult-ghostel-project` pick a ghostel terminal through `consult`
+  with live preview as you move through the candidate list — unlike the
+  built-in `ghostel-list-buffers`, which uses `read-buffer` and does not
+  preview.  Candidates are switch-ordered (recently-used first, current
+  buffer last), and submitting a name that matches no buffer creates a
+  new terminal; with a prefix argument the commands behave like
+  `ghostel` / `ghostel-project` instead, and a `New` picker group
+  offers the same default-named creation.  The `-hidden` source
+  variants are registered in `consult-buffer-sources` /
+  `consult-project-buffer-sources` at load, so the `g` narrow key
+  summons ghostel buffers in the global pickers.  Loading the package additionally makes
+  `consult-line` match across soft line wraps in ghostel buffers.
 - Public Lisp API for external integrations: `ghostel-create` creates and
   spawns an interactive shell terminal (reading `default-directory`, with an
   optional identity for later lookup), and `ghostel-buffer-list` /

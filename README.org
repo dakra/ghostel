@@ -1444,11 +1444,11 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 * Extensions
 :properties:
 :custom_id: extensions
-:description: Evil, compile, eshell, comint, and input methods
+:description: Evil, compile, eshell, comint, consult, and input methods
 :end:
 
-These features live in separate files (or, for evil, a separate package) so the
-core stays lean.  Load only what you use.
+These features live in separate files (or, for evil and consult, separate
+packages) so the core stays lean.  Load only what you use.
 
 ** Evil-mode
 :properties:
@@ -1783,6 +1783,76 @@ filter continues to handle progress bars, =read -s= prompts, etc.
 For best performance, xterm-color's advice to disable font-locking in shell
 buffers applies here too - see the docstring of =ghostel-comint-mode=.
 
+** Consult integration
+:properties:
+:custom_id: consult-integration
+:end:
+#+cindex: consult
+#+findex: consult-ghostel
+#+findex: consult-ghostel-project
+
+=consult-ghostel= picks a Ghostel terminal through [[https://github.com/minad/consult][consult]] with *live preview*:
+moving through the candidate list previews each terminal in the target window,
+the way =consult-buffer= does.  The built-in =ghostel-list-buffers= uses
+=read-buffer=, which has no preview.
+
+=consult-ghostel= is distributed as an independent MELPA package that depends on
+=ghostel= and =consult=.  Install it alongside them:
+
+#+begin_src emacs-lisp
+(use-package consult-ghostel
+  :ensure t
+  :after (ghostel consult)
+  :demand t
+  :bind (:map ghostel-semi-char-mode-map
+         ("C-c M" . consult-ghostel-project)))
+#+end_src
+
+Or from source (Emacs 30+); =:lisp-dir= points package-vc at this extension's
+subdirectory inside the ghostel monorepo:
+
+#+begin_src emacs-lisp
+(use-package consult-ghostel
+  :vc (:url "https://github.com/dakra/ghostel"
+       :lisp-dir "extensions/consult-ghostel"
+       :rev :newest)
+  :after (ghostel consult)
+  :demand t
+  :bind (:map ghostel-semi-char-mode-map
+         ("C-c M" . consult-ghostel-project)))
+#+end_src
+
+- =M-x consult-ghostel= - pick any Ghostel terminal.
+- =M-x consult-ghostel-project= - pick a terminal in the current project.
+
+Candidates are ordered for switching (recently-used first, the current buffer
+last) and annotated with the terminal title ([[#picker-annotations][Picker annotations]]).
+With [[https://github.com/minad/marginalia][marginalia]] installed, the title is prepended to marginalia's buffer
+annotations instead, in every buffer prompt.
+Submitting a name that matches no buffer *creates a new terminal* with that
+name (reach-or-create); the project command roots the new terminal at the project.
+With a prefix argument the commands behave like =ghostel= / =ghostel-project=
+instead: =C-u= creates a new terminal, a numeric argument picks that numbered
+terminal.  A /New/ group at the bottom of the picker offers the same
+default-named creation from inside the minibuffer (narrow key =n=).
+
+Loading the package also registers hidden sources in =consult-buffer= and
+=consult-project-buffer=: Ghostel buffers already appear in the default
+/Buffer/ view, so they stay invisible there until the =g= narrow key summons
+them exclusively.  To opt out:
+
+#+begin_src emacs-lisp
+(setq consult-buffer-sources
+      (delq 'consult-ghostel-source-hidden consult-buffer-sources))
+#+end_src
+
+The =g= narrow key (or any other source property) can be changed with
+=consult-customize=, e.g. ~(consult-customize consult-ghostel-source-hidden :narrow ?t)~.
+
+Loading the package also makes =consult-line= match across soft line wraps in
+Ghostel buffers: rows joined by wrap newlines become one search candidate, so a
+path or command that wrapped mid-word is still found.
+
 ** Emacs Lisp input methods
 :properties:
 :custom_id: emacs-lisp-input-methods
@@ -1869,8 +1939,9 @@ terminals like =*ghostel*= and =*ghostel*<2>= easy to tell apart.
 for the full title.
 
 [[https://github.com/minad/marginalia][Marginalia]] replaces annotations for the whole =buffer= category with its own,
-which hides the title.  You can prepend the title to marginalia's annotator to
-show it in every buffer prompt (=C-x b=, =consult-buffer=, and ghostel's own):
+which hides the title.  The [[#consult-integration][consult-ghostel]] package handles this
+automatically; without it, you can prepend the title to marginalia's annotator
+to show it in every buffer prompt (=C-x b=, =consult-buffer=, and ghostel's own):
 
 #+begin_src emacs-lisp
 (with-eval-after-load 'marginalia
@@ -2257,7 +2328,8 @@ src/emacs.zig         Zig wrapper for the Emacs module C API
 The Elisp sources live in =lisp/=, the Zig sources in =src/=, vendored upstream
 headers in =vendor/=, the bundled compiled terminfo in =etc/terminfo/=, and shell
 integration assets in =etc/shell/=.  Optional MELPA extensions that depend on
-=ghostel= live under =extensions/<package>/= (currently =evil-ghostel=).
+=ghostel= live under =extensions/<package>/= (currently =evil-ghostel= and
+=consult-ghostel=).
 
 ** PTY and process ownership
 :properties:
