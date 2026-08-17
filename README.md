@@ -128,6 +128,10 @@ with a prefix argument the pickers behave like `ghostel` / `ghostel-project`
          ("C-c M" . consult-ghostel-project)))
 ```
 
+Loading consult-ghostel also adds a `Ghostel` group to `consult-bookmark`
+(narrow with `g`) and makes `consult-line` match across soft line wraps in
+ghostel buffers.
+
 ## Evil
 If you're an evil user you can install the [evil-ghostel](https://melpa.org/#/evil-ghostel) extension:
 

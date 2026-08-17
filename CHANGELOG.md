@@ -33,7 +33,9 @@ All notable changes to this project will be documented in this file.
   variants are registered in `consult-buffer-sources` /
   `consult-project-buffer-sources` at load, so the `g` narrow key
   summons ghostel buffers in the global pickers.  Loading the package additionally makes
-  `consult-line` match across soft line wraps in ghostel buffers.
+  `consult-line` match across soft line wraps in ghostel buffers and
+  adds a `Ghostel` group to `consult-bookmark`, so the `g` narrow key
+  restricts the candidates to ghostel bookmarks.
 - Public Lisp API for external integrations: `ghostel-create` creates and
   spawns an interactive shell terminal (reading `default-directory`, with an
   optional identity for later lookup), and `ghostel-buffer-list` /

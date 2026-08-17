@@ -83,6 +83,11 @@ the other."
     (should (memq #'consult-ghostel-marginalia-annotate
                   (alist-get category marginalia-annotators)))))
 
+(ert-deftest consult-ghostel-test-bookmark-narrow-registered ()
+  "Loading adds a Ghostel group for ghostel's bookmark handler."
+  (should (member '(?g "Ghostel" ghostel-bookmark-handler)
+                  consult-bookmark-narrow)))
+
 (ert-deftest consult-ghostel-test-hidden-sources-registered ()
   "Loading registers the hidden sources in the global consult lists."
   (should (memq 'consult-ghostel-source-hidden consult-buffer-sources))
