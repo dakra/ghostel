@@ -44,6 +44,8 @@ The `g` narrow key (or any other source property) can be changed with
 Loading the package also makes `consult-line` match across soft line
 wraps in ghostel buffers: rows joined by wrap newlines become one search
 candidate, so a path or command that wrapped mid-word is still found.
+It also adds a `Ghostel` group to `consult-bookmark`, so the `g` narrow
+key restricts the candidates to ghostel bookmarks.
 
 See [the manual](https://dakra.github.io/ghostel/#consult-integration)
 for details.

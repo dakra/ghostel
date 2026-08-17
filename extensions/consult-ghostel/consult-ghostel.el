@@ -40,7 +40,8 @@
 ;;
 ;; Loading this package also makes `consult-line' match across soft
 ;; line wraps in ghostel buffers: rows joined by wrap newlines become
-;; one candidate.
+;; one candidate.  It also adds a "Ghostel" group to `consult-bookmark',
+;; so the `g' narrow key restricts the candidates to ghostel bookmarks.
 ;;
 ;; Enable by adding to your init:
 ;;
@@ -242,6 +243,12 @@ with ARG.  Project membership is determined by
   (dolist (category '(buffer project-buffer))
     (cl-pushnew #'consult-ghostel-marginalia-annotate
                 (alist-get category marginalia-annotators))))
+
+;;; consult-bookmark narrowing
+
+(unless (cl-member 'ghostel-bookmark-handler consult-bookmark-narrow
+                   :test #'memq)
+  (push '(?g "Ghostel" ghostel-bookmark-handler) consult-bookmark-narrow))
 
 ;;; consult-line over logical lines
 
