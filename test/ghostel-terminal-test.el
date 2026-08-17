@@ -194,6 +194,38 @@ modes (47 / 1047 / 1049) are handled uniformly."
     (let ((state (ghostel--copy-all-text term)))
       (should (string-match-p "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" state))))) ; 40 x's on row
 
+(ert-deftest ghostel-test-size-reports-before-first-redraw ()
+  "Size reports carry real cell dimensions before the first redraw.
+The cell pixel geometry seeded by `ghostel--set-size' must be visible
+to XTWINOPS queries immediately: a program that queries at startup,
+like timg, lays out kitty graphics from the answer, and the deferred
+grid commit left it reading the 1x1 placeholder cell until the first
+redraw (issue #642)."
+  :tags '(native)
+  (let ((term (ghostel--new 25 80 1000))
+        (ghostel--process 'fake-process)
+        (replies nil))
+    (cl-letf (((symbol-function 'process-send-string)
+               (lambda (_process string) (push string replies))))
+      ;; Seed the cell geometry as `ghostel--init-buffer' does;
+      ;; nothing below triggers a redraw.
+      (ghostel--set-size term 25 80 9 23)
+      (ghostel--write-vt term "\e[16t\e[14t\e[18t")
+      ;; Compare the concatenation so PTY write batching can't split
+      ;; or join the three replies differently across backends.
+      (should (equal (concat "\e[6;23;9t"    ; cell size in px
+                             "\e[4;575;720t" ; text area in px: 25*23 x 80*9
+                             "\e[8;25;80t")  ; text area in cells
+                     (apply #'concat (nreverse replies))))
+      ;; While a grid resize is pending, the pixel fields keep
+      ;; describing the current grid until the next redraw commits the
+      ;; new one, so the three replies stay consistent with each other.
+      (setq replies nil)
+      (ghostel--set-size term 30 100 9 23)
+      (ghostel--write-vt term "\e[16t\e[14t\e[18t")
+      (should (equal (concat "\e[6;23;9t" "\e[4;575;720t" "\e[8;25;80t")
+                     (apply #'concat (nreverse replies)))))))
+
 (defmacro ghostel-test--with-resize-stubs (size &rest body)
   "Run BODY with resize stubs returning SIZE for process window size."
   (declare (indent 1))
