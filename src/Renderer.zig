@@ -43,7 +43,8 @@ rows_in_buffer: usize = 0,
 /// List of pages materialized in buffer
 pages_in_buffer: std.DoublyLinkedList = .{},
 
-/// Any pending resize as `.{cols, rows}`. Resizes are committed on next redraw.
+/// Any pending resize as `.{cols, rows}`. The grid commit is deferred to the
+/// next redraw; the cell pixel geometry is applied immediately in `resize`.
 pending_resize: ?ViewportSize = null,
 
 /// Accumulates adjacent dirty rows before inserting them into Emacs.
@@ -161,6 +162,18 @@ pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32) !void
         .cell_w = cell_w,
         .cell_h = cell_h,
     };
+
+    // Size reports and kitty graphics derive the cell size by dividing
+    // `width_px`/`height_px` by the current grid, so update both fields
+    // immediately, computed from the current cols and rows: a program
+    // that queries at startup would otherwise read the 1x1 placeholder
+    // cell seeded by `init` until the first redraw commits this resize.
+    // `Terminal.resize` would apply them too, but it also resets
+    // synchronized-output mode, which `redraw` suppression relies on.
+    self.term.width_px = std.math.mul(u32, self.term.cols, cell_w) catch
+        std.math.maxInt(u32);
+    self.term.height_px = std.math.mul(u32, self.term.rows, cell_h) catch
+        std.math.maxInt(u32);
 }
 
 pub fn redraw(self: *Self, env: emacs.Env, force_full: bool, force_sync: bool) !bool {

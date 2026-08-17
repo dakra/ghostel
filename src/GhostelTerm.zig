@@ -227,6 +227,8 @@ pub fn encodePaste(self: *Self, data: []u8) !bool {
 /// Resize the terminal. The col/row size gets committed on next redraw in order
 /// to ensure that the we fully render the very latest state in case any rows
 /// get promoted to scrollback due to vertical shrinking of the viewport.
+/// The cell pixel geometry is applied immediately so size reports and kitty
+/// graphics see real cell dimensions without waiting for that redraw.
 pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u16, cell_h: u16) !void {
     try self.lockTerm();
     defer self.unlockTerm();

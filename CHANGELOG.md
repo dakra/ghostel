@@ -40,6 +40,14 @@ All notable changes to this project will be documented in this file.
   under the pointer; previously the drop acted on the selected window's
   buffer, so dropping onto an unselected terminal window went to the
   wrong buffer or nowhere.  Char mode accepts drag-and-drop now as well.
+- The terminal no longer reports a 1×1 px cell size (XTWINOPS CSI
+  14/16 t) between creation and the first redraw.  A program that
+  queried at startup, such as timg or anything placing kitty graphics
+  in its first output, laid out images against square cells and
+  stretched them about 2.5× too tall on typical fonts.  The cell
+  pixel geometry a resize carries is now applied immediately; only
+  the row/column commit stays deferred to the next redraw.  Fixes
+  [#642](https://github.com/dakra/ghostel/issues/642).
 
 ## [0.50.0] — 2026-08-13
 
