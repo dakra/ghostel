@@ -36,6 +36,12 @@ All notable changes to this project will be documented in this file.
   `consult-line` match across soft line wraps in ghostel buffers and
   adds a `Ghostel` group to `consult-bookmark`, so the `g` narrow key
   restricts the candidates to ghostel bookmarks.
+- `M-x consult-ghostel-history` (in the `consult-ghostel` extension)
+  picks from the shell's own command history and types the selection
+  into the terminal, replacing the pending input.  Retrieval uses the
+  new core API `ghostel-shell-history-commands` / `ghostel-shell-history`:
+  bash, zsh, fish, and nushell work out of the box, remote terminals
+  query the remote host, and history managers like atuin plug in.
 - Public Lisp API for external integrations: `ghostel-create` creates and
   spawns an interactive shell terminal (reading `default-directory`, with an
   optional identity for later lookup), and `ghostel-buffer-list` /

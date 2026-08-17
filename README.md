@@ -124,8 +124,24 @@ with a prefix argument the pickers behave like `ghostel` / `ghostel-project`
 ```emacs-lisp
 (use-package consult-ghostel
   :after (ghostel consult)
-  :bind (:map ghostel-semi-char-mode-map
-         ("C-c M" . consult-ghostel-project)))
+  :demand t
+  :bind (("C-x m" . consult-ghostel)
+         :map project-prefix-map
+         ("m" . consult-ghostel-project)
+         :map ghostel-semi-char-mode-map
+         ("C-c h" . consult-ghostel-history)))
+```
+
+`consult-ghostel-history` picks from the shell's own command history and
+types the selection into the terminal, replacing what's already on the
+command line.  The history is retrieved per shell (bash, zsh, fish, and
+nushell work out of the box); users of a history manager can point their
+shell's entry in `ghostel-shell-history-commands` at it, e.g. for
+[atuin](https://atuin.sh):
+
+```emacs-lisp
+(setf (alist-get 'zsh ghostel-shell-history-commands)
+      "atuin history list --cmd-only --print0 --reverse false")
 ```
 
 Loading consult-ghostel also adds a `Ghostel` group to `consult-bookmark`

@@ -1804,8 +1804,11 @@ the way =consult-buffer= does.  The built-in =ghostel-list-buffers= uses
   :ensure t
   :after (ghostel consult)
   :demand t
-  :bind (:map ghostel-semi-char-mode-map
-         ("C-c M" . consult-ghostel-project)))
+  :bind (("C-x m" . consult-ghostel)
+         :map project-prefix-map
+         ("m" . consult-ghostel-project)
+         :map ghostel-semi-char-mode-map
+         ("C-c h" . consult-ghostel-history)))
 #+end_src
 
 Or from source (Emacs 30+); =:lisp-dir= points package-vc at this extension's
@@ -1818,8 +1821,11 @@ subdirectory inside the ghostel monorepo:
        :rev :newest)
   :after (ghostel consult)
   :demand t
-  :bind (:map ghostel-semi-char-mode-map
-         ("C-c M" . consult-ghostel-project)))
+  :bind (("C-x m" . consult-ghostel)
+         :map project-prefix-map
+         ("m" . consult-ghostel-project)
+         :map ghostel-semi-char-mode-map
+         ("C-c h" . consult-ghostel-history)))
 #+end_src
 
 - =M-x consult-ghostel= - pick any Ghostel terminal.
@@ -1854,6 +1860,21 @@ Ghostel buffers: rows joined by wrap newlines become one search candidate, so a
 path or command that wrapped mid-word is still found.  It also adds a /Ghostel/
 group to =consult-bookmark=, so the =g= narrow key restricts the candidates to
 Ghostel bookmarks ([[#bookmarks][Bookmarks]]).
+
+#+findex: consult-ghostel-history
+=M-x consult-ghostel-history= picks from the *shell's own command history* and
+types the selection into the terminal.  The typed input before the cursor
+pre-fills the minibuffer and is replaced by the selection; the entry is not
+submitted, so it stays editable at the prompt.  The history is retrieved by
+running the shell's entry from =ghostel-shell-history-commands= — bash, zsh,
+fish, and nushell work out of the box, and a remote terminal queries the
+remote host.  Users of a history manager can point their shell's entry at it,
+e.g. for [[https://atuin.sh][atuin]]:
+
+#+begin_src emacs-lisp
+(setf (alist-get 'zsh ghostel-shell-history-commands)
+      "atuin history list --cmd-only --print0 --reverse false")
+#+end_src
 
 ** Emacs Lisp input methods
 :properties:
