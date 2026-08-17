@@ -642,6 +642,30 @@ load shell integration scripts without requiring changes to the user's
 shell configuration files.  Supports bash, zsh, fish, and nushell."
   :type 'boolean)
 
+(defcustom ghostel-shell-history-commands
+  '((bash . "bash -ic 'history -r; fc -lnr 1'")
+    (zsh  . "zsh -ic 'fc -R; fc -lnr 1'")
+    (fish . "fish -c 'history -z'")
+    (nu   . "nu -c 'history | get command | reverse | to text'"))
+  "Command printing a shell's history, keyed by shell type.
+Keys are shell type symbols (`bash', `zsh', `fish', `nu').  A string
+value is run with \"/bin/sh -c\" through `process-file', so a remote
+buffer queries the remote host; it must print one history entry per
+line, newest first.  Output containing a NUL byte is split on NUL
+instead, letting multi-line entries survive (e.g. fish's `history -z').
+Entries are trimmed of surrounding whitespace.
+
+A function value is called with no arguments in the terminal's buffer
+and must return the list of entries itself, newest first.  History
+managers replace the shell's entry, e.g.:
+
+  (setf (alist-get \\='zsh ghostel-shell-history-commands)
+        \"atuin history list --cmd-only --print0 --reverse false\")
+
+Used by `ghostel-shell-history'."
+  :type '(alist :key-type symbol
+                :value-type (choice string function)))
+
 (defcustom ghostel-macos-login-shell (eq system-type 'darwin)
   "Wrap shell invocations on macOS so the shell starts as a login shell.
 
@@ -1061,6 +1085,10 @@ process that stands in for the native child when Ghostel owns the PTY.")
   "Operating-system process id for the terminal child process.
 For remote Emacs-owned processes this is whatever `process-id' returns;
 local code should not assume it is signalable unless the process is local.")
+
+(defvar-local ghostel--shell-program nil
+  "Shell program resolved at spawn time by `ghostel--start-process'.
+Nil for buffers running an arbitrary command (`ghostel-exec').")
 
 (defvar-local ghostel--event-buf nil
   "Partial native event data not yet readable as a complete Lisp form.")
@@ -4558,6 +4586,7 @@ run the shell on the remote host."
          (spawn-args (cdr spawn-spec))
          (proc (ghostel--spawn-pty spawn-program spawn-args
                                    extra-env remote-p)))
+    (setq ghostel--shell-program shell)
     (when remote-integration
       (let ((files (plist-get remote-integration :temp-files))
             (dirs (plist-get remote-integration :temp-dirs)))
@@ -5770,6 +5799,48 @@ The annotation is the terminal title, capped at
                      (truncate-string-to-width
                       title ghostel-annotation-title-width nil nil t)
                    title))))
+
+(defun ghostel--shell-history-run (command)
+  "Run shell COMMAND via `process-file' and return its parsed entries.
+Splits the output on NUL when present, else on newline; trims each
+entry and drops blanks.  Signals `user-error' on a non-zero exit,
+including the command's first stderr line."
+  (let ((stderr-file (make-temp-file "ghostel-history")))
+    (unwind-protect
+        (with-temp-buffer
+          (let ((status (process-file "/bin/sh" nil (list t stderr-file) nil
+                                      "-c" command)))
+            (unless (eql status 0)
+              (user-error "Shell history command failed (%s): %s" status
+                          (with-temp-buffer
+                            (insert-file-contents stderr-file)
+                            (buffer-substring (point-min)
+                                              (line-end-position)))))
+            (let ((output (buffer-string)))
+              (split-string output
+                            (if (string-search "\0" output) "\0" "\n")
+                            t "[ \t\r\n]+"))))
+      (delete-file stderr-file))))
+
+(defun ghostel-shell-history ()
+  "Return the current buffer's shell history, newest first.
+Runs the shell's entry from `ghostel-shell-history-commands' (which
+see for the output contract).  Signals `user-error' when the buffer's
+shell is unrecognized, no command is configured for it, the command
+fails, or the history is empty."
+  (ghostel--ensure-ghostel-buffer)
+  (let ((shell-type (and ghostel--shell-program
+                         (ghostel--detect-shell ghostel--shell-program))))
+    (unless shell-type
+      (user-error "Buffer has no recognized shell"))
+    (let ((command (alist-get shell-type ghostel-shell-history-commands)))
+      (unless command
+        (user-error
+         "No entry for `%s' in `ghostel-shell-history-commands'" shell-type))
+      (or (if (functionp command)
+              (funcall command)
+            (ghostel--shell-history-run command))
+          (user-error "History is empty")))))
 
 (defun ghostel--read-buffer (prompt bufs)
   "Prompt with PROMPT for one of BUFS via `read-buffer'.

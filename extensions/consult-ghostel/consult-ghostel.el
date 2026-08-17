@@ -19,6 +19,7 @@
 ;;
 ;;   `consult-ghostel'          all ghostel buffers
 ;;   `consult-ghostel-project'  ghostel buffers in this project
+;;   `consult-ghostel-history'  pick from the shell's command history
 ;;
 ;; Candidates are ordered for switching (recently-used first, current
 ;; buffer last) and annotated with the terminal title, and submitting a
@@ -29,6 +30,10 @@
 ;; group inside the picker offers the same default-named creation.
 ;; When marginalia is installed, the title is prepended to marginalia's
 ;; buffer annotations instead, in every buffer prompt.
+;;
+;; `consult-ghostel-history' picks from the shell's own command history
+;; (retrieved per shell via `ghostel-shell-history-commands') and types
+;; the selection into the terminal, replacing the pending command line.
 ;;
 ;; Loading also registers hidden sources in `consult-buffer' and
 ;; `consult-project-buffer': ghostel buffers already appear in the
@@ -48,8 +53,11 @@
 ;;   (use-package consult-ghostel
 ;;     :after (ghostel consult)
 ;;     :demand t
-;;     :bind (:map ghostel-semi-char-mode-map
-;;            ("C-c M" . consult-ghostel-project)))
+;;     :bind (("C-x m" . consult-ghostel)
+;;            :map project-prefix-map
+;;            ("m" . consult-ghostel-project)
+;;            :map ghostel-semi-char-mode-map
+;;            ("C-c h" . consult-ghostel-history)))
 
 ;;; Code:
 
@@ -58,8 +66,8 @@
 (require 'ghostel)
 (require 'marginalia nil 'noerror)
 
-(defvar consult-ghostel-history nil
-  "Minibuffer history for the `consult-ghostel' commands.")
+(defvar consult-ghostel--buffer-history nil
+  "Minibuffer history for the buffer-picking `consult-ghostel' commands.")
 
 (defun consult-ghostel--pairs (buffers)
   "Return `consult' (name . buffer) pairs for BUFFERS, switch-ordered.
@@ -184,7 +192,7 @@ first source's `:new' handler."
     (consult--multi sources
                     :require-match (confirm-nonexistent-file-or-buffer)
                     :prompt prompt
-                    :history 'consult-ghostel-history
+                    :history 'consult-ghostel--buffer-history
                     :sort nil)))
 
 ;;;###autoload
@@ -221,6 +229,102 @@ with ARG.  Project membership is determined by
     (consult-ghostel--switch
      '(consult-ghostel-project-source consult-ghostel-project-source-new)
      "Project ghostel buffer: ")))
+
+;;; Shell command history
+
+;; Defined in ghostel-line-mode.el, which loads on first line-mode use.
+(defvar ghostel--line-input-start)
+(defvar ghostel--line-input-end)
+
+(defvar consult-ghostel--shell-history nil
+  "Minibuffer history for `consult-ghostel-history'.")
+
+(defun consult-ghostel--input-start (cursor)
+  "Return where the pending input on CURSOR's logical line begins, or nil.
+The prompt sits on the logical line's first row, bounding input that
+soft-wraps onto continuation rows; when that row shows no prompt,
+falls back to `ghostel-input-start-point'."
+  (save-excursion
+    (goto-char cursor)
+    (forward-line 0)
+    (let ((cursor-row (point))
+          (bol (ghostel--soft-wrap-line-beginning
+                cursor ghostel--soft-wrap-row-limit)))
+      (if (= bol cursor-row)
+          (ghostel-input-start-point)
+        (goto-char bol)
+        (let* ((eol (line-end-position))
+               (pos eol))
+          ;; Input begins after the rightmost `ghostel-prompt' char
+          ;; (as in `ghostel-input-start-point').
+          (while (and (> pos bol)
+                      (not (get-text-property (1- pos) 'ghostel-prompt)))
+            (setq pos (1- pos)))
+          (cond ((> pos bol) pos)
+                ((ghostel--regex-prompt-end eol))
+                ((ghostel-input-start-point))))))))
+
+(defun consult-ghostel--input-region ()
+  "Return (BEG . END) of the pending command-line input, or nil.
+In line mode this is the editable input region; otherwise the text
+between the prompt and the terminal cursor."
+  (if (eq ghostel--input-mode 'line)
+      (let ((beg (and (markerp ghostel--line-input-start)
+                      (marker-position ghostel--line-input-start)))
+            (end (and (markerp ghostel--line-input-end)
+                      (marker-position ghostel--line-input-end))))
+        (and beg end (<= beg end) (cons beg end)))
+    (let* ((end ghostel--cursor-char-pos)
+           (beg (and end (consult-ghostel--input-start end))))
+      (and beg (<= beg end) (cons beg end)))))
+
+;;;###autoload
+(defun consult-ghostel-history ()
+  "Pick a shell history entry and type it into the terminal.
+The typed input before the cursor pre-fills the minibuffer.  Ctrl-C
+aborts the pending line and the entry is pasted at the fresh prompt —
+not submitted, so it stays editable.  Refuses while a command is
+running (the Ctrl-C would interrupt it); detecting that needs shell
+integration's OSC 133 marks.  History comes from
+`ghostel-shell-history-commands'.  In `ghostel-line-mode' the
+editable input region is replaced in the buffer instead."
+  (interactive)
+  (when ghostel--command-running
+    (user-error "The shell is busy running a command"))
+  (let* ((history (consult--remove-dups (ghostel-shell-history)))
+         (region (consult-ghostel--input-region))
+         ;; The wrap newlines in a soft-wrapped pending line are buffer
+         ;; artifacts, not typed characters; keep them out of `:initial'.
+         (input (and region
+                     (if (eq ghostel--input-mode 'line)
+                         (buffer-substring-no-properties
+                          (car region) (cdr region))
+                       (car (ghostel--wrap-joined-region
+                             (car region) (cdr region)
+                             ghostel--soft-wrap-row-limit)))))
+         (entry (consult--read history
+                               :prompt "Shell history: "
+                               :initial input
+                               :history 'consult-ghostel--shell-history
+                               :require-match t
+                               :sort nil))
+         ;; Terminal output arriving during selection moves the input
+         ;; region, so re-read it rather than trusting the snapshot.
+         (region (consult-ghostel--input-region)))
+    (if (and (eq ghostel--input-mode 'line) region)
+        (progn
+          (delete-region (car region) (cdr region))
+          (goto-char (car region))
+          (insert entry))
+      (when (memq ghostel--input-mode '(copy emacs))
+        (ghostel-readonly-exit))
+      ;; Ctrl-C aborts the pending line and lands every line editor on
+      ;; a fresh insert-mode prompt.  Erasing in place is not portable:
+      ;; readline's vi command mode binds neither backspace-as-erase
+      ;; nor bracketed paste, and executes raw bytes as vi commands.
+      ;; The paste keeps an embedded newline from acting as Enter.
+      (ghostel-send-key "c" "ctrl")
+      (ghostel-paste-string entry))))
 
 ;;; Marginalia integration
 

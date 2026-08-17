@@ -23,9 +23,20 @@ Install from [MELPA](https://melpa.org/#/consult-ghostel):
 (use-package consult-ghostel
   :after (ghostel consult)
   :demand t
-  :bind (:map ghostel-semi-char-mode-map
-         ("C-c M" . consult-ghostel-project)))
+  :bind (("C-x m" . consult-ghostel)
+         :map project-prefix-map
+         ("m" . consult-ghostel-project)
+         :map ghostel-semi-char-mode-map
+         ("C-c h" . consult-ghostel-history)))
 ```
+
+`M-x consult-ghostel-history` picks from the shell's own command history
+and types the selection into the terminal: the typed input before the
+cursor pre-fills the minibuffer and is replaced by the selection, which
+stays editable at the prompt. The history is retrieved per shell via
+`ghostel-shell-history-commands` (bash, zsh, fish, and nushell work out
+of the box; remote terminals query the remote host; history managers
+like [atuin](https://atuin.sh) plug in through the same alist).
 
 Loading the package also registers hidden sources in the regular
 `consult-buffer` lists: ghostel buffers stay in the default *Buffer*

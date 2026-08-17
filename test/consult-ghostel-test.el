@@ -253,6 +253,105 @@ the instance suffix."
           (should (= (alist-get 'instance (cdr spawned)) 2)))
       (kill-buffer existing))))
 
+;;; Shell command history
+
+(ert-deftest consult-ghostel-test-history-input-region ()
+  "The pending input spans prompt end to cursor on the cursor's row."
+  (with-temp-buffer
+    (setq major-mode 'ghostel-mode)
+    (setq-local ghostel--input-mode 'semi-char)
+    (insert (propertize "$ " 'ghostel-prompt t) "echo fo")
+    (setq-local ghostel--cursor-char-pos (point-max))
+    (should (equal (consult-ghostel--input-region)
+                   (cons 3 (point-max))))))
+
+(ert-deftest consult-ghostel-test-history-input-region-wrapped ()
+  "A cursor on a continuation row still finds the prompt rows above."
+  (with-temp-buffer
+    (setq major-mode 'ghostel-mode)
+    (setq-local ghostel--input-mode 'semi-char)
+    (insert (propertize "$ " 'ghostel-prompt t) "echo wraps")
+    (insert (propertize "\n" 'ghostel-wrap t) "over")
+    (setq-local ghostel--cursor-char-pos (point-max))
+    (should (equal (consult-ghostel--input-region)
+                   (cons 3 (point-max))))))
+
+(ert-deftest consult-ghostel-test-history-replaces-input ()
+  "Selecting aborts the pending line with Ctrl-C and pastes the entry.
+Wrap newlines inside the pending input are buffer artifacts and stay
+out of the `:initial' text."
+  (with-temp-buffer
+    (setq major-mode 'ghostel-mode)
+    (setq-local ghostel--input-mode 'semi-char)
+    (insert (propertize "$ " 'ghostel-prompt t) "echo wraps")
+    (insert (propertize "\n" 'ghostel-wrap t) "over")
+    (setq-local ghostel--cursor-char-pos (point-max))
+    (let (keys pasted read-args)
+      (cl-letf (((symbol-function 'ghostel-shell-history)
+                 (lambda () '("make -j8" "ls")))
+                ((symbol-function 'ghostel-send-key)
+                 (lambda (key &optional mods) (push (cons key mods) keys)))
+                ((symbol-function 'ghostel-paste-string)
+                 (lambda (s) (setq pasted s)))
+                ((symbol-function 'consult--read)
+                 (lambda (cands &rest opts)
+                   (setq read-args (cons cands opts))
+                   "make -j8")))
+        (consult-ghostel-history))
+      (should (equal (car read-args) '("make -j8" "ls")))
+      (should (equal (plist-get (cdr read-args) :initial) "echo wrapsover"))
+      (should (equal keys '(("c" . "ctrl"))))
+      (should (equal pasted "make -j8")))))
+
+(ert-deftest consult-ghostel-test-history-refuses-while-running ()
+  "The command refuses to run while a shell command is running.
+Its Ctrl-C line abort would interrupt the command."
+  (with-temp-buffer
+    (setq major-mode 'ghostel-mode)
+    (setq-local ghostel--command-running t)
+    (should-error (consult-ghostel-history) :type 'user-error)))
+
+(ert-deftest consult-ghostel-test-history-line-mode-inserts ()
+  "In line mode the entry replaces the editable input region in-buffer."
+  (with-temp-buffer
+    (setq major-mode 'ghostel-mode)
+    (setq-local ghostel--input-mode 'line)
+    (insert "$ old")
+    (setq-local ghostel--line-input-start (copy-marker 3))
+    (setq-local ghostel--line-input-end (copy-marker (point-max) t))
+    (cl-letf (((symbol-function 'ghostel-shell-history)
+               (lambda () '("new one")))
+              ((symbol-function 'consult--read)
+               (lambda (&rest _) "new one")))
+      (consult-ghostel-history))
+    (should (equal (buffer-string) "$ new one"))
+    (should (= (marker-position ghostel--line-input-end) (point-max)))))
+
+(ert-deftest consult-ghostel-test-history-multiline-pastes ()
+  "A multi-line entry arrives intact through the paste.
+Sent raw, its embedded newlines would act as Enter."
+  (with-temp-buffer
+    (setq major-mode 'ghostel-mode)
+    (setq-local ghostel--input-mode 'semi-char)
+    (insert (propertize "$ " 'ghostel-prompt t))
+    (setq-local ghostel--cursor-char-pos (point-max))
+    (let ((entry "for f in *\necho $f\nend")
+          pasted)
+      (cl-letf (((symbol-function 'ghostel-shell-history)
+                 (lambda () (list entry)))
+                ((symbol-function 'ghostel-send-key) #'ignore)
+                ((symbol-function 'ghostel-paste-string)
+                 (lambda (s) (setq pasted s)))
+                ((symbol-function 'consult--read)
+                 (lambda (&rest _) entry)))
+        (consult-ghostel-history))
+      (should (equal pasted entry)))))
+
+(ert-deftest consult-ghostel-test-history-requires-ghostel-buffer ()
+  "Outside a ghostel buffer the command refuses to run."
+  (with-temp-buffer
+    (should-error (consult-ghostel-history) :type 'user-error)))
+
 ;;; consult-line over logical lines
 
 (ert-deftest consult-ghostel-test-line-candidates-advice-installed ()
