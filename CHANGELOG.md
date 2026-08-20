@@ -4,7 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.51.0] — 2026-08-20
+
 ### Added
+- The xterm window-title stack (`CSI 22 t` / `CSI 23 t`) is supported:
+  a program that saves the title, sets its own, and restores it on
+  exit gets the previous title back.  Vim with `'title'` set no longer
+  leaves "Thanks for flying Vim" stuck in the mode line after quitting.
 - Ghostel buffers survive `desktop-save-mode` restarts.  A saved
   terminal records its working directory and identity and
   `desktop-read` starts a fresh shell in that directory under the
@@ -42,6 +48,17 @@ All notable changes to this project will be documented in this file.
   under the pointer; previously the drop acted on the selected window's
   buffer, so dropping onto an unselected terminal window went to the
   wrong buffer or nowhere.  Char mode accepts drag-and-drop now as well.
+- A terminal reset (`reset(1)`, ESC c) now clears a stale window title
+  from the mode line and removes a stuck OSC 9;4 progress indicator;
+  previously both survived the reset.
+- Exiting a minibuffer command that merely switches to a ghostel buffer
+  (e.g. `consult-buffer`, `C-x b`) no longer risks freezing the buffer
+  into read-only copy mode: the point-leave check now runs only when
+  the minibuffer was entered from that same terminal, so a stale
+  restored window point can't trigger it on arrival.
+- `ghostel-send-next-key` (`C-q`) now honours
+  `ghostel-readonly-fast-exit`: sending a key from copy or emacs mode
+  first exits the read-only mode, like typing does.
 
 ## [0.50.0] — 2026-08-13
 
