@@ -8,13 +8,16 @@ export EMACSFLAGS
 XDG_CACHE_HOME ?= $(HOME)/.cache
 MELPAZOID_DIR  ?= $(XDG_CACHE_HOME)/melpazoid
 EVIL_DIR       ?= $(XDG_CACHE_HOME)/evil
+CONSULT_DIR    ?= $(XDG_CACHE_HOME)/consult
+MARGINALIA_DIR ?= $(XDG_CACHE_HOME)/marginalia
 LINT_ELPA_DIR  ?= $(XDG_CACHE_HOME)/ghostel-lint-elpa
 LINT_DEPS_STAMP := $(LINT_ELPA_DIR)/.deps-installed
 DOC_ELPA_DIR   ?= $(XDG_CACHE_HOME)/ghostel-doc-elpa
 DOC_DEPS_STAMP := $(DOC_ELPA_DIR)/.deps-installed
 
 ELISP_FILES := $(filter-out %-autoloads.el,$(wildcard lisp/ghostel*.el) \
-                                      $(wildcard extensions/evil-ghostel/*.el))
+                                      $(wildcard extensions/evil-ghostel/*.el) \
+                                      $(wildcard extensions/consult-ghostel/*.el))
 PACKAGE_FILES := $(shell grep -l '^;; Package-Requires:' $(ELISP_FILES) 2>/dev/null)
 CORE_PACKAGE_FILE := $(firstword $(filter lisp/%,$(PACKAGE_FILES)))
 ELISP := $(CORE_PACKAGE_FILE) $(filter-out $(CORE_PACKAGE_FILE),$(ELISP_FILES))
@@ -54,12 +57,12 @@ ZIG_BUILD_FLAGS := --prefix . -Doptimize=ReleaseFast -Dcpu=baseline $(ZIG_TARGET
 ZIG_SOURCES := $(wildcard src/*.zig src/*.c build.zig build.zig.zon symbols.map) \
                $(wildcard vendor/*.h)
 
-.PHONY: all build test test-native test-zig test-hypothesis test-hypothesis-cases test-all test-evil lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel byte-compile checkdoc docquotes package-lint bench bench-quick bench-e2e bench-tui-partial html clean regen-terminfo
+.PHONY: all build test test-native test-zig test-hypothesis test-hypothesis-cases test-all test-evil test-consult lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel melpazoid-consult-ghostel byte-compile checkdoc docquotes package-lint bench bench-quick bench-e2e bench-tui-partial html clean regen-terminfo
 
 # Recommended invocation: `make -j$(nproc) all' on Linux,
 # `make -j$(sysctl -n hw.ncpu) all' on macOS.  GNU make 4+ also accepts
 # bare `-j' (unlimited); pair with `-l$(nproc)' to cap by load.
-all: build test-all test-evil lint
+all: build test-all test-evil test-consult lint
 
 build: $(MODULE)
 
@@ -82,16 +85,26 @@ test-hypothesis-cases: build
 lisp/%.elc: lisp/%.el
 	$(EMACS) --batch $(EMACSFLAGS) -Q -L lisp --eval "(setq byte-compile-error-on-warn t load-prefer-newer t)" -f batch-byte-compile $<
 
-# Extension packages depend on third-party libraries; reuse the evil
-# checkout that `test-evil' manages.
+# Extension packages depend on third-party libraries; reuse the
+# checkouts that `test-evil' / `test-consult' manage.
 $(EVIL_DIR):
 	git clone --depth 1 https://github.com/emacs-evil/evil.git "$@"
+
+$(CONSULT_DIR):
+	git clone --depth 1 https://github.com/minad/consult.git "$@"
+
+$(MARGINALIA_DIR):
+	git clone --depth 1 https://github.com/minad/marginalia.git "$@"
 
 # Depend on the core .elc files: `require' prefers a stale core .elc over
 # the fresh .el, so a parallel build could otherwise compile the extension
 # before a core function it uses exists in the loaded bytecode.
 extensions/evil-ghostel/%.elc: extensions/evil-ghostel/%.el $(filter lisp/%.elc,$(ELC)) | $(EVIL_DIR)
 	$(EMACS) --batch $(EMACSFLAGS) -Q -L "$(EVIL_DIR)" -L lisp -L extensions/evil-ghostel \
+		--eval "(setq byte-compile-error-on-warn t load-prefer-newer t)" -f batch-byte-compile $<
+
+extensions/consult-ghostel/%.elc: extensions/consult-ghostel/%.el $(filter lisp/%.elc,$(ELC)) | $(CONSULT_DIR) $(MARGINALIA_DIR)
+	$(EMACS) --batch $(EMACSFLAGS) -Q -L "$(CONSULT_DIR)" -L "$(MARGINALIA_DIR)" -L lisp -L extensions/consult-ghostel \
 		--eval "(setq byte-compile-error-on-warn t load-prefer-newer t)" -f batch-byte-compile $<
 
 # Per-topic test files.  Each file becomes its own Make target with a
@@ -133,6 +146,10 @@ test-all: test test-zig test-native
 test-evil: build $(ELC) | $(EVIL_DIR)
 	$(EMACS) --batch $(EMACSFLAGS) -Q -L "$(EVIL_DIR)" -L lisp -L extensions/evil-ghostel \
 		-l ert -l test/evil-ghostel-test.el -f evil-ghostel-test-run
+
+test-consult: $(ELC) | $(CONSULT_DIR) $(MARGINALIA_DIR)
+	$(EMACS) --batch $(EMACSFLAGS) -Q -L "$(CONSULT_DIR)" -L "$(MARGINALIA_DIR)" -L lisp -L extensions/consult-ghostel \
+		-l ert -l test/consult-ghostel-test.el -f consult-ghostel-test-run
 
 byte-compile: $(ELC)
 
@@ -201,7 +218,7 @@ docquotes: $(DOCQUOTE_FILES)
 	$(EMACS) --batch $(EMACSFLAGS) -Q -l $(LINT_HELPERS) \
 		-f ghostel-lint-docquotes $(DOCQUOTE_FILES)
 
-melpazoid: melpazoid-ghostel melpazoid-evil-ghostel
+melpazoid: melpazoid-ghostel melpazoid-evil-ghostel melpazoid-consult-ghostel
 
 $(MELPAZOID_DIR):
 	git clone https://github.com/riscy/melpazoid.git "$@"
@@ -213,6 +230,11 @@ melpazoid-ghostel: | $(MELPAZOID_DIR)
 
 melpazoid-evil-ghostel: | $(MELPAZOID_DIR)
 	RECIPE='(evil-ghostel :fetcher github :repo "dakra/ghostel" :files ("extensions/evil-ghostel/evil-ghostel.el"))' \
+		LOCAL_REPO=$(CURDIR) \
+		make -C "$(MELPAZOID_DIR)"
+
+melpazoid-consult-ghostel: | $(MELPAZOID_DIR)
+	RECIPE='(consult-ghostel :fetcher github :repo "dakra/ghostel" :files ("extensions/consult-ghostel/consult-ghostel.el"))' \
 		LOCAL_REPO=$(CURDIR) \
 		make -C "$(MELPAZOID_DIR)"
 

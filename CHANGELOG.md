@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- New `consult-ghostel` extension package (under
+  `extensions/consult-ghostel/`): `M-x consult-ghostel` and
+  `M-x consult-ghostel-project` pick a ghostel terminal through `consult`
+  with live preview as you move through the candidate list — unlike the
+  built-in `ghostel-list-buffers`, which uses `read-buffer` and does not
+  preview.  Candidates are switch-ordered (recently-used first, current
+  buffer last), and submitting a name that matches no buffer creates a
+  new terminal; with a prefix argument the commands behave like
+  `ghostel` / `ghostel-project` instead, and a `New` picker group
+  offers the same default-named creation.  The `-hidden` source
+  variants are registered in `consult-buffer-sources` /
+  `consult-project-buffer-sources` at load, so the `g` narrow key
+  summons ghostel buffers in the global pickers.  Loading the package additionally makes
+  `consult-line` match across soft line wraps in ghostel buffers and
+  adds a `Ghostel` group to `consult-bookmark`, so the `g` narrow key
+  restricts the candidates to ghostel bookmarks.
+- `M-x consult-ghostel-history` (in the `consult-ghostel` extension)
+  picks from the shell's own command history and types the selection
+  into the terminal, replacing the pending input.  Retrieval uses the
+  new core API `ghostel-shell-history-commands` / `ghostel-shell-history`:
+  bash, zsh, fish, and nushell work out of the box, remote terminals
+  query the remote host, and history managers like atuin plug in.
+- Public Lisp API for external integrations: `ghostel-create` creates and
+  spawns an interactive shell terminal (reading `default-directory`, with an
+  optional identity for later lookup), and `ghostel-buffer-list` /
+  `ghostel-project-buffer-list` return the live ghostel buffers (all /
+  project-scoped).  These join the existing public `ghostel-exec` (run a
+  specific program in a TTY) and `ghostel-send-string` / `ghostel-send-key`.
+
 ## [0.51.0] — 2026-08-20
 
 ### Added
