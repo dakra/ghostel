@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Directory tracking no longer corrupts or silently stalls on paths
+  containing `#` or percent-escapes.  The bash and zsh integrations
+  report the cwd with kitty's `kitty-shell-cwd://` OSC 7 scheme (path
+  sent verbatim) and fish percent-encodes its `file://` report,
+  matching ghostty; ghostel percent-decodes `file://` reports, so
+  escaped reports from foreign integrations (vte.sh, WezTerm) resolve
+  correctly, takes `kitty-shell-cwd://` paths as-is, and keeps raw
+  `#`/`?` in the path under either scheme.  For
+  emitters that escape only control characters (nushell) or nothing
+  at all (older ghostel scripts on remote hosts), a local directory
+  whose literal name looks percent-encoded still resolves via a
+  raw-spelling fallback; remote (TRAMP) reports of such names need
+  the updated scripts.
+
 ## [0.51.0] — 2026-08-20
 
 ### Added

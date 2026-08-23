@@ -38,9 +38,11 @@ else
     __ghostel_host=$HOSTNAME
 fi
 
-# Report working directory to the terminal via OSC 7
+# Report working directory via OSC 7.  kitty's kitty-shell-cwd://
+# scheme carries the path verbatim; ghostty and kitty parse it too
+# when this script runs under them.
 __ghostel_osc7() {
-    printf '\e]7;file://%s%s\a' "$__ghostel_host" "$PWD"
+    printf '\e]7;kitty-shell-cwd://%s%s\a' "$__ghostel_host" "$PWD"
 }
 
 # --- Semantic prompt markers (OSC 133) ---

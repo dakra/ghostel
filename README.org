@@ -1195,9 +1195,10 @@ The two-clause gate covers both ways a remote ghostel shell can be reached:
 False positives - situations where the second clause matches but the session is
 not actually ghostel - include any =ssh= from a non-ghostel ghostty terminal,
 nested ssh hops carrying the same =TERM= through, and anyone who manually exports
-=TERM=xterm-ghostty=.  Sourcing the integration in those cases is harmless (OSC 7
-/ OSC 133 work in plain ghostty too; =ghostel_cmd= becomes a no-op without ghostel
-on the other end).
+=TERM=xterm-ghostty=.  Sourcing the integration in those cases is harmless: OSC 7
+/ OSC 133 work in plain ghostty and kitty too (the cwd report uses kitty's
+=kitty-shell-cwd://= scheme, which other terminals ignore), and =ghostel_cmd=
+becomes a no-op without ghostel on the other end.
 
 If you customize =ghostel-term= to something other than =xterm-ghostty=, the
 second clause will not match.  Drop it and rely on TRAMP-launched ghostel for

@@ -3615,28 +3615,62 @@ Kept in Elisp so input modes and integrations can decide whether
 
 (defun ghostel--update-directory (dir)
   "Update `default-directory' from terminal's OSC 7 report.
-DIR may be a file:// URL or a plain path.  When the hostname in a
-file:// URL does not match the local machine, construct a TRAMP path."
+DIR may be a kitty-shell-cwd:// URL (raw, unencoded path), a file://
+URL (path percent-decoded), or a plain path.  When the hostname in a
+URL does not match the local machine, construct a TRAMP path."
   (when (and dir (not (equal dir ghostel--last-directory)))
     (setq ghostel--last-directory dir)
-    (let (path)
-      (if (string-prefix-p "file://" dir)
-          (let* ((url (url-generic-parse-url dir))
-                 (host (url-host url))
-                 (filename (url-filename url)))
-            (if (ghostel--local-host-p host)
-                (setq path filename)
-              ;; Remote host — construct a TRAMP path.
-              ;; Reuse the full remote prefix from default-directory
-              ;; when available (preserves multi-hop, method, user).
-              (let ((prefix (file-remote-p default-directory)))
-                (setq path (if prefix
-                               (concat prefix filename)
-                             (format "/%s:%s:%s"
-                                     (or ghostel-tramp-default-method
-                                         tramp-default-method)
-                                     host filename))))))
-        (setq path dir))
+    (let (host raw filename path)
+      (cond
+       ;; Split scheme://host/path by hand: `url-generic-parse-url' would treat
+       ;; `#'/`?' in the path as fragment/query, but emitters that don't escape
+       ;; them (kitty-shell-cwd verbatim contract, nushell) send them literally.
+       ((string-match "\\`\\(kitty-shell-cwd\\|file\\)://" dir)
+        (let* ((rest (substring dir (match-end 0)))
+               (slash (string-search "/" rest)))
+          (when slash
+            ;; Downcased like `url-host' - a mixed-case hostname must
+            ;; not fork the TRAMP connection identity.
+            (setq host (downcase (substring rest 0 slash))
+                  raw (substring rest slash)
+                  filename
+                  (if (equal (match-string 1 dir) "kitty-shell-cwd")
+                      raw
+                    ;; The encode step keeps `url-unhex-string' from
+                    ;; mangling multibyte text that arrived unescaped;
+                    ;; utf-8-unix stops eol detection from rewriting a
+                    ;; %0D carriage return to LF.
+                    (let ((decoded (decode-coding-string
+                                    (url-unhex-string
+                                     (encode-coding-string raw 'utf-8) t)
+                                    'utf-8-unix)))
+                      ;; %00 never names a real directory, and a NUL
+                      ;; would make `file-directory-p' signal.
+                      (if (string-match-p "\0" decoded) raw decoded)))))))
+       ;; A URI with an unrecognized scheme is not a plain path (OSC 9;9).
+       ((string-match-p "\\`[[:alpha:]][[:alnum:]+.-]*://" dir)
+        (message "ghostel: ignoring OSC 7 report with unknown scheme: %s"
+                 (truncate-string-to-width dir 40)))
+       (t (setq path dir)))
+      (when filename
+        (if (ghostel--local-host-p host)
+            ;; Emitters that don't escape `%' (nushell) send `%XX' literally.
+            ;; When only the raw spelling names a directory, it is the real one.
+            (setq path (if (and raw
+                                (not (file-directory-p filename))
+                                (file-directory-p raw))
+                           raw
+                         filename))
+          ;; Remote host - construct a TRAMP path.
+          ;; Reuse the full remote prefix from default-directory
+          ;; when available (preserves multi-hop, method, user).
+          (let ((prefix (file-remote-p default-directory)))
+            (setq path (if prefix
+                           (concat prefix filename)
+                         (format "/%s:%s:%s"
+                                 (or ghostel-tramp-default-method
+                                     tramp-default-method)
+                                 host filename))))))
       (when (and path (not (string= path "")))
         (if (file-remote-p path)
             ;; Trust the shell's report; skip file-directory-p to avoid

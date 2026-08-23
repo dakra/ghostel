@@ -18,8 +18,10 @@ functions -q __ghostel_osc7; and return
 # In fish 3.0+, $hostname is gethostname(2) verbatim, matching
 # Emacs `system-name'. The local-host check needs exactly this,
 # not an FQDN-canonicalized value like zsh's $HOST.
+# The path is percent-encoded (string escape --style=url, fish 2.7+)
+# so `#', `?', and `%' survive the file:// URI parse.
 function __ghostel_osc7 --on-event fish_prompt
-    printf '\e]7;file://%s%s\a' "$hostname" "$PWD"
+    printf '\e]7;file://%s%s\a' "$hostname" (string escape --style=url "$PWD")
 end
 
 # --- Semantic prompt markers (OSC 133) ---

@@ -307,6 +307,90 @@ skips it), and `--execute' enters an interactive shell."
       (ghostel--update-directory file-url)
       (should (equal old ghostel--last-directory)))))       ; dedup
 
+(ert-deftest ghostel-test-update-directory-kitty-scheme ()
+  "OSC 7 kitty-shell-cwd:// reports carry the path verbatim.
+`#', `?', and `%XX' stay literal."
+  :tags '(posix)
+  (let* ((host (system-name))
+         (base (make-temp-file "ghostel-osc7-" t))
+         (weird (expand-file-name "a#b?c%20d" base)))
+    (unwind-protect
+        (progn
+          (make-directory weird)
+          (let ((ghostel--last-directory nil)
+                (default-directory temporary-file-directory)
+                list-buffers-directory)
+            (ghostel--update-directory
+             (concat "kitty-shell-cwd://" host weird))
+            (should (equal (file-name-as-directory weird)
+                           default-directory)))
+          ;; Scheme without a path is ignored.
+          (let ((ghostel--last-directory nil)
+                (default-directory temporary-file-directory)
+                list-buffers-directory)
+            (ghostel--update-directory (concat "kitty-shell-cwd://" host))
+            (should (equal temporary-file-directory default-directory))))
+      (delete-directory base t))))
+
+(ert-deftest ghostel-test-update-directory-kitty-scheme-remote ()
+  "A report from a foreign host builds a TRAMP path with `#' intact."
+  (let ((ghostel-tramp-default-method "ssh"))
+    (dolist (uri '("kitty-shell-cwd://otherhost.example.com/tmp/a b#c"
+                   "file://otherhost.example.com/tmp/a b#c"))
+      (let ((ghostel--last-directory nil)
+            (default-directory temporary-file-directory)
+            list-buffers-directory)
+        (ghostel--update-directory uri)
+        (should (equal "/ssh:otherhost.example.com:/tmp/a b#c/"
+                       default-directory))))))
+
+(ert-deftest ghostel-test-update-directory-file-url-decodes ()
+  "OSC 7 file:// reports are percent-decoded, UTF-8 aware.
+Unescaped ASCII input round-trips unchanged, raw `#' and `?' stay in
+the path, `%0D' decodes to a carriage return, and when only the raw
+`%XX' spelling names a directory the raw spelling wins."
+  :tags '(posix)
+  (let* ((host (system-name))
+         (base (make-temp-file "ghostel-osc7-" t))
+         (spaced (expand-file-name "a b" base))
+         (unicode (expand-file-name "päth" base))
+         (percent (expand-file-name "50%off" base))
+         (rawonly (expand-file-name "e%20f" base))
+         (hashed (expand-file-name "f#g?h" base))
+         (creturn (expand-file-name "cr\rq" base)))
+    (unwind-protect
+        (progn
+          (dolist (d (list spaced unicode percent rawonly hashed creturn))
+            (make-directory d))
+          (cl-flet ((track (uri)
+                      (let ((ghostel--last-directory nil)
+                            (default-directory temporary-file-directory)
+                            list-buffers-directory)
+                        (ghostel--update-directory uri)
+                        default-directory)))
+            (should (equal (file-name-as-directory spaced)
+                           (track (concat "file://" host base "/a%20b"))))
+            (should (equal (file-name-as-directory unicode)
+                           (track (concat "file://" host base "/p%C3%A4th"))))
+            (should (equal (file-name-as-directory percent)
+                           (track (concat "file://" host base "/50%25off"))))
+            (should (equal (file-name-as-directory spaced)
+                           (track (concat "file://" host spaced))))
+            ;; Only the literal "e%20f" exists — raw spelling wins.
+            (should (equal (file-name-as-directory rawonly)
+                           (track (concat "file://" host rawonly))))
+            ;; Both "a b" and a literal "a%20b" exist — decoded wins.
+            (make-directory (expand-file-name "a%20b" base))
+            (should (equal (file-name-as-directory spaced)
+                           (track (concat "file://" host base "/a%20b"))))
+            ;; Raw `#'/`?' stay in the path.
+            (should (equal (file-name-as-directory hashed)
+                           (track (concat "file://" host hashed))))
+            ;; %0D is a carriage return, not eol-converted to LF.
+            (should (equal (file-name-as-directory creturn)
+                           (track (concat "file://" host base "/cr%0Dq"))))))
+      (delete-directory base t))))
+
 (ert-deftest ghostel-test-list-buffers-directory ()
   "Test that `ghostel-mode' exposes cwd via `list-buffers-directory'."
   (let ((default-directory (file-name-as-directory
@@ -354,8 +438,8 @@ the buffer is misclassified as remote, switching on TRAMP."
                      (call-process "bash" nil (current-buffer) nil
                                    "--noprofile" "--norc" "-c" probe)
                      (buffer-string))))
-      ;; Probe emits: \e]7;file://HOST/\a
-      (should (string-match "\e\\]7;file://\\([^/]*\\)/" output))
+      ;; Probe emits: \e]7;kitty-shell-cwd://HOST/\a
+      (should (string-match "\e\\]7;kitty-shell-cwd://\\([^/]*\\)/" output))
       (let ((emitted (match-string 1 output)))
         ;; Polluted $HOSTNAME must not appear in the OSC 7 host.
         (should-not (equal emitted fake))
@@ -632,14 +716,67 @@ would) and puts a fake `hostname' on PATH; the integration must emit the fake
                              (call-process "zsh" nil (current-buffer) nil
                                            "-f" "-c" probe)
                              (buffer-string))))
-              ;; Probe emits: \e]7;file://HOST/\a
-              (should (string-match "\e\\]7;file://\\([^/]*\\)/" output))
+              ;; Probe emits: \e]7;kitty-shell-cwd://HOST/\a
+              (should (string-match "\e\\]7;kitty-shell-cwd://\\([^/]*\\)/" output))
               (let ((emitted (match-string 1 output)))
                 ;; Reports gethostname(2) (the fake `hostname'), …
                 (should (equal emitted fake))
                 ;; … not the canonicalized $HOST FQDN.
                 (should-not (equal emitted fqdn)))))
         (delete-directory bindir t)))))
+
+(ert-deftest ghostel-test-bash-osc7-weird-path-round-trip ()
+  "A `#'/`%'/space path survives bash's OSC 7 into `default-directory'."
+  :tags '(posix)
+  (skip-unless (executable-find "bash"))
+  (let* ((root (or (ghostel--resource-root)
+                   (file-name-directory (locate-library "ghostel"))))
+         (shell-bash (expand-file-name "etc/shell/ghostel.bash" root)))
+    (skip-unless (file-exists-p shell-bash))
+    (let* ((base (make-temp-file "ghostel-osc7-" t))
+           (dir (expand-file-name "a b#c%d" base)))
+      (unwind-protect
+          (progn
+            (make-directory dir)
+            (let ((output (with-temp-buffer
+                            (call-process "bash" nil (current-buffer) nil
+                                          "--noprofile" "--norc" "-c"
+                                          (format "cd '%s'; source '%s'; __ghostel_osc7"
+                                                  dir shell-bash))
+                            (buffer-string))))
+              (should (string-match "\e\\]7;\\([^\a]*\\)\a" output))
+              (let ((ghostel--last-directory nil)
+                    (default-directory temporary-file-directory)
+                    list-buffers-directory)
+                (ghostel--update-directory (match-string 1 output))
+                (should (equal (file-name-as-directory dir)
+                               default-directory)))))
+        (delete-directory base t)))))
+
+(ert-deftest ghostel-test-fish-osc7-percent-encodes-path ()
+  "Fish OSC 7 percent-encodes $PWD so `#'/`%'/spaces survive the URI parse."
+  :tags '(:fish posix)
+  (skip-unless (executable-find "fish"))
+  (let* ((root (or (ghostel--resource-root)
+                   (file-name-directory (locate-library "ghostel"))))
+         (shell-fish (expand-file-name "etc/shell/ghostel.fish" root)))
+    (skip-unless (file-exists-p shell-fish))
+    (let* ((base (make-temp-file "ghostel-osc7-" t))
+           (dir (expand-file-name "a b#c%d" base)))
+      (unwind-protect
+          (progn
+            (make-directory dir)
+            (let ((output (with-temp-buffer
+                            (call-process "fish" nil (current-buffer) nil
+                                          "--no-config" "-c"
+                                          (format "cd '%s'; source '%s'; __ghostel_osc7"
+                                                  dir shell-fish))
+                            (buffer-string))))
+              (should (string-match "\e\\]7;file://[^/]*\\(/[^\a]*\\)\a"
+                                    output))
+              (should (string-suffix-p "/a%20b%23c%25d"
+                                       (match-string 1 output)))))
+        (delete-directory base t)))))
 
 (ert-deftest ghostel-test-zsh-line-init-fallback-no-fresh-line ()
   "Use 133;P (not 133;A) in the `zle-line-init' fallback emit.

@@ -26,10 +26,12 @@
 __ghostel_host=$(command hostname 2>/dev/null) || __ghostel_host=$HOST
 [[ -n $__ghostel_host ]] || __ghostel_host=$HOST
 
-# Report working directory to the terminal via OSC 7
+# Report working directory via OSC 7.  kitty's kitty-shell-cwd://
+# scheme carries the path verbatim; ghostty and kitty parse it too
+# when this script runs under them.
 __ghostel_osc7() {
     builtin emulate -L zsh -o no_warn_create_global -o no_aliases
-    builtin printf '\e]7;file://%s%s\a' "$__ghostel_host" "$PWD"
+    builtin printf '\e]7;kitty-shell-cwd://%s%s\a' "$__ghostel_host" "$PWD"
 }
 
 # --- Semantic prompt markers (OSC 133) ---
