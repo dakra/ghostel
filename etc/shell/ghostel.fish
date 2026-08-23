@@ -14,14 +14,12 @@
 # Idempotency guard — skip if already loaded (e.g. auto-injected).
 functions -q __ghostel_osc7; and return
 
-# Capture gethostname(2) once for OSC 7 (matches the bash/zsh
-# capture-once approach; avoids forking `hostname' on every prompt).
-# A global so the `--on-event fish_prompt' handler sees it when it fires.
-set -g __ghostel_host (hostname)
-
-# Report working directory to the terminal via OSC 7
+# Report working directory to the terminal via OSC 7.
+# In fish 3.0+, $hostname is gethostname(2) verbatim, matching
+# Emacs `system-name'. The local-host check needs exactly this,
+# not an FQDN-canonicalized value like zsh's $HOST.
 function __ghostel_osc7 --on-event fish_prompt
-    printf '\e]7;file://%s%s\a' "$__ghostel_host" "$PWD"
+    printf '\e]7;file://%s%s\a' "$hostname" "$PWD"
 end
 
 # --- Semantic prompt markers (OSC 133) ---
