@@ -438,6 +438,45 @@ Each function is called with two arguments: the buffer and the
 exit event string."
   :type 'hook)
 
+(defcustom ghostel-bell-functions '(ghostel-ding)
+  "Hook run when the terminal receives BEL.
+Each function is called with no arguments, with the terminal
+buffer current.  Remove `ghostel-ding' to silence the audible bell.
+Runs from the terminal event dispatch, so keep handlers cheap.
+Errors are demoted to messages (re-signalled when `debug-on-error' is non-nil)."
+  :type 'hook)
+
+(define-obsolete-variable-alias 'ghostel-notification-function
+  'ghostel-notification-functions "0.52.0")
+
+(defcustom ghostel-notification-functions '(ghostel-default-notify)
+  "Hook run for OSC 9 / OSC 777 desktop notifications.
+Each function is called with two string arguments: TITLE (empty for body-only
+iTerm2-style OSC 9) and BODY, with the originating terminal buffer current.
+The hook runs asynchronously via `run-at-time', so handlers may block or spawn
+processes freely without stalling the terminal.
+Errors are demoted to messages (re-signalled when `debug-on-error' is non-nil)."
+  :type 'hook)
+
+(define-obsolete-variable-alias 'ghostel-progress-function
+  'ghostel-progress-functions "0.52.0")
+
+(defcustom ghostel-progress-functions
+  (if (locate-library "spinner")
+      '(ghostel-spinner-progress)
+    '(ghostel-default-progress))
+  "Hook run for ConEmu OSC 9;4 progress reports.
+Each function is called with two arguments: STATE (one of the symbols `remove',
+`set', `error', `indeterminate', `pause') and PROGRESS (an integer 0-100,
+or nil when not reported), with the terminal buffer current.
+Runs from the terminal event dispatch, so keep handlers cheap.
+Errors are demoted to messages (re-signalled when `debug-on-error' is non-nil).
+
+The default member drives the mode line: `ghostel-spinner-progress'
+\(animated via spinner.el) when spinner.el is on the `load-path' at
+ghostel load time, else the plain text `ghostel-default-progress'."
+  :type 'hook)
+
 (defcustom ghostel-pre-spawn-hook nil
   "Hook run just before spawning a new terminal process.
 Each function is called with no arguments in the buffer that will
@@ -533,45 +572,13 @@ reach the user - matching ghostty's natural 200 ms termios polling
 cadence.  Set to 0 to open the prompt immediately."
   :type 'number)
 
-(defcustom ghostel-notification-function #'ghostel-default-notify
-  "Function called for OSC 9 / OSC 777 desktop notifications.
-Called with two string arguments: TITLE and BODY.  Title is empty
-for iTerm2-style OSC 9 notifications, which only carry a body.
-Set to nil to ignore notifications.
-
-The handler is invoked asynchronously via `run-at-time', with the
-originating ghostel buffer as `current-buffer', so it may block or
-spawn processes freely without stalling the terminal."
-  :type '(choice (const :tag "Disabled" nil) function))
-
-(defcustom ghostel-progress-function
-  (if (locate-library "spinner")
-      #'ghostel-spinner-progress
-    #'ghostel-default-progress)
-  "Function called for ConEmu OSC 9;4 progress reports.
-Called with two arguments: STATE (one of the symbols `remove',
-`set', `error', `indeterminate', `pause') and PROGRESS (an integer
-0-100, or nil when not reported).  Set to nil to ignore progress
-reports.
-
-When spinner.el is on the `load-path' at ghostel load time, the
-default is `ghostel-spinner-progress' (which animates the mode
-line during indeterminate progress).  Otherwise it is
-`ghostel-default-progress' (a plain text indicator).
-
-The handler runs synchronously on the VT-parser callpath because
-progress updates are expected to feed the mode line or similar
-cheap UI.  A slow handler here will stall terminal output — defer
-expensive work via `run-at-time' on your own if you need it."
-  :type '(choice (const :tag "Disabled" nil) function))
-
 (defcustom ghostel-spinner-type 'progress-bar
   "Spinner style used by `ghostel-spinner-progress'.
 Passed to `spinner-create' as its first argument; see
 `spinner-types' in spinner.el for the full list (e.g.
 `progress-bar', `horizontal-moving', `vertical-breathing').
-Only consulted when `ghostel-progress-function' is
-`ghostel-spinner-progress'."
+Only consulted when `ghostel-spinner-progress' is in
+`ghostel-progress-functions'."
   :type 'symbol)
 
 (defcustom ghostel-tramp-default-method nil
@@ -3338,7 +3345,7 @@ the first call if it is not.  The spinner style is controlled by
   (unless (require 'spinner nil t)
     (user-error
      "Cannot run `ghostel-spinner-progress' without spinner.el — install it \
-from MELPA or set `ghostel-progress-function' to #'ghostel-default-progress"))
+from MELPA or use `ghostel-default-progress' in `ghostel-progress-functions'"))
   (if (eq state 'indeterminate)
       ;; Indeterminate: install spinner.el's mode-line construct.
       ;; Clear any prior determinate text first so the spinner shows
@@ -3368,54 +3375,41 @@ from MELPA or set `ghostel-progress-function' to #'ghostel-default-progress"))
          (with-current-buffer buffer
            (apply function args)))))))
 
+(defun ghostel-ding ()
+  "Beep for a terminal bell.
+Passes a non-nil argument to `ding' so that during an executing
+keyboard macro the bell still beeps instead of signalling."
+  (ding t))
+
+(defun ghostel--bell ()
+  "Handle a terminal BEL: run `ghostel-bell-functions'.
+Called from the native VT parser with the terminal buffer current."
+  (ghostel--run-hook-safely 'ghostel-bell-functions))
+
 (defun ghostel--handle-notification (title body)
-  "Dispatch TITLE and BODY to `ghostel-notification-function'.
-Called synchronously from the native VT parser; the user handler
-is invoked off the callpath via `run-at-time' so a slow backend
-\(DBus, osascript, etc.) can't stall terminal output.  The
-originating ghostel buffer is made current for the handler, so
-`buffer-name' etc. report the terminal buffer and not whatever was
-current when the timer happened to fire.  Errors in the handler
-are caught and logged — an unhandled error in a timer callback
-does not crash the process filter, but it does produce a backtrace
-in batch runs."
-  (when ghostel-notification-function
-    (let ((buf (current-buffer))
-          (fn ghostel-notification-function))
-      (run-at-time
-       0 nil
-       (lambda ()
-         (when (buffer-live-p buf)
-           (with-current-buffer buf
-             ;; Only `error' is caught here — `quit' (C-g) is allowed
-             ;; to propagate so a user can interrupt a hung handler.
-             ;; Emacs' timer machinery swallows a propagated quit.
-             (condition-case err
-                 (funcall fn title body)
-               (error
-                (message "ghostel: notification handler error: %s"
-                         (error-message-string err)))))))))))
+  "Dispatch TITLE and BODY to `ghostel-notification-functions'.
+The hook is run off the parser callpath via `ghostel--defer' with
+the originating terminal buffer current, so a slow backend (DBus,
+osascript, etc.) can't stall terminal output."
+  (ghostel--defer #'ghostel--run-hook-safely
+                  'ghostel-notification-functions title body))
 
 (defun ghostel--osc-progress (state-str progress)
-  "Dispatch ConEmu OSC 9;4 progress to `ghostel-progress-function'.
+  "Dispatch ConEmu OSC 9;4 progress to `ghostel-progress-functions'.
 STATE-STR is the state name as a string (sent from the native
 module); it is converted to a known symbol via an explicit allowlist
 to avoid polluting the obarray if a future Zig-side typo sneaks in.
 Unknown state strings are silently dropped.
 PROGRESS is an integer 0-100 or nil."
-  (when ghostel-progress-function
-    (let ((state-sym (pcase state-str
-                       ("remove"        'remove)
-                       ("set"           'set)
-                       ("error"         'error)
-                       ("indeterminate" 'indeterminate)
-                       ("pause"         'pause))))
-      (when state-sym
-        (condition-case err
-            (funcall ghostel-progress-function state-sym progress)
-          (error
-           (message "ghostel: progress handler error: %s"
-                    (error-message-string err))))))))
+  (let ((state-sym (pcase state-str
+                     ("remove"        'remove)
+                     ("set"           'set)
+                     ("error"         'error)
+                     ("indeterminate" 'indeterminate)
+                     ("pause"         'pause))))
+    (when state-sym
+      (ghostel--run-hook-safely 'ghostel-progress-functions
+                                state-sym progress))))
 
 (defun ghostel-buffer-name-by-title (title)
   "Return \"*ghostel: TITLE*\", or nil when TITLE is nil.

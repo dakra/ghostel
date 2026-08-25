@@ -978,27 +978,27 @@ Ghostel recognises two notification protocols used by terminal programs:
 - *OSC 9* (iTerm2 form): =ESC ] 9 ; BODY ST= - body only.
 - *OSC 777* (rxvt =notify=): =ESC ] 777 ; notify ; TITLE ; BODY ST= - title + body.
 
-Both route to =ghostel-notification-function= with =(TITLE BODY)=.  The default
-handler, =ghostel-default-notify=, uses the [[https://github.com/jwiegley/alert][alert]] package when installed - it picks
-a sensible backend per platform (=osascript= on macOS, libnotify on Linux, Growl,
-terminal-notifier, etc.) and is configurable via =alert-default-style=.  Install
-it from MELPA with =M-x package-install RET alert RET=.
+Both run the =ghostel-notification-functions= hook with =(TITLE BODY)= and the
+terminal buffer current.  The default member, =ghostel-default-notify=, uses the
+[[https://github.com/jwiegley/alert][alert]] package when installed - it picks a sensible backend per platform
+(=osascript= on macOS, libnotify on Linux, Growl, terminal-notifier, etc.) and is
+configurable via =alert-default-style=.  Install it from MELPA with
+=M-x package-install RET alert RET=.  When =alert= is not available, it falls back
+to =message=, which only appears in the echo area.
 
-When =alert= is not available, ghostel falls back to =message=, which only appears
-in the echo area.  Set =ghostel-notification-function= to nil to silence
-notifications entirely, or to your own function to route them elsewhere.
-
-A custom handler receives the title and body and can route them anywhere:
+Remove the default member to silence notifications, or add your own to route
+them elsewhere:
 
 #+begin_src emacs-lisp
-(setq ghostel-notification-function
-      (lambda (title body)
-        (alert body :title (or title "ghostel") :category 'ghostel)))
+(remove-hook 'ghostel-notification-functions #'ghostel-default-notify)
+(add-hook 'ghostel-notification-functions
+          (lambda (title body)
+            (alert body :title (or title "ghostel") :category 'ghostel)))
 #+end_src
 
 ConEmu's *OSC 9;4* progress protocol is also recognised: build tools, AI agents
 like Claude Code, and other long-running commands emit it to report completion
-percentage.  Ghostel dispatches these to =ghostel-progress-function= with =(STATE
+percentage.  Ghostel runs the =ghostel-progress-functions= hook with =(STATE
 PROGRESS)= where STATE is one of =remove=, =set=, =error=, =indeterminate=, =pause= and
 PROGRESS is an integer 0-100 or nil.
 
@@ -1010,18 +1010,50 @@ Two built-in handlers are available:
   =indeterminate= (e.g. while Claude Code is working) and falls back to the same
   text indicator for the other states.
 
-=ghostel-progress-function= defaults to =ghostel-spinner-progress= when spinner.el
-is on the =load-path= at ghostel load time, otherwise to =ghostel-default-progress=.
-Pin a specific handler explicitly:
+The default member is =ghostel-spinner-progress= when spinner.el is on the
+=load-path= at ghostel load time, otherwise =ghostel-default-progress=.  Pin a
+specific handler explicitly:
 
 #+begin_src emacs-lisp
 ;; Pin to spinner (errors with a hint if spinner.el isn't installed):
-(setq ghostel-progress-function #'ghostel-spinner-progress)
+(setq ghostel-progress-functions '(ghostel-spinner-progress))
 ;; Or stay on the plain text indicator:
-(setq ghostel-progress-function #'ghostel-default-progress)
+(setq ghostel-progress-functions '(ghostel-default-progress))
 ;; Pick a different spinner style - see `spinner-types' in spinner.el:
 (setq ghostel-spinner-type 'horizontal-moving)
 #+end_src
+
+*** System taskbar
+:properties:
+:custom_id: system-taskbar
+:end:
+#+cindex: taskbar
+
+On Emacs 31+, =ghostel-taskbar-mode= (from =ghostel-taskbar.el=) mirrors
+terminal activity on the system taskbar icon - the macOS Dock, the
+MS-Windows taskbar, or a GNU/Linux launcher implementing the Unity D-Bus
+spec (see the built-in =system-taskbar= package for setup details):
+
+- OSC 9;4 progress reports become a progress bar on the Emacs icon.
+  Since the icon is global, the bar tracks the last terminal that
+  reported determinate progress.
+- A shell command that ran for at least
+  =ghostel-taskbar-attention-min-duration= seconds (default 5) and
+  finishes while no Emacs frame has focus bounces/flashes the icon -
+  with =critical= urgency when the command failed.  Requires OSC 133
+  shell integration.
+- Desktop notifications (OSC 9 / OSC 777) and the terminal bell also
+  request attention while Emacs is unfocused.
+
+#+begin_src emacs-lisp
+(ghostel-taskbar-mode)
+#+end_src
+
+The underlying hooks are available for your own integrations
+independent of =ghostel-taskbar-mode=: =ghostel-bell-functions=,
+=ghostel-notification-functions=, =ghostel-progress-functions=,
+=ghostel-command-start-functions=, and
+=ghostel-command-finish-functions=.
 
 ** Color palette
 :properties:
@@ -1421,9 +1453,10 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 
 | Variable                      | Default                                             | Description                                                     |
 |-------------------------------+-----------------------------------------------------+-----------------------------------------------------------------|
-| =ghostel-notification-function= | =ghostel-default-notify=                              | Handler for OSC 9 / OSC 777 notifications (nil disables).       |
-| =ghostel-progress-function=     | spinner if available, else =ghostel-default-progress= | Handler for OSC 9;4 progress (nil disables).                    |
-| =ghostel-spinner-type=          | =progress-bar=                                        | Spinner style for =ghostel-spinner-progress= (see =spinner-types=). |
+| =ghostel-notification-functions= | =(ghostel-default-notify)=                            | Hook for OSC 9 / OSC 777 notifications.                         |
+| =ghostel-progress-functions=     | spinner if available, else =ghostel-default-progress= | Hook for OSC 9;4 progress.                                      |
+| =ghostel-bell-functions=         | =(ghostel-ding)=                                      | Hook for the terminal bell.                                     |
+| =ghostel-spinner-type=           | =progress-bar=                                        | Spinner style for =ghostel-spinner-progress= (see =spinner-types=). |
 
 ** Input and interaction
 

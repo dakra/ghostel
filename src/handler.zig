@@ -104,7 +104,7 @@ pub fn GhostelHandler(Effects: type) type {
         /// Called when the terminal receives BEL.
         fn bellCallback(handler: *gt.TerminalStream.Handler) void {
             const self: *Self = @fieldParentPtr("inner", handler);
-            self.effects.effect("ding", .{});
+            self.effects.effect("ghostel--bell", .{});
         }
 
         /// CSI ? 996 n - the scheme Emacs assigned, not the OSC 11 color.
