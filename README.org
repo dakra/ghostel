@@ -1089,6 +1089,37 @@ default members:
 A root record's =title= takes the place of the OSC 2 title in =ghostel-title=
 and the buffer name.
 
+*** System taskbar
+:properties:
+:custom_id: system-taskbar
+:end:
+#+cindex: taskbar
+
+On Emacs 31+, =ghostel-taskbar-mode= (from =ghostel-taskbar.el=) mirrors
+terminal activity on the system taskbar icon - the macOS Dock, the
+MS-Windows taskbar, or a GNU/Linux launcher implementing the Unity D-Bus
+spec (see the built-in =system-taskbar= package for setup details):
+
+- The root program status record's percentage (OSC 7501, or OSC 9;4
+  mapped onto it) becomes a progress bar on the Emacs icon.  The icon
+  is global, so the bar follows the last terminal that reported a
+  percentage and clears when that record ends, loses its percentage,
+  or its terminal exits.
+- A shell command that ran for at least
+  =ghostel-taskbar-attention-min-duration= seconds (default 5) and
+  finishes while no Emacs frame has focus bounces/flashes the icon -
+  with =critical= urgency when the command failed.  Requires OSC 133
+  shell integration.
+- Desktop notifications (OSC 9 / OSC 777, and the ones
+  =ghostel-status-notify= sends), the terminal bell, and a program
+  reporting an =error= status (=critical=) also request attention while
+  Emacs is unfocused - at most once per unfocused period, where
+  =critical= upgrades a pending =informational= request.
+
+#+begin_src emacs-lisp
+(ghostel-taskbar-mode)
+#+end_src
+
 ** Color palette
 :properties:
 :custom_id: color-palette
