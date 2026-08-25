@@ -135,6 +135,7 @@ stale or missing PWD, a shell started in a symlinked directory shows
 the physical path in its prompt and OSC 7.  The injected entry must
 override a stale inherited PWD, while a user PWD in
 `ghostel-environment' must win over the injected one."
+  :tags '(posix)
   (let* ((captured nil)
          (ghostel-shell "/bin/sh")
          (ghostel-shell-integration nil)
@@ -153,6 +154,13 @@ override a stale inherited PWD, while a user PWD in
       (let ((ghostel-environment '("PWD=/ghostel/user-override")))
         (ghostel--start-process))
       (should (equal captured "/ghostel/user-override")))))
+
+(ert-deftest ghostel-test-logical-pwd-env ()
+  "No PWD entry for remote spawns or on Windows."
+  (let ((system-type 'gnu/linux))
+    (should-not (ghostel--logical-pwd-env t)))
+  (let ((system-type 'windows-nt))
+    (should-not (ghostel--logical-pwd-env nil))))
 
 (ert-deftest ghostel-test-spawn-symlinked-dir-child-sees-logical-pwd ()
   "A child spawned in a symlinked directory sees the logical path in PWD.

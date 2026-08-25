@@ -391,6 +391,92 @@ the path, `%0D' decodes to a carriage return, and when only the raw
                            (track (concat "file://" host base "/cr%0Dq"))))))
       (delete-directory base t))))
 
+(ert-deftest ghostel-test-update-directory-windows-drive-glued-host ()
+  "A drive glued onto the local authority tracks as the drive path.
+No TRAMP host is fabricated from the glued spelling."
+  ;; Bind `system-type' inside `cl-letf': installing the stub may
+  ;; native-compile a trampoline, which must run on the real platform.
+  (let ((ghostel--last-directory nil)
+        (default-directory temporary-file-directory)
+        list-buffers-directory)
+    (cl-letf (((symbol-function 'file-directory-p)
+               (lambda (f) (equal f "d:/repos/foo"))))
+      (let ((system-type 'windows-nt))
+        (ghostel--update-directory
+         (concat "kitty-shell-cwd://" (system-name) "d:/repos/foo")))
+      (should (equal "d:/repos/foo/" default-directory)))))
+
+(ert-deftest ghostel-test-update-directory-authority-trailing-colon ()
+  "A trailing-colon authority never rewrites a foreign host.
+The empty-port colon is stripped; a local empty-port authority
+stays local."
+  (let ((ghostel-tramp-default-method "ssh"))
+    (dolist (case '(("kitty-shell-cwd://otherhostd:/repos/foo"
+                     . "/ssh:otherhostd:/repos/foo/")
+                    ("file://otherhost:/home/user"
+                     . "/ssh:otherhost:/home/user/")))
+      (let ((ghostel--last-directory nil)
+            (default-directory temporary-file-directory)
+            list-buffers-directory)
+        (ghostel--update-directory (car case))
+        (should (equal (cdr case) default-directory))))
+    (let ((base (make-temp-file "ghostel-osc7-" t)))
+      (unwind-protect
+          ;; A drive-lettered BASE would re-trigger the glue parse;
+          ;; the empty-port form is only unambiguous for POSIX paths.
+          (unless (string-match-p "\\`[[:alpha:]]:/" base)
+            (let ((ghostel--last-directory nil)
+                  (default-directory temporary-file-directory)
+                  list-buffers-directory)
+              (ghostel--update-directory
+               (concat "file://" (system-name) ":" base))
+              (should (equal (file-name-as-directory base)
+                             default-directory))))
+        (delete-directory base)))))
+
+(ert-deftest ghostel-test-update-directory-windows-slash-drive ()
+  "On Windows a slash-drive URL path (/d:/foo) resolves to d:/foo."
+  (dolist (case '(("/d:/repos/foo" . "d:/repos/foo")
+                  ("/c:\\repos\\foo" . "c:\\repos\\foo")))
+    (let ((ghostel--last-directory nil)
+          (default-directory temporary-file-directory)
+          list-buffers-directory)
+      (cl-letf (((symbol-function 'file-directory-p)
+                 (lambda (f) (equal f (cdr case)))))
+        (let ((system-type 'windows-nt))
+          (ghostel--update-directory
+           (concat "file://" (system-name) (car case))))
+        (should (equal (file-name-as-directory (cdr case))
+                       default-directory))))))
+
+(ert-deftest ghostel-test-update-directory-windows-msys-path ()
+  "On Windows the MSYS and Cygwin mount spellings resolve to the drive path.
+A lookalike on the current drive must not shadow the translation."
+  (dolist (case '(("/d/repos/foo" ("d:/repos/foo"))
+                  ("/cygdrive/d/repos/foo" ("d:/repos/foo"))
+                  ("/d/repos/foo" ("/d/repos/foo" "d:/repos/foo"))))
+    (let ((ghostel--last-directory nil)
+          (default-directory temporary-file-directory)
+          list-buffers-directory)
+      (cl-letf (((symbol-function 'file-directory-p)
+                 (lambda (f) (member f (cadr case)))))
+        (let ((system-type 'windows-nt))
+          (ghostel--update-directory
+           (concat "kitty-shell-cwd://" (system-name) (car case))))
+        (should (equal "d:/repos/foo/" default-directory))))))
+
+(ert-deftest ghostel-test-update-directory-windows-plain-path ()
+  "Plain-path reports (OSC 9;9) get the same Windows normalization."
+  (dolist (dir '("/d/repos/foo" "/d:/repos/foo"))
+    (let ((ghostel--last-directory nil)
+          (default-directory temporary-file-directory)
+          list-buffers-directory)
+      (cl-letf (((symbol-function 'file-directory-p)
+                 (lambda (f) (equal f "d:/repos/foo"))))
+        (let ((system-type 'windows-nt))
+          (ghostel--update-directory dir))
+        (should (equal "d:/repos/foo/" default-directory))))))
+
 (ert-deftest ghostel-test-list-buffers-directory ()
   "Test that `ghostel-mode' exposes cwd via `list-buffers-directory'."
   (let ((default-directory (file-name-as-directory

@@ -3499,6 +3499,22 @@ Kept in Elisp so input modes and integrations can decide whether
         (ghostel--cursor-blink-start)
       (ghostel--cursor-blink-stop))))
 
+(defun ghostel--windows-local-path (path)
+  "Return PATH in a spelling native Windows Emacs can resolve.
+Strips the slash from a slash-drive form (\"/d:/foo\"), which
+`expand-file-name' does not resolve, and rewrites MSYS \"/d/foo\" and
+Cygwin \"/cygdrive/d/foo\" mounts to the existing \"d:/foo\" directory."
+  (if (string-match-p "\\`/[[:alpha:]]:[/\\]" path)
+      (substring path 1)
+    (let ((translated
+           (and (string-match
+                 "\\`\\(?:/cygdrive\\)?/\\([[:alpha:]]\\)\\(/.*\\)?\\'" path)
+                (concat (match-string 1 path) ":"
+                        (or (match-string 2 path) "/")))))
+      (if (and translated (file-directory-p translated))
+          translated
+        path))))
+
 (defun ghostel--update-directory (dir)
   "Update `default-directory' from terminal's OSC 7 report.
 DIR may be a kitty-shell-cwd:// URL (raw, unencoded path), a file://
@@ -3532,7 +3548,19 @@ URL does not match the local machine, construct a TRAMP path."
                                     'utf-8-unix)))
                       ;; %00 never names a real directory, and a NUL
                       ;; would make `file-directory-p' signal.
-                      (if (string-match-p "\0" decoded) raw decoded)))))))
+                      (if (string-match-p "\0" decoded) raw decoded))))
+            ;; A Windows-style $PWD ("d:/...", no leading slash) glues
+            ;; its drive spec onto the authority: scheme://HOSTd:/...
+            ;; Only a local-host prefix disambiguates this from an RFC 3986
+            ;; empty-port authority; a foreign host keeps its glued spelling.
+            (if (and (string-match "\\`\\(.*\\)\\([a-z]:\\)\\'" host)
+                     (ghostel--local-host-p (match-string 1 host)))
+                (setq raw (concat (match-string 2 host) raw)
+                      filename (concat (match-string 2 host) filename)
+                      host (match-string 1 host))
+              ;; Trailing colon for an empty port is not part of a hostname
+              (when (string-suffix-p ":" host)
+                (setq host (substring host 0 -1)))))))
        ;; A URI with an unrecognized scheme is not a plain path (OSC 9;9).
        ((string-match-p "\\`[[:alpha:]][[:alnum:]+.-]*://" dir)
         (message "ghostel: ignoring OSC 7 report with unknown scheme: %s"
@@ -3563,6 +3591,8 @@ URL does not match the local machine, construct a TRAMP path."
             ;; synchronous TRAMP connections on every cd.
             (setq default-directory (file-name-as-directory path)
                   list-buffers-directory default-directory)
+          (when (eq system-type 'windows-nt)
+            (setq path (ghostel--windows-local-path path)))
           (when (file-directory-p path)
             (setq default-directory (file-name-as-directory path)
                   list-buffers-directory default-directory))))
@@ -3927,11 +3957,12 @@ verbatim.  `COLORTERM=truecolor' is exported unconditionally."
 
 (defun ghostel--logical-pwd-env (remote-p)
   "Return a PWD env entry naming the logical `default-directory', as a list.
-Nil when REMOTE-P.  Shells keep an inherited PWD that names the cwd
-\(same inode) and otherwise reset it from getcwd(), which resolves symlinks.
-Without this entry a shell started in a symlinked directory shows the
-physical path in its prompt and OSC 7."
-  (unless remote-p
+Shells keep an inherited PWD naming the cwd; without this entry a shell
+started in a symlinked directory shows the getcwd()-resolved physical
+path in its prompt and OSC 7.  Nil when REMOTE-P, and on Windows: an
+MSYS shell keeps the Windows-form value verbatim and reports it glued
+into its OSC 7 authority."
+  (unless (or remote-p (eq system-type 'windows-nt))
     (list (format "PWD=%s"
                   (directory-file-name (expand-file-name default-directory))))))
 
