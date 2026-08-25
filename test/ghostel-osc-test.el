@@ -216,14 +216,14 @@ Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
        (lambda () (equal "AFTER" ghostel-title)) proc 5))))
 
 (ert-deftest ghostel-test-osc9-notification ()
-  "OSC 9 iTerm2-style notifications reach `ghostel-notification-function'."
+  "OSC 9 iTerm2-style notifications reach `ghostel-notification-functions'."
   :tags '(native)
   (ghostel-test--with-pty-matrix
       backend
     (ghostel-test--with-raw-echo-buffer (buf proc)
       (let* ((calls nil)
-             (ghostel-notification-function
-              (lambda (title body) (push (cons title body) calls))))
+             (ghostel-notification-functions
+              (list (lambda (title body) (push (cons title body) calls)))))
         (cl-letf (((symbol-function 'run-at-time)
                    (lambda (_secs _rep fn &rest args) (apply fn args))))
           ;; Plain iTerm2 notification, ST terminator.
@@ -336,13 +336,13 @@ ConEmu's CWD-reporting alias uses the same callback as OSC 7, so
           (should (equal nil notifs)))))))
 
 (ert-deftest ghostel-test-osc9-progress ()
-  "OSC 9;4 progress reports reach `ghostel-progress-function'."
+  "OSC 9;4 progress reports reach `ghostel-progress-functions'."
   :tags '(native)
   (ghostel-test--with-pty-matrix backend
     (ghostel-test--with-raw-echo-buffer (buf proc)
       (let* ((calls nil)
-             (ghostel-progress-function
-              (lambda (state progress) (push (list state progress) calls))))
+             (ghostel-progress-functions
+              (list (lambda (state progress) (push (list state progress) calls)))))
         (pcase-dolist (`(,payload ,expected)
                        '(("\e]9;4;1;50\e\\" (set 50))
                          ("\e]9;4;1\e\\" (set 0))
@@ -369,8 +369,8 @@ ConEmu's CWD-reporting alias uses the same callback as OSC 7, so
   (ghostel-test--with-pty-matrix backend
     (ghostel-test--with-raw-echo-buffer (buf proc)
       (let* ((calls nil)
-             (ghostel-progress-function
-              (lambda (state progress) (push (list state progress) calls))))
+             (ghostel-progress-functions
+              (list (lambda (state progress) (push (list state progress) calls)))))
         (ghostel--write-vt ghostel--term "\e]9;4;1;50\e\\")
         (ghostel-test--wait-until (lambda () calls) proc 5)
         (should (equal '((set 50)) calls))
@@ -380,28 +380,26 @@ ConEmu's CWD-reporting alias uses the same callback as OSC 7, so
         (should (equal '((remove nil)) calls))))))
 
 (ert-deftest ghostel-test-osc-progress-dispatch ()
-  "`ghostel--osc-progress' converts the state string to a symbol."
-  (let ((calls nil))
-    (let ((ghostel-progress-function
-           (lambda (state progress) (push (list state progress) calls))))
-      (ghostel--osc-progress "set" 42)
-      (should (equal '((set 42)) calls))
-      (setq calls nil)
-      (ghostel--osc-progress "remove" nil)
-      (should (equal '((remove nil)) calls))
-      ;; Unknown state strings are dropped without invoking the handler
-      ;; (defends against a Zig-side typo polluting the obarray).
-      ;; `calls' is populated only by `ghostel-progress-function', so
-      ;; asserting it stayed nil proves the sink was not invoked.
-      (setq calls nil)
-      (should-not (ghostel--osc-progress "bogus" 1))
-      (should (equal nil calls)))
-    ;; nil function → no call, no error
-    (let ((ghostel-progress-function nil))
-      (should-not (ghostel--osc-progress "set" 10)))))
+  "`ghostel--osc-progress' converts the state string and runs the hook."
+  (let* ((calls nil)
+         (ghostel-progress-functions
+          (list (lambda (state progress) (push (list state progress) calls)))))
+    (ghostel--osc-progress "set" 42)
+    (should (equal '((set 42)) calls))
+    (setq calls nil)
+    (ghostel--osc-progress "remove" nil)
+    (should (equal '((remove nil)) calls))
+    ;; Unknown state strings are dropped without running the hook
+    ;; (defends against a Zig-side typo polluting the obarray).
+    (setq calls nil)
+    (should-not (ghostel--osc-progress "bogus" 1))
+    (should (equal nil calls)))
+  ;; Empty hook → no call, no error.
+  (let ((ghostel-progress-functions nil))
+    (should-not (ghostel--osc-progress "set" 10))))
 
 (ert-deftest ghostel-test-osc777-notification ()
-  "OSC 777 `notify;TITLE;BODY' reaches `ghostel-notification-function'."
+  "OSC 777 `notify;TITLE;BODY' reaches `ghostel--handle-notification'."
   :tags '(native)
   (ghostel-test--with-pty-matrix
       backend
@@ -444,28 +442,33 @@ ConEmu's CWD-reporting alias uses the same callback as OSC 7, so
           (should (equal nil calls)))))))
 
 (ert-deftest ghostel-test-notification-dispatch ()
-  "`ghostel--handle-notification' honours `ghostel-notification-function'.
+  "`ghostel--handle-notification' runs `ghostel-notification-functions'.
 `run-at-time' is stubbed synchronously since the dispatcher defers
-the handler off the VT-parser callpath."
+the hook off the VT-parser callpath."
   (cl-letf (((symbol-function 'run-at-time)
              (lambda (_secs _rep fn &rest args) (apply fn args))))
     (let ((calls nil))
-      (let ((ghostel-notification-function
-             (lambda (title body) (push (cons title body) calls))))
+      (let ((ghostel-notification-functions
+             (list (lambda (title body) (push (cons title body) calls)))))
         (ghostel--handle-notification "T" "B")
         (should (equal '(("T" . "B")) calls)))
-      ;; nil → silently ignored: returns nil and does not signal.
-      (let ((ghostel-notification-function nil))
+      ;; Empty hook → silently ignored: does not signal.
+      (let ((ghostel-notification-functions nil))
         (should-not (condition-case _
                         (progn (ghostel--handle-notification "T" "B") nil)
                       (error t))))
-      ;; Error in handler is demoted to message (does not propagate)
-      (let ((ghostel-notification-function (lambda (_t _b) (error "Boom")))
+      ;; An erroring member is demoted to a message, and later
+      ;; members still run.
+      (setq calls nil)
+      (let ((ghostel-notification-functions
+             (list (lambda (_t _b) (error "Boom"))
+                   (lambda (title body) (push (cons title body) calls))))
             (inhibit-message t)
             (debug-on-error nil))
         (should-not (condition-case _
                         (progn (ghostel--handle-notification "T" "B") nil)
-                      (error t)))))))
+                      (error t)))
+        (should (equal '(("T" . "B")) calls))))))
 
 (ert-deftest ghostel-test-notification-dispatch-current-buffer ()
   "Dispatcher re-enters the originating buffer before calling the handler.
@@ -482,8 +485,8 @@ that emitted the escape as `current-buffer'."
     (let ((captured-name nil))
       (with-temp-buffer
         (rename-buffer "*ghostel: origin*" t)
-        (let ((ghostel-notification-function
-               (lambda (_title _body) (setq captured-name (buffer-name)))))
+        (let ((ghostel-notification-functions
+               (list (lambda (_title _body) (setq captured-name (buffer-name))))))
           (ghostel--handle-notification "" "hi")
           (should (equal captured-name "*ghostel: origin*")))))))
 
@@ -506,15 +509,15 @@ that emitted the escape as `current-buffer'."
 (ert-deftest ghostel-test-notification-dispatch-real-timer ()
   "Async path runs end-to-end through a real `run-at-time'.
 Every other dispatcher test stubs `run-at-time' synchronously, so
-the closure capture, `buffer-live-p' guard, `with-current-buffer'
-re-entry, and `condition-case' all go uncovered unless this test
+the closure capture, `buffer-live-p' guard, and
+`with-current-buffer' re-entry go uncovered unless this test
 actually yields the event loop and observes the delayed side effect."
   (let ((captured nil))
     (with-temp-buffer
       (rename-buffer "*ghostel: real-timer*" t)
-      (let ((ghostel-notification-function
-             (lambda (title body)
-               (push (list title body (buffer-name)) captured))))
+      (let ((ghostel-notification-functions
+             (list (lambda (title body)
+                     (push (list title body (buffer-name)) captured)))))
         (ghostel--handle-notification "T" "B")
         ;; Not fired yet — still scheduled.
         (should (equal nil captured))
@@ -527,29 +530,24 @@ actually yields the event loop and observes the delayed side effect."
 (ert-deftest ghostel-test-notification-dispatch-buffer-killed ()
   "Drop notifications whose originating buffer died before timer firing.
 Uses a second notification from a live buffer as a positive
-control so we can wait on *something* and then assert the
-killed-buffer one did not fire."
-  (let ((dead-fired nil)
-        (live-fired nil))
-    (let* ((dead (generate-new-buffer " *ghostel-test-killed*")))
-      (let ((ghostel-notification-function
-             (lambda (_t _b) (setq dead-fired t))))
-        (with-current-buffer dead
-          (ghostel--handle-notification "D" "D")))
-      (kill-buffer dead))
+control: the timers run in scheduling order, so once the live one
+fired the killed-buffer one has already been (not) run."
+  (let* ((fired nil)
+         (dead (generate-new-buffer " *ghostel-test-killed*"))
+         (ghostel-notification-functions
+          (list (lambda (title _body) (push title fired)))))
+    (with-current-buffer dead
+      (ghostel--handle-notification "D" "D"))
+    (kill-buffer dead)
     (with-temp-buffer
       (rename-buffer " *ghostel-test-live*" t)
-      (let ((ghostel-notification-function
-             (lambda (_t _b) (setq live-fired t))))
-        (ghostel--handle-notification "L" "L")
-        (with-timeout (1.0 (error "Live timer never fired"))
-          (while (null live-fired) (sit-for 0.01)))))
-    (should live-fired)
-    (should (equal nil dead-fired))))
+      (ghostel--handle-notification "L" "L")
+      (ghostel-test--wait-until (lambda () fired) nil 1))
+    (should (equal '("L") fired))))
 
 (ert-deftest ghostel-test-osc-progress-dispatch-error-isolated ()
-  "Errors in `ghostel-progress-function' are caught and demoted."
-  (let ((ghostel-progress-function (lambda (_s _p) (error "Boom")))
+  "Errors in `ghostel-progress-functions' members are caught and demoted."
+  (let ((ghostel-progress-functions (list (lambda (_s _p) (error "Boom"))))
         (inhibit-message t)
         (debug-on-error nil))
     (should-not (condition-case _
@@ -560,9 +558,9 @@ killed-buffer one did not fire."
   "Route notifications through `alert' when the package is available.
 `alert' is pre-provided so the branch fires under batch mode
 without the real package installed.  Also verifies that
-`ghostel-notification-function' is wired to `ghostel-default-notify'
-by default, so a notification arriving through the dispatcher ends
-up at the alert backend."
+`ghostel-default-notify' is a default member of
+`ghostel-notification-functions', so a notification arriving
+through the dispatcher ends up at the alert backend."
   (provide 'alert)
   (let ((captured nil))
     (cl-letf (((symbol-function 'alert)
@@ -572,13 +570,13 @@ up at the alert backend."
       (should (equal (car captured) "body text"))
       (should (equal (plist-get (cdr captured) :title) "Title"))
 
-      ;; Wiring: the dispatcher's default sink is `ghostel-default-notify',
-      ;; so going through `ghostel--handle-notification' must also hit the
+      ;; Wiring: `ghostel-default-notify' is a default hook member, so
+      ;; going through `ghostel--handle-notification' must also hit the
       ;; alert mock.  `run-at-time' is stubbed synchronous.
       (setq captured nil)
       (cl-letf (((symbol-function 'run-at-time)
                  (lambda (_secs _rep fn &rest args) (apply fn args))))
-        (should (eq ghostel-notification-function #'ghostel-default-notify))
+        (should (memq 'ghostel-default-notify ghostel-notification-functions))
         (ghostel--handle-notification "Wired" "via dispatch")
         (should captured)
         (should (equal (car captured) "via dispatch"))
