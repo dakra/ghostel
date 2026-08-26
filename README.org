@@ -1235,7 +1235,7 @@ it.  Nothing persists on the remote.
 
 The bundled bash/zsh/fish integration shadows =ssh= with a function that:
 
-1. Resolves the canonical target via =ssh -G= (normalises ssh_config aliases).
+1. Resolves the canonical target via =ssh -G= (normalises =ssh_config= aliases).
 2. Looks up the target in =~/.cache/ghostel/ssh-terminfo-cache=.  The cache key
    includes a hash of the local terminfo, so libghostty bumps automatically
    invalidate it.  Cache hit → connect with the remembered =TERM=.
