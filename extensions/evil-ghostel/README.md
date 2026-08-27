@@ -18,6 +18,25 @@ terminal, and the editing operators (`d`, `c`, `x`, `r`, `p`, `u`, …) drive
 the shell's line editor over the PTY. See the
 [manual](https://dakra.github.io/ghostel/#evil-mode) for the full list.
 
+## Word boundaries
+
+Word motions use Vim-style word boundaries: `w`, `b`, `e`, `ciw` stop at
+path components (`bar` in `~/src/foo/bar.txt`) instead of treating the
+whole path as one word. The default of `evil-ghostel-word-boundaries`
+matches Vim's default `iskeyword` — letters, digits, and `_` are word
+constituents, all other punctuation is a boundary.
+
+Tradeoff: the syntax table drives every syntax-based word command, not
+only Evil's, so while `evil-ghostel-mode` is enabled double-click, `*`,
+dabbrev, and line-mode `M-f`/`M-b` likewise see path components rather
+than the whole path. Link clicking, `ghostel-find-file-at-point`,
+and the whitespace-based WORD motions (`W`, `ciW`, …) are unaffected.
+
+Set `evil-ghostel-word-boundaries` to `nil` to keep ghostel's path-aware
+boundaries. While the Vim-style table is installed it takes precedence
+for printable ASCII, so ghostel's `ghostel-word-boundary-string` only
+affects non-ASCII characters in `evil-ghostel-mode` buffers.
+
 ## ESC in fullscreen apps
 
 In alt-screen apps — vim, less, and fullscreen TUIs like Claude Code

@@ -746,21 +746,26 @@ Use `setopt' or `customize-set-variable' so the table is rebuilt."
 (defvar ghostel-mode-syntax-table (make-syntax-table)
   "Syntax table for `ghostel-mode'.")
 
+(defun ghostel--realize-word-boundaries (table boundary-string)
+  "Realize BOUNDARY-STRING into syntax TABLE, mutating it in place.
+
+Printable ASCII starts as word syntax and non-ASCII as inherited from
+TABLE's parent; configured boundaries become plain punctuation.
+Keeping boundaries as `.' (not paren/string syntax) prevents double-click
+selection from invoking `forward-sexp'.  Whitespace keeps whitespace syntax."
+  (set-char-table-range table (cons 128 (max-char)) nil)
+  (modify-syntax-entry '(?! . ?~) "w" table)
+  (dolist (ch (string-to-list boundary-string))
+    (unless (memq ch '(?\s ?\t ?\n ?\r ?\f ?\v))
+      (modify-syntax-entry ch "." table))))
+
 (defun ghostel--rebuild-mode-syntax-table ()
   "Realize `ghostel-word-boundary-string' into `ghostel-mode-syntax-table'.
 
 Mutates the table in place, so live ghostel buffers keep their
-buffer-local syntax-table reference and see customization changes.
-
-Printable ASCII starts as word syntax; configured boundaries become plain
-punctuation.  Keeping boundaries as `.' (not paren/string syntax) prevents
-double-click selection from invoking `forward-sexp'.
-Whitespace keeps whitespace syntax."
-  (cl-loop for ch from ?! to ?~
-           do (modify-syntax-entry ch "w" ghostel-mode-syntax-table))
-  (dolist (ch (string-to-list ghostel-word-boundary-string))
-    (unless (memq ch '(?\s ?\t ?\n ?\r ?\f ?\v))
-      (modify-syntax-entry ch "." ghostel-mode-syntax-table))))
+buffer-local syntax-table reference and see customization changes."
+  (ghostel--realize-word-boundaries ghostel-mode-syntax-table
+                                    ghostel-word-boundary-string))
 
 (ghostel--rebuild-mode-syntax-table)
 

@@ -24,6 +24,16 @@ All notable changes to this project will be documented in this file.
   classifies the `ghostel-default` background, and clients that enabled
   Mode 2031 receive an unsolicited CSI `? 997 n` when that classification
   changes (theme change or `ghostel-sync-theme`).
+- `evil-ghostel-mode` now uses Vim-style word boundaries: `w`, `b`, `e`,
+  `ciw`, and friends stop at path components (`bar` in
+  `~/src/foo/bar.txt`) instead of treating the whole path as one word,
+  matching Vim's default `iskeyword` (`_` stays a word constituent).
+  While the mode is on, double-click and other syntax-based word
+  commands (`*`, dabbrev, line-mode `M-f`) likewise see path components
+  rather than the whole path, and `ghostel-word-boundary-string` only
+  governs non-ASCII characters; the new `evil-ghostel-word-boundaries`
+  option configures the boundary set, and setting it to `nil` restores
+  ghostel's path-aware behavior.
 - The terminal title is now public as the buffer-local `ghostel-title`
   variable (formerly the private `ghostel--title`).  It holds the current
   title reported via OSC 0/2, or nil when no title is set.

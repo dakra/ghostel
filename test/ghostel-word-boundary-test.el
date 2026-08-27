@@ -98,5 +98,15 @@ fresh table would leave existing buffers with the old boundaries."
                          "git@github.com:dakra/ghostel")))
       (customize-set-variable 'ghostel-word-boundary-string saved))))
 
+(ert-deftest ghostel-test-syntax-table-drops-stale-non-ascii-boundary ()
+  "A non-ASCII char dropped from the boundary string reverts to inherited syntax."
+  (let ((table (make-syntax-table)))
+    (ghostel--realize-word-boundaries table "|é")
+    (with-syntax-table table
+      (should (eq (char-syntax ?é) ?.)))
+    (ghostel--realize-word-boundaries table "|")
+    (with-syntax-table table
+      (should (eq (char-syntax ?é) ?w)))))
+
 (provide 'ghostel-word-boundary-test)
 ;;; ghostel-word-boundary-test.el ends here

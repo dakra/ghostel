@@ -2632,6 +2632,146 @@ attaches to it and gates it by major mode."
     (should (evil-escape--insert))
     (should (equal "x" (buffer-string)))))
 
+;; -----------------------------------------------------------------------
+;; Test: vim-style word boundaries
+;; -----------------------------------------------------------------------
+
+(ert-deftest evil-ghostel-test-word-motion-stops-at-path-components ()
+  "`w'-style motion stops at each path component, not the whole path."
+  (evil-ghostel-test--with-evil-buffer
+    (insert "cat ~/src/foo/bar.txt")
+    (goto-char (point-min))
+    (let (stops)
+      (while (< (point) (point-max))
+        (forward-thing 'evil-word)
+        (push (buffer-substring-no-properties
+               (save-excursion (forward-thing 'evil-word -1) (point))
+               (point))
+              stops))
+      (should (equal (nreverse stops)
+                     '("cat" "~/" "src" "/" "foo" "/" "bar" "." "txt"))))))
+
+(ert-deftest evil-ghostel-test-inner-word-covers-component ()
+  "`ciw' bounds cover one path component; `_' stays a word constituent."
+  (evil-ghostel-test--with-evil-buffer
+    (insert "cat ~/src/foo/bar.txt")
+    (goto-char (point-min))
+    (search-forward "bar")
+    (let ((beg (match-beginning 0))
+          (end (match-end 0)))
+      (goto-char beg)
+      (should (equal (bounds-of-thing-at-point 'evil-word)
+                     (cons beg end))))
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
+      (erase-buffer))
+    (insert "x foo_bar y")
+    (goto-char (point-min))
+    (search-forward "foo")
+    (should (equal (buffer-substring-no-properties
+                    (car (bounds-of-thing-at-point 'evil-word))
+                    (cdr (bounds-of-thing-at-point 'evil-word)))
+                   "foo_bar"))))
+
+(ert-deftest evil-ghostel-test-WORD-motion-unaffected ()
+  "`W'-style WORD motion still spans the whole whitespace-delimited token."
+  (evil-ghostel-test--with-evil-buffer
+    (insert "cat ~/src/foo/bar.txt more")
+    (goto-char (point-min))
+    (forward-thing 'evil-WORD)
+    (should (looking-back "cat" (point-min)))
+    (forward-thing 'evil-WORD)
+    (should (looking-back "~/src/foo/bar\\.txt" (point-min)))))
+
+(ert-deftest evil-ghostel-test-word-boundary-table-shape ()
+  "Boundary chars are punctuation, `_' is word, and no char gets paren
+or string-quote syntax (which would let mouse selection invoke
+`forward-sexp' on unbalanced terminal output)."
+  (evil-ghostel-test--with-evil-buffer
+    (dolist (ch '(?/ ?. ?$ ?% ?\( ?\"))
+      (should (eq (char-syntax ch) ?.)))
+    (should (eq (char-syntax ?_) ?w))
+    (cl-loop for ch from ?! to ?~
+             do (should (memq (char-syntax ch) '(?w ?.))))
+    ;; Realizing the child table must not have touched the parent.
+    (with-syntax-table ghostel-mode-syntax-table
+      (should (eq (char-syntax ?/) ?w)))))
+
+(ert-deftest evil-ghostel-test-word-boundaries-install-restore ()
+  "Enable installs the evil table; disable restores the previous one.
+Double enable and double disable are idempotent."
+  (evil-ghostel-test--with-evil-buffer
+    (should (eq (syntax-table) evil-ghostel-syntax-table))
+    (evil-ghostel-mode -1)
+    (should (eq (syntax-table) ghostel-mode-syntax-table))
+    (should-not (local-variable-p 'evil-ghostel--saved-syntax-table))
+    ;; Double enable must not save the evil table as "previous".
+    (evil-ghostel-mode 1)
+    (evil-ghostel-mode 1)
+    (evil-ghostel-mode -1)
+    (should (eq (syntax-table) ghostel-mode-syntax-table))
+    ;; Double disable is harmless.
+    (evil-ghostel-mode -1)
+    (should (eq (syntax-table) ghostel-mode-syntax-table))))
+
+(ert-deftest evil-ghostel-test-word-boundaries-non-ghostel-buffer ()
+  "Enabling the mode outside a ghostel buffer leaves its syntax table alone."
+  (with-temp-buffer
+    (emacs-lisp-mode)
+    (evil-local-mode 1)
+    (unwind-protect
+        (progn
+          (evil-ghostel-mode 1)
+          (should (eq (syntax-table) emacs-lisp-mode-syntax-table))
+          (should-not evil-ghostel--saved-syntax-table))
+      (evil-ghostel-mode -1))))
+
+(ert-deftest evil-ghostel-test-word-boundaries-plain-setq-realizes ()
+  "A value set with plain `setq' before enable still yields a realized table."
+  (unwind-protect
+      (let ((evil-ghostel-word-boundaries "/"))
+        (evil-ghostel-test--with-evil-buffer
+          (should (eq (syntax-table) evil-ghostel-syntax-table))
+          (should (eq (char-syntax ?/) ?.))
+          (should (eq (char-syntax ?.) ?w))))
+    ;; The shared table was realized from "/"; put the default back.
+    (ghostel--realize-word-boundaries evil-ghostel-syntax-table
+                                      evil-ghostel-word-boundaries)))
+
+(ert-deftest evil-ghostel-test-word-boundaries-opt-out ()
+  "With `evil-ghostel-word-boundaries' nil, ghostel's table stays installed."
+  (let ((evil-ghostel-word-boundaries nil))
+    (evil-ghostel-test--with-evil-buffer
+      (should (eq (syntax-table) ghostel-mode-syntax-table))
+      (should-not evil-ghostel--saved-syntax-table))))
+
+(ert-deftest evil-ghostel-test-word-boundaries-live-customization ()
+  "`customize-set-variable' re-realizes the table in live buffers,
+and nil restores ghostel's table, all without toggling the mode."
+  (evil-ghostel-test--with-evil-buffer
+    (let ((orig evil-ghostel-word-boundaries))
+      (unwind-protect
+          (progn
+            (customize-set-variable 'evil-ghostel-word-boundaries "/")
+            (should (eq (syntax-table) evil-ghostel-syntax-table))
+            (should (eq (char-syntax ?.) ?w))
+            (should (eq (char-syntax ?/) ?.))
+            (customize-set-variable 'evil-ghostel-word-boundaries nil)
+            (should (eq (syntax-table) ghostel-mode-syntax-table))
+            (customize-set-variable 'evil-ghostel-word-boundaries orig)
+            (should (eq (syntax-table) evil-ghostel-syntax-table))
+            (should (eq (char-syntax ?.) ?.)))
+        (customize-set-variable 'evil-ghostel-word-boundaries orig)))))
+
+(ert-deftest evil-ghostel-test-word-boundaries-non-ascii-inherited ()
+  "Non-ASCII chars resolve through the parent tables: `│' keeps its
+boundary syntax from `ghostel-mode-syntax-table', Unicode letters
+keep word syntax."
+  (evil-ghostel-test--with-evil-buffer
+    (should (eq (syntax-table) evil-ghostel-syntax-table))
+    (should (eq (char-syntax ?│) ?.))
+    (should (eq (char-syntax ?é) ?w))))
+
 (defun evil-ghostel-test-run ()
   "Run all evil-ghostel tests.
 Most tests mock the native module; the few that drive a real terminal

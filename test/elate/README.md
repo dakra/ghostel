@@ -19,6 +19,8 @@ the parallel bash/zsh/fish/python3 sessions from the evil-ghostel rewrite
   X dw 2dw cw c dd cc D C s S r 3r u . ~`, visual `v e d`, paste `p P`, and insert-mode
   Ctrl passthrough `C-w C-u C-a/C-e`. `{{shell}}`/`{{echo}}`/`{{setup}}` fill the shell
   specifics; `{{u_expect}}`/`{{P_expect}}` flip the nu-only known failures to `xfail`.
+  Plus 4 word-boundary ops (`ciw-path b-dw-path ciW-path opt-out`); see the
+  word-boundary section below.
 - `matrix/python3.json` — the REPL, kept separate because it has no `echo` and its
   operator tokens don't word-split cleanly (word-heavy/passthrough ops omitted). 12 ops.
 - `matrix/boundary-<shell>-ghostel.json` — the input-region boundary suite (autosuggestion,
@@ -26,6 +28,8 @@ the parallel bash/zsh/fish/python3 sessions from the evil-ghostel rewrite
   section below.
 - `matrix/tracking-ghostel.json` — normal-state point tracking across streamed output
   (#228 / #454); see the point-tracking section below.
+- `matrix/word-boundaries-ghostel.json` — double-click selection under evil-ghostel's
+  Vim-style syntax table, on bash; see the word-boundary section below.
 
 ## Running (elate 0.11.0+)
 
@@ -131,6 +135,30 @@ elate run --keep-going --format json test/elate/matrix/tracking-ghostel.json
 
 The parked groups send ESC only after a short idle inside a `sleep 2` prefix so it
 lands exactly on the cursor (the esc-clamp group covers the atomic RET+ESC timing).
+
+## Word-boundary suite (Vim-style `iskeyword` vs ghostel's path-aware table)
+
+`evil-ghostel-mode` installs `evil-ghostel-syntax-table`, so `w`/`b`/`ciw` stop at path
+components instead of spanning `a/BAD/c.txt` as one word.  The other ops edit plain
+alphanumeric words, identical under either table; these four target the difference
+(shell as oracle, all four shells):
+
+- **ciw-path** -- `^ w w w c i w` on `a/BAD/c.txt` reaches and replaces `BAD` only
+  (`a/m27ok/c.txt`).  Under ghostel's own table `^ w w` leaves the token entirely.
+- **b-dw-path** -- `$ b d w` on `m28ok/DELME` removes just `DELME` (`m28ok/`).
+- **ciW-path** -- `ciW` on `BAD/BAD.BAD` still replaces the whole whitespace-delimited token.
+- **opt-out** -- `(customize-set-variable 'evil-ghostel-word-boundaries nil)` restores
+  `ghostel-mode-syntax-table` in the live buffer (asserted), so `ciw` takes the whole path;
+  the option is reset to its standard value afterwards.
+
+`matrix/word-boundaries-ghostel.json` pins the documented mouse tradeoff on rendered
+output with real double-clicks (`mouse: double` at a fixed line/column, layout asserted
+first): mode on selects `BAD`, `(evil-ghostel-mode -1)` selects `a/BAD/c.txt`, re-enabling
+selects `BAD` again.
+
+```sh
+elate run --keep-going --format json test/elate/matrix/word-boundaries-ghostel.json
+```
 
 ## Known xfails (flagged, not fixed — confirmed live on elate 0.11.0)
 

@@ -1421,20 +1421,20 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 
 ** Input and interaction
 
-| Variable                           | Default           | Description                                                                                                          |
-|------------------------------------+-------------------+----------------------------------------------------------------------------------------------------------------------|
-| =ghostel-keymap-exceptions=          | =("C-c" "C-x" ...)= | Keys passed through to Emacs in semi-char mode.                                                                      |
-| =ghostel-ignore-cursor-change=       | =nil=               | Ignore terminal-driven cursor shape/visibility changes.                                                              |
-| =ghostel-readonly-fast-exit=         | =t=                 | In copy/Emacs modes, exit on =q=, =C-g=, or any self-insert key.                                                         |
-| =ghostel-readonly-fake-cursor=       | =t=                 | Draw a hint cursor at the live terminal position in copy/Emacs modes.                                                |
-| =ghostel-readonly-default-mode=      | =copy=              | Read-only mode entered by =C-x C-q=, hyperlink navigation, and every trigger below left at =default=: =copy= or =emacs=.     |
-| =ghostel-mouse-drag-input-mode=      | =default=           | Mode to enter after a click/drag/multi-click selection: =default=, =copy=, =emacs=, or =nil=.                                |
-| =ghostel-mark-activation-input-mode= | =default=           | Mode to enter when a command activates the mark: =default=, =copy=, =emacs=, or =nil=.                                       |
-| =ghostel-point-leave-input-mode=     | =default=           | Mode to enter when point leaves the input point (isearch/minibuffer): =default=, =copy=, =emacs=, or =nil=.                  |
-| =ghostel-prompt-navigation-input-mode= | =default=         | Mode to enter for prompt navigation (=C-c M-n= / =C-c M-p=, imenu): =default=, =copy=, or =emacs=.                             |
-| =ghostel-word-boundary-string=       | (see docstring)   | Characters that terminate words for double-click selection and word motion (mirrors Ghostty's =selection-word-chars=). |
-| =ghostel-scroll-on-input=            | =t=                 | Jump to the bottom when typing while scrolled into scrollback.                                                       |
-| =ghostel-bold-color=                 | =nil=               | How bold text is colored: =nil=, =bright=, or a =#RRGGBB= string.                                                          |
+| Variable                             | Default           | Description                                                                                                                                                                                                         |
+|--------------------------------------+-------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| =ghostel-keymap-exceptions=            | =("C-c" "C-x" ...)= | Keys passed through to Emacs in semi-char mode.                                                                                                                                                                     |
+| =ghostel-ignore-cursor-change=         | =nil=               | Ignore terminal-driven cursor shape/visibility changes.                                                                                                                                                             |
+| =ghostel-readonly-fast-exit=           | =t=                 | In copy/Emacs modes, exit on =q=, =C-g=, or any self-insert key.                                                                                                                                                        |
+| =ghostel-readonly-fake-cursor=         | =t=                 | Draw a hint cursor at the live terminal position in copy/Emacs modes.                                                                                                                                               |
+| =ghostel-readonly-default-mode=        | =copy=              | Read-only mode entered by =C-x C-q=, hyperlink navigation, and every trigger below left at =default=: =copy= or =emacs=.                                                                                                    |
+| =ghostel-mouse-drag-input-mode=        | =default=           | Mode to enter after a click/drag/multi-click selection: =default=, =copy=, =emacs=, or =nil=.                                                                                                                               |
+| =ghostel-mark-activation-input-mode=   | =default=           | Mode to enter when a command activates the mark: =default=, =copy=, =emacs=, or =nil=.                                                                                                                                      |
+| =ghostel-point-leave-input-mode=       | =default=           | Mode to enter when point leaves the input point (isearch/minibuffer): =default=, =copy=, =emacs=, or =nil=.                                                                                                                 |
+| =ghostel-prompt-navigation-input-mode= | =default=           | Mode to enter for prompt navigation (=C-c M-n= / =C-c M-p=, imenu): =default=, =copy=, or =emacs=.                                                                                                                            |
+| =ghostel-word-boundary-string=         | (see docstring)   | Characters that terminate words for double-click selection and word motion (mirrors Ghostty's =selection-word-chars=).  Overridden for printable ASCII by =evil-ghostel-word-boundaries= while =evil-ghostel-mode= is on. |
+| =ghostel-scroll-on-input=              | =t=                 | Jump to the bottom when typing while scrolled into scrollback.                                                                                                                                                      |
+| =ghostel-bold-color=                   | =nil=               | How bold text is colored: =nil=, =bright=, or a =#RRGGBB= string.                                                                                                                                                         |
 
 ** Line mode
 
@@ -1502,6 +1502,16 @@ When =evil-ghostel-mode= is active:
 - *Paste* (=p=, =P=) pastes from the kill ring via bracketed paste.
 - *Undo* (=u=) sends readline undo (=Ctrl+_=).
 - Cursor shape follows evil state (block for normal, bar for insert).
+- Word motions use *Vim-style word boundaries*: =w=, =b=, =e=, =ciw= stop at path
+  components (=bar= in =~/src/foo/bar.txt=) instead of treating the whole path
+  as one word, matching Vim's default =iskeyword= (=_= stays a word
+  constituent).  Configurable via =evil-ghostel-word-boundaries=; set it to
+  =nil= to keep ghostel's path-aware boundaries.  Tradeoff: while active,
+  every syntax-based word command — double-click, =*=, dabbrev, line-mode
+  =M-f=/=M-b= — also sees path components rather than the whole path
+  (link clicking, =ghostel-find-file-at-point=, and the whitespace-based
+  =W=/=ciW= WORD motions are unaffected), and =ghostel-word-boundary-string=
+  only governs non-ASCII characters in these buffers.
 - Alt-screen programs (vim, less, htop) are unaffected: ESC goes to the app
   (see below).
 

@@ -5,7 +5,7 @@
 ;; Author: Daniel Kraus <daniel@kraus.my>
 ;; URL: https://github.com/dakra/ghostel
 ;; Version: 0.51.0
-;; Package-Requires: ((emacs "28.1") (evil "1.0") (ghostel "0.42.1"))
+;; Package-Requires: ((emacs "28.1") (evil "1.0") (ghostel "0.51.0"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is NOT part of GNU Emacs.
@@ -88,6 +88,42 @@ buffer with \\[evil-ghostel-toggle-send-escape]."
   "Iteration cap for waiting on terminal output to settle.
 Each iteration waits up to 50 ms, bounding the total wait at ~500 ms."
   :type 'integer)
+
+(defvar evil-ghostel-syntax-table (make-syntax-table ghostel-mode-syntax-table)
+  "Syntax table installed in ghostel buffers while `evil-ghostel-mode' is on.
+Realized from `evil-ghostel-word-boundaries' for printable ASCII;
+non-ASCII characters inherit from `ghostel-mode-syntax-table'.")
+
+(defcustom evil-ghostel-word-boundaries "!\"#$%&'()*+,-./:;<=>?@[\\]^`{|}~"
+  "Characters that terminate words for Evil motions in ghostel buffers.
+
+The default matches Vim's iskeyword: letters, digits, and underscore are word
+constituents, so `w', `b', `e', and `ciw' stop at path components (`bar' in
+`~/src/foo/bar.txt') instead of spanning the whole path.
+
+The table drives every syntax-based word command, not only Evil's: while
+`evil-ghostel-mode' is on, double-click, `*', dabbrev, and line-mode
+`M-f' likewise see path components, not the whole path.
+Link clicking, `ghostel-find-file-at-point', and the whitespace-delimited
+WORD motions (\"W\", \"ciW\") are unaffected.
+
+nil keeps ghostel's path-aware `ghostel-mode-syntax-table'.  While a
+string is installed it takes precedence for printable ASCII, so
+`ghostel-word-boundary-string' only governs non-ASCII characters.
+
+The option is global (buffer-local values are ignored) and realized into
+`evil-ghostel-syntax-table'; use `setopt' or `customize-set-variable' so
+live buffers pick up the change."
+  :type '(choice (const :tag "Keep ghostel's path-aware boundaries" nil)
+                 (string :tag "Boundary characters"))
+  :initialize #'custom-initialize-default
+  :set (lambda (sym newval)
+         (set-default-toplevel-value sym newval)
+         (dolist (buf (buffer-list))
+           (when (buffer-local-value 'evil-ghostel-mode buf)
+             (with-current-buffer buf
+               (evil-ghostel--restore-word-boundaries)
+               (evil-ghostel--install-word-boundaries))))))
 
 ;; Apply at load: a plain `setq' before load skips the `:set' above.
 (evil-set-initial-state 'ghostel-mode evil-ghostel-initial-state)
@@ -905,6 +941,28 @@ to the shell; without the preview the chord still works via `read-event'."
 
 ;; Minor mode
 
+(defvar-local evil-ghostel--saved-syntax-table nil
+  "Syntax table that was current before `evil-ghostel-syntax-table' replaced it.
+Non-nil only while the evil table is installed in this buffer.")
+
+(defun evil-ghostel--install-word-boundaries ()
+  "Realize and install `evil-ghostel-syntax-table' in the current buffer.
+No-op outside `ghostel-mode' buffers, when `evil-ghostel-word-boundaries'
+is nil, or when the table is already installed."
+  (let ((boundaries (default-value 'evil-ghostel-word-boundaries)))
+    (when (and (derived-mode-p 'ghostel-mode)
+               (stringp boundaries)
+               (not evil-ghostel--saved-syntax-table))
+      (ghostel--realize-word-boundaries evil-ghostel-syntax-table boundaries)
+      (setq evil-ghostel--saved-syntax-table (syntax-table))
+      (set-syntax-table evil-ghostel-syntax-table))))
+
+(defun evil-ghostel--restore-word-boundaries ()
+  "Restore the syntax table that was current before the evil table."
+  (when evil-ghostel--saved-syntax-table
+    (set-syntax-table evil-ghostel--saved-syntax-table)
+    (setq evil-ghostel--saved-syntax-table nil)))
+
 (defun evil-ghostel--any-active-elsewhere-p (except-buffer)
   "Return non-nil if any buffer but EXCEPT-BUFFER has `evil-ghostel-mode' on.
 Decides whether the global advice can be removed on the last disable."
@@ -934,6 +992,7 @@ Enabling installs global advice while any buffer has the mode enabled."
         ;; Mouse selection stays governed by `ghostel-mouse-drag-input-mode',
         ;; so it still picks its own mode.
         (setq-local ghostel-mark-activation-input-mode nil)
+        (evil-ghostel--install-word-boundaries)
         (add-hook 'evil-insert-state-entry-hook
                   #'evil-ghostel--insert-state-entry nil t)
         ;; Reuse the insert-state sync when entering emacs-state — both
@@ -955,6 +1014,8 @@ Enabling installs global advice while any buffer has the mode enabled."
     (remove-hook 'ghostel-inhibit-anchor-functions
                  #'evil-ghostel--anchor-inhibit t)
     (kill-local-variable 'ghostel-mark-activation-input-mode)
+    (evil-ghostel--restore-word-boundaries)
+    (kill-local-variable 'evil-ghostel--saved-syntax-table)
     (unless (evil-ghostel--any-active-elsewhere-p (current-buffer))
       (advice-remove 'ghostel--redraw #'evil-ghostel--around-redraw)
       (advice-remove 'ghostel--apply-cursor-style
