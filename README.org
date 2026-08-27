@@ -1948,6 +1948,17 @@ Enable it for any Emacs Lisp input method:
 | =M-x ghostel-download-module=          | Download the pre-built native module.                                     |
 | =M-x ghostel-module-compile=           | Compile the native module from source.                                    |
 
+** Terminal title
+:properties:
+:custom_id: terminal-title
+:end:
+#+vindex: ghostel-title
+
+=ghostel-title= holds the current terminal title reported via OSC 0/2.  It is
+buffer-local and nil until the terminal reports a title or after the title is
+cleared.  Read another terminal buffer's title with
+=(buffer-local-value 'ghostel-title BUFFER)=.
+
 ** Picker annotations
 :properties:
 :custom_id: picker-annotations

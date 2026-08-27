@@ -973,8 +973,10 @@ local code should not assume it is signalable unless the process is local.")
 (defvar-local ghostel--last-directory nil
   "Last known working directory from OSC 7, used for dedup.")
 
-(defvar-local ghostel--title nil
-  "Last terminal title reported by OSC 0/2; nil when unset or cleared.")
+(defvar-local ghostel-title nil
+  "Current terminal title reported by OSC 0/2.
+This buffer-local value is read-only and nil when no title has been reported
+or the title has been cleared.")
 
 (defvar-local ghostel--managed-buffer-name nil
   "Last buffer name managed by Ghostel title tracking.
@@ -3368,13 +3370,13 @@ A nil or empty TITLE clears the title and reverts a title-derived
 name to the slot's creation-style name.  Renames via
 `ghostel-buffer-name-function' and `ghostel--rename-managed', which
 declines after a manual rename."
-  (setq ghostel--title (and title (not (string= "" title)) title))
+  (setq ghostel-title (and title (not (string= "" title)) title))
   (when ghostel-buffer-name-function
     (ghostel--rename-managed
-     (or (funcall ghostel-buffer-name-function ghostel--title)
+     (or (funcall ghostel-buffer-name-function ghostel-title)
          ;; Revert only names title tracking has claimed; a clear must
          ;; not rename a buffer it never touched.
-         (and (null ghostel--title)
+         (and (null ghostel-title)
               ghostel--managed-buffer-name
               ghostel--initial-name))))
   (ghostel--buffer-identification-update))
@@ -3384,7 +3386,7 @@ declines after a manual rename."
 See `ghostel-buffer-identification-format' for the specs.
 %b stays a live mode-line construct.
 A FORMAT with %t returns the plain buffer name while the terminal has no title."
-  (if (and (null ghostel--title)
+  (if (and (null ghostel-title)
            ;; Skip quoted percents so e.g. "50%%tests" is not read as a
            ;; title reference.
            (string-match-p "%[ 0<>^_-]*[0-9]*\\(?:\\.[0-9]+\\)?t"
@@ -3397,8 +3399,8 @@ A FORMAT with %t returns the plain buffer name while the terminal has no title."
             (format-spec (replace-regexp-in-string
                           "%[ 0<>^_-]*[0-9]*\\(?:\\.[0-9]+\\)?b" "%b" format)
                          `((?b . "\0")
-                           (?t . ,(propertize (or ghostel--title "")
-                                              'help-echo ghostel--title))
+                           (?t . ,(propertize (or ghostel-title "")
+                                              'help-echo ghostel-title))
                            (?d . ,(abbreviate-file-name
                                    (directory-file-name default-directory))))
                          'ignore))
@@ -3598,7 +3600,7 @@ URL does not match the local machine, construct a TRAMP path."
                   list-buffers-directory default-directory))))
       (when ghostel-buffer-name-function
         (ghostel--rename-managed
-         (funcall ghostel-buffer-name-function ghostel--title)))
+         (funcall ghostel-buffer-name-function ghostel-title)))
       (ghostel--buffer-identification-update))))
 
 
@@ -4990,7 +4992,7 @@ spawn after initialization."
           ghostel--process nil
           ghostel--pid nil
           ghostel--last-directory nil
-          ghostel--title nil
+          ghostel-title nil
           ghostel--command-running nil
           ghostel--event-buf nil
           ghostel--redraw-timer nil
@@ -5380,7 +5382,7 @@ Project membership is determined by `ghostel-project-buffer-scope'."
 The annotation is the terminal title, capped at
 `ghostel-annotation-title-width' columns."
   (when-let* ((buffer (get-buffer name))
-              (title (buffer-local-value 'ghostel--title buffer)))
+              (title (buffer-local-value 'ghostel-title buffer)))
     (concat "  " (if ghostel-annotation-title-width
                      (truncate-string-to-width
                       title ghostel-annotation-title-width nil nil t)
