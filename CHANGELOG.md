@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Editing the live prompt with evil-ghostel no longer leaves characters behind
+  or desynchronizes point around wide characters, grapheme clusters, and soft
+  wraps.  Cursor moves and deletions now follow the position reported by the
+  terminal and stop if a key is ignored.  The new
+  `evil-ghostel-cursor-feedback-timeout` allows slow shell echoes without
+  coupling correctness to redraw scheduling.
+
 ## [0.52.0] — 2026-08-31
 
 ### Added

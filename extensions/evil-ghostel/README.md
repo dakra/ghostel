@@ -18,6 +18,10 @@ terminal, and the editing operators (`d`, `c`, `x`, `r`, `p`, `u`, …) drive
 the shell's line editor over the PTY. See the
 [manual](https://dakra.github.io/ghostel/#evil-mode) for the full list.
 
+Cursor-driven commands follow the position reported by the terminal after
+each key, keeping edits aligned around wide characters, grapheme clusters,
+and soft wraps and stopping if the shell ignores a key.
+
 ## Word boundaries
 
 Word motions use Vim-style word boundaries: `w`, `b`, `e`, `ciw` stop at
