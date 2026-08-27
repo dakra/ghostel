@@ -765,6 +765,22 @@ YANK-HANDLER is used by Evil outside live terminal input.  Covers P."
 Bindings for normal/visual editing commands and insert-state Ctrl
 passthrough are installed via `evil-define-key*'.")
 
+(defun evil-ghostel-copy-mode ()
+  "Toggle `ghostel-copy-mode', entering Evil normal state on entry.
+Copy mode must not inherit Evil's insert state: otherwise its first
+printable motion key is handled as self-insert.  With Ghostel's fast
+read-only exit enabled, that key would immediately leave copy mode and
+reach the terminal instead of navigating the frozen buffer."
+  (interactive)
+  (ghostel-copy-mode)
+  (when (eq ghostel--input-mode 'copy)
+    (evil-normal-state)))
+
+;; Keep the core binding (and any user binding of `ghostel-copy-mode') while
+;; adding Evil's state transition whenever the command is invoked.
+(define-key evil-ghostel-mode-map [remap ghostel-copy-mode]
+            #'evil-ghostel-copy-mode)
+
 (defconst evil-ghostel--ctrl-passthrough-keys
   '("a" "b" "d" "e" "f" "k" "l" "n" "o" "p" "q" "r" "s" "t" "u" "v" "w" "y")
   "Ctrl+key combinations to pass through to the terminal in insert state.
@@ -865,26 +881,33 @@ Valid values: `auto', `terminal', `evil'.")
 
 (defun evil-ghostel--escape ()
   "Dispatch insert-state ESC based on `evil-ghostel--escape-mode'.
-Terminal-bound ESC runs through `ghostel--on-user-input'.  Falling back to
-evil uses `evil-force-normal-state' when the `evil-insert-state-map'
+In copy and Emacs modes, always return to Evil normal state.  Otherwise,
+terminal-bound ESC runs through `ghostel--on-user-input'.  Falling back
+to evil uses `evil-force-normal-state' when the `evil-insert-state-map'
 binding is missing or a chord prefix (e.g. `evil-escape''s `jk'), so the
 keystroke is never dropped."
   (interactive)
-  (let* ((mode evil-ghostel--escape-mode)
-         (to-terminal (or (eq mode 'terminal)
-                          (and (eq mode 'auto)
-                               (ghostel-alt-screen-p)))))
-    (if to-terminal
-        (progn
-          (ghostel--on-user-input)
-          (ghostel--send-encoded "escape" "")
-          (when (and (eq mode 'auto) (not evil-ghostel--escape-hint-shown))
-            (setq evil-ghostel--escape-hint-shown t)
-            (message (substitute-command-keys
-                      "ESC sent to the terminal app (alt-screen); \
+  ;; Insert state cannot edit a read-only Ghostel view.  ESC must remain a
+  ;; reliable way back to normal state there, even when the frozen terminal
+  ;; is an alt-screen app whose ESC would normally be routed to the PTY.
+  (if (memq ghostel--input-mode '(copy emacs))
+      (evil-force-normal-state)
+    (let* ((mode evil-ghostel--escape-mode)
+           (to-terminal (or (eq mode 'terminal)
+                            (and (eq mode 'auto)
+                                 (ghostel-alt-screen-p)))))
+      (if to-terminal
+          (progn
+            (ghostel--on-user-input)
+            (ghostel--send-encoded "escape" "")
+            (when (and (eq mode 'auto) (not evil-ghostel--escape-hint-shown))
+              (setq evil-ghostel--escape-hint-shown t)
+              (message (substitute-command-keys
+                        "ESC sent to the terminal app (alt-screen); \
 \\[evil-ghostel-toggle-send-escape] routes it to evil instead"))))
-      (let ((cmd (lookup-key evil-insert-state-map (kbd "<escape>"))))
-        (call-interactively (if (commandp cmd) cmd #'evil-force-normal-state))))))
+        (let ((cmd (lookup-key evil-insert-state-map (kbd "<escape>"))))
+          (call-interactively
+           (if (commandp cmd) cmd #'evil-force-normal-state)))))))
 
 (defun evil-ghostel-toggle-send-escape (&optional arg)
   "Toggle or set the ESC routing mode for the current buffer.
@@ -919,9 +942,10 @@ the default."
 
 ;; The <escape> function-key event exists on GUI frames, on ttys with
 ;; the kitty keyboard protocol (kkp.el), and on legacy ttys in ghostel
-;; terminal-input buffers via ghostel's lone-ESC `input-decode-map'
-;; filter.  Fast C-c M-... chords still decode as meta there: the
-;; filter sees the pending follow-up byte and leaves ESC alone.
+;; buffers via ghostel's lone-ESC `input-decode-map' filter (extended below
+;; to Evil insert state in read-only modes).  Fast C-c M-... chords still
+;; decode as Meta: the filter sees the pending follow-up byte and leaves
+;; ESC alone.
 (define-key evil-ghostel-mode-map (kbd "C-c <escape>")
             #'evil-force-normal-state)
 
@@ -963,6 +987,48 @@ is nil, or when the table is already installed."
     (set-syntax-table evil-ghostel--saved-syntax-table)
     (setq evil-ghostel--saved-syntax-table nil)))
 
+(defun evil-ghostel--around-tty-esc (orig-fn map)
+  "Let lone TTY ESC reach Evil insert state in read-only Ghostel modes.
+ORIG-FN is `ghostel--tty-esc' and MAP is its wrapped decode map.
+Ghostel normally translates ESC only in terminal-input modes; temporarily
+present a read-only Evil insert state as semi-char so ESC becomes the
+`escape' event, while Meta chords and terminal escape sequences still pass
+through MAP unchanged."
+  (if (and evil-ghostel-mode
+           (evil-insert-state-p)
+           (memq ghostel--input-mode '(copy emacs)))
+      (let ((ghostel--input-mode 'semi-char))
+        (funcall orig-fn map))
+    (funcall orig-fn map)))
+
+(defvar-local evil-ghostel--saved-readonly-fast-exit nil
+  "Saved buffer-local state of `ghostel-readonly-fast-exit'.
+The value is (WAS-LOCAL VALUE), or nil when there is nothing to restore.")
+
+(defun evil-ghostel--disable-readonly-fast-exit ()
+  "Keep Ghostel's read-only modes active while Evil navigation runs."
+  (unless evil-ghostel--saved-readonly-fast-exit
+    (setq evil-ghostel--saved-readonly-fast-exit
+          (list (local-variable-p 'ghostel-readonly-fast-exit)
+                ghostel-readonly-fast-exit)))
+  (setq-local ghostel-readonly-fast-exit nil)
+  ;; `setq-local' bypasses the option's custom setter.  Refresh a read-only
+  ;; map explicitly when evil-ghostel is enabled after copy/Emacs mode.
+  (when (memq ghostel--input-mode '(copy emacs))
+    (use-local-map (ghostel--readonly-keymap))))
+
+(defun evil-ghostel--restore-readonly-fast-exit ()
+  "Restore the setting saved by `evil-ghostel--disable-readonly-fast-exit'."
+  (when evil-ghostel--saved-readonly-fast-exit
+    (pcase-let ((`(,was-local ,value)
+                 evil-ghostel--saved-readonly-fast-exit))
+      (if was-local
+          (setq-local ghostel-readonly-fast-exit value)
+        (kill-local-variable 'ghostel-readonly-fast-exit)))
+    (kill-local-variable 'evil-ghostel--saved-readonly-fast-exit)
+    (when (memq ghostel--input-mode '(copy emacs))
+      (use-local-map (ghostel--readonly-keymap)))))
+
 (defun evil-ghostel--any-active-elsewhere-p (except-buffer)
   "Return non-nil if any buffer but EXCEPT-BUFFER has `evil-ghostel-mode' on.
 Decides whether the global advice can be removed on the last disable."
@@ -993,6 +1059,10 @@ Enabling installs global advice while any buffer has the mode enabled."
         ;; so it still picks its own mode.
         (setq-local ghostel-mark-activation-input-mode nil)
         (evil-ghostel--install-word-boundaries)
+        ;; Evil's navigation keys are printable characters.  A copy-mode
+        ;; entered from insert state must keep them in the frozen buffer
+        ;; instead of treating the first one as Ghostel's fast exit.
+        (evil-ghostel--disable-readonly-fast-exit)
         (add-hook 'evil-insert-state-entry-hook
                   #'evil-ghostel--insert-state-entry nil t)
         ;; Reuse the insert-state sync when entering emacs-state — both
@@ -1006,6 +1076,8 @@ Enabling installs global advice while any buffer has the mode enabled."
         (advice-add 'ghostel--redraw :around #'evil-ghostel--around-redraw)
         (advice-add 'ghostel--apply-cursor-style :around
                     #'evil-ghostel--override-cursor-style)
+        (advice-add 'ghostel--tty-esc :around
+                    #'evil-ghostel--around-tty-esc)
         (evil-refresh-cursor))
     (remove-hook 'evil-insert-state-entry-hook
                  #'evil-ghostel--insert-state-entry t)
@@ -1014,12 +1086,15 @@ Enabling installs global advice while any buffer has the mode enabled."
     (remove-hook 'ghostel-inhibit-anchor-functions
                  #'evil-ghostel--anchor-inhibit t)
     (kill-local-variable 'ghostel-mark-activation-input-mode)
+    (evil-ghostel--restore-readonly-fast-exit)
     (evil-ghostel--restore-word-boundaries)
     (kill-local-variable 'evil-ghostel--saved-syntax-table)
     (unless (evil-ghostel--any-active-elsewhere-p (current-buffer))
       (advice-remove 'ghostel--redraw #'evil-ghostel--around-redraw)
       (advice-remove 'ghostel--apply-cursor-style
-                     #'evil-ghostel--override-cursor-style))))
+                     #'evil-ghostel--override-cursor-style)
+      (advice-remove 'ghostel--tty-esc
+                     #'evil-ghostel--around-tty-esc))))
 
 (provide 'evil-ghostel)
 ;;; evil-ghostel.el ends here
