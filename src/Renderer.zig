@@ -924,6 +924,24 @@ fn render(
     env: emacs.Env,
     start_pin: gt.Pin,
 ) !void {
+    var render_start = start_pin;
+    // Incremental redraws can jump over the clean prefix; a new buffer must
+    // still visit every terminal row so it can materialize them.
+    if (self.rows_in_buffer > 0) {
+        var skipped: usize = 0;
+        var first_dirty: ?gt.Pin = null;
+        var clean_it = start_pin.rowIterator(.right_down, null);
+        while (clean_it.next()) |row_pin| : (skipped += 1) {
+            if (self.isRowDirty(row_pin)) {
+                first_dirty = row_pin;
+                break;
+            }
+        }
+
+        render_start = first_dirty orelse return;
+        if (skipped > 0) _ = env.f("forward-line", .{skipped});
+    }
+
     var eob = false;
     var current_span: ?struct {
         start_val: emacs.Value,
@@ -931,7 +949,7 @@ fn render(
         adjusted_line_start: usize,
     } = null;
 
-    var it = start_pin.rowIterator(.right_down, null);
+    var it = render_start.rowIterator(.right_down, null);
     while (it.next()) |row_pin| {
         const row = row_pin.rowAndCell().row;
         eob = eob or env.isNotNil(env.f("eobp", .{}));

@@ -10,7 +10,9 @@ All notable changes to this project will be documented in this file.
   wraps.  Cursor moves and deletions now follow the position reported by the
   terminal and stop if a key is ignored.  The new
   `evil-ghostel-cursor-feedback-timeout` allows slow shell echoes without
-  coupling correctness to redraw scheduling.
+  coupling correctness to redraw scheduling.  Incremental redraws skip clean
+  rows above the first changed row, reducing the cost of the per-key feedback
+  loop.
 
 ## [0.52.0] — 2026-08-31
 
