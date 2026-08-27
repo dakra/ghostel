@@ -1500,7 +1500,7 @@ When =evil-ghostel-mode= is active:
   (outside alt-screen; see [[#evil-escape-routing][ESC routing]] below).
 - Normal-mode navigation (=h=, =j=, =k=, =l=, =w=, =b=, =e=, =0=, =$=, ...) works as expected.
 - *Insert/append* (=i=, =a=, =I=, =A=) sync the terminal cursor to point before entering
-  insert state.
+  insert state, including around wide characters, grapheme clusters, and soft wraps.
 - *Delete* (=d=, =dw=, =dd=, =D=, =x=, =X=) yanks text to the kill ring and deletes via the
   shell.
 - *Change* (=c=, =cw=, =cc=, =C=, =s=, =S=) deletes then enters insert state.
@@ -1523,6 +1523,10 @@ When =evil-ghostel-mode= is active:
 
 The initial state is configurable via =evil-ghostel-initial-state= (default
 =insert=).
+
+Cursor-driven commands follow the position reported by the terminal after
+each key and stop if the shell ignores it.  Delayed shell echoes are allowed
+up to =evil-ghostel-cursor-feedback-timeout= seconds (default 0.5).
 
 *** ESC routing
 :properties:
