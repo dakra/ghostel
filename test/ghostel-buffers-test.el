@@ -204,9 +204,9 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
 (ert-deftest ghostel-test-annotate-buffer-title ()
   "`ghostel-annotate-buffer' caps the title at `ghostel-annotation-title-width'."
   (ghostel-buffers-test--with-bufs ((a "*ghostel-a*"))
-    (with-current-buffer a (setq-local ghostel--title "make test"))
+    (with-current-buffer a (setq-local ghostel-title "make test"))
     (should (equal "  make test" (ghostel-annotate-buffer (buffer-name a))))
-    (with-current-buffer a (setq-local ghostel--title (make-string 60 ?x)))
+    (with-current-buffer a (setq-local ghostel-title (make-string 60 ?x)))
     (let* ((ghostel-annotation-title-width 30)
            (annotation (ghostel-annotate-buffer (buffer-name a))))
       (should (<= (string-width annotation) 32))

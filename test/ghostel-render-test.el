@@ -821,7 +821,7 @@ and typed text was invisible."
       (ghostel--write-vt term "\e]2;My Title\e\\")
       (should (equal "My Title"
                      (ghostel-test--wait-until
-                      (lambda () ghostel--title) nil 1))))))
+                      (lambda () ghostel-title) nil 1))))))
 
 
 ;;; Scrollback materialization and eviction

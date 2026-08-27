@@ -59,7 +59,7 @@ the other."
         (let ((fun (plist-get consult-ghostel-source :annotate)))
           (should-not (funcall fun buf))
           (with-current-buffer buf
-            (setq ghostel--title "make -j8"))
+            (setq ghostel-title "make -j8"))
           (should (equal (funcall fun buf) "  make -j8")))
       (kill-buffer buf))))
 
@@ -71,7 +71,7 @@ the other."
                    (lambda (_) " orig")))
           (should (equal (consult-ghostel-marginalia-annotate buf) " orig"))
           (with-current-buffer buf
-            (setq ghostel--title "make -j8"))
+            (setq ghostel-title "make -j8"))
           (should (equal (consult-ghostel-marginalia-annotate buf)
                          "  make -j8 orig")))
       (kill-buffer buf))))

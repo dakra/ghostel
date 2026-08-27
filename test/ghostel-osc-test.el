@@ -55,10 +55,10 @@
           (ghostel--write-pty ghostel--term (format "\e]2;%s\e\\" title))
           (ghostel-test--wait-until
            (lambda ()
-             (and (equal title ghostel--title)
+             (and (equal title ghostel-title)
                   (equal expected (buffer-name))))
            proc 5)
-          (should (equal title ghostel--title))
+          (should (equal title ghostel-title))
           (should (equal expected (buffer-name))))))))
 
 (ert-deftest ghostel-test-osc2-empty-title-clears ()
@@ -76,12 +76,12 @@ Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
                                  (setq round (1+ round)))))
               (ghostel--write-pty ghostel--term (format "\e]2;%s\e\\" title))
               (ghostel-test--wait-until
-               (lambda () (equal title ghostel--title)) proc 5)
+               (lambda () (equal title ghostel-title)) proc 5)
               (should (equal (format "*ghostel: %s*" title) (buffer-name)))
               (ghostel--write-pty ghostel--term clear)
               (ghostel-test--wait-until
-               (lambda () (null ghostel--title)) proc 5)
-              (should (null ghostel--title))
+               (lambda () (null ghostel-title)) proc 5)
+              (should (null ghostel-title))
               (should (equal expected (buffer-name)))
               (should (equal expected ghostel--managed-buffer-name)))))))))
 
@@ -95,11 +95,11 @@ Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
               (title (format "RIS Stale %S" backend)))
           (ghostel--write-vt ghostel--term (format "\e]2;%s\e\\" title))
           (ghostel-test--wait-until
-           (lambda () (equal title ghostel--title)) proc 5)
+           (lambda () (equal title ghostel-title)) proc 5)
           (should (equal (format "*ghostel: %s*" title) (buffer-name)))
           (ghostel--write-vt ghostel--term "\ec")
           (ghostel-test--wait-until
-           (lambda () (null ghostel--title)) proc 5)
+           (lambda () (null ghostel-title)) proc 5)
           (should (equal expected (buffer-name)))
           (should (equal expected ghostel--managed-buffer-name)))))))
 
@@ -117,7 +117,7 @@ Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
           (ghostel--write-vt ghostel--term "\ec\e]2;SENTINEL\e\\")
           ;; Effects are FIFO, so observing SENTINEL drains any RIS callback.
           (ghostel-test--wait-until
-           (lambda () (equal "SENTINEL" ghostel--title)) proc 5)
+           (lambda () (equal "SENTINEL" ghostel-title)) proc 5)
           (should (equal 1 calls)))))))
 
 (ert-deftest ghostel-test-title-stack-restores-title ()
@@ -129,18 +129,18 @@ Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
             (inner (format "Inner %S" backend)))
         (ghostel--write-vt ghostel--term (format "\e]2;%s\e\\" outer))
         (ghostel-test--wait-until
-         (lambda () (equal outer ghostel--title)) proc 5)
+         (lambda () (equal outer ghostel-title)) proc 5)
         (ghostel--write-vt ghostel--term
                            (format "\e[22;0t\e]2;%s\e\\" inner))
         (ghostel-test--wait-until
-         (lambda () (equal inner ghostel--title)) proc 5)
+         (lambda () (equal inner ghostel-title)) proc 5)
         (ghostel--write-vt ghostel--term "\e[23;0t")
         (ghostel-test--wait-until
-         (lambda () (equal outer ghostel--title)) proc 5)
+         (lambda () (equal outer ghostel-title)) proc 5)
         ;; Push again to verify that pop restored terminal state as well as Elisp state.
         (ghostel--write-vt ghostel--term "\e[22;0t\e]2;transient\e\\\e[23;0t")
         (ghostel-test--wait-until
-         (lambda () (equal outer ghostel--title)) proc 5)))))
+         (lambda () (equal outer ghostel-title)) proc 5)))))
 
 (ert-deftest ghostel-test-title-stack-drops-push-when-full ()
   "Pushes beyond xterm's 10-entry title stack limit are dropped."
@@ -153,11 +153,11 @@ Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
                            (format "\e]2;T%d\e\\\e[22;0t" i)))
       (ghostel--write-vt ghostel--term "\e]2;final\e\\\e[23;0t")
       (ghostel-test--wait-until
-       (lambda () (equal "T9" ghostel--title)) proc 5)
+       (lambda () (equal "T9" ghostel-title)) proc 5)
       (dotimes (_ 9)
         (ghostel--write-vt ghostel--term "\e[23;0t"))
       (ghostel-test--wait-until
-       (lambda () (equal "T0" ghostel--title)) proc 5))))
+       (lambda () (equal "T0" ghostel-title)) proc 5))))
 
 (ert-deftest ghostel-test-title-stack-restores-no-title ()
   "Vim's push/set/pop sequence restores an unset title."
@@ -170,10 +170,10 @@ Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
                                  "\e]2;file +  - VIM\a"
                                  "\e]2;Thanks for flying Vim\a"))
       (ghostel-test--wait-until
-       (lambda () (equal "Thanks for flying Vim" ghostel--title)) proc 5)
+       (lambda () (equal "Thanks for flying Vim" ghostel-title)) proc 5)
       (ghostel--write-vt ghostel--term "\e[23;2t\e[23;1t")
       (ghostel-test--wait-until
-       (lambda () (null ghostel--title)) proc 5))))
+       (lambda () (null ghostel-title)) proc 5))))
 
 (ert-deftest ghostel-test-title-stack-empty-pop-is-no-op ()
   "Popping an empty title stack leaves the title unchanged."
@@ -182,7 +182,7 @@ Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
     (ghostel-test--with-raw-echo-buffer (buf proc)
       (ghostel--write-vt ghostel--term "\e]2;KEEP\e\\\e[23;0t")
       (ghostel-test--wait-until
-       (lambda () (equal "KEEP" ghostel--title)) proc 5))))
+       (lambda () (equal "KEEP" ghostel-title)) proc 5))))
 
 (ert-deftest ghostel-test-title-stack-indexed-operations-are-no-ops ()
   "Indexed title stack operations leave the default stack unchanged."
@@ -193,17 +193,17 @@ Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
       ;; Since the indexed push is ignored, the pop has nothing to restore.
       (ghostel--write-vt ghostel--term "\e[22;0;5t\e]2;IDX\e\\\e[23;0t")
       (ghostel-test--wait-until
-       (lambda () (equal "IDX" ghostel--title)) proc 5)
+       (lambda () (equal "IDX" ghostel-title)) proc 5)
       ;; Push IDX onto the default stack, set the title to AFTER, then try
       ;; indexed pop 5.  The indexed pop leaves AFTER displayed and IDX saved.
       (ghostel--write-vt ghostel--term
                          "\e[22;0t\e]2;AFTER\e\\\e[23;0;5t")
       (ghostel-test--wait-until
-       (lambda () (equal "AFTER" ghostel--title)) proc 5)
+       (lambda () (equal "AFTER" ghostel-title)) proc 5)
       ;; A default pop restores IDX, proving that indexed pop 5 did not consume it.
       (ghostel--write-vt ghostel--term "\e[23;0t")
       (ghostel-test--wait-until
-       (lambda () (equal "IDX" ghostel--title)) proc 5))))
+       (lambda () (equal "IDX" ghostel-title)) proc 5))))
 
 (ert-deftest ghostel-test-full-reset-clears-title-stack ()
   "RIS discards saved title stack entries."
@@ -213,7 +213,7 @@ Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
       (ghostel--write-vt ghostel--term
                          "\e]2;BEFORE\e\\\e[22;0t\ec\e]2;AFTER\e\\\e[23;0t")
       (ghostel-test--wait-until
-       (lambda () (equal "AFTER" ghostel--title)) proc 5))))
+       (lambda () (equal "AFTER" ghostel-title)) proc 5))))
 
 (ert-deftest ghostel-test-osc9-notification ()
   "OSC 9 iTerm2-style notifications reach `ghostel-notification-function'."

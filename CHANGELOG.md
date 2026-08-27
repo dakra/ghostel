@@ -20,6 +20,9 @@ All notable changes to this project will be documented in this file.
   the updated scripts.
 
 ### Added
+- The terminal title is now public as the buffer-local `ghostel-title`
+  variable (formerly the private `ghostel--title`).  It holds the current
+  title reported via OSC 0/2, or nil when no title is set.
 - New `consult-ghostel` extension package (under
   `extensions/consult-ghostel/`): `M-x consult-ghostel` and
   `M-x consult-ghostel-project` pick a ghostel terminal through `consult`
