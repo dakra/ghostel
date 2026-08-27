@@ -203,10 +203,86 @@ overwrite the position evil assigns at operator/visual completion."
 (ert-deftest evil-ghostel-test-mode-deactivation ()
   "Test that `evil-ghostel-mode' cleans up on deactivation."
   (evil-ghostel-test--with-evil-buffer
+   (should (local-variable-p 'ghostel-readonly-fast-exit))
+   (should-not ghostel-readonly-fast-exit)
    (evil-ghostel-mode -1)
    (should-not evil-ghostel-mode)
+   (should-not (local-variable-p 'ghostel-readonly-fast-exit))
+   (should ghostel-readonly-fast-exit)
    (should-not (memq 'evil-ghostel--insert-state-entry
                      evil-insert-state-entry-hook))))
+
+(ert-deftest evil-ghostel-test-disable-restores-local-readonly-fast-exit ()
+  "Disabling evil-ghostel restores a pre-existing buffer-local fast-exit value."
+  (with-temp-buffer
+    (ghostel-mode)
+    (setq-local ghostel-readonly-fast-exit t)
+    (evil-local-mode 1)
+    (evil-ghostel-mode 1)
+    (should-not ghostel-readonly-fast-exit)
+    (evil-ghostel-mode -1)
+    (should (local-variable-p 'ghostel-readonly-fast-exit))
+    (should ghostel-readonly-fast-exit)))
+
+(ert-deftest evil-ghostel-test-copy-mode-enters-normal-and-toggles ()
+  "The Evil copy-mode remap freezes navigation until explicitly toggled off."
+  (evil-ghostel-test--with-evil-buffer
+   (insert "abc")
+   (goto-char (point-max))
+   (should (evil-insert-state-p))
+   (should (eq #'evil-ghostel-copy-mode
+               (command-remapping #'ghostel-copy-mode)))
+   (evil-ghostel-copy-mode)
+   (should (eq ghostel--input-mode 'copy))
+   (should (evil-normal-state-p))
+   (should-not ghostel-readonly-fast-exit)
+   (should (eq (current-local-map) ghostel-readonly-mode-map))
+   (should (eq (key-binding (kbd "h")) #'evil-backward-char))
+   (let ((before (point)))
+     (call-interactively (key-binding (kbd "h")))
+     (should (< (point) before)))
+   (should (eq ghostel--input-mode 'copy))
+   ;; Entering insert state cannot modify the read-only buffer, but ESC is
+   ;; still a recovery path to normal state and must not unfreeze copy mode.
+   (call-interactively (key-binding (kbd "i")))
+   (should (evil-insert-state-p))
+   (let ((last-command-event ?x))
+     (should-error (self-insert-command 1) :type 'buffer-read-only))
+   (let (sent)
+     (cl-letf (((symbol-function 'ghostel--alt-screen-p)
+                (lambda (&rest _) t))
+               ((symbol-function 'ghostel--send-encoded)
+                (lambda (&rest _) (setq sent t))))
+       (evil-ghostel--escape))
+     (should-not sent))
+   (should (evil-normal-state-p))
+   (should (eq ghostel--input-mode 'copy))
+   (evil-ghostel-copy-mode)
+   (should (eq ghostel--input-mode 'semi-char))))
+
+(ert-deftest evil-ghostel-test-tty-esc-recovers-from-readonly-insert-state ()
+  "A lone legacy-TTY ESC is decoded while Evil insert state is read-only."
+  (evil-ghostel-test--with-evil-buffer
+   (evil-ghostel-copy-mode)
+   (evil-insert 1)
+   (setq-local ghostel--term 'fake)
+   (let ((saved-map (make-sparse-keymap)))
+     (cl-letf (((symbol-function 'this-single-command-keys)
+                (lambda () [27]))
+               ((symbol-function 'sit-for) (lambda (_seconds) t)))
+       (should (equal [escape] (ghostel--tty-esc saved-map)))))))
+
+(ert-deftest evil-ghostel-test-enable-in-copy-mode-refreshes-keymap ()
+  "Enabling evil-ghostel replaces an already-active fast-exit map."
+  (with-temp-buffer
+    (ghostel-mode)
+    (ghostel-copy-mode)
+    (should (eq (current-local-map) ghostel-readonly-fast-exit-mode-map))
+    (evil-local-mode 1)
+    (evil-ghostel-mode 1)
+    (should-not ghostel-readonly-fast-exit)
+    (should (eq (current-local-map) ghostel-readonly-mode-map))
+    (evil-ghostel-mode -1)))
 
 (ert-deftest evil-ghostel-test-visual-inhibits-mark-copy-mode ()
   "Entering evil visual must not flip ghostel into copy mode.
@@ -242,7 +318,7 @@ buffer-locally so that chain yields to evil's own selection model."
    (should-not (local-variable-p 'ghostel-mark-activation-input-mode))))
 
 (ert-deftest evil-ghostel-test-advice-survives-disable-in-other-buffer ()
-  "Global `ghostel--redraw' / cursor-style advice survives one buffer disabling.
+  "Global redraw, cursor-style, and TTY ESC advice survives one disable.
 The advice is global but the mode is buffer-local; `advice-remove'
 during disable must wait until the LAST `evil-ghostel-mode' buffer
 is gone, otherwise toggling off in one buffer silently strips the
@@ -263,18 +339,24 @@ wrapper from every other ghostel buffer."
             (evil-ghostel-mode 1))
           (should (advice-member-p #'evil-ghostel--around-redraw
                                    'ghostel--redraw))
+          (should (advice-member-p #'evil-ghostel--around-tty-esc
+                                   'ghostel--tty-esc))
           ;; Disable in A — B still has the mode on, advice must stay.
           (with-current-buffer a (evil-ghostel-mode -1))
           (should (advice-member-p #'evil-ghostel--around-redraw
                                    'ghostel--redraw))
           (should (advice-member-p #'evil-ghostel--override-cursor-style
                                    'ghostel--apply-cursor-style))
+          (should (advice-member-p #'evil-ghostel--around-tty-esc
+                                   'ghostel--tty-esc))
           ;; Disable in B — no buffers left, advice removed.
           (with-current-buffer b (evil-ghostel-mode -1))
           (should-not (advice-member-p #'evil-ghostel--around-redraw
                                        'ghostel--redraw))
           (should-not (advice-member-p #'evil-ghostel--override-cursor-style
-                                       'ghostel--apply-cursor-style)))
+                                       'ghostel--apply-cursor-style))
+          (should-not (advice-member-p #'evil-ghostel--around-tty-esc
+                                       'ghostel--tty-esc)))
       (when (buffer-live-p a) (kill-buffer a))
       (when (buffer-live-p b) (kill-buffer b)))))
 
