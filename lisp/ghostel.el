@@ -3636,7 +3636,8 @@ URL does not match the local machine, construct a TRAMP path."
 
 (defun ghostel-sync-theme ()
   "Re-apply terminal color palette in all ghostel buffers.
-Call this after changing the Emacs theme so terminals match.
+Theme changes call this automatically.  Call it manually after changing
+`ghostel-default' or palette faces directly.
 
 Re-seeds OSC 10/11 protocol defaults from `ghostel-default'.  When a
 client has enabled Mode 2031, also writes CSI ? 997 n (dark=1, light=2)

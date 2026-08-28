@@ -1,13 +1,27 @@
+const std = @import("std");
 const gt = @import("ghostty-vt");
 
 const emacs = @import("emacs.zig");
 
-/// ITU-R BT.601 luma.  Matches herdr's OSC 11 → light/dark cutoff (128).
-/// Unset protocol background is treated as dark (libghostty's seed).
+/// Classify an OSC 11 default background using the convention from Neovim's
+/// terminal background detection: ITU-R BT.601 luma split at the 0.5 midpoint.
+/// https://github.com/neovim/neovim/blob/2fbc82820b5168b0da4e918c192c05832dfd6211/runtime/lua/vim/_core/defaults.lua
+///
+/// Ghostel has no separate light/dark appearance state. Instead, CSI 996/997
+/// classifies the `ghostel-default` background most recently seeded by
+/// `ghostel-sync-theme`. Theme changes trigger that sync automatically; direct
+/// face changes require an explicit sync. An unset background is treated as dark
+/// (libghostty's seed).
 pub fn backgroundIsLight(rgb: ?gt.color.RGB) bool {
     const c = rgb orelse return false;
     const y = @as(u32, c.r) * 299 + @as(u32, c.g) * 587 + @as(u32, c.b) * 114;
-    return y >= 128_000;
+    return y >= 127_500;
+}
+
+test backgroundIsLight {
+    try std.testing.expect(!backgroundIsLight(null));
+    try std.testing.expect(!backgroundIsLight(.{ .r = 127, .g = 127, .b = 127 }));
+    try std.testing.expect(backgroundIsLight(.{ .r = 128, .g = 128, .b = 127 }));
 }
 
 pub fn cellCharCount(page: *gt.Page, cell: *gt.Cell) usize {

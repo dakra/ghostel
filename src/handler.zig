@@ -114,7 +114,8 @@ pub fn GhostelHandler(Context: type) type {
         ).pointer.child;
         const ColorScheme = @typeInfo(ColorSchemeFn).@"fn".return_type.?;
 
-        /// CSI ? 996 n — report light/dark from the protocol background color.
+        /// CSI ? 996 n — report the last synchronized default background.
+        /// Do not let a child OSC 11 override redefine the host color scheme.
         fn colorSchemeCallback(handler: *gt.TerminalStream.Handler) ColorScheme {
             return if (utils.backgroundIsLight(handler.terminal.colors.background.default))
                 .light

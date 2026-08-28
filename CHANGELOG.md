@@ -6,8 +6,9 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - Color-scheme DSR is implemented: CSI `? 996 n` reports light/dark
-  from the protocol background (OSC 11), and enabling Mode 2031 now
-  actually produces CSI `? 997` reports when the Emacs theme changes.
+  from the last synchronized `ghostel-default` background, and enabling
+  Mode 2031 now actually produces CSI `? 997` reports when the Emacs theme
+  changes or `ghostel-sync-theme` is called explicitly.
   Previously ghostel stored Mode 2031 but never answered 996 or pushed
   997, so multiplexers (herdr) kept a stale OSC 11 cache and TUIs that
   paint from it (Codex's composer) did not follow light/dark.

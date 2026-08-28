@@ -113,8 +113,10 @@ pub fn vtWrite(self: *Self, data: []const u8) !void {
     self.unlockTerm();
 }
 
-/// CSI ? 997 report for the current protocol background, or null when
-/// Mode 2031 is off or no child PTY is attached.
+/// CSI ? 997 report for the last synchronized default background, or null when
+/// Mode 2031 is off or no child PTY is attached. The default is intentional:
+/// a child OSC 11 override is terminal-session state, not a host appearance
+/// change.
 pub fn colorSchemeReport(self: *Self, env: emacs.Env) ?[]const u8 {
     const mode = gt.modes.modeFromInt(2031, false) orelse return null;
     if (!self.terminal.modes.get(mode)) return null;
