@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const emacs = @import("emacs.zig");
 const gt = @import("ghostty-vt");
 const GhostelTerm = @import("GhostelTerm.zig");
+const utils = @import("utils.zig");
 
 const log = std.log.scoped(.GhostelHandler);
 
@@ -35,6 +36,7 @@ pub fn GhostelHandler(Context: type) type {
             };
             self.inner.effects.write_pty = &writePtyCallback;
             self.inner.effects.bell = &bellCallback;
+            self.inner.effects.color_scheme = &colorSchemeCallback;
             self.inner.effects.device_attributes = &deviceAttributesCallback;
             self.inner.effects.title_changed = &titleChangedCallback;
             self.inner.effects.size = &sizeCallback;
@@ -102,6 +104,22 @@ pub fn GhostelHandler(Context: type) type {
         fn bellCallback(handler: *gt.TerminalStream.Handler) void {
             const self: *Self = @fieldParentPtr("inner", handler);
             self.context.effect("ding", .{});
+        }
+
+        // `device_status.ColorScheme` is not re-exported from ghostty-vt.
+        const ColorSchemeFn = @typeInfo(
+            @typeInfo(
+                @FieldType(gt.TerminalStream.Handler.Effects, "color_scheme"),
+            ).optional.child,
+        ).pointer.child;
+        const ColorScheme = @typeInfo(ColorSchemeFn).@"fn".return_type.?;
+
+        /// CSI ? 996 n — report light/dark from the protocol background color.
+        fn colorSchemeCallback(handler: *gt.TerminalStream.Handler) ColorScheme {
+            return if (utils.backgroundIsLight(handler.terminal.colors.background.default))
+                .light
+            else
+                .dark;
         }
 
         // TODO: DeviceAttributes is not exported from ghostty-vt for some reason.

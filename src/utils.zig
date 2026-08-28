@@ -2,6 +2,14 @@ const gt = @import("ghostty-vt");
 
 const emacs = @import("emacs.zig");
 
+/// ITU-R BT.601 luma.  Matches herdr's OSC 11 → light/dark cutoff (128).
+/// Unset protocol background is treated as dark (libghostty's seed).
+pub fn backgroundIsLight(rgb: ?gt.color.RGB) bool {
+    const c = rgb orelse return false;
+    const y = @as(u32, c.r) * 299 + @as(u32, c.g) * 587 + @as(u32, c.b) * 114;
+    return y >= 128_000;
+}
+
 pub fn cellCharCount(page: *gt.Page, cell: *gt.Cell) usize {
     if (cell.wide == .spacer_head or cell.wide == .spacer_tail) {
         return 0;
