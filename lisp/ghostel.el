@@ -3771,17 +3771,16 @@ EVENT is the state-change description passed by Emacs."
         (ghostel--spinner-stop)
         (remove-hook 'pre-redisplay-functions #'ghostel--fake-cursor-update t)
         (ghostel--fake-cursor-clear)
-        (run-hook-with-args 'ghostel-exit-functions buf event)
-        ;; Dead terminal: restore the plain read-only barrier.
-        (ghostel--sync-read-only)
-        ;; Only a live shell restores usefully.
-        ;; Drop the buffer from future desktop saves.
-        (setq desktop-save-buffer nil)
-        (if ghostel-kill-buffer-on-exit
-            (kill-buffer buf)
-          (let ((inhibit-read-only t))
-            (goto-char (point-max))
-            (insert "\n[Process exited]\n")))))))
+        (ghostel--run-hook-safely 'ghostel-exit-functions buf event))
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          (ghostel--sync-read-only)  ; Restore the plain read-only barrier
+          (setq desktop-save-buffer nil)  ; Don't save/restore dead sessions
+          (if ghostel-kill-buffer-on-exit
+              (kill-buffer buf)
+            (let ((inhibit-read-only t))
+              (goto-char (point-max))
+              (insert "\n[Process exited]\n"))))))))
 
 (defun ghostel--local-host-p (host)
   "Return non-nil if HOST refers to the local machine.
