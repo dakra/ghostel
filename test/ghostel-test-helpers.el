@@ -405,26 +405,52 @@ PROCESS and TIMEOUT are passed to `ghostel-test--wait-until'."
 
 (defconst ghostel-test--pty-byte-recorder-script
   (string-join
-   '("import os, select, sys, tty, time"
-     "fd = sys.stdin.fileno()"
-     "if os.isatty(fd):"
-     "    tty.setraw(fd)"
-     "count = int(sys.argv[1])"
-     "sys.stdout.buffer.write(b'GHOSTEL_RECORDER_READY\\r\\n')"
-     "sys.stdout.buffer.flush()"
-     "buf = b''"
-     "deadline = time.time() + 5"
-     "while len(buf) < count and time.time() < deadline:"
-     "    readable, _, _ = select.select([fd], [], [], 0.05)"
-     "    if readable:"
-     "        chunk = os.read(fd, count - len(buf))"
+   '("import os, queue, sys, threading, time"
+     "sys.path.insert(0, sys.argv[1])"
+     "from pty_setup import set_raw_stdio"
+     "set_raw_stdio()"
+     "stdin_fd = sys.stdin.fileno()"
+     "stdout_fd = sys.stdout.fileno()"
+     "count = int(sys.argv[2])"
+     "input_queue = queue.Queue()"
+     "def read_input():"
+     "    while True:"
+     "        chunk = os.read(stdin_fd, 4096)"
+     "        input_queue.put(chunk)"
      "        if not chunk:"
-     "            break"
-     "        buf += chunk"
-     "sys.stdout.buffer.write(b'\\r\\nGHOSTEL_INPUT_HEX:' + buf.hex().encode('ascii') + b'\\r\\n')"
-     "sys.stdout.buffer.flush()")
+     "            return"
+     "def write_all(data):"
+     "    while data:"
+     "        data = data[os.write(stdout_fd, data):]"
+     "write_all(b'GHOSTEL_RECORDER_READY\\r\\n')"
+     "threading.Thread(target=read_input, daemon=True).start()"
+     "buf = bytearray()"
+     "deadline = time.monotonic() + 5"
+     "while len(buf) < count:"
+     "    remaining = deadline - time.monotonic()"
+     "    if remaining <= 0:"
+     "        break"
+     "    try:"
+     "        chunk = input_queue.get(timeout=remaining)"
+     "    except queue.Empty:"
+     "        break"
+     "    if not chunk:"
+     "        break"
+     "    buf.extend(chunk[: count - len(buf)])"
+     "write_all(b'\\r\\nGHOSTEL_INPUT_HEX:' + buf.hex().encode('ascii') + b'\\r\\n')")
    "\n")
-  "Python code that reads N bytes from stdin and prints them as hex.")
+  "Python code that reads N bytes from stdin and prints them as hex.
+The first argument locates the portable PTY setup module; the second is
+the number of stdin bytes to capture.  Raw mode uses `pty_setup` so the
+recorder works on POSIX PTYs and Windows ConPTY.  After printing
+`GHOSTEL_RECORDER_READY', the script prints `GHOSTEL_INPUT_HEX:' followed
+by the captured bytes as lowercase hex.")
+
+(defun ghostel-test--pty-byte-recorder-args (byte-count)
+  "Return Python argv that records BYTE-COUNT bytes from the child PTY."
+  (list "-u" "-c" ghostel-test--pty-byte-recorder-script
+        (ghostel-test--fixture-directory)
+        (number-to-string byte-count)))
 
 (defun ghostel-test--last-marker-payload (marker)
   "Return the last hex-like payload following MARKER in terminal text."

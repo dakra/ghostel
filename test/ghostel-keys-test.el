@@ -143,8 +143,7 @@ SETUP, when non-nil, is called before sending the key."
     (unless python (ert-skip "python3 not available"))
     (ghostel-test--with-exec-buffer
         (buf proc python
-             (list "-c" ghostel-test--pty-byte-recorder-script
-                   (number-to-string byte-count)))
+             (ghostel-test--pty-byte-recorder-args byte-count))
       (ghostel-test--wait-for-text "GHOSTEL_RECORDER_READY" proc 5)
       (when setup (funcall setup))
       (ghostel--send-encoded key mods)
@@ -347,8 +346,7 @@ SETUP, when non-nil, is called before sending the paste."
     (unless python (ert-skip "python3 not available"))
     (ghostel-test--with-exec-buffer
         (buf proc python
-             (list "-c" ghostel-test--pty-byte-recorder-script
-                   (number-to-string byte-count)))
+             (ghostel-test--pty-byte-recorder-args byte-count))
       (ghostel-test--wait-for-text "GHOSTEL_RECORDER_READY" proc 5)
       (when setup (funcall setup))
       (ghostel--paste-text text)

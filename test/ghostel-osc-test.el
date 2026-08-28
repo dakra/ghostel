@@ -866,7 +866,7 @@ fresh."
     (ghostel-test--with-pty-matrix backend
       (ghostel-test--with-exec-buffer
           (buf proc python
-               (list "-u" "-c" ghostel-test--pty-byte-recorder-script "9"))
+               (ghostel-test--pty-byte-recorder-args 9))
         (ghostel-test--wait-for-text "GHOSTEL_RECORDER_READY" proc 5)
         (ghostel--set-default-colors ghostel--term "#eeeeee" "#111111")
         (ghostel--write-vt ghostel--term "\e[?996n")
@@ -875,7 +875,7 @@ fresh."
                         "GHOSTEL_INPUT_HEX:" #'identity proc 5))))
       (ghostel-test--with-exec-buffer
           (buf proc python
-               (list "-u" "-c" ghostel-test--pty-byte-recorder-script "9"))
+               (ghostel-test--pty-byte-recorder-args 9))
         (ghostel-test--wait-for-text "GHOSTEL_RECORDER_READY" proc 5)
         (ghostel--set-default-colors ghostel--term "#111111" "#f7f3fa")
         (ghostel--write-vt ghostel--term "\e[?996n")
@@ -890,7 +890,7 @@ fresh."
     (ghostel-test--with-pty-matrix backend
       (ghostel-test--with-exec-buffer
           (buf proc python
-               (list "-u" "-c" ghostel-test--pty-byte-recorder-script "9"))
+               (ghostel-test--pty-byte-recorder-args 9))
         (ghostel-test--wait-for-text "GHOSTEL_RECORDER_READY" proc 5)
         (ghostel--write-vt ghostel--term "\e[?2031h")
         (ghostel--set-default-colors ghostel--term "#eeeeee" "#111111")
