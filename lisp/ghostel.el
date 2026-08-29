@@ -3609,10 +3609,10 @@ URL does not match the local machine, construct a TRAMP path."
 (defun ghostel--apply-palette (term)
   "Apply face-derived protocol defaults and palette colors to TERM."
   (when term
-    (ghostel--set-default-colors
-     term
-     (ghostel--face-hex-color 'ghostel-default :foreground)
-     (ghostel--face-hex-color 'ghostel-default :background))
+    (let ((bg (ghostel--face-hex-color 'ghostel-default :background)))
+      (ghostel--set-default-colors
+       term (ghostel--face-hex-color 'ghostel-default :foreground) bg
+       (ghostel--hex-color-scheme bg)))
     (when ghostel-color-palette
       (let ((colors
              (mapconcat
@@ -3636,21 +3636,18 @@ URL does not match the local machine, construct a TRAMP path."
 
 (defun ghostel-sync-theme ()
   "Re-apply terminal color palette in all ghostel buffers.
-Theme changes call this automatically.  Call it manually after changing
-`ghostel-default' or palette faces directly.
-
-Re-seeds OSC 10/11 protocol defaults from `ghostel-default'.  When a
-client has enabled Mode 2031, also writes CSI ? 997 n (dark=1, light=2)
-so multiplexers such as herdr re-query those colors."
+Theme changes call this automatically; call it manually after changing
+`ghostel-default' or palette faces directly."
   (interactive)
   (dolist (buf (buffer-list))
-    (with-current-buffer buf
-      (when (and (derived-mode-p 'ghostel-mode) ghostel--term)
-        (ghostel--apply-palette ghostel--term)
-        (ghostel--apply-bold-config ghostel--term)
-        (when (ghostel--terminal-live-p)
-          (setq ghostel--force-next-redraw t)
-          (ghostel--redraw-now buf))))))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (when (and (derived-mode-p 'ghostel-mode) ghostel--term)
+          (ghostel--apply-palette ghostel--term)
+          (ghostel--apply-bold-config ghostel--term)
+          (when (ghostel--terminal-live-p)
+            (setq ghostel--force-next-redraw t)
+            (ghostel--redraw-now buf)))))))
 
 (defun ghostel--on-theme-change (&rest _args)
   "Hook function to sync terminal colors after theme change."
@@ -3658,7 +3655,9 @@ so multiplexers such as herdr re-query those colors."
 
 (if (boundp 'enable-theme-functions)
     ;; Emacs 29+
-    (add-hook 'enable-theme-functions #'ghostel--on-theme-change)
+    (progn
+      (add-hook 'enable-theme-functions #'ghostel--on-theme-change)
+      (add-hook 'disable-theme-functions #'ghostel--on-theme-change))
   ;; Emacs < 29 fallback
   (advice-add 'load-theme :after #'ghostel--on-theme-change))
 

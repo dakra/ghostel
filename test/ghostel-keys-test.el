@@ -139,18 +139,8 @@ Covers punctuation, digits, uppercase, space, and lowercase letters."
 (defun ghostel-test--send-key-and-read-hex (key mods byte-count &optional setup)
   "Send KEY/MODS to a byte-recorder child and return BYTE-COUNT bytes as hex.
 SETUP, when non-nil, is called before sending the key."
-  (let ((python (executable-find "python3")))
-    (unless python (ert-skip "python3 not available"))
-    (ghostel-test--with-exec-buffer
-        (buf proc python
-             (ghostel-test--pty-byte-recorder-args byte-count))
-      (ghostel-test--wait-for-text "GHOSTEL_RECORDER_READY" proc 5)
-      (when setup (funcall setup))
-      (ghostel--send-encoded key mods)
-      (ghostel-test--wait-for-marker-payload
-       "GHOSTEL_INPUT_HEX:"
-       (lambda (hex) (= (length hex) (* 2 byte-count)))
-       proc 5))))
+  (ghostel-test--record-pty-bytes
+   byte-count (lambda () (when setup (funcall setup)) (ghostel--send-encoded key mods))))
 
 (ert-deftest ghostel-test-encode-key-kitty-backspace ()
   "Test that backspace is correctly encoded when kitty keyboard mode is active."
@@ -342,18 +332,8 @@ Without this guard a flood would spawn a storm of redraw timers."
 (defun ghostel-test--paste-and-read-hex (text byte-count &optional setup)
   "Paste TEXT to a byte-recorder child and return BYTE-COUNT bytes as hex.
 SETUP, when non-nil, is called before sending the paste."
-  (let ((python (executable-find "python3")))
-    (unless python (ert-skip "python3 not available"))
-    (ghostel-test--with-exec-buffer
-        (buf proc python
-             (ghostel-test--pty-byte-recorder-args byte-count))
-      (ghostel-test--wait-for-text "GHOSTEL_RECORDER_READY" proc 5)
-      (when setup (funcall setup))
-      (ghostel--paste-text text)
-      (ghostel-test--wait-for-marker-payload
-       "GHOSTEL_INPUT_HEX:"
-       (lambda (hex) (= (length hex) (* 2 byte-count)))
-       proc 5))))
+  (ghostel-test--record-pty-bytes
+   byte-count (lambda () (when setup (funcall setup)) (ghostel--paste-text text))))
 
 (ert-deftest ghostel-test-encode-paste-bracketed ()
   "Bracketed-paste mode wraps pasted data via libghostty's paste encoder."

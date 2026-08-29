@@ -1,7 +1,10 @@
 """Portable terminal setup for PTY integration-test children."""
 
 import os
+import queue
 import sys
+import threading
+import time
 
 
 def set_raw_stdio():
@@ -40,3 +43,43 @@ def set_raw_stdio():
         import tty
 
         tty.setraw(sys.stdin.fileno())
+
+
+def start_reader():
+    """Read stdin on a daemon thread; return its chunk queue (b"" marks EOF)."""
+    fd = sys.stdin.fileno()
+    chunks = queue.Queue()
+
+    def run():
+        while True:
+            chunk = os.read(fd, 4096)
+            chunks.put(chunk)
+            if not chunk:
+                return
+
+    threading.Thread(target=run, daemon=True).start()
+    return chunks
+
+
+def write_all(data):
+    fd = sys.stdout.fileno()
+    while data:
+        data = data[os.write(fd, data):]
+
+
+def read_for(chunks, timeout, count=None):
+    """Collect from CHUNKS until TIMEOUT seconds, EOF, or at least COUNT bytes."""
+    buf = bytearray()
+    deadline = time.monotonic() + timeout
+    while count is None or len(buf) < count:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            chunk = chunks.get(timeout=remaining)
+        except queue.Empty:
+            break
+        if not chunk:
+            break
+        buf.extend(chunk)
+    return buf

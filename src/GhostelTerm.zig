@@ -29,6 +29,8 @@ stream: gt.Stream(GhostelHandler(*Self)),
 string_buffer: ?[]u8 = null,
 renderer: Renderer,
 process: ?*NativeProcess = null,
+/// Light/dark as classified by Emacs for `ghostel-default`; reported via CSI 996/997.
+color_scheme: gt.device_status.ColorScheme = .dark,
 
 /// Create a new terminal with the given dimensions and scrollback.
 pub fn init(
@@ -113,20 +115,8 @@ pub fn vtWrite(self: *Self, data: []const u8) !void {
     self.unlockTerm();
 }
 
-/// CSI ? 997 report for the last synchronized default background, or null when
-/// Mode 2031 is off or no child PTY is attached. The default is intentional:
-/// a child OSC 11 override is terminal-session state, not a host appearance
-/// change.
-pub fn colorSchemeReport(self: *Self, env: emacs.Env) ?[]const u8 {
-    const mode = gt.modes.modeFromInt(2031, false) orelse return null;
-    if (!self.terminal.modes.get(mode)) return null;
-    if (self.process == null and env.isNil(env.symbolValue("ghostel--process"))) {
-        return null;
-    }
-    return if (utils.backgroundIsLight(self.terminal.colors.background.default))
-        "\x1b[?997;2n"
-    else
-        "\x1b[?997;1n";
+pub fn colorScheme(self: *Self) gt.device_status.ColorScheme {
+    return self.color_scheme;
 }
 
 pub fn ptyWrite(self: *Self, data: []const u8) !void {
@@ -275,6 +265,7 @@ pub fn spawnNativeProcess(
         self.terminal.rows,
         ProcessParams{ .file = command[0], .args = command, .env = env, .cwd = cwd },
         &self.terminal,
+        &self.color_scheme,
         event_fd,
     );
     self.process = process;
@@ -657,7 +648,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
     },
     .{
         .name = "ghostel--set-default-colors",
-        .arity = .{ 3, 3 },
+        .arity = .{ 4, 4 },
         .doc =
         \\Set protocol default foreground and background colors.
         \\
@@ -665,7 +656,10 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         \\color state.  The renderer intentionally does not emit them as
         \\default-cell face properties.
         \\
-        \\(ghostel--set-default-colors TERM FG-HEX BG-HEX)
+        \\(ghostel--set-default-colors TERM FG-HEX BG-HEX SCHEME)
+        \\
+        \\SCHEME is `light' or `dark'.  When it changes and the child enabled
+        \\Mode 2031, a CSI ? 997 n report is written to the PTY.
         ,
         .impl = struct {
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
@@ -674,12 +668,24 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 var bg_buf: [16]u8 = undefined;
                 const fg_str = try env.extractString(args[1], &fg_buf);
                 const bg_str = try env.extractString(args[2], &bg_buf);
-                try term.lockTerm();
-                defer term.unlockTerm();
-                term.terminal.colors.foreground.default = try gt.color.RGB.parse(fg_str);
-                term.terminal.colors.background.default = try gt.color.RGB.parse(bg_str);
-                if (term.colorSchemeReport(env)) |report| {
-                    try term.ptyWrite(report);
+                const scheme: gt.device_status.ColorScheme =
+                    if (env.eq(args[3], emacs.sym.light)) .light else .dark;
+                const report = blk: {
+                    try term.lockTerm();
+                    defer term.unlockTerm();
+                    term.terminal.colors.foreground.default = try gt.color.RGB.parse(fg_str);
+                    term.terminal.colors.background.default = try gt.color.RGB.parse(bg_str);
+                    const changed = term.color_scheme != scheme;
+                    term.color_scheme = scheme;
+                    break :blk changed and term.terminal.modes.get(.report_color_scheme);
+                };
+                // Written outside the lock: a full PTY must not stall the reader thread.
+                // Best effort: a client can re-query with CSI ? 996 n.
+                if (report) {
+                    var buf: [gt.device_status.max_color_scheme_report_encode_size]u8 = undefined;
+                    var writer = std.Io.Writer.fixed(&buf);
+                    try gt.device_status.encodeColorSchemeReport(&writer, scheme);
+                    term.ptyWrite(writer.buffered()) catch {};
                 }
                 return env.t();
             }

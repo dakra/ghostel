@@ -8,7 +8,6 @@ const Allocator = std.mem.Allocator;
 const emacs = @import("emacs.zig");
 const gt = @import("ghostty-vt");
 const GhostelTerm = @import("GhostelTerm.zig");
-const utils = @import("utils.zig");
 
 const log = std.log.scoped(.GhostelHandler);
 
@@ -106,21 +105,10 @@ pub fn GhostelHandler(Context: type) type {
             self.context.effect("ding", .{});
         }
 
-        // `device_status.ColorScheme` is not re-exported from ghostty-vt.
-        const ColorSchemeFn = @typeInfo(
-            @typeInfo(
-                @FieldType(gt.TerminalStream.Handler.Effects, "color_scheme"),
-            ).optional.child,
-        ).pointer.child;
-        const ColorScheme = @typeInfo(ColorSchemeFn).@"fn".return_type.?;
-
-        /// CSI ? 996 n — report the last synchronized default background.
-        /// Do not let a child OSC 11 override redefine the host color scheme.
-        fn colorSchemeCallback(handler: *gt.TerminalStream.Handler) ColorScheme {
-            return if (utils.backgroundIsLight(handler.terminal.colors.background.default))
-                .light
-            else
-                .dark;
+        /// CSI ? 996 n - the scheme Emacs assigned, not the OSC 11 color.
+        fn colorSchemeCallback(handler: *gt.TerminalStream.Handler) ?gt.device_status.ColorScheme {
+            const self: *Self = @fieldParentPtr("inner", handler);
+            return self.context.colorScheme();
         }
 
         // TODO: DeviceAttributes is not exported from ghostty-vt for some reason.

@@ -768,6 +768,12 @@ and typed text was invisible."
       (should (string-match-p "\\`#[0-9a-fA-F]\\{6\\}\\'" bg))
       (should-not (string= fg bg)))))
 
+(ert-deftest ghostel-test-hex-color-scheme ()
+  "Light/dark follows `color-dark-p', including mid-grey it calls dark."
+  (should (eq 'dark (ghostel--hex-color-scheme "#000000")))
+  (should (eq 'light (ghostel--hex-color-scheme "#ffffff")))
+  (should (eq 'dark (ghostel--hex-color-scheme "#808080"))))
+
 (ert-deftest ghostel-test-sync-theme ()
   "Test that ghostel-sync-theme reapplies palette and requests redraws."
   (let ((palette-calls nil)

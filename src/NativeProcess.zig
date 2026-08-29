@@ -39,6 +39,8 @@ event_buf: FixedArrayList(u8, 16 * 1024) = .{},
 
 term_mutex: RecursiveMutex = .{},
 term: *gt.Terminal,
+/// GhostelTerm.color_scheme, read under term_mutex for the CSI 996 answer.
+color_scheme: *const gt.device_status.ColorScheme,
 stream: gt.Stream(GhostelHandler(*Self)),
 
 quit: bool = false,
@@ -62,6 +64,7 @@ pub fn init(
     initial_rows: u16,
     params: ProcessParams,
     term: *gt.Terminal,
+    color_scheme: *const gt.device_status.ColorScheme,
     event_fd: ChannelFd,
 ) !void {
     var backend = try Backend.init(alloc, io, initial_cols, initial_rows, params);
@@ -84,10 +87,15 @@ pub fn init(
         .pid = backend.pidValue(),
         .replica_name = replica_name,
         .term = term,
+        .color_scheme = color_scheme,
         .stream = stream,
         .thread = undefined,
     };
     self.thread = try std.Thread.spawn(.{}, Self.run, .{self});
+}
+
+pub fn colorScheme(self: *Self) gt.device_status.ColorScheme {
+    return self.color_scheme.*;
 }
 
 pub fn lockTerm(self: *Self) !void {

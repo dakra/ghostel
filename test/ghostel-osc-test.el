@@ -860,43 +860,51 @@ fresh."
                             (:match (should (string-match-p arg reply))))))))))))
 
 (ert-deftest ghostel-test-csi996-reports-light-and-dark ()
-  "CSI ? 996 n reports 997;1 for a dark OSC 11 background, 997;2 for light."
+  "A child's CSI ? 996 n gets 997;1 for a dark default background, 997;2 for light."
   :tags '(native)
-  (let ((python (ghostel-test--python)))
-    (ghostel-test--with-pty-matrix backend
+  (ghostel-test--with-pty-matrix backend
+    (dolist (case '((dark . "1b5b3f3939373b316e") (light . "1b5b3f3939373b326e")))
       (ghostel-test--with-exec-buffer
-          (buf proc python
-               (ghostel-test--pty-byte-recorder-args 9))
-        (ghostel-test--wait-for-text "GHOSTEL_RECORDER_READY" proc 5)
-        (ghostel--set-default-colors ghostel--term "#eeeeee" "#111111")
-        (ghostel--write-vt ghostel--term "\e[?996n")
-        (should (equal "1b5b3f3939373b316e"
-                       (ghostel-test--wait-for-marker-payload
-                        "GHOSTEL_INPUT_HEX:" #'identity proc 5))))
-      (ghostel-test--with-exec-buffer
-          (buf proc python
-               (ghostel-test--pty-byte-recorder-args 9))
-        (ghostel-test--wait-for-text "GHOSTEL_RECORDER_READY" proc 5)
-        (ghostel--set-default-colors ghostel--term "#111111" "#f7f3fa")
-        (ghostel--write-vt ghostel--term "\e[?996n")
-        (should (equal "1b5b3f3939373b326e"
-                       (ghostel-test--wait-for-marker-payload
-                        "GHOSTEL_INPUT_HEX:" #'identity proc 5)))))))
+          (buf proc (ghostel-test--python)
+               (list "-c" ghostel-test--pty-reply-probe-script
+                     (ghostel-test--fixture-directory) "0.15"
+                     (ghostel-test--hex-encode-string "\e[?996n")))
+        (ghostel--set-default-colors ghostel--term "#eeeeee" "#111111" (car case))
+        (should (equal (cdr case) (ghostel-test--wait-for-pty-reply 0 proc 6)))))))
 
-(ert-deftest ghostel-test-mode-2031-pushes-997-on-color-change ()
-  "With Mode 2031 enabled, set-default-colors writes an unsolicited 997."
+(ert-deftest ghostel-test-csi996-ignores-osc11-override ()
+  "A child OSC 11 override does not change the CSI ? 996 n answer."
   :tags '(native)
-  (let ((python (ghostel-test--python)))
-    (ghostel-test--with-pty-matrix backend
-      (ghostel-test--with-exec-buffer
-          (buf proc python
-               (ghostel-test--pty-byte-recorder-args 9))
-        (ghostel-test--wait-for-text "GHOSTEL_RECORDER_READY" proc 5)
-        (ghostel--write-vt ghostel--term "\e[?2031h")
-        (ghostel--set-default-colors ghostel--term "#eeeeee" "#111111")
-        (should (equal "1b5b3f3939373b316e"
-                       (ghostel-test--wait-for-marker-payload
-                        "GHOSTEL_INPUT_HEX:" #'identity proc 5)))))))
+  (ghostel-test--with-pty-matrix backend
+    (should (equal "1b5b3f3939373b326e"
+                   (ghostel-test--record-pty-bytes
+                    9 (lambda ()
+                        (ghostel--set-default-colors ghostel--term "#111111" "#f7f3fa" 'light)
+                        (ghostel--write-vt ghostel--term "\e]11;#111111\e\\\e[?996n")))))))
+
+(ert-deftest ghostel-test-mode-2031-off-does-not-push-997 ()
+  "Without Mode 2031, a dark→light re-seed pushes nothing ahead of the query's own answer."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (should (equal "1b5b3f3939373b326e"
+                   (ghostel-test--record-pty-bytes
+                    9 (lambda ()
+                        (ghostel--set-default-colors ghostel--term "#eeeeee" "#111111" 'dark)
+                        (ghostel--set-default-colors ghostel--term "#111111" "#f7f3fa" 'light)
+                        (ghostel--write-vt ghostel--term "\e[?996n")))))))
+
+(ert-deftest ghostel-test-mode-2031-pushes-997-on-scheme-change ()
+  "With Mode 2031 enabled, a 997 is pushed once per scheme change, not per re-seed."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (should (equal "1b5b3f3939373b326e1b5b3f3939373b316e"
+                   (ghostel-test--record-pty-bytes
+                    18 (lambda ()
+                         (ghostel--set-default-colors ghostel--term "#eeeeee" "#111111" 'dark)
+                         (ghostel--write-vt ghostel--term "\e[?2031h")
+                         (ghostel--set-default-colors ghostel--term "#111111" "#f7f3fa" 'light)
+                         (ghostel--set-default-colors ghostel--term "#111111" "#fafafa" 'light)
+                         (ghostel--set-default-colors ghostel--term "#eeeeee" "#111111" 'dark)))))))
 
 (ert-deftest ghostel-test-osc52-eval ()
   "Test that OSC 52;e dispatches to whitelisted functions."

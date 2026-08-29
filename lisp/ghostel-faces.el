@@ -164,5 +164,13 @@ Falls back to white (for :foreground) or black (for :background)."
                    color)))))
       (if (eq attr :foreground) "#ffffff" "#000000")))
 
+(defun ghostel--hex-color-scheme (hex)
+  "Return `light' or `dark' for HEX (\"#RRGGBB\") as `color-dark-p' judges it."
+  (if (color-dark-p (mapcar (lambda (i)
+                              (/ (string-to-number (substring hex i (+ i 2)) 16)
+                                 255.0))
+                            '(1 3 5)))
+      'dark 'light))
+
 (provide 'ghostel-faces)
 ;;; ghostel-faces.el ends here

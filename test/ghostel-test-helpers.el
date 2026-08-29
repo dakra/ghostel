@@ -299,16 +299,11 @@ to the lifecycle process returned by `ghostel-exec'; see
   (string-join
    '("import os, sys"
      "sys.path.insert(0, sys.argv[1])"
-     "from pty_setup import set_raw_stdio"
+     "from pty_setup import set_raw_stdio, write_all"
      "set_raw_stdio()"
-     "stdin_fd = sys.stdin.fileno()"
-     "stdout_fd = sys.stdout.fileno()"
-     "def write_all(data):"
-     "    while data:"
-     "        data = data[os.write(stdout_fd, data):]"
      "write_all(b'GHOSTEL_RAW_ECHO_READY')"
      "while True:"
-     "    data = os.read(stdin_fd, 4096)"
+     "    data = os.read(sys.stdin.fileno(), 4096)"
      "    if not data:"
      "        break"
      "    write_all(data)")
@@ -347,40 +342,15 @@ returned as terminal output without line-discipline rewriting."
 
 (defconst ghostel-test--pty-reply-probe-script
   (string-join
-   '("import os, queue, sys, threading, time"
+   '("import sys"
      "sys.path.insert(0, sys.argv[1])"
-     "from pty_setup import set_raw_stdio"
+     "from pty_setup import set_raw_stdio, start_reader, write_all, read_for"
      "set_raw_stdio()"
-     "stdin_fd = sys.stdin.fileno()"
-     "stdout_fd = sys.stdout.fileno()"
      "timeout = float(sys.argv[2])"
-     "payloads = sys.argv[3:]"
-     "input_queue = queue.Queue()"
-     "def read_input():"
-     "    while True:"
-     "        chunk = os.read(stdin_fd, 4096)"
-     "        input_queue.put(chunk)"
-     "        if not chunk:"
-     "            return"
-     "def write_all(data):"
-     "    while data:"
-     "        data = data[os.write(stdout_fd, data):]"
-     "threading.Thread(target=read_input, daemon=True).start()"
-     "for idx, payload_hex in enumerate(payloads):"
+     "chunks = start_reader()"
+     "for idx, payload_hex in enumerate(sys.argv[3:]):"
      "    write_all(bytes.fromhex(payload_hex))"
-     "    buf = bytearray()"
-     "    deadline = time.monotonic() + timeout"
-     "    while True:"
-     "        remaining = deadline - time.monotonic()"
-     "        if remaining <= 0:"
-     "            break"
-     "        try:"
-     "            chunk = input_queue.get(timeout=remaining)"
-     "        except queue.Empty:"
-     "            break"
-     "        if not chunk:"
-     "            break"
-     "        buf.extend(chunk)"
+     "    buf = read_for(chunks, timeout)"
      "    marker = ('\\r\\nGHOSTEL_PTY_REPLY_%d_HEX:' % idx).encode('ascii')"
      "    write_all(marker + buf.hex().encode('ascii') + b'\\r\\n')")
    "\n")
@@ -405,52 +375,30 @@ PROCESS and TIMEOUT are passed to `ghostel-test--wait-until'."
 
 (defconst ghostel-test--pty-byte-recorder-script
   (string-join
-   '("import os, queue, sys, threading, time"
+   '("import sys"
      "sys.path.insert(0, sys.argv[1])"
-     "from pty_setup import set_raw_stdio"
+     "from pty_setup import set_raw_stdio, start_reader, write_all, read_for"
      "set_raw_stdio()"
-     "stdin_fd = sys.stdin.fileno()"
-     "stdout_fd = sys.stdout.fileno()"
-     "count = int(sys.argv[2])"
-     "input_queue = queue.Queue()"
-     "def read_input():"
-     "    while True:"
-     "        chunk = os.read(stdin_fd, 4096)"
-     "        input_queue.put(chunk)"
-     "        if not chunk:"
-     "            return"
-     "def write_all(data):"
-     "    while data:"
-     "        data = data[os.write(stdout_fd, data):]"
      "write_all(b'GHOSTEL_RECORDER_READY\\r\\n')"
-     "threading.Thread(target=read_input, daemon=True).start()"
-     "buf = bytearray()"
-     "deadline = time.monotonic() + 5"
-     "while len(buf) < count:"
-     "    remaining = deadline - time.monotonic()"
-     "    if remaining <= 0:"
-     "        break"
-     "    try:"
-     "        chunk = input_queue.get(timeout=remaining)"
-     "    except queue.Empty:"
-     "        break"
-     "    if not chunk:"
-     "        break"
-     "    buf.extend(chunk[: count - len(buf)])"
+     "buf = read_for(start_reader(), 5, int(sys.argv[2]))"
      "write_all(b'\\r\\nGHOSTEL_INPUT_HEX:' + buf.hex().encode('ascii') + b'\\r\\n')")
    "\n")
-  "Python code that reads N bytes from stdin and prints them as hex.
-The first argument locates the portable PTY setup module; the second is
-the number of stdin bytes to capture.  Raw mode uses `pty_setup` so the
-recorder works on POSIX PTYs and Windows ConPTY.  After printing
-`GHOSTEL_RECORDER_READY', the script prints `GHOSTEL_INPUT_HEX:' followed
-by the captured bytes as lowercase hex.")
+  "Python code that reads at least N bytes from stdin and prints them as hex.")
 
 (defun ghostel-test--pty-byte-recorder-args (byte-count)
   "Return Python argv that records BYTE-COUNT bytes from the child PTY."
   (list "-u" "-c" ghostel-test--pty-byte-recorder-script
         (ghostel-test--fixture-directory)
         (number-to-string byte-count)))
+
+(defun ghostel-test--record-pty-bytes (byte-count action)
+  "Call ACTION in a fresh recorder buffer; return the next BYTE-COUNT PTY bytes as hex."
+  (ghostel-test--with-exec-buffer
+      (buf proc (ghostel-test--python) (ghostel-test--pty-byte-recorder-args byte-count))
+    (ghostel-test--wait-for-text "GHOSTEL_RECORDER_READY" proc 5)
+    (funcall action)
+    (ghostel-test--wait-for-marker-payload
+     "GHOSTEL_INPUT_HEX:" (lambda (hex) (>= (length hex) (* 2 byte-count))) proc 5)))
 
 (defun ghostel-test--last-marker-payload (marker)
   "Return the last hex-like payload following MARKER in terminal text."

@@ -522,6 +522,7 @@ const interned_symbols = [_][:0]const u8{
     "insert",
     "italic",
     "keymap",
+    "light",
     "line",
     "line-number-at-pos",
     "list",
