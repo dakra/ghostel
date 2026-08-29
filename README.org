@@ -685,6 +685,13 @@ read-only buffer (Emacs or copy).
   foreground, and background colors, so tools like =duf=, =btop=, =delta=, and
   anything else using =termenv= auto-detect the right light/dark theme from the
   Emacs face colors.
+- *CSI ? 996 / Mode 2031* - color-scheme DSR.  A query (=CSI ? 996 n=)
+  is answered with =CSI ? 997 ; 1 n= (dark) or =; 2 n= (light), inferred
+  from the last synchronized =ghostel-default= background.  Theme changes
+  synchronize it automatically; after changing =ghostel-default= directly,
+  run =ghostel-sync-theme=.  Clients that enable Mode 2031 also get an
+  unsolicited 997 on synchronization, so multiplexers can refresh their
+  OSC 11 cache.
 - *OSC 9 / OSC 777* - desktop notifications and ConEmu progress reports (see
   [[#notifications-and-progress][Notifications and Progress]]).
 - Text attributes: bold, italic, faint, underline (single/double/curly/dotted/dashed, with color), strikethrough, inverse.

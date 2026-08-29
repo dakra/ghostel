@@ -113,6 +113,22 @@ pub fn vtWrite(self: *Self, data: []const u8) !void {
     self.unlockTerm();
 }
 
+/// CSI ? 997 report for the last synchronized default background, or null when
+/// Mode 2031 is off or no child PTY is attached. The default is intentional:
+/// a child OSC 11 override is terminal-session state, not a host appearance
+/// change.
+pub fn colorSchemeReport(self: *Self, env: emacs.Env) ?[]const u8 {
+    const mode = gt.modes.modeFromInt(2031, false) orelse return null;
+    if (!self.terminal.modes.get(mode)) return null;
+    if (self.process == null and env.isNil(env.symbolValue("ghostel--process"))) {
+        return null;
+    }
+    return if (utils.backgroundIsLight(self.terminal.colors.background.default))
+        "\x1b[?997;2n"
+    else
+        "\x1b[?997;1n";
+}
+
 pub fn ptyWrite(self: *Self, data: []const u8) !void {
     const env = emacs.current_env orelse return error.MissingEmacsEnv;
     if (self.process) |proc| {
@@ -662,6 +678,9 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 defer term.unlockTerm();
                 term.terminal.colors.foreground.default = try gt.color.RGB.parse(fg_str);
                 term.terminal.colors.background.default = try gt.color.RGB.parse(bg_str);
+                if (term.colorSchemeReport(env)) |report| {
+                    try term.ptyWrite(report);
+                }
                 return env.t();
             }
         },

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Color-scheme DSR is implemented: CSI `? 996 n` reports light/dark
+  from the last synchronized `ghostel-default` background, and enabling
+  Mode 2031 now actually produces CSI `? 997` reports when the Emacs theme
+  changes or `ghostel-sync-theme` is called explicitly.
+  Previously ghostel stored Mode 2031 but never answered 996 or pushed
+  997, so multiplexers (herdr) kept a stale OSC 11 cache and TUIs that
+  paint from it (Codex's composer) did not follow light/dark.
 - Directory tracking no longer corrupts or silently stalls on paths
   containing `#` or percent-escapes.  The bash and zsh integrations
   report the cwd with kitty's `kitty-shell-cwd://` OSC 7 scheme (path

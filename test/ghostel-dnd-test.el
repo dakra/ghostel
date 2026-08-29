@@ -234,8 +234,7 @@ layer runs no default handler such as `find-file'."
              (payload (concat "\e[200~" quoted "\e[201~")))
         (ghostel-test--with-exec-buffer
             (buf proc python
-                 (list "-c" ghostel-test--pty-byte-recorder-script
-                       (number-to-string (length payload))))
+                 (ghostel-test--pty-byte-recorder-args (length payload)))
           (ghostel-test--wait-for-text "GHOSTEL_RECORDER_READY" proc 5)
           (ghostel--write-vt ghostel--term "\e[?2004h")
           (ghostel--drop (ghostel-test--drop-event 'file "/tmp/a b.png"))
