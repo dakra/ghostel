@@ -37,11 +37,13 @@
 (declare-function ghostel--enter-readonly-input-mode "ghostel")
 (declare-function ghostel--resource-root "ghostel-module-install")
 (declare-function ghostel--run-hook-safely "ghostel")
+(declare-function ghostel--set-title "ghostel")
 (declare-function ghostel--ssh-install-enabled-p "ghostel")
 (declare-function ghostel--terminfo-directory "ghostel")
 (defvar ghostel-prompt-navigation-input-mode)
 (defvar ghostel-shell)
 (defvar ghostel--input-mode)
+(defvar ghostel-title)
 
 
 ;;; Customization
@@ -184,6 +186,19 @@ non-nil so the debugger can fire)."
   :type 'hook
   :group 'ghostel)
 
+(defcustom ghostel-restore-title-after-command t
+  "Non-nil means a title set during a command is restored when it finishes.
+Some programs (Claude Code, for example) set a title and exit
+without clearing it, so the stale title stays in the mode line.
+With this enabled, the title goes back to its pre-command value
+when the command finishes.  Titles set outside a command are
+never touched, and programs that clean up their own title are
+unaffected.
+
+Requires shell integration, like `ghostel-command-finish-functions'."
+  :type 'boolean
+  :group 'ghostel)
+
 
 ;;; Buffer-local state
 
@@ -193,6 +208,10 @@ Nil for buffers running an arbitrary command (`ghostel-exec').")
 
 (defvar-local ghostel--command-running nil
   "Non-nil between OSC 133 command-start and command-finish markers.")
+
+(defvar-local ghostel--pre-command-title nil
+  "Value of `ghostel-title' when the current command started.
+Restored at command finish by `ghostel-restore-title-after-command'.")
 
 (defvar-local ghostel--prompt-positions nil
   "List of prompt positions as (buffer-line . exit-status) pairs.
@@ -565,16 +584,24 @@ not here.  This handler only tracks prompt positions and exit status."
      ;; Command output start — notify `ghostel-command-start-functions'.
      (ghostel--run-hook-safely 'ghostel-command-start-functions
                                (current-buffer))
-     (setq ghostel--command-running t))
+     (setq ghostel--command-running t
+           ghostel--pre-command-title ghostel-title))
     ("D"
      ;; Command finished — store exit status on the most recent entry
      ;; and notify `ghostel-command-finish-functions'.
-     (let ((exit (and param (string-to-number param))))
+     (let ((exit (and param (string-to-number param)))
+           (was-running ghostel--command-running))
        (when (and ghostel--prompt-positions param)
          (setcdr (car ghostel--prompt-positions) exit))
        (ghostel--run-hook-safely 'ghostel-command-finish-functions
-                                 (current-buffer) exit))
-     (setq ghostel--command-running nil))))
+                                 (current-buffer) exit)
+       (setq ghostel--command-running nil)
+       ;; Restore the pre-command title, after the finish hooks so they
+       ;; still see the command's title; `was-running' skips prompt redraws.
+       (when (and was-running
+                  ghostel-restore-title-after-command
+                  (not (equal ghostel-title ghostel--pre-command-title)))
+         (ghostel--set-title ghostel--pre-command-title))))))
 
 (defun ghostel--prompt-input-start ()
   "From the start of a `ghostel-prompt' region, move past the prefix.

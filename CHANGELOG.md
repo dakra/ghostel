@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- A title set while a command runs is now restored when the command
+  finishes, so programs that set a title and exit without clearing it
+  (Claude Code, for example) no longer leave it in the mode line.
+  Disable with `ghostel-restore-title-after-command`.
+
 ## [0.53.0] — 2026-09-02
 
 ### Added

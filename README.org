@@ -849,7 +849,10 @@ TRAMP-aware =auth-source-pick-first-password= example.
   =C-c M-n= / =C-c M-p=.
 - *OSC 2* - title tracking (the title is shown in the mode line; see
   =ghostel-buffer-identification-format=.  Set =ghostel-buffer-name-function= to
-  rename the buffer from the title instead).
+  rename the buffer from the title instead).  A title set while a command
+  runs is restored when the command finishes, so a program that exits
+  without clearing its title can't leave it behind (see
+  =ghostel-restore-title-after-command=).
 - *OSC 52;e* - call whitelisted Emacs functions from shell scripts (see [[#calling-elisp-from-the-shell][Calling
   Elisp from the Shell]]).
 - *OSC 52* - clipboard support (opt-in, for remote sessions).
@@ -1356,6 +1359,7 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 | =ghostel-exit-functions=               | =nil=                                           | Hook run with =(BUFFER EVENT)= when the terminal process exits.                                                                                                                                            |
 | =ghostel-command-start-functions=      | =(ghostel--query-before-killing-on-cmd-start)=  | Hook run with =(BUFFER)= on OSC 133 C (command start).                                                                                                                                                     |
 | =ghostel-command-finish-functions=     | =(ghostel--query-before-killing-on-cmd-finish)= | Hook run with =(BUFFER EXIT-STATUS)= on OSC 133 D (command finish).                                                                                                                                        |
+| =ghostel-restore-title-after-command=  | =t=                                             | Restore the pre-command title when a command finishes, so a program that exits without clearing its title doesn't leave it in the mode line.                                                               |
 | =ghostel-bookmark-check-dir=           | =t=                                             | Restore the working directory when jumping to a ghostel [[#bookmarks][bookmark]] (=cd= into a reused buffer that moved).                                                                                                   |
 
 ** Native module
