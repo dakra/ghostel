@@ -14,22 +14,24 @@ const log = std.log.scoped(.GhostelHandler);
 // xterm limits the title stack to 10 entries.
 const title_stack_max = 10;
 
-pub fn GhostelHandler(Context: type) type {
+pub fn GhostelHandler(Effects: type) type {
     return struct {
         const Self = @This();
 
         alloc: Allocator,
-        context: Context,
+        term: *GhostelTerm,
+        effects: Effects,
         inner: gt.TerminalStream.Handler,
         // Null entries represent an unset title.
         title_stack: [title_stack_max]?[]u8,
         title_stack_len: usize,
 
-        pub fn init(alloc: Allocator, context: Context, terminal: *gt.Terminal) Self {
+        pub fn init(alloc: Allocator, term: *GhostelTerm, effects: Effects) Self {
             var self = Self{
                 .alloc = alloc,
-                .context = context,
-                .inner = .init(terminal),
+                .term = term,
+                .effects = effects,
+                .inner = .init(&term.terminal),
                 .title_stack = @splat(null),
                 .title_stack_len = 0,
             };
@@ -96,19 +98,20 @@ pub fn GhostelHandler(Context: type) type {
         fn writePtyCallback(handler: *gt.TerminalStream.Handler, data: [:0]const u8) void {
             const self: *Self = @fieldParentPtr("inner", handler);
             if (data.len == 0) return;
-            self.context.ptyWriteFromTerminal(data);
+            self.effects.ptyWriteFromTerminal(data);
         }
 
         /// Called when the terminal receives BEL.
         fn bellCallback(handler: *gt.TerminalStream.Handler) void {
             const self: *Self = @fieldParentPtr("inner", handler);
-            self.context.effect("ding", .{});
+            self.effects.effect("ding", .{});
         }
 
         /// CSI ? 996 n - the scheme Emacs assigned, not the OSC 11 color.
         fn colorSchemeCallback(handler: *gt.TerminalStream.Handler) ?gt.device_status.ColorScheme {
             const self: *Self = @fieldParentPtr("inner", handler);
-            return self.context.colorScheme();
+            // Streams are advanced only while their GhostelTerm is locked.
+            return self.term.color_scheme;
         }
 
         // TODO: DeviceAttributes is not exported from ghostty-vt for some reason.
@@ -154,7 +157,7 @@ pub fn GhostelHandler(Context: type) type {
         fn titleChangedCallback(handler: *gt.TerminalStream.Handler) void {
             const self: *Self = @fieldParentPtr("inner", handler);
             const title = handler.terminal.getTitle() orelse "";
-            self.context.effect("ghostel--set-title", .{title});
+            self.effects.effect("ghostel--set-title", .{title});
         }
 
         // ---------------------------------------------------------------------------
@@ -215,7 +218,7 @@ pub fn GhostelHandler(Context: type) type {
             else
                 null;
 
-            self.context.effect("ghostel--osc133-marker", .{ &type_str, param_val });
+            self.effects.effect("ghostel--osc133-marker", .{ &type_str, param_val });
         }
 
         // ---------------------------------------------------------------------------
@@ -225,7 +228,7 @@ pub fn GhostelHandler(Context: type) type {
         /// Update Emacs from the reported PWD.
         fn handleReportPwd(self: *Self, v: gt.StreamAction.ReportPwd) void {
             if (v.url.len == 0) return;
-            self.context.effect("ghostel--update-directory", .{v.url});
+            self.effects.effect("ghostel--update-directory", .{v.url});
         }
 
         // ---------------------------------------------------------------------------
@@ -244,10 +247,10 @@ pub fn GhostelHandler(Context: type) type {
             if (v.data.len == 1 and v.data[0] == '?') return;
 
             switch (v.kind) {
-                'e' => _ = self.context.effect("ghostel--osc52-eval", .{v.data}),
+                'e' => _ = self.effects.effect("ghostel--osc52-eval", .{v.data}),
                 else => {
                     const kind_str: [1]u8 = .{v.kind};
-                    _ = self.context.effect("ghostel--osc52-handle", .{ &kind_str, v.data });
+                    _ = self.effects.effect("ghostel--osc52-handle", .{ &kind_str, v.data });
                 },
             }
         }
@@ -262,7 +265,7 @@ pub fn GhostelHandler(Context: type) type {
         /// it at the FFI boundary rather than pay the call for nothing.
         fn handleNotification(self: *Self, v: gt.StreamAction.ShowDesktopNotification) void {
             if (v.title.len == 0 and v.body.len == 0) return;
-            self.context.effect("ghostel--handle-notification", .{ v.title, v.body });
+            self.effects.effect("ghostel--handle-notification", .{ v.title, v.body });
         }
 
         // ---------------------------------------------------------------------------
@@ -279,7 +282,7 @@ pub fn GhostelHandler(Context: type) type {
                 .pause => "pause",
             };
             const progress_val = if (v.progress) |p| p else null;
-            self.context.effect("ghostel--osc-progress", .{ state_str, progress_val });
+            self.effects.effect("ghostel--osc-progress", .{ state_str, progress_val });
         }
     };
 }

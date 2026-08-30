@@ -9,6 +9,7 @@ const emacs = @import("emacs.zig");
 const gt = @import("ghostty-vt");
 const GhostelHandler = @import("handler.zig").GhostelHandler;
 const Renderer = @import("Renderer.zig");
+const RecursiveMutex = @import("RecursiveMutex.zig");
 const input = @import("input.zig");
 const kitty_graphics = @import("kitty_graphics.zig");
 const utils = @import("utils.zig");
@@ -24,6 +25,7 @@ const Self = @This();
 
 alloc: Allocator,
 io: std.Io,
+mutex: RecursiveMutex = .{},
 terminal: gt.Terminal,
 stream: gt.Stream(GhostelHandler(*Self)),
 string_buffer: ?[]u8 = null,
@@ -56,7 +58,7 @@ pub fn init(
     };
     errdefer term.terminal.deinit(alloc);
 
-    term.stream = .initAlloc(alloc, .init(alloc, term, &term.terminal));
+    term.stream = .initAlloc(alloc, .init(alloc, term, term));
     errdefer term.stream.deinit();
 
     term.renderer = try .init(alloc, env, &term.terminal);
@@ -79,8 +81,8 @@ pub fn deinit(self: *Self) void {
 }
 
 pub fn redraw(self: *Self, force_full: bool, force_sync: bool) !bool {
-    try self.lockTerm();
-    defer self.unlockTerm();
+    try self.lock();
+    defer self.unlock();
 
     const env = emacs.current_env orelse return false;
     const pre_size = .{ self.terminal.cols, self.terminal.rows };
@@ -103,20 +105,16 @@ pub fn redraw(self: *Self, force_full: bool, force_sync: bool) !bool {
     return true;
 }
 
-/// Set the color palette (256 entries).
-pub fn setColorPalette(self: *Self, palette: gt.color.Palette) void {
+/// Set the color palette (256 entries). The terminal must be locked.
+fn setColorPaletteLocked(self: *Self, palette: gt.color.Palette) void {
     self.terminal.colors.palette.changeDefault(palette);
     self.terminal.flags.dirty.palette = true;
 }
 
 pub fn vtWrite(self: *Self, data: []const u8) !void {
-    try self.lockTerm();
+    try self.lock();
+    defer self.unlock();
     self.stream.nextSlice(data);
-    self.unlockTerm();
-}
-
-pub fn colorScheme(self: *Self) gt.device_status.ColorScheme {
-    return self.color_scheme;
 }
 
 pub fn ptyWrite(self: *Self, data: []const u8) !void {
@@ -154,10 +152,15 @@ pub fn encode(
     buf: []u8,
     event: gt.input.KeyEvent,
 ) !?[]const u8 {
-    var options = gt.input.KeyEncodeOptions.fromTerminal(&self.terminal);
-    // Emacs resolves option-vs-meta before the event reaches us, so a
-    // meta modifier always means alt.
-    options.macos_option_as_alt = .true;
+    const options = blk: {
+        try self.lock();
+        defer self.unlock();
+        var options = gt.input.KeyEncodeOptions.fromTerminal(&self.terminal);
+        // Emacs resolves option-vs-meta before the event reaches us, so a
+        // meta modifier always means alt.
+        options.macos_option_as_alt = .true;
+        break :blk options;
+    };
 
     // Encode
     var writer = std.Io.Writer.fixed(buf);
@@ -177,14 +180,18 @@ pub fn encodeMouse(
     col: i64,
     mods_val: i64,
 ) !bool {
-    const options = gt.input.MouseEncodeOptions.fromTerminal(&self.terminal, .{
-        .screen = .{
-            .width = self.terminal.cols,
-            .height = self.terminal.rows,
-        },
-        .cell = .{ .width = 1, .height = 1 },
-        .padding = .{ .top = 0, .bottom = 0, .right = 0, .left = 0 },
-    });
+    const options = blk: {
+        try self.lock();
+        defer self.unlock();
+        break :blk gt.input.MouseEncodeOptions.fromTerminal(&self.terminal, .{
+            .screen = .{
+                .width = self.terminal.cols,
+                .height = self.terminal.rows,
+            },
+            .cell = .{ .width = 1, .height = 1 },
+            .padding = .{ .top = 0, .bottom = 0, .right = 0, .left = 0 },
+        });
+    };
 
     const event = gt.input.MouseEncodeEvent{
         .action = @enumFromInt(action),
@@ -205,6 +212,13 @@ pub fn encodeMouse(
 }
 
 pub fn encodeFocus(self: *Self, gained: bool) !bool {
+    const enabled = blk: {
+        try self.lock();
+        defer self.unlock();
+        break :blk self.terminal.modes.get(.focus_event);
+    };
+    if (!enabled) return false;
+
     const event = if (gained) gt.input.FocusEvent.gained else gt.input.FocusEvent.lost;
     var buf: [8]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
@@ -216,10 +230,12 @@ pub fn encodeFocus(self: *Self, gained: bool) !bool {
 }
 
 pub fn encodePaste(self: *Self, data: []u8) !bool {
-    const slices = gt.input.encodePaste(
-        data,
-        gt.input.PasteOptions.fromTerminal(&self.terminal),
-    );
+    const options = blk: {
+        try self.lock();
+        defer self.unlock();
+        break :blk gt.input.PasteOptions.fromTerminal(&self.terminal);
+    };
+    const slices = gt.input.encodePaste(data, options);
 
     var wrote = false;
     for (slices) |slice| {
@@ -234,17 +250,17 @@ pub fn encodePaste(self: *Self, data: []u8) !bool {
 /// to ensure that the we fully render the very latest state in case any rows
 /// get promoted to scrollback due to vertical shrinking of the viewport.
 pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u16, cell_h: u16) !void {
-    try self.lockTerm();
-    defer self.unlockTerm();
+    try self.lock();
+    defer self.unlock();
     try self.renderer.resize(cols, rows, cell_w, cell_h);
 }
 
-pub fn lockTerm(self: *Self) !void {
-    if (self.process) |process| try process.lockTerm();
+pub fn lock(self: *Self) !void {
+    try self.mutex.lock(self.io);
 }
 
-pub fn unlockTerm(self: *Self) void {
-    if (self.process) |handler| handler.unlockTerm();
+pub fn unlock(self: *Self) void {
+    self.mutex.unlock(self.io);
 }
 
 pub fn spawnNativeProcess(
@@ -256,16 +272,21 @@ pub fn spawnNativeProcess(
 ) !ProcessPid {
     if (command.len == 0) return error.InvalidCommand;
 
+    const initial_size = blk: {
+        try self.lock();
+        defer self.unlock();
+        break :blk .{ self.terminal.cols, self.terminal.rows };
+    };
+
     const process = try self.alloc.create(NativeProcess);
     errdefer self.alloc.destroy(process);
     try process.init(
         self.alloc,
         self.io,
-        self.terminal.cols,
-        self.terminal.rows,
+        initial_size[0],
+        initial_size[1],
         ProcessParams{ .file = command[0], .args = command, .env = env, .cwd = cwd },
-        &self.terminal,
-        &self.color_scheme,
+        self,
         event_fd,
     );
     self.process = process;
@@ -594,9 +615,6 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
                 if (env.isNil(args[0])) return env.nil();
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
-                if (!term.terminal.modes.get(gt.modes.Mode.focus_event)) {
-                    return env.nil();
-                }
                 const gained = env.isNotNil(args[1]);
                 return if (try term.encodeFocus(gained)) env.t() else env.nil();
             }
@@ -633,15 +651,15 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 var str_buf: [2048]u8 = undefined;
                 const colors_str = try env.extractString(args[1], &str_buf);
                 if (colors_str.len < 16 * 7) return error.InvalidPaletteLength;
-                try term.lockTerm();
-                defer term.unlockTerm();
+                try term.lock();
+                defer term.unlock();
                 var palette = term.terminal.colors.palette.current;
                 var idx: usize = 0;
                 while (idx < 16) : (idx += 1) {
                     const pos = idx * 7;
                     palette[idx] = try gt.color.RGB.parse(colors_str[pos .. pos + 7]);
                 }
-                term.setColorPalette(palette);
+                term.setColorPaletteLocked(palette);
                 return env.t();
             }
         },
@@ -671,8 +689,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 const scheme: gt.device_status.ColorScheme =
                     if (env.eq(args[3], emacs.sym.light)) .light else .dark;
                 const report = blk: {
-                    try term.lockTerm();
-                    defer term.unlockTerm();
+                    try term.lock();
+                    defer term.unlock();
                     term.terminal.colors.foreground.default = try gt.color.RGB.parse(fg_str);
                     term.terminal.colors.background.default = try gt.color.RGB.parse(bg_str);
                     const changed = term.color_scheme != scheme;
@@ -736,8 +754,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 const mode: gt.modes.Mode = gt.modes.modeFromInt(mode_int, false) orelse {
                     return error.InvalidModeValue;
                 };
-                try term.lockTerm();
-                defer term.unlockTerm();
+                try term.lock();
+                defer term.unlock();
                 return if (term.terminal.modes.get(mode)) env.t() else env.nil();
             }
         },
@@ -753,8 +771,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .impl = struct {
             pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
-                try term.lockTerm();
-                defer term.unlockTerm();
+                try term.lock();
+                defer term.unlock();
                 return if (term.terminal.screens.active_key == .alternate) env.t() else env.nil();
             }
         },
@@ -775,8 +793,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     .unwrap = true,
                     .trim = true,
                 };
-                try term.lockTerm();
-                defer term.unlockTerm();
+                try term.lock();
+                defer term.unlock();
                 var formatter = gt.formatter.TerminalFormatter.init(&term.terminal, options);
                 var writer = std.Io.Writer.Allocating.init(module_alloc);
                 defer writer.deinit();
