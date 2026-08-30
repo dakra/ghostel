@@ -4,20 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Fixed
-- Directory tracking no longer corrupts or silently stalls on paths
-  containing `#` or percent-escapes.  The bash and zsh integrations
-  report the cwd with kitty's `kitty-shell-cwd://` OSC 7 scheme (path
-  sent verbatim) and fish percent-encodes its `file://` report,
-  matching ghostty; ghostel percent-decodes `file://` reports, so
-  escaped reports from foreign integrations (vte.sh, WezTerm) resolve
-  correctly, takes `kitty-shell-cwd://` paths as-is, and keeps raw
-  `#`/`?` in the path under either scheme.  For
-  emitters that escape only control characters (nushell) or nothing
-  at all (older ghostel scripts on remote hosts), a local directory
-  whose literal name looks percent-encoded still resolves via a
-  raw-spelling fallback; remote (TRAMP) reports of such names need
-  the updated scripts.
+## [0.52.0] — 2026-08-31
 
 ### Added
 - Color-scheme DSR: CSI `? 996 n` is answered with light/dark as Emacs
@@ -65,6 +52,43 @@ All notable changes to this project will be documented in this file.
   `ghostel-project-buffer-list` return the live ghostel buffers (all /
   project-scoped).  These join the existing public `ghostel-exec` (run a
   specific program in a TTY) and `ghostel-send-string` / `ghostel-send-key`.
+
+### Fixed
+- Directory tracking no longer corrupts or silently stalls on paths
+  containing `#` or percent-escapes.  The bash and zsh integrations
+  report the cwd with kitty's `kitty-shell-cwd://` OSC 7 scheme (path
+  sent verbatim) and fish percent-encodes its `file://` report,
+  matching ghostty; ghostel percent-decodes `file://` reports, so
+  escaped reports from foreign integrations (vte.sh, WezTerm) resolve
+  correctly, takes `kitty-shell-cwd://` paths as-is, and keeps raw
+  `#`/`?` in the path under either scheme.  For
+  emitters that escape only control characters (nushell) or nothing
+  at all (older ghostel scripts on remote hosts), a local directory
+  whose literal name looks percent-encoded still resolves via a
+  raw-spelling fallback; remote (TRAMP) reports of such names need
+  the updated scripts.
+- Exit functions (`ghostel-exit-functions`) that delete the terminal's
+  window or kill its buffer no longer leave the buffer they switched to
+  locked read-only with its desktop-save setting clobbered; the
+  sentinel's remaining cleanup now runs in the terminal buffer itself.
+- Directory tracking on native Windows Emacs no longer flips
+  `default-directory` to a TRAMP path on a bogus host when an MSYS
+  shell glues a drive spec onto the OSC 7 authority
+  (`kitty-shell-cwd://HOSTd:/repos/foo`), and `/d:/foo`, MSYS `/d/foo`
+  and Cygwin `/cygdrive/d/foo` spellings of local directories are
+  recognized instead of silently stalling tracking.  Ghostel no longer
+  injects a drive-form logical `PWD` into MSYS shells.
+- The fish shell integration reads fish's own `$hostname` variable
+  instead of running `hostname`, so it works on systems without that
+  command.
+
+### Internal
+- Everything that assumes a shell on the other side of the PTY (shell
+  detection and spawn specs, shell-integration injection, OSC 133 prompt
+  navigation, shell history) moved into the new `lisp/ghostel-shell.el`;
+  `lisp/ghostel-prompt.el` is folded into it.  No behavior change.
+- The native module keeps the terminal mutex on the terminal object and
+  locks terminal-dependent input encoding consistently.
 
 ## [0.51.0] — 2026-08-20
 
