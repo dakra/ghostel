@@ -10,6 +10,18 @@
 
 (require 'ghostel-test-helpers)
 
+(defmacro ghostel-test--with-public-send-buffer (live &rest body)
+  "Run BODY in a Ghostel buffer whose lifecycle state follows LIVE."
+  (declare (indent 2))
+  `(with-temp-buffer
+     (ghostel-mode)
+     (let ((ghostel-scroll-on-input nil))
+       (setq-local ghostel--term 'fake
+                   ghostel--process 'fake)
+       (cl-letf (((symbol-function 'process-live-p)
+                  (lambda (_process) ,live)))
+         ,@body))))
+
 (ert-deftest ghostel-test-raw-key-sequences ()
   "Test the Elisp raw key sequence builder."
   ;; Basic keys
@@ -959,26 +971,26 @@ inject raw bytes a kitty-protocol child cannot parse."
 
 (ert-deftest ghostel-test-send-key-routes-to-send-encoded ()
   "`ghostel-send-key' forwards key-name and mods to `ghostel--send-encoded'."
-  (with-temp-buffer
-    (ghostel-mode)
-    (let (captured-key captured-mods)
-      (cl-letf (((symbol-function 'ghostel--send-encoded)
-                 (lambda (key mods &optional _utf8)
-                   (setq captured-key key captured-mods mods))))
-        (ghostel-send-key "return" "ctrl")
-        (should (equal captured-key "return"))
-        (should (equal captured-mods "ctrl"))))))
+  (let ((live t))
+    (ghostel-test--with-public-send-buffer live
+      (let (captured-key captured-mods)
+        (cl-letf (((symbol-function 'ghostel--send-encoded)
+                   (lambda (key mods &optional _utf8)
+                     (setq captured-key key captured-mods mods))))
+          (ghostel-send-key "return" "ctrl")
+          (should (equal captured-key "return"))
+          (should (equal captured-mods "ctrl")))))))
 
 (ert-deftest ghostel-test-send-key-nil-mods-becomes-empty-string ()
   "`ghostel-send-key' passes an empty string when MODS is omitted."
-  (with-temp-buffer
-    (ghostel-mode)
-    (let (captured-mods)
-      (cl-letf (((symbol-function 'ghostel--send-encoded)
-                 (lambda (_key mods &optional _utf8)
-                   (setq captured-mods mods))))
-        (ghostel-send-key "up")
-        (should (equal captured-mods ""))))))
+  (let ((live t))
+    (ghostel-test--with-public-send-buffer live
+      (let (captured-mods)
+        (cl-letf (((symbol-function 'ghostel--send-encoded)
+                   (lambda (_key mods &optional _utf8)
+                     (setq captured-mods mods))))
+          (ghostel-send-key "up")
+          (should (equal captured-mods "")))))))
 
 (ert-deftest ghostel-test-send-key-errors-outside-ghostel-buffer ()
   "`ghostel-send-key' signals `user-error' when not in a ghostel buffer."
@@ -997,18 +1009,66 @@ External packages may still call the old internal name."
 
 (ert-deftest ghostel-test-paste-string-routes-to-paste-text ()
   "`ghostel-paste-string' forwards its argument to `ghostel--paste-text'."
-  (with-temp-buffer
-    (ghostel-mode)
-    (let (received)
-      (cl-letf (((symbol-function 'ghostel--paste-text)
-                 (lambda (str) (setq received str))))
-        (ghostel-paste-string "hello world")
-        (should (equal received "hello world"))))))
+  (let ((live t))
+    (ghostel-test--with-public-send-buffer live
+      (let (received)
+        (cl-letf (((symbol-function 'ghostel--paste-text)
+                   (lambda (str) (setq received str))))
+          (ghostel-paste-string "hello world")
+          (should (equal received "hello world")))))))
 
 (ert-deftest ghostel-test-paste-string-errors-outside-ghostel-buffer ()
   "`ghostel-paste-string' signals `user-error' when not in a ghostel buffer."
   (with-temp-buffer
     (should-error (ghostel-paste-string "x") :type 'user-error)))
+
+(ert-deftest ghostel-test-buffer-live-p-requires-live-terminal ()
+  "`ghostel-buffer-live-p' excludes dead and non-Ghostel buffers."
+  (let ((live t))
+    (ghostel-test--with-public-send-buffer live
+      (should (ghostel-buffer-live-p (current-buffer)))
+      (setq live nil)
+      (should-not (ghostel-buffer-live-p (current-buffer)))))
+  (with-temp-buffer
+    (should-not (ghostel-buffer-live-p (current-buffer))))
+  (let ((buffer (generate-new-buffer " *ghostel-test-killed*")))
+    (kill-buffer buffer)
+    (should-not (ghostel-buffer-live-p buffer))))
+
+(ert-deftest ghostel-test-public-sends-error-for-exited-terminal ()
+  "Public paste and key sends reject a Ghostel terminal that already exited."
+  (let ((live nil))
+    (ghostel-test--with-public-send-buffer live
+      (let (pasted key)
+        (cl-letf (((symbol-function 'ghostel--paste-text)
+                   (lambda (text) (setq pasted text)))
+                  ((symbol-function 'ghostel--send-encoded)
+                   (lambda (name mods &optional _utf8)
+                     (setq key (cons name mods)))))
+          (should-error (ghostel-paste-string "text") :type 'user-error)
+          (should-error (ghostel-send-key "return") :type 'user-error)
+          (should-not pasted)
+          (should-not key))))))
+
+(ert-deftest ghostel-test-public-sends-error-when-terminal-exits-during-send ()
+  "Public paste and key sends reject a terminal that exits during a write."
+  (let ((live t))
+    (ghostel-test--with-public-send-buffer live
+      (let (pasted key)
+        (cl-letf (((symbol-function 'ghostel--paste-text)
+                   (lambda (text)
+                     (setq pasted text
+                           live nil)
+                     (error "PTY exited")))
+                  ((symbol-function 'ghostel--send-encoded)
+                   (lambda (name mods &optional _utf8)
+                     (setq key (cons name mods)
+                           live nil))))
+          (should-error (ghostel-paste-string "text") :type 'user-error)
+          (setq live t)
+          (should-error (ghostel-send-key "return") :type 'user-error)
+          (should (equal pasted "text"))
+          (should (equal key '("return" . ""))))))))
 
 (ert-deftest ghostel-test-tty-esc-filter-translates-lone-esc ()
   "`ghostel--tty-esc' yields [escape] in terminal-input ghostel buffers."

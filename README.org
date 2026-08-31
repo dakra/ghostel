@@ -2011,21 +2011,25 @@ to show it in every buffer prompt (=C-x b=, =consult-buffer=, and ghostel's own)
 :end:
 #+findex: ghostel-send-string
 #+findex: ghostel-send-key
+#+findex: ghostel-paste-string
 
 For packages that need to inject input into a running ghostel buffer (agent
-integrations, custom keymaps, ...), two public functions
+integrations, custom keymaps, ...), three public functions
 are provided:
 
 #+begin_src emacs-lisp
 (ghostel-send-string "ls -la\n")      ; send raw bytes, newline included
+(ghostel-paste-string "ls -la")       ; send a bracketed paste
 (ghostel-send-key "return")           ; send a named key through the encoder
 (ghostel-send-key "a" "ctrl")         ; C-a - respects the current terminal mode
 (ghostel-send-key "up" "shift,ctrl")  ; modifiers are comma-separated
 #+end_src
 
-Both operate on the current buffer; wrap in =with-current-buffer= when driving
-another ghostel buffer.  Calling either outside a ghostel buffer signals a
-=user-error=.
+All operate on the current buffer; wrap in =with-current-buffer= when driving
+another ghostel buffer.  Calling one outside a ghostel buffer signals a
+=user-error=.  =ghostel-paste-string= and =ghostel-send-key= also signal
+=user-error= if the terminal is no longer live or exits before the send
+completes.
 
 ** Creating and listing terminals from Lisp
 :properties:
@@ -2034,6 +2038,7 @@ another ghostel buffer.  Calling either outside a ghostel buffer signals a
 #+findex: ghostel-create
 #+findex: ghostel-exec
 #+findex: ghostel-buffer-list
+#+findex: ghostel-buffer-live-p
 #+findex: ghostel-project-buffer-list
 
 For packages that build on ghostel, a small public API creates and enumerates
@@ -2047,7 +2052,8 @@ terminals without reaching into internals:
 
 (ghostel-exec (get-buffer-create "*tig*") "tig")  ; run one program in a TTY instead of a shell
 
-(ghostel-buffer-list)                 ; all live ghostel buffers
+(ghostel-buffer-list)                 ; all live Ghostel buffers, including exited terminals
+(ghostel-buffer-live-p buffer)        ; terminal in BUFFER can accept input
 (ghostel-project-buffer-list)         ; ghostel buffers in the current project
 #+end_src
 
@@ -2056,6 +2062,10 @@ but always creating a fresh terminal; =ghostel-exec= runs a single program in
 a real TTY with no shell integration.  Both read =default-directory=, and both
 accept an optional IDENTITY alist stored as the buffer's =ghostel-identity=
 for later lookup.
+=ghostel-buffer-list= returns live Ghostel buffers even after their terminal
+process exits.  Filter its results with =ghostel-buffer-live-p= before sending
+input; the process can still exit immediately after that check, so the public
+paste and key send functions signal =user-error= for that race.
 =ghostel-project-buffer-list= prompts to choose a project when there is no
 current one.
 

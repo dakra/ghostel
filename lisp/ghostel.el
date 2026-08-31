@@ -1679,10 +1679,28 @@ dead terminals and compile-style buffers."
 
 ;;; Public input API
 
+(defun ghostel-buffer-live-p (buffer)
+  "Return non-nil when BUFFER is a Ghostel buffer that can accept input.
+BUFFER must be live, use `ghostel-mode', retain its terminal, and have a
+live lifecycle process.  A terminal can exit immediately after this function
+returns; `ghostel-paste-string' and `ghostel-send-key' detect that race and
+signal `user-error'."
+  (and (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (and (derived-mode-p 'ghostel-mode)
+              ghostel--term
+              (process-live-p ghostel--process)))))
+
 (defun ghostel--ensure-ghostel-buffer ()
   "Signal a `user-error' unless the current buffer is a ghostel buffer."
   (unless (derived-mode-p 'ghostel-mode)
     (user-error "Must be called from a ghostel buffer")))
+
+(defun ghostel--ensure-live-ghostel-buffer ()
+  "Signal a `user-error' unless the current buffer can accept input."
+  (ghostel--ensure-ghostel-buffer)
+  (unless (ghostel-buffer-live-p (current-buffer))
+    (user-error "Ghostel terminal cannot accept input")))
 
 (defun ghostel-send-string (string)
   "Send STRING to the terminal process in the current ghostel buffer.
@@ -1700,22 +1718,40 @@ comma-separated modifier string like \"ctrl\" or \"shift,ctrl\", or
 nil for no modifiers.  The encoder respects the terminal's current
 mode (application cursor keys, Kitty keyboard protocol, etc.).
 
-Signals a `user-error' when called outside a ghostel buffer."
-  (ghostel--ensure-ghostel-buffer)
+Signals a `user-error' when called outside a ghostel buffer or when the
+terminal cannot accept input."
+  (ghostel--ensure-live-ghostel-buffer)
   (ghostel--on-user-input)
-  (ghostel--send-encoded key-name (or mods "")))
+  (ghostel--ensure-live-ghostel-buffer)
+  (let (result)
+    (condition-case err
+        (setq result (ghostel--send-encoded key-name (or mods "")))
+      (error
+       (user-error "Ghostel terminal cannot accept input: %s"
+                   (error-message-string err))))
+    (ghostel--ensure-live-ghostel-buffer)
+    result))
 
 (defun ghostel-paste-string (string)
   "Send STRING to the terminal using bracketed paste.
-Signals a `user-error' when called outside a ghostel buffer.
+Signals a `user-error' when called outside a ghostel buffer or when the
+terminal cannot accept input.
 
 Unlike `ghostel-send-string', this wraps STRING in bracketed paste
 markers (ESC [200~ / ESC [201~) when the terminal supports bracketed
 paste mode (mode 2004), so the shell treats the input as an atomic
 paste rather than character-by-character typed keystrokes."
-  (ghostel--ensure-ghostel-buffer)
+  (ghostel--ensure-live-ghostel-buffer)
   (ghostel--on-user-input)
-  (ghostel--paste-text string))
+  (ghostel--ensure-live-ghostel-buffer)
+  (let (result)
+    (condition-case err
+        (setq result (ghostel--paste-text string))
+      (error
+       (user-error "Ghostel terminal cannot accept input: %s"
+                   (error-message-string err))))
+    (ghostel--ensure-live-ghostel-buffer)
+    result))
 
 
 ;;; Terminal control commands (C-c prefix)
@@ -5287,7 +5323,10 @@ Returns the buffer."
 (defun ghostel-buffer-list ()
   "Return all live `ghostel-mode' buffers, sorted alphabetically by name.
 Sorted (not `buffer-list' order) so cycle commands advance through
-the same sequence regardless of recent buffer-switch history."
+the same sequence regardless of recent buffer-switch history.
+
+The list includes buffers whose terminal process has exited.  Use
+`ghostel-buffer-live-p' to select buffers that can accept input."
   (sort (cl-remove-if-not
          (lambda (b) (with-current-buffer b (derived-mode-p 'ghostel-mode)))
          (buffer-list))
