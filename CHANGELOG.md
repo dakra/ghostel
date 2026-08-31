@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `ghostel-window-padding-balance`: places the fractional-row space a
+  window leaves under the grid whenever nothing precedes the first row
+  (alternate screen, fresh primary screen): `center` splits it between
+  the top and the bottom like ghostty's option of the same name,
+  `bottom` moves it all above the grid, `top` (the default) keeps it
+  below.  Graphical frames on Emacs 29+ only.
+
 ## [0.52.0] — 2026-08-31
 
 ### Added

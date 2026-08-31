@@ -901,5 +901,235 @@ apply to it."
       (set-window-buffer (selected-window) previous-buffer)
       (kill-buffer buf))))
 
+;;; Window padding balance
+
+(defun ghostel-test-scroll--pad-px ()
+  "Pixels the pad overlay adds above row 1, 0 without one."
+  (let ((ov ghostel--top-pad-overlay))
+    (if (and ov (overlay-buffer ov) (= (overlay-start ov) (point-min)))
+        (get-text-property 0 'line-height (overlay-get ov 'before-string))
+      0)))
+
+(defmacro ghostel-test-scroll--with-pixel-layout (body-px vscrolls &rest body)
+  "Run BODY under a simulated graphical layout of 20-px rows in a BODY-PX body.
+`ghostel--pixel-anchor' is answered from line counts and never counts
+the pad's display line, like the environments whose measurement
+excludes it - the pad code must only measure with the pad cleared.
+`set-window-vscroll' records into the hash table VSCROLLS."
+  (declare (indent 2))
+  `(let ((ghostel--pixel-anchor-supported-p t))
+     (cl-letf (((symbol-function 'display-graphic-p) (lambda (&optional _) t))
+               ((symbol-function 'default-font-height) (lambda () 20))
+               ((symbol-function 'window-body-height)
+                (lambda (&optional _window _pixelwise) ,body-px))
+               ((symbol-function 'set-window-vscroll)
+                (lambda (win vscroll &optional _pixels-p &rest _)
+                  (puthash win vscroll ,vscrolls)))
+               ((symbol-function 'ghostel--pixel-anchor)
+                (lambda (window target)
+                  (let* ((body (window-body-height window t))
+                         (lines (count-lines (point-min) target))
+                         (rows (min lines (ceiling body 20)))
+                         (start (save-excursion
+                                  (goto-char target)
+                                  (forward-line (- rows))
+                                  (point)))
+                         (height (* rows 20)))
+                    (list start (max 0 (- height body)) height)))))
+       ,@body)))
+
+(ert-deftest ghostel-test-padding-balance-splits-alt-screen-leftover ()
+  "On the alternate screen half of the fractional-row space pads row 1."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (let ((vscrolls (make-hash-table :test 'eq))
+          (ghostel-window-padding-balance 'center))
+      (ghostel--write-vt term "\e[?1049h")
+      (ghostel-test-scroll--write-lines term "alt" 9)
+      (ghostel--redraw term t)
+      ;; 10 rows of 20 px in a 212 px body: 12 px left over.
+      (ghostel-test-scroll--with-pixel-layout 212 vscrolls
+        (ghostel--anchor-window (selected-window) t)
+        (should (= 6 ghostel--top-pad))
+        (should (= 6 (ghostel-test-scroll--pad-px)))
+        (should (= 0 (gethash (selected-window) vscrolls)))
+        (should (= (point-min) (window-start (selected-window))))
+        ;; Steady state: the pad stays put across anchors.
+        (ghostel--anchor-window (selected-window) t)
+        (should (= 6 ghostel--top-pad))))))
+
+(ert-deftest ghostel-test-padding-balance-survives-row-1-rewrite ()
+  "A render that rewrites row 1 leaves the pad in place."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (let ((vscrolls (make-hash-table :test 'eq))
+          (ghostel-window-padding-balance 'center))
+      (ghostel--write-vt term "\e[?1049hfirst\r\n")
+      (ghostel--redraw term t)
+      (ghostel-test-scroll--with-pixel-layout 212 vscrolls
+        (ghostel--anchor-window (selected-window) t)
+        (should (= 6 ghostel--top-pad))
+        (ghostel--write-vt term "\e[H\e[2Ka longer first row")
+        (ghostel--redraw-now buf)
+        (should (= 6 (ghostel-test-scroll--pad-px)))
+        ;; An empty row 1 must not matter either.
+        (ghostel--write-vt term "\e[H\e[2K")
+        (ghostel--redraw-now buf)
+        (should (= 6 (ghostel-test-scroll--pad-px)))))))
+
+(ert-deftest ghostel-test-padding-balance-rebalances-after-sub-row-shrink ()
+  "A shrink smaller than a row re-splits the remaining space in one anchor."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (let ((vscrolls (make-hash-table :test 'eq))
+          (ghostel-window-padding-balance 'center))
+      (ghostel--write-vt term "\e[?1049h")
+      (ghostel--redraw term t)
+      (ghostel-test-scroll--with-pixel-layout 212 vscrolls
+        (ghostel--anchor-window (selected-window) t)
+        (should (= 6 ghostel--top-pad)))
+      (ghostel-test-scroll--with-pixel-layout 204 vscrolls
+        (ghostel--anchor-window (selected-window) t)
+        (should (= 2 ghostel--top-pad))
+        (should (= 0 (gethash (selected-window) vscrolls)))))))
+
+(ert-deftest ghostel-test-padding-balance-dropped-on-major-mode-change ()
+  "Changing the major mode of an exited terminal removes the pad overlay."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (let ((vscrolls (make-hash-table :test 'eq))
+          (ghostel-window-padding-balance 'center))
+      (ghostel--write-vt term "\e[?1049h")
+      (ghostel--redraw term t)
+      (ghostel-test-scroll--with-pixel-layout 212 vscrolls
+        (ghostel--anchor-window (selected-window) t)
+        (should (= 6 ghostel--top-pad)))
+      (let ((ov ghostel--top-pad-overlay))
+        (fundamental-mode)
+        (should-not (overlay-buffer ov))))))
+
+(ert-deftest ghostel-test-padding-balance-rounds-down-the-top ()
+  "An odd leftover gives the bottom the extra pixel."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (let ((vscrolls (make-hash-table :test 'eq))
+          (ghostel-window-padding-balance 'center))
+      (ghostel--write-vt term "\e[?1049h")
+      (ghostel--redraw term t)
+      (ghostel-test-scroll--with-pixel-layout 211 vscrolls
+        (ghostel--anchor-window (selected-window) t)
+        (should (= 5 ghostel--top-pad))))))
+
+(ert-deftest ghostel-test-padding-balance-toggles-with-option ()
+  "The pad tracks the option value on the next anchor; t means `center'."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (let ((vscrolls (make-hash-table :test 'eq))
+          (ghostel-window-padding-balance nil))
+      (ghostel--write-vt term "\e[?1049h")
+      (ghostel--redraw term t)
+      (ghostel-test-scroll--with-pixel-layout 212 vscrolls
+        (ghostel--anchor-window (selected-window) t)
+        (should-not ghostel--top-pad-overlay)
+        (setq ghostel-window-padding-balance t)
+        (ghostel--anchor-window (selected-window) t)
+        (should (= 6 ghostel--top-pad))
+        (setq ghostel-window-padding-balance 'bottom)
+        (ghostel--anchor-window (selected-window) t)
+        (should (= 12 ghostel--top-pad))
+        (setq ghostel-window-padding-balance 'top)
+        (ghostel--anchor-window (selected-window) t)
+        (should (= 0 ghostel--top-pad))
+        (should-not (overlay-buffer ghostel--top-pad-overlay))))))
+
+(ert-deftest ghostel-test-padding-balance-bottom-takes-all-leftover ()
+  "With `bottom' the whole fractional-row space pads row 1."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (let ((vscrolls (make-hash-table :test 'eq))
+          (ghostel-window-padding-balance 'bottom))
+      (ghostel--write-vt term "\e[?1049h")
+      (ghostel--redraw term t)
+      ;; 10 rows of 20 px in a 212 px body: all 12 leftover px on top.
+      (ghostel-test-scroll--with-pixel-layout 212 vscrolls
+        (ghostel--anchor-window (selected-window) t)
+        (should (= 12 ghostel--top-pad))
+        (should (= 0 (gethash (selected-window) vscrolls)))
+        (should (= (point-min) (window-start (selected-window))))
+        ;; Steady state: the pad stays put across anchors.
+        (ghostel--anchor-window (selected-window) t)
+        (should (= 12 ghostel--top-pad))))))
+
+(ert-deftest ghostel-test-padding-balance-skips-unfilled-grid ()
+  "A grid shorter than the window gets no pad; the gap is real bottom space."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (let ((vscrolls (make-hash-table :test 'eq))
+          (ghostel-window-padding-balance 'bottom))
+      (ghostel--write-vt term "\e[?1049h")
+      (ghostel--redraw term t)
+      ;; 10 rows of 20 px in a 400 px body: the window is half empty.
+      (ghostel-test-scroll--with-pixel-layout 400 vscrolls
+        (ghostel--anchor-window (selected-window) t)
+        (should (= 0 ghostel--top-pad))))))
+
+(ert-deftest ghostel-test-padding-balance-oversized-pad-recovers ()
+  "A stale oversized pad re-settles to the true leftover in one anchor."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (let ((vscrolls (make-hash-table :test 'eq))
+          (ghostel-window-padding-balance 'bottom))
+      (ghostel--write-vt term "\e[?1049h")
+      (ghostel--redraw term t)
+      (ghostel-test-scroll--with-pixel-layout 212 vscrolls
+        (ghostel--top-pad-set 300)
+        (ghostel--anchor-window (selected-window) t)
+        (should (= 12 ghostel--top-pad))))))
+
+(ert-deftest ghostel-test-padding-balance-yields-to-scrollback ()
+  "Once scrollback precedes row 1 the pad goes and the anchor is re-measured."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (let ((vscrolls (make-hash-table :test 'eq))
+          (ghostel-window-padding-balance 'center))
+      ;; Fresh primary screen: grid only, so the pad applies.
+      (ghostel-test-scroll--write-lines term "row" 9)
+      (ghostel--redraw term t)
+      (ghostel-test-scroll--with-pixel-layout 212 vscrolls
+        (ghostel--anchor-window (selected-window) t)
+        (should (= 6 ghostel--top-pad))
+        ;; One more line scrolls a row into scrollback.
+        (ghostel--write-vt term "more\r\n")
+        (ghostel--redraw term t)
+        (ghostel--anchor-window (selected-window) t)
+        (should (= 0 ghostel--top-pad))
+        ;; 11 rows = 220 px in 212 px: 8 px clipped off the top, no pad.
+        (should (= 8 (gethash (selected-window) vscrolls)))
+        (should (= (point-min) (window-start (selected-window))))))))
+
+(ert-deftest ghostel-test-padding-balance-follows-smallest-window ()
+  "The buffer-wide pad fits the smallest graphical window showing the buffer."
+  :tags '(native)
+  (ghostel-test-scroll--with-buffer (buf term 10 40 200)
+    (let ((vscrolls (make-hash-table :test 'eq))
+          (ghostel-window-padding-balance 'center)
+          (other (split-window)))
+      (unwind-protect
+          (progn
+            (set-window-buffer other buf)
+            (ghostel--write-vt term "\e[?1049h")
+            (ghostel--redraw term t)
+            ;; 204 px body in the other window: 4 px left over.
+            (ghostel-test-scroll--with-pixel-layout 212 vscrolls
+              (cl-letf* ((orig (symbol-function 'window-body-height))
+                         ((symbol-function 'window-body-height)
+                          (lambda (&optional window pixelwise)
+                            (if (and pixelwise (eq window other))
+                                204
+                              (funcall orig window pixelwise)))))
+                (ghostel--anchor-window (selected-window) t)
+                (should (= 2 ghostel--top-pad)))))
+        (delete-window other)))))
+
 (provide 'ghostel-scroll-test)
 ;;; ghostel-scroll-test.el ends here

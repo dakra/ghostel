@@ -458,6 +458,14 @@ the path, `%0D' decodes to a carriage return, and when only the raw
                            (track (concat "file://" host base "/cr%0Dq"))))))
       (delete-directory base t))))
 
+(ert-deftest ghostel-test-local-host-p-preserves-match-data ()
+  "`ghostel--local-host-p' keeps the caller's match data intact.
+The glued-drive parse reads `match-string' after probing the host; a
+dotted host reaches the `split-string' clause, which matches internally."
+  (string-match "\\`\\(foo\\)\\(bar\\)\\'" "foobar")
+  (ghostel--local-host-p "somehost.local")
+  (should (equal "bar" (match-string 2 "foobar"))))
+
 (ert-deftest ghostel-test-update-directory-windows-drive-glued-host ()
   "A drive glued onto the local authority tracks as the drive path.
 No TRAMP host is fabricated from the glued spelling."

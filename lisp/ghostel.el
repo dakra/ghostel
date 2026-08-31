@@ -646,6 +646,15 @@ Customize the faces `ghostel-fake-cursor' and
 `ghostel-fake-cursor-box' to tune the appearance."
   :type 'boolean)
 
+(defcustom ghostel-window-padding-balance 'top
+  "Where a GUI window's fractional-row leftover pixels go.
+`top' keeps them below the last row, `center' (or t) splits them top
+and bottom (like ghostty's `window-padding-balance'),
+`bottom' moves them all above the first row."
+  :type '(choice (const :tag "Top (default)" top)
+                 (const :tag "Center" center)
+                 (const :tag "Bottom" bottom)))
+
 (defcustom ghostel-initial-input-mode 'semi-char
   "Input mode a freshly started `ghostel' terminal begins in.
 One of `semi-char' (default), `char', or `line'.  `line' engages on
@@ -3798,14 +3807,15 @@ kernel hostname drifts between NAME and NAME.local with network state,
 while the function `system-name' keeps the value from Emacs startup."
   (or (null host)
       (string= host "")
-      (let ((host (if (string-suffix-p ".local" host t)
-                      (substring host 0 (- (length host) (length ".local")))
-                    host)))
-        (or (eq t (compare-strings host nil nil "localhost" nil nil t))
-            (eq t (compare-strings host nil nil (system-name) nil nil t))
-            (eq t (compare-strings
-                   host nil nil
-                   (car (split-string (system-name) "\\.")) nil nil t))))))
+      (save-match-data
+        (let ((host (if (string-suffix-p ".local" host t)
+                        (substring host 0 (- (length host) (length ".local")))
+                      host)))
+          (or (eq t (compare-strings host nil nil "localhost" nil nil t))
+              (eq t (compare-strings host nil nil (system-name) nil nil t))
+              (eq t (compare-strings
+                     host nil nil
+                     (car (split-string (system-name) "\\.")) nil nil t)))))))
 
 (defun ghostel--resolve-local-executable (program)
   "Return the absolute local executable path for PROGRAM.
@@ -4386,15 +4396,75 @@ would not, since the function predates the form.  Emacs 28 falls back to
 line-count anchoring, exact for ghostel's uniform row heights.")
 
 (defun ghostel--pixel-anchor (window target)
-  "Return (START . VSCROLL) anchoring TARGET at WINDOW's bottom.
+  "Return (START VSCROLL HEIGHT) anchoring TARGET at WINDOW's bottom.
 Ask Emacs redisplay for the exact pixel position that places TARGET at
-the bottom of WINDOW."
+the bottom of WINDOW.  HEIGHT is the pixel height of START..TARGET."
   (when-let* ((body-height (window-body-height window t))
               ((> body-height 0))
               (size (window-text-pixel-size
                      window (cons target (- body-height)) target nil nil))
               (start (nth 2 size)))
-    (cons start (max 0 (- (nth 1 size) body-height)))))
+    (list start (max 0 (- (nth 1 size) body-height)) (nth 1 size))))
+
+(defvar-local ghostel--top-pad-overlay nil
+  "Empty overlay at `point-min' whose `before-string' pads above the first row.
+See `ghostel-window-padding-balance'.")
+
+(defvar-local ghostel--top-pad 0
+  "Pixels `ghostel--top-pad-overlay' currently adds above the first row.")
+
+(defun ghostel--top-pad-set (pad)
+  "Pad PAD pixels above the first row; 0 removes the pad.
+The pad is a PAD-pixel display line: a newline in a tiny face whose
+`line-height' sets the height.  A `line-height' on the first row's own
+newline would not do: redisplay drops it when the row fills the window
+width, and the renderer rewrites that newline."
+  (unless (eql pad ghostel--top-pad)
+    (if (= pad 0)
+        (delete-overlay ghostel--top-pad-overlay)
+      (let ((ov (or ghostel--top-pad-overlay
+                    (setq ghostel--top-pad-overlay
+                          (make-overlay (point-min) (point-min))))))
+        (unless (overlay-buffer ov)
+          (move-overlay ov (point-min) (point-min)))
+        (overlay-put ov 'before-string
+                     (propertize "\n" 'face '(:inherit default :height 10)
+                                 'line-height pad))))
+    (setq ghostel--top-pad pad)))
+
+(defun ghostel--top-pad-leftover (window target anchor)
+  "Return the pixels WINDOW leaves free below TARGET, 0 unless it shows row 1.
+ANCHOR is WINDOW's `ghostel--pixel-anchor' for TARGET, measured when
+nil.  Call only with the pad cleared - see `ghostel--balance-top-pad'."
+  (pcase (or anchor (ghostel--pixel-anchor window target))
+    (`(,start ,_ ,height)
+     (if (= start (point-min))
+         (max 0 (- (window-body-height window t) height))
+       0))
+    (_ 0)))
+
+(defun ghostel--balance-top-pad (window target)
+  "Return WINDOW's pixel anchor for TARGET, its free space padded on top."
+  ;; Measure with the pad cleared: whether a measurement counts the pad
+  ;; line varies with build and geometry, and a tainted leftover feeds
+  ;; back into the next pad.
+  (ghostel--top-pad-set 0)
+  (when-let* ((anchor (ghostel--pixel-anchor window target)))
+    (when (memq ghostel-window-padding-balance '(center bottom t))
+      (let ((leftover most-positive-fixnum))
+        (dolist (w (ghostel--windows (current-buffer) t))
+          (when (display-graphic-p (window-frame w))
+            (setq leftover
+                  (min leftover
+                       (ghostel--top-pad-leftover
+                        w target (and (eq w window) anchor))))))
+        ;; A row or more means an unfilled grid, not a fractional-row gap.
+        (unless (>= leftover (default-font-height))
+          (ghostel--top-pad-set
+           (if (eq ghostel-window-padding-balance 'bottom)
+               leftover
+             (/ leftover 2))))))
+    anchor))
 
 (defun ghostel--anchor-window (&optional window force following)
   "Scroll WINDOW so that the last row is aligned to the bottom of the window.
@@ -4441,12 +4511,12 @@ mode keeps the user's point."
                                   (line-beginning-position))))
                (anchor (or (and (display-graphic-p (window-frame window))
                                 ghostel--pixel-anchor-supported-p
-                                (ghostel--pixel-anchor window target))
+                                (ghostel--balance-top-pad window target))
                            (save-excursion
                              (goto-char target)
                              (forward-line
                               (- (floor (window-screen-lines))))
-                             (cons (point) 0))))
+                             (list (point) 0))))
                (start (if (and cursor-bol (< cursor-bol (car anchor)))
                           cursor-bol
                         (car anchor)))
@@ -4455,7 +4525,7 @@ mode keeps the user's point."
                ;; boundary anyway.
                (vscroll (if (and cursor-bol (= cursor-bol start))
                             0
-                          (cdr anchor))))
+                          (nth 1 anchor))))
           (set-window-start window start)
           (ghostel--set-window-vscroll window vscroll t t)
           (set-window-point window (if (eq ghostel--input-mode 'line)
@@ -4810,7 +4880,8 @@ A mode change runs `kill-all-local-variables', wiping the buffer-locals
 the native module and PTY depend on; once the process is dead the mode
 may change freely (`ghostel-compile' finalize relies on this)."
   (when (process-live-p ghostel--process)
-    (user-error "Cannot change major mode in a live ghostel buffer")))
+    (user-error "Cannot change major mode in a live ghostel buffer"))
+  (ghostel--top-pad-set 0))
 
 ;; Like `term-mode': the buffer is not for ordinary text editing, and
 ;; `read-only-mode' must not drag in `view-mode' under `view-read-only'.
@@ -5010,6 +5081,7 @@ spawn after initialization."
           ghostel--cursor-pos nil
           ghostel--cursor-char-pos nil
           ghostel--repainted-region nil)
+    (ghostel--top-pad-set 0)
     ;; Reused buffers hold the previous session's title; drop it from
     ;; the mode line along with the buffer-local reset above.
     (ghostel--buffer-identification-update)

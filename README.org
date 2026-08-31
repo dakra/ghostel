@@ -869,6 +869,12 @@ TRAMP-aware =auth-source-pick-first-password= example.
   reader and Emacs is notified only when callbacks or redraws are needed.
 - Cursor position updates even without cell changes.
 - Theme-aware color palette (syncs with the Emacs theme via =ghostel-sync-theme=).
+- =ghostel-window-padding-balance= places the fractional-row space under
+  the grid whenever nothing precedes the first row, e.g. on the alternate
+  screen: =center= splits it between the top and the bottom (as ghostty's
+  option of the same name does), =bottom= moves it all above the grid so
+  the last row sits flush against the mode line.  =top= (the default)
+  keeps it at the bottom.
 
 ** Inline images (Kitty graphics protocol)
 :properties:
