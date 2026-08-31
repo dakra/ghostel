@@ -888,8 +888,11 @@ a second C mid-line (a mid-line C re-runs
 
 PS0 expands only when a complete command line is read, so a handler
 key (fzf style) must not produce a C; the next real command still
-emits its own."
-  :tags '(native)
+emits its own.
+
+Posix-only: `bind -x' needs readline line editing, which bash
+disables on the pipe that stands in for a PTY on Windows."
+  :tags '(native posix)
   (skip-unless (executable-find "bash"))
   (skip-unless (ghostel-test--bash-at-least-p 4 4))
   (let* ((root (or (ghostel--resource-root)
