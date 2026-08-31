@@ -32,9 +32,11 @@ builtin command stty echo 2>/dev/null
 # \H prompt escape; ${var@P} (bash 4.4+) reads it back without forking.
 # On bash <4.4 the @P transform is unavailable, so fall back to $HOSTNAME.
 if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))); then
+    __ghostel_bash44=1
     __ghostel_host=$'\\H'
     __ghostel_host=${__ghostel_host@P}
 else
+    __ghostel_bash44=""
     __ghostel_host=$HOSTNAME
 fi
 
@@ -74,23 +76,47 @@ __ghostel_prompt_start() {
     __ghostel_prompt_shown=1
 }
 
-# Emit "command output start" (C) via the DEBUG trap, and restore the
-# unmarked PS1/PS2 so the user's command (and any other DEBUG-trap
-# observers) doesn't see our markers.
-# Guards: skip until the first prompt — startup commands (this file's
-# tail, the rest of `.bashrc') fire DEBUG too, and their C would have
-# no matching D.  Skip when running inside PROMPT_COMMAND itself, and
-# skip PROMPT_COMMAND content executing at top level — hooks appended
-# to the bash-5.1+ PROMPT_COMMAND array after this file loaded (e.g.
-# systemd's osc-context profile.d script) run as separate top-level
-# commands and must not unwrap PS1 or emit 133;C.  DEBUG fires once
-# per simple command, so a compound element (`history -a; history -n')
-# is matched fragment-by-fragment, split on `;'/newline like
-# bash-preexec does.  Known limitation (shared with bash-preexec): a
-# user-typed command byte-identical to a fragment is skipped too.
-__ghostel_in_prompt_command=0
+# Restore the unmarked PS1/PS2 while they still carry our wrap, so
+# the running command doesn't see our markers.
+__ghostel_restore_prompt() {
+    if [[ -n "${__ghostel_marked_ps1+x}" && "$PS1" == "$__ghostel_marked_ps1" ]]; then
+        PS1=$__ghostel_saved_ps1
+        PS2=$__ghostel_saved_ps2
+    fi
+}
+
+# Emit "command output start" (C) and restore the prompt, for the
+# bash < 4.4 DEBUG-trap adapter.  On bash >= 4.4, C is emitted via
+# PS0 instead (see the version gate below): an interactive bash
+# expands PS0 exactly once after reading a complete command line and
+# before executing it, so a compound line (`sleep 7; false') emits a
+# single C.
 __ghostel_preexec() {
-    [[ -z "${__ghostel_prompt_shown:-}" ]] && return
+    __ghostel_restore_prompt
+    printf '\e]133;C\a'
+}
+
+# DEBUG-trap adapter for bash < 4.4 (no PS0).  DEBUG fires before
+# every simple command, so `__ghostel_preexec_armed' — set once per
+# cycle at the end of PROMPT_COMMAND — limits C to the first command
+# of each line.  Guards: skip inside PROMPT_COMMAND itself, and skip
+# hooks appended to the bash-5.1+ PROMPT_COMMAND array after this
+# file loaded (e.g. systemd's osc-context profile.d script) — they
+# run as separate top-level commands, matched fragment-by-fragment,
+# split on `;'/newline like bash-preexec does.  Known limitation
+# (shared with bash-preexec): a user-typed command byte-identical to
+# a fragment is skipped too.  Subshells inherit the trap but must not
+# emit C: their disarm cannot reach the parent shell.  A readline
+# `bind -x' handler runs through DEBUG while still at the prompt;
+# READLINE_LINE is set only during such handlers (bash 4.0+), so skip
+# them and keep the armed C for the real command.  bash 3.x has no
+# such discriminator: there a `bind -x' keypress consumes the C.
+__ghostel_preexec_armed=""
+__ghostel_in_prompt_command=0
+__ghostel_debug_preexec() {
+    [[ -z "$__ghostel_preexec_armed" ]] && return
+    [[ -n "${READLINE_LINE+x}" ]] && return
+    [[ "${BASH_SUBSHELL:-0}" != 0 ]] && return
     [[ "$__ghostel_in_prompt_command" = 1 ]] && return
     local __ghostel_frags __ghostel_f IFS=$';\n'
     read -rd '' -a __ghostel_frags <<< "${PROMPT_COMMAND[*]:-}"
@@ -99,11 +125,8 @@ __ghostel_preexec() {
         __ghostel_f="${__ghostel_f%"${__ghostel_f##*[![:space:]]}"}"
         [[ -n "$__ghostel_f" && "$BASH_COMMAND" == "$__ghostel_f" ]] && return
     done
-    if [[ -n "${__ghostel_marked_ps1+x}" && "$PS1" == "$__ghostel_marked_ps1" ]]; then
-        PS1=$__ghostel_saved_ps1
-        PS2=$__ghostel_saved_ps2
-    fi
-    printf '\e]133;C\a'
+    __ghostel_preexec_armed=""
+    __ghostel_preexec
 }
 
 # Wrap PS1/PS2 with the inline markers and emit 133;A separately.
@@ -117,10 +140,7 @@ __ghostel_wrapped_prompt_command() {
     __ghostel_in_prompt_command=1
     __ghostel_last_status=$__ghostel_status
 
-    if [[ -n "${__ghostel_marked_ps1+x}" && "$PS1" == "$__ghostel_marked_ps1" ]]; then
-        PS1=$__ghostel_saved_ps1
-        PS2=$__ghostel_saved_ps2
-    fi
+    __ghostel_restore_prompt
 
     __ghostel_prompt_start
 
@@ -140,25 +160,31 @@ __ghostel_wrapped_prompt_command() {
     __ghostel_osc7
 
     local __ghostel_p_initial='\[\e]133;P;k=i\a\]'
-    if [[ "$PS1" != *"$__ghostel_p_initial"* ]]; then
-        __ghostel_saved_ps1=$PS1
-        __ghostel_saved_ps2=$PS2
-        local __ghostel_p_secondary='\[\e]133;P;k=s\a\]'
-        local __ghostel_b='\[\e]133;B\a\]'
-        PS1="${__ghostel_p_initial}${PS1}${__ghostel_b}"
-        # Inject 133;P;k=s after the bash `\n' PS1 escape so each
-        # continuation row of a multiline prompt is tagged.  Skip
-        # literal newlines ($'\n') — they may live inside $(...)
-        # command substitutions where escape sequences would break
-        # syntax.
-        if [[ "$PS1" == *"\n"* ]]; then
-            PS1="${PS1//\\n/\\n${__ghostel_p_secondary}}"
-        fi
-        # PS2 (continuation): k=s + B.
-        PS2="${__ghostel_p_secondary}${PS2}${__ghostel_b}"
-        __ghostel_marked_ps1=$PS1
-        __ghostel_marked_ps2=$PS2
+    local __ghostel_p_secondary='\[\e]133;P;k=s\a\]'
+    local __ghostel_b='\[\e]133;B\a\]'
+    # PS1 may still carry a previous cycle's wrap — e.g.
+    # `source venv/bin/activate' prepends to the marked PS1 when the
+    # pre-command restore was skipped (bash < 5.3).  Strip embedded
+    # markers so the wrap below re-anchors at the prompt start.
+    PS1=${PS1//"$__ghostel_p_initial"/}
+    PS1=${PS1//"$__ghostel_p_secondary"/}
+    PS1=${PS1//"$__ghostel_b"/}
+    PS2=${PS2//"$__ghostel_p_secondary"/}
+    PS2=${PS2//"$__ghostel_b"/}
+    __ghostel_saved_ps1=$PS1
+    __ghostel_saved_ps2=$PS2
+    PS1="${__ghostel_p_initial}${PS1}${__ghostel_b}"
+    # Inject 133;P;k=s after the bash `\n' PS1 escape so each
+    # continuation row of a multiline prompt is tagged.  Skip
+    # literal newlines ($'\n') — they may live inside $(...)
+    # command substitutions where escape sequences would break
+    # syntax.
+    if [[ "$PS1" == *"\n"* ]]; then
+        PS1="${PS1//\\n/\\n${__ghostel_p_secondary}}"
     fi
+    # PS2 (continuation): k=s + B.
+    PS2="${__ghostel_p_secondary}${PS2}${__ghostel_b}"
+    __ghostel_marked_ps1=$PS1
 
     # Emit 133;A once per cycle (with cl=line for click-events and
     # redraw=last so libghostty knows the prompt-redraw boundary).
@@ -166,6 +192,27 @@ __ghostel_wrapped_prompt_command() {
     printf '\e]133;A;redraw=last;cl=line;aid=%s\a' "${BASHPID:-}"
 
     __ghostel_in_prompt_command=0
+
+    # Append the C hook to PS0 (self-healing if something overwrote
+    # PS0), or arm the DEBUG-trap adapter on bash < 4.4.  The restore
+    # funsub rides along only while `promptvars' is on: with it off,
+    # bash still decodes PS0 backslash escapes but prints the
+    # `${ ...; }' text literally before every command.
+    if [[ -z "$__ghostel_preexec_ps0" ]]; then
+        __ghostel_preexec_armed=1
+    else
+        local __ghostel_ps0_hook=$__ghostel_preexec_ps0
+        if [[ -n "$__ghostel_preexec_funsub" ]] && shopt -q promptvars; then
+            __ghostel_ps0_hook+=$__ghostel_preexec_funsub
+        fi
+        if [[ "$__ghostel_ps0_hook" != "${__ghostel_installed_ps0:-}" ||
+                  "${PS0:-}" != *"$__ghostel_ps0_hook"* ]]; then
+            [[ -n "${__ghostel_installed_ps0:-}" ]] &&
+                PS0=${PS0//"$__ghostel_installed_ps0"/}
+            PS0=${PS0:-}$__ghostel_ps0_hook
+            __ghostel_installed_ps0=$__ghostel_ps0_hook
+        fi
+    fi
 }
 
 # Restore $? for a hook about to run: `return N' makes N the visible
@@ -182,7 +229,27 @@ __ghostel_original_prompt_commands=()
 builtin unset PROMPT_COMMAND
 PROMPT_COMMAND="__ghostel_wrapped_prompt_command"
 
-trap '__ghostel_preexec' DEBUG
+if [[ -n $__ghostel_bash44 ]]; then
+    # C as literal prompt text: PS0 backslash escapes are decoded
+    # even with `promptvars' off, and a literal needs no per-command
+    # fork.
+    __ghostel_preexec_ps0='\e]133;C\a'
+    __ghostel_preexec_funsub=""
+    if ((BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 3))); then
+        # Function substitution (bash 5.3+) runs in the current
+        # shell, so the pre-command prompt restore takes effect.  On
+        # older bash the restore is skipped: the running command sees
+        # the marked PS1, and the next prompt cycle strips the
+        # markers back out.  Joined onto PS0 per prompt cycle while
+        # `promptvars' is on (see `__ghostel_wrapped_prompt_command').
+        __ghostel_preexec_funsub='${ __ghostel_restore_prompt; }'
+    fi
+else
+    __ghostel_preexec_ps0=""
+    __ghostel_preexec_funsub=""
+    trap '__ghostel_debug_preexec' DEBUG
+fi
+__ghostel_installed_ps0=""
 
 # Outbound `ssh' wrapper.  Activated when the elisp side sets
 # `ghostel-ssh-install-terminfo' (which exports

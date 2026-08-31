@@ -173,7 +173,7 @@ can fire (standard `with-demoted-errors' semantics)."
 Each function is called with one argument: the buffer.
 
 Requires shell integration; this fires from the shell's
-preexec/DEBUG hook just before the user's command runs.  Useful
+preexec hook just before the user's command runs.  Useful
 for distinguishing a real command's lifecycle from prompt
 redraws (which emit D markers without a preceding C).
 

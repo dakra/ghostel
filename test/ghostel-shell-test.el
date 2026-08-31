@@ -584,6 +584,66 @@ output must be ours, not the competing one."
       ;; stores whichever fires last per cycle.
       (should-not (string-match-p "competing-host" (car (last osc7s)))))))
 
+(defun ghostel-shell-test--count-occurrences (needle s)
+  "Count non-overlapping occurrences of NEEDLE in S."
+  (let ((n 0) (start 0))
+    (while (setq start (string-search needle s start))
+      (setq n (1+ n) start (+ start (length needle))))
+    n))
+
+(defconst ghostel-shell-test--force-debug-probe
+  " __ghostel_preexec_ps0=''; trap '__ghostel_debug_preexec' DEBUG;"
+  "Probe fragment forcing the bash<4.4 shell-integration setup.
+Installs what the version gate in ghostel.bash selects on old bash:
+no PS0 hook, DEBUG-trap adapter.")
+
+(defun ghostel-shell-test--interactive-bash (lines)
+  "Feed LINES one at a time to an interactive bash on a PTY.
+The first line must source ghostel.bash: each line is sent only
+after the previous one's prompt cycle emitted its 133;A, so PS0
+expansion is attributable per line.  An entry of the form
+\(:raw . STRING) is sent verbatim - no newline, no prompt-cycle
+wait - for keystrokes like a `bind -x' key.  A final `exit' is
+appended (it adds one 133;C of its own, like any typed line).
+Return all output.  ghostel.bash re-enables PTY echo, so typed
+lines after the sourcing line are echoed into the output."
+  (let* ((buf (generate-new-buffer " *ghostel-bash-interactive*"))
+         (process-environment
+          (append '("INSIDE_EMACS=ghostel" "TERM=dumb" "HISTFILE=/dev/null")
+                  process-environment))
+         (proc (make-process
+                :name "ghostel-test-bash-interactive" :buffer buf
+                :command '("bash" "--noprofile" "--norc" "-i")
+                :connection-type 'pty))
+         (cycles 0))
+    (unwind-protect
+        (progn
+          (set-process-window-size proc 48 200)
+          (dolist (line lines)
+            (if (eq (car-safe line) :raw)
+                (process-send-string proc (cdr line))
+              (process-send-string proc (concat line "\n"))
+              (setq cycles (1+ cycles))
+              (ghostel-test--wait-for
+               proc (lambda ()
+                      (with-current-buffer buf
+                        (>= (ghostel-shell-test--count-occurrences
+                             "\e]133;A" (buffer-string))
+                            cycles))))))
+          (process-send-string proc "exit\n")
+          (ghostel-test--wait-for
+           proc (lambda () (not (process-live-p proc))) 10)
+          ;; The exit is visible via `process-live-p' before the last
+          ;; PTY chunk (echoed `exit' plus its PS0 output) reaches the
+          ;; buffer; drain until the buffer stops growing.
+          (let ((prev -1))
+            (while (/= prev (buffer-size buf))
+              (setq prev (buffer-size buf))
+              (accept-process-output nil 0.1)))
+          (with-current-buffer buf (buffer-string)))
+      (when (process-live-p proc) (delete-process proc))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-bash-prompt-command-array-captured ()
   "Array PROMPT_COMMAND (systemd osc-context style) is captured whole.
 
@@ -640,16 +700,17 @@ emitting 133;A."
         (should-not (string-match-p "\e\\]133;C" (substring output a-pos)))))))
 
 (ert-deftest ghostel-test-bash-prompt-command-array-sibling-hook-harmless ()
-  "A hook appended to the PROMPT_COMMAND array after load is harmless.
+  "A PROMPT_COMMAND array sibling is harmless on the DEBUG-trap path.
 
 When something appends to the bash-5.1+ PROMPT_COMMAND array after
 ghostel.bash loaded (manual setup sourcing ghostel.bash before
 profile.d, `direnv hook bash', ...), the sibling element executes at
-top level each prompt cycle.  The DEBUG trap must not treat it as a
-user command: no 133;C after 133;A, and PS1 keeps its 133;P/B wrap
-\(issue #540).  The element is compound (two commands joined by `;')
-because DEBUG fires once per simple command - the guard must match
-each fragment, not just whole elements."
+top level each prompt cycle.  The bash<4.4 DEBUG-trap adapter
+\(forced here on modern bash) must not treat it as a user command:
+no 133;C after 133;A, no disarm, and PS1 keeps its 133;P/B wrap.
+The element is compound (two commands joined by `;') because DEBUG
+fires once per simple command - the guard must match each fragment,
+not just whole elements."
   :tags '(native)
   (skip-unless (executable-find "bash"))
   (skip-unless (ghostel-test--bash-at-least-p 5 1))
@@ -669,12 +730,16 @@ each fragment, not just whole elements."
              " fake_hist_hook() { :; };"
              (format " source %s;" shell-bash)
              " PS1='$ '; PS2='> ';"
+             ghostel-shell-test--force-debug-probe
              " PROMPT_COMMAND+=('fake_hist_hook; fake_sd_hook');"
              ;; Simulate one prompt cycle the way bash runs an array:
              ;; DEBUG fires once per simple command of each element.
              " __ghostel_wrapped_prompt_command;"
              " fake_hist_hook;"
-             " fake_sd_hook"))
+             " fake_sd_hook;"
+             ;; The guard must leave the cycle armed: the next user
+             ;; command still emits its C.
+             " : user-cmd-after-sibling"))
            (process-environment
             (append '("INSIDE_EMACS=ghostel") process-environment))
            (output (with-temp-buffer
@@ -684,18 +749,144 @@ each fragment, not just whole elements."
       ;; The sibling saw the marked PS1 - the DEBUG trap didn't unwrap.
       (should (string-match-p "SIBLINGWRAPPED" output))
       (should-not (string-match-p "SIBLINGUNWRAPPED" output))
-      ;; No 133;C between 133;A and the sibling's output.
-      (let ((a-pos (string-match "\e\\]133;A" output)))
-        (should a-pos)
-        (should-not (string-match-p "\e\\]133;C" (substring output a-pos)))))))
+      ;; No 133;C between 133;A and the sibling's output; the guarded
+      ;; cycle stays armed, so the trailing user command emits one C.
+      (let ((a-pos (string-match "\e\\]133;A" output))
+            (sd-pos (string-match "\e\\]3008;SD" output)))
+        (should (and a-pos sd-pos))
+        (should-not (string-match-p "\e\\]133;C"
+                                    (substring output a-pos sd-pos)))
+        (should (= 1 (ghostel-shell-test--count-occurrences
+                      "\e]133;C" (substring output sd-pos))))))))
 
 (ert-deftest ghostel-test-bash-no-osc133c-before-first-prompt ()
-  "Startup commands after ghostel.bash loads must not emit 133;C.
+  "Startup commands on the sourcing line must not emit 133;C.
 
-DEBUG fires for every top-level command once the trap is installed; a
-startup C has no matching D (the first prompt skips it), leaving
+The C hook reaches PS0 only when the first prompt cycle installs it;
+a startup C would have no matching D, leaving
 `ghostel--command-running' stuck at an idle first prompt.  C must
-still fire normally after the first prompt."
+still fire for the first line typed after the first prompt."
+  :tags '(native)
+  (skip-unless (executable-find "bash"))
+  (skip-unless (ghostel-test--bash-at-least-p 4 4))
+  (let* ((root (or (ghostel--resource-root)
+                   (file-name-directory (locate-library "ghostel"))))
+         (shell-bash (expand-file-name "etc/shell/ghostel.bash" root)))
+    (skip-unless (file-exists-p shell-bash))
+    (let* ((output (ghostel-shell-test--interactive-bash
+                    (list (format "source %s; : startup-top-level-cmd"
+                                  shell-bash)
+                          ": simulated-user-cmd")))
+           (a-pos (string-match "\e\\]133;A" output)))
+      (should a-pos)
+      ;; Nothing before the first prompt emits C.
+      (should-not (string-match-p "\e\\]133;C" (substring output 0 a-pos)))
+      ;; The first typed line after the first prompt emits C, and D
+      ;; closes the cycle.
+      (should (string-match-p "\e\\]133;C" (substring output a-pos)))
+      (should (string-match-p "\e\\]133;D;0" (substring output a-pos))))))
+
+(ert-deftest ghostel-test-bash-compound-line-single-osc133c ()
+  "A compound input line emits exactly one 133;C.
+
+PS0 is expanded once per accepted line, so `: a; : b' must not emit
+a second C mid-line (a mid-line C re-runs
+`ghostel-command-start-functions', resetting per-command state).
+133;D carries each line's final status."
+  :tags '(native)
+  (skip-unless (executable-find "bash"))
+  (skip-unless (ghostel-test--bash-at-least-p 4 4))
+  (let* ((root (or (ghostel--resource-root)
+                   (file-name-directory (locate-library "ghostel"))))
+         (shell-bash (expand-file-name "etc/shell/ghostel.bash" root)))
+    (skip-unless (file-exists-p shell-bash))
+    (let ((output (ghostel-shell-test--interactive-bash
+                   (list (format "source %s" shell-bash)
+                         ": a; : b"
+                         "echo \"l1\nl2\""
+                         ": | cat; false"
+                         "   "))))
+      ;; One C per submitted command: the compound line, the
+      ;; PS2-continued two-physical-line command, the pipeline, and
+      ;; the helper's final `exit'.  The sourcing line and the
+      ;; whitespace-only line emit none.
+      (should (= 4 (ghostel-shell-test--count-occurrences
+                    "\e]133;C" output)))
+      ;; D after each line reports its final command's status.
+      (should (string-match-p "\e\\]133;D;0" output))
+      (should (string-match-p "\e\\]133;D;1" output)))))
+
+(ert-deftest ghostel-test-bash-bind-x-emits-no-osc133c ()
+  "A `bind -x' keystroke at the prompt emits no C on the PS0 path.
+
+PS0 expands only when a complete command line is read, so a handler
+key (fzf style) must not produce a C; the next real command still
+emits its own."
+  :tags '(native)
+  (skip-unless (executable-find "bash"))
+  (skip-unless (ghostel-test--bash-at-least-p 4 4))
+  (let* ((root (or (ghostel--resource-root)
+                   (file-name-directory (locate-library "ghostel"))))
+         (shell-bash (expand-file-name "etc/shell/ghostel.bash" root)))
+    (skip-unless (file-exists-p shell-bash))
+    (let ((output (ghostel-shell-test--interactive-bash
+                   (list (format "source %s" shell-bash)
+                         "bind -x '\"\\C-t\": echo BOUND-RAN'"
+                         (cons :raw "\C-t")
+                         ": after"))))
+      (should (string-match-p "BOUND-RAN" output))
+      ;; bind line, ": after", and the helper's exit - not the keypress.
+      (should (= 3 (ghostel-shell-test--count-occurrences
+                    "\e]133;C" output))))))
+
+(ert-deftest ghostel-test-bash-user-ps0-preserved ()
+  "The PS0 C-hook install keeps user PS0 content across self-heals.
+
+The hook is appended to an existing PS0, and the promptvars-off
+self-heal strips only the previously installed hook variant, never
+the user's text."
+  :tags '(native)
+  (skip-unless (executable-find "bash"))
+  (skip-unless (ghostel-test--bash-at-least-p 4 4))
+  (let* ((root (or (ghostel--resource-root)
+                   (file-name-directory (locate-library "ghostel"))))
+         (shell-bash (expand-file-name "etc/shell/ghostel.bash" root)))
+    (skip-unless (file-exists-p shell-bash))
+    (let* ((probe
+            (concat
+             (format "source %s;" shell-bash)
+             " PS1='$ '; PS2='> ';"
+             " PS0='USERPS0 ';"
+             " __ghostel_wrapped_prompt_command >/dev/null;"
+             " __ghostel_wrapped_prompt_command >/dev/null;"
+             " shopt -u promptvars;"
+             " __ghostel_wrapped_prompt_command >/dev/null;"
+             " printf '<PS0>%s</PS0>' \"$PS0\""))
+           (process-environment
+            (append '("INSIDE_EMACS=ghostel") process-environment))
+           (output (with-temp-buffer
+                     (call-process "bash" nil (current-buffer) nil
+                                   "--noprofile" "--norc" "-c" probe)
+                     (buffer-string))))
+      (should (string-match "<PS0>\\(\\(?:.\\|\\n\\)*\\)</PS0>" output))
+      (let ((ps0 (match-string 1 output)))
+        ;; User text intact, at the front, exactly once.
+        (should (string-prefix-p "USERPS0 " ps0))
+        (should (= 1 (ghostel-shell-test--count-occurrences "USERPS0" ps0)))
+        ;; The literal C hook installed exactly once; the restore
+        ;; funsub stripped by the promptvars-off self-heal.
+        (should (= 1 (ghostel-shell-test--count-occurrences
+                      "\\e]133;C\\a" ps0)))
+        (should-not (string-search "__ghostel_restore_prompt" ps0))))))
+
+(ert-deftest ghostel-test-bash-debug-trap-fallback-single-osc133c ()
+  "The bash<4.4 DEBUG-trap adapter emits one C per prompt cycle.
+
+Forced on modern bash by installing the configuration the version
+gate selects on bash < 4.4.  DEBUG fires once per simple command, so
+only the first command after arming may emit C; under functrace a
+subshell command must emit none (its disarm cannot reach the parent
+shell) while the next top-level command still emits its own."
   :tags '(native)
   (skip-unless (executable-find "bash"))
   (let* ((root (or (ghostel--resource-root)
@@ -706,25 +897,39 @@ still fire normally after the first prompt."
             (concat
              (format "source %s;" shell-bash)
              " PS1='$ '; PS2='> ';"
-             ;; Simulates `.bashrc' content after the source line.
-             " : startup-top-level-cmd;"
+             ghostel-shell-test--force-debug-probe
+             ;; functrace propagates DEBUG into subshells; enabled
+             ;; while disarmed so it cannot consume a C itself.
+             " builtin set -o functrace;"
              " __ghostel_wrapped_prompt_command;"
-             ;; First command after the first prompt: C must fire.
-             " : simulated-user-cmd;"
-             " __ghostel_wrapped_prompt_command"))
+             ;; Armed: one C for the first simple command only.
+             " : a; : b;"
+             " __ghostel_wrapped_prompt_command;"
+             ;; Re-armed; the subshell's commands must not emit C or
+             ;; disarm (their disarm cannot reach the parent) ...
+             " (: sub1; : sub2);"
+             ;; ... so the next top-level command still emits its C.
+             " : c"))
            (process-environment
             (append '("INSIDE_EMACS=ghostel") process-environment))
            (output (with-temp-buffer
                      (call-process "bash" nil (current-buffer) nil
                                    "--noprofile" "--norc" "-c" probe)
-                     (buffer-string)))
-           (a-pos (string-match "\e\\]133;A" output)))
-      (should a-pos)
-      ;; Nothing before the first prompt emits C.
-      (should-not (string-match-p "\e\\]133;C" (substring output 0 a-pos)))
-      ;; The post-prompt command still emits C, and D closes the cycle.
-      (should (string-match-p "\e\\]133;C" (substring output a-pos)))
-      (should (string-match-p "\e\\]133;D;0" (substring output a-pos))))))
+                     (buffer-string))))
+      (should (= 2 (ghostel-shell-test--count-occurrences
+                    "\e]133;C" output)))
+      (let* ((a1 (string-match "\e\\]133;A" output))
+             (d0 (and a1 (string-match "\e\\]133;D;0" output a1)))
+             (a2 (and d0 (string-match "\e\\]133;A" output d0))))
+        (should (and a1 d0 a2))
+        ;; Nothing before the first prompt emits C.
+        (should-not (string-match-p "\e\\]133;C" (substring output 0 a1)))
+        ;; First cycle: `: a' emits the C, `: b''s status closes it.
+        (should (= 1 (ghostel-shell-test--count-occurrences
+                      "\e]133;C" (substring output a1 d0))))
+        ;; Second cycle: only `: c' emits a C.
+        (should (= 1 (ghostel-shell-test--count-occurrences
+                      "\e]133;C" (substring output a2))))))))
 
 (ert-deftest ghostel-test-zsh-osc7-wins-race-vs-precmd ()
   "Zsh `__ghostel_osc7' must run last among precmd_functions emitters.
