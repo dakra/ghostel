@@ -209,6 +209,73 @@ newest-first list aligns with the buffer-order regions."
                                       (match-string 1 output))))
       (delete-directory fish-home t))))
 
+(ert-deftest ghostel-test-fish-osc133-handlers-track-native-marking ()
+  "Fish OSC 133 handlers are defined exactly when native marking is off.
+
+fish 4.0+ with the `mark-prompt' feature flag emits the markers
+natively; ghostel handlers on top would double every A/C/D.  With
+native marking off (fish < 4, or `no-mark-prompt' in fish_features)
+the handlers must load.  The rest of the integration (OSC 7,
+`ghostel_cmd') loads either way."
+  :tags '(:fish)
+  (skip-unless (executable-find "fish"))
+  (let* ((root (or (ghostel--resource-root)
+                   (file-name-directory (locate-library "ghostel"))))
+         (shell-fish (expand-file-name "etc/shell/ghostel.fish" root)))
+    (skip-unless (file-exists-p shell-fish))
+    (let ((probe
+           (concat
+            (format "source %s\n" shell-fish)
+            "status test-feature mark-prompt 2>/dev/null;"
+            " and echo native=on; or echo native=off\n"
+            "functions -q __ghostel_mark_prompt_start; and echo markers=yes; or echo markers=no\n"
+            "functions -q __ghostel_osc7; and echo osc7=yes; or echo osc7=no\n"
+            "functions -q ghostel_cmd; and echo cmd=yes; or echo cmd=no\n")))
+      ;; Default features: handlers iff fish does not mark natively.
+      (let ((output (with-temp-buffer
+                      (call-process "fish" nil (current-buffer) nil
+                                    "--no-config" "-c" probe)
+                      (buffer-string))))
+        (should (string-match-p "^osc7=yes$" output))
+        (should (string-match-p "^cmd=yes$" output))
+        (should (string-match-p (if (string-match-p "^native=on$" output)
+                                    "^markers=no$" "^markers=yes$")
+                                output)))
+      ;; Native marking disabled (unknown flags are ignored on fish
+      ;; without it): the handlers must load.
+      (let ((output (with-temp-buffer
+                      (call-process "fish" nil (current-buffer) nil
+                                    "--no-config" "--features" "no-mark-prompt"
+                                    "-c" probe)
+                      (buffer-string))))
+        (should (string-match-p "^markers=yes$" output)))
+      ;; Handler lifecycle, driven by emitted events: one D per
+      ;; completed command, a synthetic D only for a C whose command
+      ;; never reached fish_postexec (e.g. cancelled), no D on the
+      ;; first or on idle prompts.
+      (let* ((probe
+              (concat
+               (format "source %s\n" shell-fish)
+               "emit fish_prompt\n"          ; A (no first-prompt D)
+               "emit fish_preexec true\n"    ; C
+               "emit fish_postexec true\n"   ; D;0
+               "emit fish_prompt\n"          ; A (no duplicate D)
+               "emit fish_prompt\n"          ; A (idle prompt: no D)
+               "emit fish_preexec sleep\n"   ; C
+               "emit fish_prompt\n"))        ; D (close cancelled C) + A
+             (output (with-temp-buffer
+                       (call-process "fish" nil (current-buffer) nil
+                                     "--no-config" "--features"
+                                     "no-mark-prompt" "-c" probe)
+                       (buffer-string)))
+             (markers nil)
+             (start 0))
+        (while (string-match "\e]133;\\([^\a\e]*\\)\a" output start)
+          (push (match-string 1 output) markers)
+          (setq start (match-end 0)))
+        (should (equal (nreverse markers)
+                       '("A" "C" "D;0" "A" "A" "C" "D" "A")))))))
+
 (ert-deftest ghostel-test-nu-auto-inject-loads-integration ()
   "Nushell auto-inject shim chains to ghostel.nu and cleans XDG_DATA_DIRS.
 The shim is vendor-autoloaded via XDG_DATA_DIRS; it locates ghostel.nu

@@ -26,58 +26,50 @@ end
 
 # --- Semantic prompt markers (OSC 133) ---
 #
-# Mirrors ghostty's fish integration:
+# fish 4.0+ with the `mark-prompt' feature flag enabled (the
+# default) emits OSC 133 natively (A/C/D; B since 4.3; C carries the
+# URL-encoded command line) — defining handlers there would double
+# every marker.  The handlers below cover the rest: fish < 4 (the
+# flag is unknown there) and fish 4+ with native marking disabled
+# (`set -Ua fish_features no-mark-prompt').
+#
+# The handlers mirror ghostty's:
 #   - 133;A on `fish_prompt' (start of prompt).
 #   - 133;C on `fish_preexec' (start of command output).
 #   - 133;D on `fish_postexec' (end of command).
 #
-# Note: ghostty does NOT emit 133;B in fish — fish has no "after
-# fish_prompt" event, and ghostty does without it.  Cells from 133;A
-# to 133;C carry the `prompt' semantic state in libghostty, which the
-# link-skip logic treats the same as `input' for skip purposes.
+# Note: no 133;B — fish has no "after fish_prompt" event, and ghostty
+# does without it.  Cells from 133;A to 133;C carry the `prompt'
+# semantic state in libghostty, which the link-skip logic treats the
+# same as `input' for skip purposes.
+if not status test-feature mark-prompt 2>/dev/null
+    set -g __ghostel_prompt_state ""
 
-# Detect fish version for the 133;A `click_events' parameter (fish
-# 4.1+ supports it).
-set -l __ghostel_fish_major 0
-set -l __ghostel_fish_minor 0
-if set -q version[1]
-    set -l __ghostel_v (string match -r '(\d+)\.(\d+)' -- $version[1])
-    if set -q __ghostel_v[2]; and test -n "$__ghostel_v[2]"
-        set __ghostel_fish_major "$__ghostel_v[2]"
+    # Emit "command finished" (D) for the previous command, then
+    # "prompt start" (A) for the new prompt.
+    function __ghostel_mark_prompt_start --on-event fish_prompt --on-event fish_posterror
+        # Close a section whose command never reached fish_postexec
+        # (e.g. cancelled): C was emitted but its D was not.  A wider
+        # guard would re-emit D after every normal command, firing
+        # `ghostel-command-finish-functions' twice per cycle.
+        if test "$__ghostel_prompt_state" = "pre-exec"
+            printf '\e]133;D\a'
+        end
+        set -g __ghostel_prompt_state prompt-start
+        printf '\e]133;A\a'
     end
-    if set -q __ghostel_v[3]; and test -n "$__ghostel_v[3]"
-        set __ghostel_fish_minor "$__ghostel_v[3]"
+
+    # Emit "command output start" (C) before command runs.
+    function __ghostel_mark_output_start --on-event fish_preexec
+        set -g __ghostel_prompt_state pre-exec
+        printf '\e]133;C\a'
     end
-end
-set -g __ghostel_prompt_start_mark "\e]133;A\a"
-if test "$__ghostel_fish_major" -gt 4; or test "$__ghostel_fish_major" -eq 4 -a "$__ghostel_fish_minor" -ge 1
-    set -g __ghostel_prompt_start_mark "\e]133;A;click_events=1\a"
-end
 
-set -g __ghostel_prompt_state ""
-
-# Emit "command finished" (D) for the previous command, then "prompt
-# start" (A) for the new prompt.
-function __ghostel_mark_prompt_start --on-event fish_prompt --on-event fish_posterror
-    # If we never got the fish_postexec event (e.g. fish_posterror
-    # without postexec), close the prior section now.
-    if test "$__ghostel_prompt_state" != "prompt-start"
-        printf '\e]133;D\a'
+    # Emit "command finished" (D) with exit status after command runs.
+    function __ghostel_mark_output_end --on-event fish_postexec
+        set -g __ghostel_prompt_state post-exec
+        printf '\e]133;D;%s\a' $status
     end
-    set -g __ghostel_prompt_state prompt-start
-    printf "$__ghostel_prompt_start_mark"
-end
-
-# Emit "command output start" (C) before command runs.
-function __ghostel_mark_output_start --on-event fish_preexec
-    set -g __ghostel_prompt_state pre-exec
-    printf '\e]133;C\a'
-end
-
-# Emit "command finished" (D) with exit status after command runs.
-function __ghostel_mark_output_end --on-event fish_postexec
-    set -g __ghostel_prompt_state post-exec
-    printf '\e]133;D;%s\a' $status
 end
 
 # Outbound `ssh' wrapper.  See etc/ghostel.bash for the full design
