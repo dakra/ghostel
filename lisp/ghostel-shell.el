@@ -36,6 +36,7 @@
 (declare-function ghostel--ensure-ghostel-buffer "ghostel")
 (declare-function ghostel--enter-readonly-input-mode "ghostel")
 (declare-function ghostel--resource-root "ghostel-module-install")
+(declare-function ghostel--run-hook-safely "ghostel")
 (declare-function ghostel--ssh-install-enabled-p "ghostel")
 (declare-function ghostel--terminfo-directory "ghostel")
 (defvar ghostel-prompt-navigation-input-mode)
@@ -574,19 +575,6 @@ not here.  This handler only tracks prompt positions and exit status."
        (ghostel--run-hook-safely 'ghostel-command-finish-functions
                                  (current-buffer) exit))
      (setq ghostel--command-running nil))))
-
-(defun ghostel--run-hook-safely (hook &rest args)
-  "Run HOOK with ARGS, isolating errors per handler.
-Each handler is wrapped in `with-demoted-errors' so a raising
-handler logs and the remaining hooks still run.  As with the rest
-of Emacs, `with-demoted-errors' re-signals when `debug-on-error'
-is non-nil so the debugger fires for hook authors who want it."
-  (run-hook-wrapped
-   hook
-   (lambda (fn)
-     (with-demoted-errors "ghostel: error in hook: %S"
-       (apply fn args))
-     nil)))
 
 (defun ghostel--prompt-input-start ()
   "From the start of a `ghostel-prompt' region, move past the prefix.

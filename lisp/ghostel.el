@@ -1023,6 +1023,27 @@ The spinner object itself lives in spinner.el's buffer-local
 something to gate teardown on.")
 
 
+;;; Internal helpers
+
+(defun ghostel--ensure-ghostel-buffer ()
+  "Signal a `user-error' unless the current buffer is a ghostel buffer."
+  (unless (derived-mode-p 'ghostel-mode)
+    (user-error "Must be called from a ghostel buffer")))
+
+(defun ghostel--run-hook-safely (hook &rest args)
+  "Run HOOK with ARGS, isolating errors per handler.
+Each handler is wrapped in `with-demoted-errors' so a raising
+handler logs and the remaining hooks still run.  As with the rest
+of Emacs, `with-demoted-errors' re-signals when `debug-on-error'
+is non-nil so the debugger fires for hook authors who want it."
+  (run-hook-wrapped
+   hook
+   (lambda (fn)
+     (with-demoted-errors "ghostel: error in hook: %S"
+       (apply fn args))
+     nil)))
+
+
 ;;; Scroll intercept via emulation-mode-map-alists
 ;;
 ;; We need highest-priority interception of wheel events so that terminal
@@ -1688,11 +1709,6 @@ dead terminals and compile-style buffers."
 
 ;;; Public input API
 
-(defun ghostel--ensure-ghostel-buffer ()
-  "Signal a `user-error' unless the current buffer is a ghostel buffer."
-  (unless (derived-mode-p 'ghostel-mode)
-    (user-error "Must be called from a ghostel buffer")))
-
 (defun ghostel-send-string (string)
   "Send STRING to the terminal process in the current ghostel buffer.
 Signals a `user-error' when called outside a ghostel buffer.  STRING
@@ -1726,7 +1742,7 @@ paste rather than character-by-character typed keystrokes."
   (ghostel--on-user-input)
   (ghostel--paste-text string))
 
-
+
 ;;; Terminal control commands (C-c prefix)
 
 (defun ghostel-send-C-c ()
@@ -1942,40 +1958,6 @@ into the terminal shown in the event's window."
     ;; Send form-feed to the shell so it redraws its prompt.
     (ghostel--write-pty ghostel--term "\f")))
 
-(defun ghostel--forward-scroll-event (event button)
-  "Try to forward a scroll EVENT as mouse BUTTON to the terminal.
-Return non-nil if the event was encoded and sent."
-  (when (and event (ghostel--terminal-input-mode-p))
-    (let* ((posn (event-start event))
-           (col-row (posn-col-row posn))
-           (col (car col-row))
-           (row (cdr col-row)))
-      (ghostel--mouse-event ghostel--term
-                            0  ; press
-                            button
-                            row col
-                            (ghostel--mouse-mods event)))))
-
-(defun ghostel-readonly-end-of-buffer ()
-  "Move to the bottom of the buffer (current viewport) in read-only mode."
-  (interactive)
-  (goto-char (point-max))
-  (skip-chars-backward " \t\n")
-  (when (and ghostel--cursor-char-pos
-             (<= ghostel--cursor-char-pos (point-max))
-             (> ghostel--cursor-char-pos (point)))
-    (goto-char ghostel--cursor-char-pos)))
-
-;; Let isearch treat this as the buffer-end motion command.
-(put 'ghostel-readonly-end-of-buffer 'isearch-motion
-     (cons (lambda () (goto-char (point-max)) (recenter -1 t)) 'backward))
-
-(defun ghostel-readonly-end-of-line ()
-  "Move to the last non-whitespace character on the line."
-  (interactive)
-  (end-of-line)
-  (skip-chars-backward " \t"))
-
 
 ;;; Mouse input
 
@@ -2029,6 +2011,20 @@ running program receives a live motion stream during the drag.")
     (when (memq 'control mods) (setq result (logior result 4)))
     (when (memq 'meta mods) (setq result (logior result 2)))
     result))
+
+(defun ghostel--forward-scroll-event (event button)
+  "Try to forward a scroll EVENT as mouse BUTTON to the terminal.
+Return non-nil if the event was encoded and sent."
+  (when (and event (ghostel--terminal-input-mode-p))
+    (let* ((posn (event-start event))
+           (col-row (posn-col-row posn))
+           (col (car col-row))
+           (row (cdr col-row)))
+      (ghostel--mouse-event ghostel--term
+                            0  ; press
+                            button
+                            row col
+                            (ghostel--mouse-mods event)))))
 
 (defun ghostel--mouse-press (event)
   "Handle mouse button press EVENT for terminal mouse tracking.
@@ -2620,13 +2616,6 @@ command set the region, so the selection survives the switch."
              (not ghostel--inhibit-insert-forwarding))
     (ghostel--enter-readonly-input-mode ghostel-mark-activation-input-mode)))
 
-(defun ghostel--pos-on-cursor-p (pos)
-  "Non-nil if POS rides the live terminal cursor: on it, or at `point-max'.
-Positions between the cursor and `point-max' do not count."
-  (and ghostel--cursor-char-pos
-       (or (= pos ghostel--cursor-char-pos)
-           (= pos (point-max)))))
-
 (defun ghostel-maybe-leave-input (&rest _)
   "Leave semi-char for `ghostel-point-leave-input-mode' if point left the input.
 A no-op unless, in semi-char mode, point has moved off the live terminal
@@ -2703,6 +2692,29 @@ press anywhere else exits and forwards a CR to the terminal."
                  (memq target '(semi-char char)))
         (ghostel--send-encoded "return" "")))))
 
+(defun ghostel-readonly-end-of-buffer ()
+  "Move to the bottom of the buffer (current viewport) in read-only mode."
+  (interactive)
+  (goto-char (point-max))
+  (skip-chars-backward " \t\n")
+  (when (and ghostel--cursor-char-pos
+             (<= ghostel--cursor-char-pos (point-max))
+             (> ghostel--cursor-char-pos (point)))
+    (goto-char ghostel--cursor-char-pos)))
+
+;; Let isearch treat this as the buffer-end motion command.
+(put 'ghostel-readonly-end-of-buffer 'isearch-motion
+     (cons (lambda () (goto-char (point-max)) (recenter -1 t)) 'backward))
+
+(defun ghostel-readonly-end-of-line ()
+  "Move to the last non-whitespace character on the line."
+  (interactive)
+  (end-of-line)
+  (skip-chars-backward " \t"))
+
+
+;;; Copying text
+
 (defun ghostel--filter-soft-wraps (text)
   "Remove newlines from TEXT that were inserted by soft line wrapping.
 These are newlines with the `ghostel-wrap' text property."
@@ -2745,7 +2757,16 @@ When `ghostel-readonly-fast-exit' is non-nil, also exits read-only mode."
   (when ghostel-readonly-fast-exit
     (ghostel-readonly-exit)))
 
+(defun ghostel-copy-all ()
+  "Copy the entire scrollback buffer to the kill ring."
+  (interactive)
+  (when ghostel--term
+    (let ((text (ghostel--copy-all-text ghostel--term)))
+      (when (and text (> (length text) 0))
+        (kill-new text)
+        (message "Copied %d characters to kill ring" (length text))))))
 
+
 ;;; Prompt and cursor-state queries
 
 (defun ghostel--regex-prompt-end (pos)
@@ -2856,7 +2877,6 @@ prompt prefix.  On other rows, point moves to the line beginning."
      (regex-target     (goto-char regex-target))
      (t                (move-beginning-of-line 1)))))
 
-
 
 ;; Public cursor-state queries
 
@@ -2869,6 +2889,13 @@ necessarily at the end of typed content.
 
 Returns nil when no terminal cursor is available."
   ghostel--cursor-char-pos)
+
+(defun ghostel--pos-on-cursor-p (pos)
+  "Non-nil if POS rides the live terminal cursor: on it, or at `point-max'.
+Positions between the cursor and `point-max' do not count."
+  (and ghostel--cursor-char-pos
+       (or (= pos ghostel--cursor-char-pos)
+           (= pos (point-max)))))
 
 (defun ghostel--viewport-row-at (pos)
   "Return the 0-indexed viewport row of POS, or nil.
@@ -2891,16 +2918,6 @@ available."
            (trow (cdr ghostel--cursor-pos))
            (prow (ghostel--viewport-row-at p)))
       (and prow (= prow trow)))))
-
-
-(defun ghostel-copy-all ()
-  "Copy the entire scrollback buffer to the kill ring."
-  (interactive)
-  (when ghostel--term
-    (let ((text (ghostel--copy-all-text ghostel--term)))
-      (when (and text (> (length text) 0))
-        (kill-new text)
-        (message "Copied %d characters to kill ring" (length text))))))
 
 
 ;;; Password prompt detection
@@ -3531,6 +3548,23 @@ Cygwin \"/cygdrive/d/foo\" mounts to the existing \"d:/foo\" directory."
           translated
         path))))
 
+(defun ghostel--local-host-p (host)
+  "Return non-nil if HOST refers to the local machine.
+A trailing \".local\" (mDNS) suffix on HOST is ignored: the macOS
+kernel hostname drifts between NAME and NAME.local with network state,
+while the function `system-name' keeps the value from Emacs startup."
+  (or (null host)
+      (string= host "")
+      (save-match-data
+        (let ((host (if (string-suffix-p ".local" host t)
+                        (substring host 0 (- (length host) (length ".local")))
+                      host)))
+          (or (eq t (compare-strings host nil nil "localhost" nil nil t))
+              (eq t (compare-strings host nil nil (system-name) nil nil t))
+              (eq t (compare-strings
+                     host nil nil
+                     (car (split-string (system-name) "\\.")) nil nil t)))))))
+
 (defun ghostel--update-directory (dir)
   "Update `default-directory' from terminal's OSC 7 report.
 DIR may be a kitty-shell-cwd:// URL (raw, unencoded path), a file://
@@ -3799,23 +3833,6 @@ EVENT is the state-change description passed by Emacs."
             (let ((inhibit-read-only t))
               (goto-char (point-max))
               (insert "\n[Process exited]\n"))))))))
-
-(defun ghostel--local-host-p (host)
-  "Return non-nil if HOST refers to the local machine.
-A trailing \".local\" (mDNS) suffix on HOST is ignored: the macOS
-kernel hostname drifts between NAME and NAME.local with network state,
-while the function `system-name' keeps the value from Emacs startup."
-  (or (null host)
-      (string= host "")
-      (save-match-data
-        (let ((host (if (string-suffix-p ".local" host t)
-                        (substring host 0 (- (length host) (length ".local")))
-                      host)))
-          (or (eq t (compare-strings host nil nil "localhost" nil nil t))
-              (eq t (compare-strings host nil nil (system-name) nil nil t))
-              (eq t (compare-strings
-                     host nil nil
-                     (car (split-string (system-name) "\\.")) nil nil t)))))))
 
 (defun ghostel--resolve-local-executable (program)
   "Return the absolute local executable path for PROGRAM.
@@ -4744,6 +4761,9 @@ When BUFFER is non-nil, only refit windows showing BUFFER."
            (not (advice-member-p #'ghostel--around-global-font-scale
                                  'global-text-scale-adjust)))
   (advice-add 'global-text-scale-adjust :around #'ghostel--around-global-font-scale))
+
+
+;;; Mode hooks
 
 (defun ghostel--sync-tty-composition (window)
   "Sync `auto-composition-mode' with WINDOW's frame for ghostel buffers.
