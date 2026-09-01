@@ -2236,14 +2236,7 @@ the prompt."
         (ghostel--paste-text text)))))
 
 
-;;; Input modes — state helpers
-
-(defvar-local ghostel--saved-cursor-type nil
-  "Saved `cursor-type' before entering a read-only mode.")
-
-(defvar-local ghostel--saved-hl-line-mode nil
-  "Non-nil if line highlighting was active when `ghostel-mode' suppressed it.
-Covers both `global-hl-line-mode' and buffer-local `hl-line-mode'.")
+;;; Mode line
 
 (defvar ghostel--password-mode-p)         ; forward decls; defined below.
 (defvar ghostel--password-handled-cursor) ;
@@ -2329,6 +2322,16 @@ OSC 9;4 packet, and same-value packets must not fire FMLU."
     (unless (equal new-val mode-line-process)
       (setq mode-line-process new-val)
       (force-mode-line-update))))
+
+
+;;; Input modes - state helpers
+
+(defvar-local ghostel--saved-cursor-type nil
+  "Saved `cursor-type' before entering a read-only mode.")
+
+(defvar-local ghostel--saved-hl-line-mode nil
+  "Non-nil if line highlighting was active when `ghostel-mode' suppressed it.
+Covers both `global-hl-line-mode' and buffer-local `hl-line-mode'.")
 
 (defun ghostel--enter-readonly-state ()
   "Common setup when entering copy or Emacs mode.
@@ -3455,83 +3458,6 @@ No-op when `ghostel-buffer-identification-format' is nil."
         (setq-local mode-line-buffer-identification new)
         (force-mode-line-update)))))
 
-(defun ghostel--cursor-blink-stop ()
-  "Cancel the blink timer, restore the cursor, and remove the blink hooks.
-Restores via `ghostel--cursor-blink-window' rather than this buffer's
-current window, which may already show another buffer."
-  (when ghostel--cursor-blink-timer
-    (cancel-timer ghostel--cursor-blink-timer)
-    (setq ghostel--cursor-blink-timer nil))
-  (when (window-live-p ghostel--cursor-blink-window)
-    (internal-show-cursor ghostel--cursor-blink-window t))
-  (setq ghostel--cursor-blink-window nil)
-  (remove-hook 'window-buffer-change-functions
-               #'ghostel--cursor-blink-restore-window t)
-  (remove-hook 'kill-buffer-hook #'ghostel--cursor-blink-stop t))
-
-(defun ghostel--cursor-blink-restore-window (window)
-  "Show WINDOW's cursor after this buffer enters or leaves it.
-A buffer-local `window-buffer-change-functions' entry.  The blink sets
-a per-window \"cursor off\" flag via `internal-show-cursor', which would
-hide the cursor of whatever buffer the window shows next.  The restore
-is deferred to a 0-delay timer because `internal-show-cursor' is inert
-during redisplay, which is when these functions run."
-  (run-at-time 0 nil
-               (lambda ()
-                 (when (window-live-p window)
-                   (internal-show-cursor window t)))))
-
-(defun ghostel--cursor-blink-tick (buffer)
-  "Toggle BUFFER's cursor visibility.
-Self-stops when BUFFER is no longer the selected window or has
-left terminal input mode, so the navigation cursor stays solid."
-  (when (buffer-live-p buffer)
-    (with-current-buffer buffer
-      (let ((win (get-buffer-window buffer)))
-        (if (and win
-                 (eq win (selected-window))
-                 (ghostel--terminal-input-mode-p))
-            (progn
-              (setq ghostel--cursor-blink-window win)
-              (internal-show-cursor win (not (internal-show-cursor-p win))))
-          (ghostel--cursor-blink-stop))))))
-
-(defun ghostel--cursor-blink-start ()
-  "Begin blinking the cursor.
-No-op on text terminals, when already blinking, or when the global
-`blink-cursor-mode' already drives the blink (avoids a double beat)."
-  (when (and (display-graphic-p)
-             (not ghostel--cursor-blink-timer)
-             (not blink-cursor-mode))
-    (add-hook 'kill-buffer-hook #'ghostel--cursor-blink-stop nil t)
-    ;; Restore the cursor when the blinked window switches buffers, so a window
-    ;; left in the blink's "off" phase never hides the next buffer's cursor.
-    (add-hook 'window-buffer-change-functions
-              #'ghostel--cursor-blink-restore-window nil t)
-    (setq ghostel--cursor-blink-window (selected-window))
-    (setq ghostel--cursor-blink-timer
-          (run-with-timer blink-cursor-interval blink-cursor-interval
-                          #'ghostel--cursor-blink-tick (current-buffer)))))
-
-(defun ghostel--apply-cursor-style ()
-  "Apply the cursor style and blink published by the native renderer.
-Kept in Elisp so input modes and integrations can decide whether
-`cursor-type' should change.  Reads the buffer-local
-`ghostel--cursor-style' and `ghostel--cursor-blinking'."
-  (when (and (ghostel--terminal-input-mode-p)
-             (not ghostel-ignore-cursor-change))
-    (setq cursor-type
-		  (pcase ghostel--cursor-style
-			(0 '(bar . 2))       ; bar
-			(1 'box)             ; block
-			(2 '(hbar . 2))      ; underline
-			(3 'hollow)          ; hollow block
-			('nil nil)
-			(_ 'box)))
-    (if (and ghostel--cursor-style ghostel--cursor-blinking)
-        (ghostel--cursor-blink-start)
-      (ghostel--cursor-blink-stop))))
-
 (defun ghostel--windows-local-path (path)
   "Return PATH in a spelling native Windows Emacs can resolve.
 Strips the slash from a slash-drive form (\"/d:/foo\"), which
@@ -3650,6 +3576,86 @@ URL does not match the local machine, construct a TRAMP path."
         (ghostel--rename-managed
          (funcall ghostel-buffer-name-function ghostel-title)))
       (ghostel--buffer-identification-update))))
+
+
+;;; Cursor style
+
+(defun ghostel--cursor-blink-stop ()
+  "Cancel the blink timer, restore the cursor, and remove the blink hooks.
+Restores via `ghostel--cursor-blink-window' rather than this buffer's
+current window, which may already show another buffer."
+  (when ghostel--cursor-blink-timer
+    (cancel-timer ghostel--cursor-blink-timer)
+    (setq ghostel--cursor-blink-timer nil))
+  (when (window-live-p ghostel--cursor-blink-window)
+    (internal-show-cursor ghostel--cursor-blink-window t))
+  (setq ghostel--cursor-blink-window nil)
+  (remove-hook 'window-buffer-change-functions
+               #'ghostel--cursor-blink-restore-window t)
+  (remove-hook 'kill-buffer-hook #'ghostel--cursor-blink-stop t))
+
+(defun ghostel--cursor-blink-restore-window (window)
+  "Show WINDOW's cursor after this buffer enters or leaves it.
+A buffer-local `window-buffer-change-functions' entry.  The blink sets
+a per-window \"cursor off\" flag via `internal-show-cursor', which would
+hide the cursor of whatever buffer the window shows next.  The restore
+is deferred to a 0-delay timer because `internal-show-cursor' is inert
+during redisplay, which is when these functions run."
+  (run-at-time 0 nil
+               (lambda ()
+                 (when (window-live-p window)
+                   (internal-show-cursor window t)))))
+
+(defun ghostel--cursor-blink-tick (buffer)
+  "Toggle BUFFER's cursor visibility.
+Self-stops when BUFFER is no longer the selected window or has
+left terminal input mode, so the navigation cursor stays solid."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (let ((win (get-buffer-window buffer)))
+        (if (and win
+                 (eq win (selected-window))
+                 (ghostel--terminal-input-mode-p))
+            (progn
+              (setq ghostel--cursor-blink-window win)
+              (internal-show-cursor win (not (internal-show-cursor-p win))))
+          (ghostel--cursor-blink-stop))))))
+
+(defun ghostel--cursor-blink-start ()
+  "Begin blinking the cursor.
+No-op on text terminals, when already blinking, or when the global
+`blink-cursor-mode' already drives the blink (avoids a double beat)."
+  (when (and (display-graphic-p)
+             (not ghostel--cursor-blink-timer)
+             (not blink-cursor-mode))
+    (add-hook 'kill-buffer-hook #'ghostel--cursor-blink-stop nil t)
+    ;; Restore the cursor when the blinked window switches buffers, so a window
+    ;; left in the blink's "off" phase never hides the next buffer's cursor.
+    (add-hook 'window-buffer-change-functions
+              #'ghostel--cursor-blink-restore-window nil t)
+    (setq ghostel--cursor-blink-window (selected-window))
+    (setq ghostel--cursor-blink-timer
+          (run-with-timer blink-cursor-interval blink-cursor-interval
+                          #'ghostel--cursor-blink-tick (current-buffer)))))
+
+(defun ghostel--apply-cursor-style ()
+  "Apply the cursor style and blink published by the native renderer.
+Kept in Elisp so input modes and integrations can decide whether
+`cursor-type' should change.  Reads the buffer-local
+`ghostel--cursor-style' and `ghostel--cursor-blinking'."
+  (when (and (ghostel--terminal-input-mode-p)
+             (not ghostel-ignore-cursor-change))
+    (setq cursor-type
+		  (pcase ghostel--cursor-style
+			(0 '(bar . 2))       ; bar
+			(1 'box)             ; block
+			(2 '(hbar . 2))      ; underline
+			(3 'hollow)          ; hollow block
+			('nil nil)
+			(_ 'box)))
+    (if (and ghostel--cursor-style ghostel--cursor-blinking)
+        (ghostel--cursor-blink-start)
+      (ghostel--cursor-blink-stop))))
 
 
 ;;; Palette
@@ -5038,6 +5044,60 @@ prevent redraw flicker."
     (hl-line-mode -1)))
 
 
+;;; Buffer identity
+
+(defun ghostel--identity-normalize (identity)
+  "Return a copy of IDENTITY with its pairs sorted by key name."
+  (sort (copy-sequence identity)
+        (lambda (a b) (string< (symbol-name (car a)) (symbol-name (car b))))))
+
+(defun ghostel--identity-equal (a b)
+  "Return non-nil when identities A and B contain the same pairs."
+  (equal (ghostel--identity-normalize a) (ghostel--identity-normalize b)))
+
+(defun ghostel-identity-match-p (pattern identity)
+  "Return non-nil when every (KEY . VALUE) pair of PATTERN is in IDENTITY.
+PATTERN and IDENTITY are `ghostel-identity' alists."
+  (seq-every-p (lambda (pair)
+                 (equal (alist-get (car pair) identity) (cdr pair)))
+               pattern))
+
+(defun ghostel--normalize-root (root)
+  "Return ROOT as a normalized directory path for `project-root' keys.
+Remote ROOTs are used as-is; TRAMP expansion and abbreviation
+depend on connection state and would make the key unstable."
+  (if (file-remote-p root)
+      (file-name-as-directory root)
+    (abbreviate-file-name (file-name-as-directory (expand-file-name root)))))
+
+(defun ghostel--next-instance (context)
+  "Return 1 + the highest slot instance in use for CONTEXT.
+CONTEXT is an identity alist without its `instance' pair."
+  (let ((max 0))
+    (dolist (b (buffer-list))
+      (let ((id (buffer-local-value 'ghostel-identity b)))
+        (when (and id
+                   (ghostel--identity-equal
+                    context (assq-delete-all 'instance (copy-alist id))))
+          (setq max (max max (or (alist-get 'instance id) 0))))))
+    (1+ max)))
+
+(defun ghostel--find-buffer-by-identity (identity &optional predicate)
+  "Return the first live ghostel buffer whose identity equals IDENTITY, or nil.
+Only `ghostel-mode' buffers are considered: the permanent-local
+identity outlives a major-mode change, but the slot claim must not.
+Non-nil PREDICATE further filters candidates (called with the buffer),
+so several buffers sharing IDENTITY cannot shadow one the caller wants."
+  (seq-find (lambda (b)
+              (and (buffer-live-p b)
+                   (with-current-buffer b
+                     (and (derived-mode-p 'ghostel-mode)
+                          (ghostel--identity-equal ghostel-identity
+                                                   identity)))
+                   (if predicate (funcall predicate b) t)))
+            (buffer-list)))
+
+
 ;;; Entry point
 
 (defun ghostel--init-buffer (buffer &optional rows cols)
@@ -5152,57 +5212,6 @@ or quit, the partially created buffer is killed before re-signaling."
        (when (buffer-live-p buffer)
          (kill-buffer buffer))
        (signal (car err) (cdr err))))))
-
-(defun ghostel--identity-normalize (identity)
-  "Return a copy of IDENTITY with its pairs sorted by key name."
-  (sort (copy-sequence identity)
-        (lambda (a b) (string< (symbol-name (car a)) (symbol-name (car b))))))
-
-(defun ghostel--identity-equal (a b)
-  "Return non-nil when identities A and B contain the same pairs."
-  (equal (ghostel--identity-normalize a) (ghostel--identity-normalize b)))
-
-(defun ghostel-identity-match-p (pattern identity)
-  "Return non-nil when every (KEY . VALUE) pair of PATTERN is in IDENTITY.
-PATTERN and IDENTITY are `ghostel-identity' alists."
-  (seq-every-p (lambda (pair)
-                 (equal (alist-get (car pair) identity) (cdr pair)))
-               pattern))
-
-(defun ghostel--normalize-root (root)
-  "Return ROOT as a normalized directory path for `project-root' keys.
-Remote ROOTs are used as-is; TRAMP expansion and abbreviation
-depend on connection state and would make the key unstable."
-  (if (file-remote-p root)
-      (file-name-as-directory root)
-    (abbreviate-file-name (file-name-as-directory (expand-file-name root)))))
-
-(defun ghostel--next-instance (context)
-  "Return 1 + the highest slot instance in use for CONTEXT.
-CONTEXT is an identity alist without its `instance' pair."
-  (let ((max 0))
-    (dolist (b (buffer-list))
-      (let ((id (buffer-local-value 'ghostel-identity b)))
-        (when (and id
-                   (ghostel--identity-equal
-                    context (assq-delete-all 'instance (copy-alist id))))
-          (setq max (max max (or (alist-get 'instance id) 0))))))
-    (1+ max)))
-
-(defun ghostel--find-buffer-by-identity (identity &optional predicate)
-  "Return the first live ghostel buffer whose identity equals IDENTITY, or nil.
-Only `ghostel-mode' buffers are considered: the permanent-local
-identity outlives a major-mode change, but the slot claim must not.
-Non-nil PREDICATE further filters candidates (called with the buffer),
-so several buffers sharing IDENTITY cannot shadow one the caller wants."
-  (seq-find (lambda (b)
-              (and (buffer-live-p b)
-                   (with-current-buffer b
-                     (and (derived-mode-p 'ghostel-mode)
-                          (ghostel--identity-equal ghostel-identity
-                                                   identity)))
-                   (if predicate (funcall predicate b) t)))
-            (buffer-list)))
 
 (defun ghostel--apply-initial-input-mode ()
   "Switch a new `ghostel' terminal to `ghostel-initial-input-mode'.
