@@ -1676,13 +1676,13 @@ dead terminals and compile-style buffers."
         (not (or (ghostel--insert-forwarding-live-p)
                  (eq ghostel--input-mode 'line)))))
 
-
-;;; Public input API
-
 (defun ghostel--ensure-ghostel-buffer ()
   "Signal a `user-error' unless the current buffer is a ghostel buffer."
   (unless (derived-mode-p 'ghostel-mode)
     (user-error "Must be called from a ghostel buffer")))
+
+
+;;; Public input API
 
 (defun ghostel-send-string (string)
   "Send STRING to the terminal process in the current ghostel buffer.
