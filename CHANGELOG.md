@@ -12,6 +12,14 @@ All notable changes to this project will be documented in this file.
   `bottom` moves it all above the grid, `top` (the default) keeps it
   below.  Graphical frames on Emacs 29+ only.
 
+### Fixed
+- Editing the live prompt with evil-ghostel no longer leaves characters behind
+  or desynchronizes point around wide characters, grapheme clusters, and soft
+  wraps.  Cursor moves and deletions now follow the position reported by the
+  terminal and stop if a key is ignored.  The new
+  `evil-ghostel-cursor-feedback-timeout` allows slow shell echoes without
+  coupling correctness to redraw scheduling.
+
 ## [0.52.0] — 2026-08-31
 
 ### Added

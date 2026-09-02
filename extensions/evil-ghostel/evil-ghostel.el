@@ -20,9 +20,9 @@
 ;; the commands that drive the shell's line editor are customized:
 ;; operators (d c x s r and line variants) clamp their range to
 ;; [input-start, input-end] and apply it over the PTY (arrows, backspaces,
-;; bracketed paste); i a I A drive the shell cursor to point; ^ jumps past
-;; the prompt; j / G stay on the live prompt; p / P paste; u sends
-;; readline undo.
+;; bracketed paste), following renderer feedback after each key; i a I A
+;; drive the shell cursor to point; ^ jumps past the prompt; j / G stay on
+;; the live prompt; p / P paste; u sends readline undo.
 ;;
 ;; Outside semi-char input mode (`line' / `copy' / `emacs' / `char' modes,
 ;; or an alt-screen TUI) every command falls through to `evil-*'.
@@ -84,10 +84,11 @@ buffer with \\[evil-ghostel-toggle-send-escape]."
                  (const :tag "Always to terminal" terminal)
                  (const :tag "Always to evil" evil)))
 
-(defcustom evil-ghostel-sync-render-max-iterations 10
-  "Iteration cap for waiting on terminal output to settle.
-Each iteration waits up to 50 ms, bounding the total wait at ~500 ms."
-  :type 'integer)
+(defcustom evil-ghostel-cursor-feedback-timeout 0.5
+  "Seconds to wait for the terminal cursor to react to an editing key.
+The wait returns as soon as renderer feedback moves the cursor.  This timeout
+only applies when the shell ignores a key or its echo is delayed."
+  :type 'number)
 
 (defvar evil-ghostel-syntax-table (make-syntax-table ghostel-mode-syntax-table)
   "Syntax table installed in ghostel buffers while `evil-ghostel-mode' is on.
@@ -165,11 +166,31 @@ and `ghostel--line-input-end', so evil's operators apply directly."
 
 (defun evil-ghostel--reset-cursor-point ()
   "Move Emacs point to the terminal cursor.
-`ghostel--cursor-pos' is viewport-relative; its row is offset by scrollback."
-  (when (and ghostel--term ghostel--term-rows ghostel--cursor-pos)
+Prefer `ghostel--cursor-char-pos', the buffer position the renderer
+publishes for the terminal cursor: it is cell-accurate, so unlike the
+viewport row/column fallback it stays correct under wide glyphs and
+grapheme clusters (a wide char is one buffer character but two terminal
+cells, so `move-to-column' on the cell column lands on the wrong char).
+Falls back to the viewport-relative row/column math only before the
+first render has published a cursor position."
+  (cond
+   ((and ghostel--cursor-char-pos
+         (>= ghostel--cursor-char-pos (point-min))
+         (<= ghostel--cursor-char-pos (point-max)))
+    (goto-char ghostel--cursor-char-pos))
+   ((and ghostel--term ghostel--term-rows ghostel--cursor-pos)
     (goto-char (point-min))
     (forward-line (+ (evil-ghostel--scrollback-lines) (cdr ghostel--cursor-pos)))
-    (move-to-column (car ghostel--cursor-pos))))
+    (move-to-column (car ghostel--cursor-pos)))))
+
+(defun evil-ghostel--cursor-char-pos ()
+  "Return the renderer's terminal-cursor buffer position, or nil.
+Coerces to nil when out of buffer range, so closed-loop guards treat a
+stale or pre-render value as absent rather than driving off it."
+  (and ghostel--cursor-char-pos
+       (>= ghostel--cursor-char-pos (point-min))
+       (<= ghostel--cursor-char-pos (point-max))
+       ghostel--cursor-char-pos))
 
 (defun evil-ghostel--point-viewport-row ()
   "Return the viewport row of point, 0-indexed, or nil.
@@ -381,60 +402,151 @@ word) can't over-delete past the live input.  END is never below BEG."
 ;; PTY-driven input editing.  Drive the shell's line editor (readline /
 ;; zle / prompt_toolkit) with arrow keys, backspaces, and bracketed paste
 ;; over the PTY.  Only meaningful in semi-char input mode.
+;;
+;; Cursor movements use a closed feedback loop like `vterm-goto-char':
+;; send one arrow, drain the shell echo via `evil-ghostel--drain-output',
+;; re-read the renderer's cell-accurate `ghostel--cursor-char-pos', and
+;; repeat until point reaches the target.  Open-loop column math (Emacs
+;; char columns vs terminal cell columns) diverges on wide glyphs and
+;; grapheme clusters — the renderer skips spacer cells, so one wide char
+;; is one buffer character but two terminal cells — which left single
+;; characters behind and desynced point.  Buffer positions from the
+;; renderer (`ghostel--cursor-char-pos', `ghostel--viewport-row-at') are
+;; the cell-accurate ground truth this loops on.
 
-(defun evil-ghostel--sync-render ()
-  "Drain pending PTY output so cursor state reflects the latest echo.
-Loops `accept-process-output' (capped by
-`evil-ghostel-sync-render-max-iterations'), then flushes any deferred redraw."
+(defun evil-ghostel--drain-output (previous-pos)
+  "Process PTY output until the cursor moves from PREVIOUS-POS or times out.
+Each `accept-process-output' returns as soon as output arrives.  If that batch
+does not move the cursor, keep waiting within
+`evil-ghostel-cursor-feedback-timeout'.  Force deferred redraws so every
+comparison uses renderer feedback rather than timer state."
   (when ghostel--process
-    (let ((iter 0))
-      (while (and (< iter evil-ghostel-sync-render-max-iterations)
-                  (accept-process-output ghostel--process 0.05 nil t))
-        (setq iter (1+ iter))))
-    (when ghostel--redraw-timer
-      (ghostel--redraw-now (current-buffer)))))
+    (let ((deadline (+ (float-time) evil-ghostel-cursor-feedback-timeout)))
+      (while (and (equal (evil-ghostel--cursor-char-pos) previous-pos)
+                  (process-live-p ghostel--process)
+                  (< (float-time) deadline))
+        (accept-process-output ghostel--process
+                               (- deadline (float-time)) nil t)
+        (when ghostel--redraw-timer
+          (ghostel--redraw-now (current-buffer)))))))
+
+(defun evil-ghostel--cursor-direction (current target target-row)
+  "Return the safe cursor key direction from CURRENT toward TARGET.
+TARGET-ROW is TARGET's viewport row.
+Use Left or Right across renderer-created soft wraps.  Up and Down remain
+available for real multiline input, where they avoid walking every character."
+  (let ((current-row (cdr ghostel--cursor-pos))
+        (target-row (or target-row (cdr ghostel--cursor-pos))))
+    (cond
+     ((= current-row target-row)
+      (if (< current target) "right" "left"))
+     ((< current target)
+      (if (save-excursion
+            (goto-char current)
+            (get-text-property (line-end-position) 'ghostel-wrap))
+          "right"
+        "down"))
+     ((save-excursion
+        (goto-char current)
+        (let ((bol (line-beginning-position)))
+          (and (> bol (point-min))
+               (get-text-property (1- bol) 'ghostel-wrap))))
+      "left")
+     (t "up"))))
+
+(defun evil-ghostel--drive-cursor (target-pos)
+  "Drive the terminal cursor monotonically to TARGET-POS.
+Send one cursor key, wait for renderer feedback, and stop unless the reported
+cursor moved strictly toward the target without passing its row or position.
+Vertical moves reach the target row first; horizontal moves finish there.
+Strict progress makes a separate iteration cap unnecessary."
+  (let ((moving t))
+    (while (and moving
+                (evil-ghostel--cursor-char-pos)
+                (/= (evil-ghostel--cursor-char-pos) target-pos))
+      (let* ((previous (evil-ghostel--cursor-char-pos))
+             (previous-row (cdr ghostel--cursor-pos))
+             (target-row (or (ghostel--viewport-row-at target-pos)
+                             previous-row))
+             (direction (evil-ghostel--cursor-direction
+                         previous target-pos target-row)))
+        (ghostel--send-encoded direction "")
+        (evil-ghostel--drain-output previous)
+        (let ((next (evil-ghostel--cursor-char-pos))
+              (next-row (cdr ghostel--cursor-pos)))
+          (setq moving
+                (and next
+                     (pcase direction
+                       ("left"
+                        (and (< next previous) (>= next target-pos)))
+                       ("right"
+                        (and (> next previous) (<= next target-pos)))
+                       ("up"
+                        (and (< next-row previous-row)
+                             (>= next-row target-row)))
+                       ("down"
+                        (and (> next-row previous-row)
+                             (<= next-row target-row)))))))))
+    (equal (evil-ghostel--cursor-char-pos) target-pos)))
 
 (defun evil-ghostel-goto-input-position (pos)
   "Drive the terminal cursor and Emacs point to buffer position POS.
-On the cursor row a rightward target is clamped to `evil-ghostel--input-end',
-so the move never right-arrows across a trailing autosuggestion, which the
-shell would accept (zsh-autosuggestions / fish).  Only meaningful in
-semi-char mode.  Returns non-nil when it ran."
+A closed feedback loop: send one arrow at a time and re-read the
+renderer's cell-accurate `ghostel--cursor-char-pos' after each, instead
+of open-loop column math that breaks on wide glyphs.  Rightward,
+on-cursor-row targets are clamped to `evil-ghostel--input-end' so a move
+never right-arrows across a trailing autosuggestion, which the shell
+would accept (zsh-autosuggestions / fish).  Only meaningful in semi-char
+mode.  Returns non-nil when the cursor reaches POS."
   (when (and ghostel--term ghostel--cursor-pos)
-    (let* ((start-col (car ghostel--cursor-pos))
-           (start-row-vp (cdr ghostel--cursor-pos))
+    (let* ((start-row-vp (cdr ghostel--cursor-pos))
            (target-row-vp (or (ghostel--viewport-row-at pos) start-row-vp))
-           (dy (- target-row-vp start-row-vp)))
-      ;; Clamp only a rightward, same-row target: at end-of-input a right
-      ;; arrow accepts the greyed suggestion.
-      ;; `input-end' excludes it, so stopping there means we never accept.
-      (when (and (zerop dy)
-                 ghostel--cursor-char-pos
-                 (> pos ghostel--cursor-char-pos))
-        (setq pos (min pos (or (evil-ghostel--input-end) pos))))
-      (let ((dx (- (save-excursion (goto-char pos) (current-column)) start-col)))
-        (cond ((> dy 0) (dotimes (_ dy) (ghostel--send-encoded "down" "")))
-              ((< dy 0) (dotimes (_ (abs dy)) (ghostel--send-encoded "up" ""))))
-        (cond ((> dx 0) (dotimes (_ dx) (ghostel--send-encoded "right" "")))
-              ((< dx 0) (dotimes (_ (abs dx)) (ghostel--send-encoded "left" ""))))
-        (when (or (/= dx 0) (/= dy 0))
-          (evil-ghostel--sync-render))
-        (goto-char pos)
-        t))))
+           (dy (- target-row-vp start-row-vp))
+           ;; Clamp only a rightward, same-row target: at end-of-input a
+           ;; right arrow accepts the greyed suggestion; `input-end'
+           ;; excludes it, so stopping there means we never accept.
+           (pos (if (and (zerop dy)
+                         (evil-ghostel--cursor-char-pos)
+                         (> pos (evil-ghostel--cursor-char-pos)))
+                    (min pos (or (evil-ghostel--input-end) pos))
+                  pos)))
+      (evil-ghostel--drive-cursor pos)
+      ;; Point follows where the terminal actually landed.  In particular,
+      ;; do not claim POS when the shell swallowed an arrow and the loop bailed.
+      (evil-ghostel--reset-cursor-point)
+      (equal (evil-ghostel--cursor-char-pos) pos))))
 
 (defun evil-ghostel-delete-input-region (beg end)
   "Delete BEG..END from input by backspacing over the PTY; return the count.
-Soft-wrap newlines are skipped (renderer artifacts).  Leaves point at BEG;
-the delete lands when the shell echoes it.  Semi-char only."
-  (let ((count (length (ghostel--filter-soft-wraps (buffer-substring beg end)))))
+Soft-wrap newlines are skipped (renderer artifacts).  Drives the cursor to
+END with a closed feedback loop, then sends a backspace per real input
+character, re-reading the live cursor after each so a wide glyph or a
+shell that refuses a backspace (bracketed-paste guard, read-only) doesn't
+leave a stray character.  Leaves point at the terminal cursor (BEG after a
+complete delete).  Semi-char only."
+  (let ((count (length (ghostel--filter-soft-wraps (buffer-substring beg end))))
+        (deleted 0))
     (when (> count 0)
-      (evil-ghostel-goto-input-position end)
-      (dotimes (_ count)
-        (ghostel--send-encoded "backspace" ""))
-      ;; Keep cursor state current for commands that continue editing.
-      (evil-ghostel--sync-render)
-      (goto-char beg))
-    count))
+      ;; Do not delete from the wrong place when cursor positioning failed.
+      (when (evil-ghostel-goto-input-position end)
+        (let ((iter 0)
+              (moving t))
+          ;; Stop by renderer position, not by key count: one backspace may
+          ;; remove a multi-codepoint grapheme (and cross a soft-wrap newline).
+          (while (and moving
+                      (< iter count)
+                      (> (evil-ghostel--cursor-char-pos) beg))
+            (let ((prev (evil-ghostel--cursor-char-pos)))
+              (ghostel--send-encoded "backspace" "")
+              (evil-ghostel--drain-output prev)
+              (let ((next (evil-ghostel--cursor-char-pos)))
+                (unless (and next (< next prev) (>= next beg))
+                  (setq moving nil))))
+            (cl-incf iter))
+          (when (equal (evil-ghostel--cursor-char-pos) beg)
+            (setq deleted count))))
+      (evil-ghostel--reset-cursor-point))
+    deleted))
 
 (defun evil-ghostel-replace-input-region (beg end string)
   "Replace the BEG..END range with STRING via the terminal PTY.
@@ -544,8 +656,9 @@ $ would walk into non-typed cells).  Off the cursor row, unchanged."
     (evil-insert-state 1))
    (t
     (let* ((cur (ghostel-cursor-point))
+           (cursor-pos (evil-ghostel--cursor-char-pos))
            (target
-            (if (and cur (>= (point) cur)
+            (if (and cur cursor-pos (>= (point) cursor-pos)
                      (save-excursion
                        (goto-char cur)
                        (or (eolp) (looking-at-p "[ \t]"))))
