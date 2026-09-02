@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.53.0] — 2026-09-02
+
 ### Added
 - `ghostel-window-padding-balance`: places the fractional-row space a
   window leaves under the grid whenever nothing precedes the first row
@@ -18,6 +20,23 @@ All notable changes to this project will be documented in this file.
   wheel press per trackpad tick: pixel deltas are accumulated and one
   press is sent per row of travel, as ghostty does.  A mouse-wheel notch
   stays one press.
+- The bash integration emits one OSC 133 C ("command output start")
+  marker per accepted command line instead of one per simple command,
+  so a compound line like `sleep 7; false` no longer re-runs
+  `ghostel-command-start-functions` mid-line and resets per-command
+  state (command durations, imenu cwd stamps).  Bash 4.4+ emits the
+  marker from `PS0`; older bash keeps a DEBUG-trap adapter armed once
+  per prompt cycle.  The prompt wrapper also strips stale markers from
+  `PS1`/`PS2` before re-wrapping, so a prompt derived from an
+  already-marked one (e.g. a venv `activate` prepending to `PS1`)
+  heals on the next cycle.
+- The fish integration no longer doubles every OSC 133 marker on
+  fish 4.0+, which emits them natively: two C/D per command, duplicate
+  `ghostel-command-finish-functions` runs, and two prompt entries per
+  cycle.  Ghostel's own handlers now load only on fish < 4 or when
+  native marking is disabled via `no-mark-prompt`.  Their synthetic
+  close-D also no longer fires after every normal command with a nil
+  status.
 
 ## [0.52.0] — 2026-08-31
 
