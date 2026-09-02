@@ -12,6 +12,13 @@ All notable changes to this project will be documented in this file.
   `bottom` moves it all above the grid, `top` (the default) keeps it
   below.  Graphical frames on Emacs 29+ only.
 
+### Changed
+- Trackpad scrolling in mouse-tracking programs (htop, vim) under
+  `pixel-scroll-precision-mode` or ultra-scroll no longer sends one
+  wheel press per trackpad tick: pixel deltas are accumulated and one
+  press is sent per row of travel, as ghostty does.  A mouse-wheel notch
+  stays one press.
+
 ## [0.52.0] — 2026-08-31
 
 ### Added

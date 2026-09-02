@@ -9,6 +9,8 @@
 
 (require 'ghostel-test-helpers)
 
+(defvar mwheel-coalesce-scroll-events)
+(defvar last-event-device)
 (defvar xterm-store-paste-on-kill-ring)
 
 (defun ghostel-test--make-focus-buffer (name)
@@ -208,8 +210,8 @@ first real focus event."
         (mouse-event-args nil)
         ;; Fake wheel-up event at row 5, col 10
         (fake-event `(wheel-up (,(selected-window) 1 (10 . 5) 0))))
-    ;; Mouse tracking active: ghostel--mouse-event returns non-nil
-    (cl-letf (((symbol-function 'ghostel--mouse-event)
+    (cl-letf (((symbol-function 'ghostel--mouse-tracking-p) (lambda (_term) t))
+              ((symbol-function 'ghostel--mouse-event)
                (lambda (_term action button row col mods)
                  (setq mouse-event-args (list action button row col mods))
                  t))
@@ -225,7 +227,8 @@ first real focus event."
     ;; Reset and test scroll-down with a wheel-down event
     (setq mouse-event-args nil)
     (let ((fake-down-event `(wheel-down (,(selected-window) 1 (10 . 5) 0))))
-      (cl-letf (((symbol-function 'ghostel--mouse-event)
+      (cl-letf (((symbol-function 'ghostel--mouse-tracking-p) (lambda (_term) t))
+                ((symbol-function 'ghostel--mouse-event)
                  (lambda (_term action button row col mods)
                    (setq mouse-event-args (list action button row col mods))
                    t))
@@ -246,15 +249,19 @@ first real focus event."
       (setq-local ghostel--process 'fake)
       (setq-local ghostel--input-mode 'semi-char)
       (setq-local ghostel--scroll-intercept-active t)
+      (setq-local ghostel--scroll-pending 7.0)
       (setq-local pre-command-hook nil))
     (unwind-protect
-        (cl-letf (((symbol-function 'ghostel--mouse-event)
-                   (lambda (_term _action _button _row _col _mods) nil))
+        (cl-letf (((symbol-function 'ghostel--mouse-tracking-p)
+                   (lambda (_term) nil))
                   ((symbol-function 'process-live-p) (lambda (_p) t)))
           ;; Test wheel-up re-dispatch
           (ghostel--scroll-intercept-up fake-up-event)
           (should-not (buffer-local-value
                        'ghostel--scroll-intercept-active event-buf))
+          ;; Wheel travel banked for the terminal is dropped.
+          (should (eql 0.0 (buffer-local-value
+                            'ghostel--scroll-pending event-buf)))
           (should (equal fake-up-event (car unread-command-events)))
           ;; Running the buffer-local pre-command-hook in event-buf
           ;; re-enables the intercept and removes the one-shot hook.
@@ -278,6 +285,87 @@ first real focus event."
         (kill-local-variable 'ghostel--process)
         (kill-local-variable 'ghostel--input-mode)
         (kill-local-variable 'ghostel--scroll-intercept-active)
+        (kill-local-variable 'ghostel--scroll-pending)
+        (kill-local-variable 'pre-command-hook)))))
+
+(ert-deftest ghostel-test-scroll-intercept-accumulates-pixel-deltas ()
+  "Uncoalesced wheel events send one press per full row of travel.
+A mouse notch, reported as a line count or from a mouse device, is
+never fewer than one press."
+  (let* ((win (selected-window))
+         (event-buf (window-buffer win))
+         (mwheel-coalesce-scroll-events nil)
+         (last-event-device nil)
+         (unread-command-events nil)
+         (device 'touchpad)
+         (buttons nil)
+         (tick (lambda (dir lines px)
+                 (funcall (if (eq dir 'up)
+                              #'ghostel--scroll-intercept-up
+                            #'ghostel--scroll-intercept-down)
+                          `(,(intern (format "wheel-%s" dir))
+                            (,win 1 (10 . 5) 0) 1 ,lines (0.0 . ,px))))))
+    (with-current-buffer event-buf
+      (setq-local ghostel--term 'fake)
+      (setq-local ghostel--process 'fake)
+      (setq-local ghostel--input-mode 'semi-char)
+      (setq-local ghostel--scroll-intercept-active t)
+      (setq-local ghostel--scroll-pending 0.0))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--mouse-tracking-p)
+                   (lambda (_term) t))
+                  ((symbol-function 'ghostel--mouse-event)
+                   (lambda (_term _action button _row _col _mods)
+                     (push button buttons)
+                     t))
+                  ((symbol-function 'default-line-height) (lambda () 20))
+                  ((symbol-function 'device-class)
+                   (lambda (_frame _name) device))
+                  ((symbol-function 'process-live-p) (lambda (_p) t)))
+          ;; 8 px ticks: 8, 16, 24.  First press on the third tick.
+          (dotimes (i 3)
+            (funcall tick 'up 0 8.0)
+            (should (equal (if (< i 2) nil '(4)) buttons))
+            ;; Consumed even when nothing was sent: never re-dispatched.
+            (should-not unread-command-events))
+          ;; 4 px remainder carried: a 40 px flick sends two presses.
+          (funcall tick 'up 0 40.0)
+          (should (equal '(4 4 4) buttons))
+          ;; Reversing direction drains the leftover before sending.
+          (funcall tick 'down 0 -4.0)
+          (should (equal '(4 4 4) buttons))
+          (funcall tick 'down 0 -20.0)
+          (should (equal '(5 4 4 4) buttons))
+          ;; A notch counted as one line but fewer pixels than a row
+          ;; (macOS mouse with `line-spacing') is a press every time.
+          (setq buttons nil)
+          (dotimes (_ 5) (funcall tick 'up 1 16.0))
+          (should (equal '(4 4 4 4 4) buttons))
+          ;; A mouse device (X11, pgtk) is one press per notch
+          ;; whatever the delta.
+          (setq buttons nil device 'mouse)
+          (dotimes (_ 3) (funcall tick 'up nil 100.0))
+          (should (equal '(4 4 4) buttons))
+          (should-not unread-command-events))
+      (with-current-buffer event-buf
+        (dolist (var '(ghostel--term ghostel--process ghostel--input-mode
+                       ghostel--scroll-intercept-active
+                       ghostel--scroll-pending))
+          (kill-local-variable var))))))
+
+(ert-deftest ghostel-test-scroll-intercept-frame-posn ()
+  "A wheel event positioned on the frame re-dispatches instead of erroring."
+  (let ((fake-event `(wheel-up (,(selected-frame) nil (10 . 5) 0) 1 0 (0.0 . 8.0)))
+        (unread-command-events nil)
+        (buf (window-buffer (frame-selected-window))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--mouse-tracking-p)
+                   (lambda (_term) nil)))
+          (ghostel--scroll-intercept-up fake-event)
+          (should (equal fake-event (car unread-command-events))))
+      (with-current-buffer buf
+        (kill-local-variable 'ghostel--scroll-intercept-active)
+        (kill-local-variable 'ghostel--scroll-pending)
         (kill-local-variable 'pre-command-hook)))))
 
 (ert-deftest ghostel-test-mouse-1-press-no-tracking-semi-char ()
@@ -1580,8 +1668,8 @@ binding wins."
                  (fake-event `(wheel-up (,ghostel-win 1 (10 . 5) 0)))
                  (unread-command-events nil))
             (set-buffer other-buf)
-            (cl-letf (((symbol-function 'ghostel--mouse-event)
-                       (lambda (_term _action _button _row _col _mods) nil))
+            (cl-letf (((symbol-function 'ghostel--mouse-tracking-p)
+                       (lambda (_term) nil))
                       ((symbol-function 'process-live-p) (lambda (_p) t)))
               (ghostel--scroll-intercept-up fake-event)
               ;; Flag must be cleared in the *ghostel* buffer — otherwise
@@ -1623,7 +1711,9 @@ rather than the selected window's buffer."
             ;; Sanity: in `other-buf' these are all nil — the bug was
             ;; that forward-scroll read them from current-buffer.
             (should-not ghostel--term)
-            (cl-letf (((symbol-function 'ghostel--mouse-event)
+            (cl-letf (((symbol-function 'ghostel--mouse-tracking-p)
+                       (lambda (_term) t))
+                      ((symbol-function 'ghostel--mouse-event)
                        (lambda (_term action button row col mods)
                          (setq mouse-event-args
                                (list action button row col mods))

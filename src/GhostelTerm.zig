@@ -778,6 +778,27 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         },
     },
     .{
+        .name = "ghostel--mouse-tracking-p",
+        .arity = .{ 1, 1 },
+        .doc =
+        \\Return t if the terminal reports wheel presses (DEC 1000/1002/1003).
+        \\
+        \\(ghostel--mouse-tracking-p TERM)
+        ,
+        .impl = struct {
+            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
+                if (env.isNil(args[0])) return env.nil();
+                const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
+                try term.lock();
+                defer term.unlock();
+                return switch (term.terminal.flags.mouse_event) {
+                    .none, .x10 => env.nil(),
+                    else => env.t(),
+                };
+            }
+        },
+    },
+    .{
         .name = "ghostel--copy-all-text",
         .arity = .{ 1, 1 },
         .doc =

@@ -831,6 +831,7 @@ to nil to disable the regex fallback entirely (OSC 133 only)."
 (declare-function ghostel--copy-all-text "ghostel-module")
 (declare-function ghostel--module-version "ghostel-module")
 (declare-function ghostel--mouse-event "ghostel-module")
+(declare-function ghostel--mouse-tracking-p "ghostel-module")
 (declare-function ghostel--new "ghostel-module")
 (declare-function ghostel--redraw "ghostel-module"
                   (term &optional full force-sync))
@@ -1051,6 +1052,13 @@ is non-nil so the debugger fires for hook authors who want it."
 ;; tracking is off, we fall through to whatever scroll package the user
 ;; has configured (ultra-scroll, pixel-scroll-precision-mode, etc.).
 
+(defun ghostel--event-window (event)
+  "Return EVENT's window.
+`posn-window' returns a frame for positions outside any window;
+use that frame's selected window."
+  (let ((win (posn-window (event-start event))))
+    (if (framep win) (frame-selected-window win) win)))
+
 (defun ghostel--scroll-intercept-up (event)
   "Intercept wheel-up EVENT for terminal mouse tracking.
 If the terminal is tracking mouse events, forward as button 4.
@@ -1062,7 +1070,7 @@ user's scroll package handles it."
   ;; intercept in the event's own buffer so buffer-local state
   ;; (`ghostel--term', `ghostel--scroll-intercept-active', the
   ;; `pre-command-hook' re-enable) lands in the ghostel buffer.
-  (with-current-buffer (window-buffer (posn-window (event-start event)))
+  (with-current-buffer (window-buffer (ghostel--event-window event))
     (unless (ghostel--forward-scroll-event event 4)
       (ghostel--redispatch-scroll-event event))))
 
@@ -1072,9 +1080,11 @@ If the terminal is tracking mouse events, forward as button 5.
 Otherwise, re-dispatch EVENT through the normal event loop so the
 user's scroll package handles it."
   (interactive "e")
-  (with-current-buffer (window-buffer (posn-window (event-start event)))
+  (with-current-buffer (window-buffer (ghostel--event-window event))
     (unless (ghostel--forward-scroll-event event 5)
       (ghostel--redispatch-scroll-event event))))
+
+(defvar ghostel--scroll-pending)
 
 (defun ghostel--redispatch-scroll-event (event)
   "Re-dispatch scroll EVENT through the event loop without our intercept.
@@ -1083,7 +1093,8 @@ back as unread input.  The next key-lookup therefore skips our map and
 finds the user's scroll handler.  A `pre-command-hook' re-enables the
 intercept before that handler runs, so subsequent events are intercepted
 again."
-  (setq ghostel--scroll-intercept-active nil)
+  (setq ghostel--scroll-intercept-active nil
+        ghostel--scroll-pending 0.0)
   (push event unread-command-events)
   ;; pre-command-hook fires *after* key lookup but *before* the command,
   ;; so the re-dispatched event is looked up with our intercept disabled
@@ -2012,19 +2023,48 @@ running program receives a live motion stream during the drag.")
     (when (memq 'meta mods) (setq result (logior result 2)))
     result))
 
+(defvar mwheel-coalesce-scroll-events)
+(defvar last-event-device)
+(declare-function device-class "frame" (frame name))
+
+(defvar-local ghostel--scroll-pending 0.0
+  "Wheel travel in pixels not yet forwarded as a whole terminal row.")
+
 (defun ghostel--forward-scroll-event (event button)
   "Try to forward a scroll EVENT as mouse BUTTON to the terminal.
-Return non-nil if the event was encoded and sent."
-  (when (and event (ghostel--terminal-input-mode-p))
+Return non-nil if the terminal consumed the event.
+With `mwheel-coalesce-scroll-events' nil (`pixel-scroll-precision-mode',
+ultra-scroll) every trackpad tick is its own EVENT, so pixel deltas are
+accumulated and one press sent per full row of travel.
+A mouse-wheel notch is never fewer than one press."
+  (when (and event (ghostel--terminal-input-mode-p)
+             (ghostel--mouse-tracking-p ghostel--term))
     (let* ((posn (event-start event))
            (col-row (posn-col-row posn))
-           (col (car col-row))
-           (row (cdr col-row)))
-      (ghostel--mouse-event ghostel--term
-                            0  ; press
-                            button
-                            row col
-                            (ghostel--mouse-mods event)))))
+           (delta (cdr (nth 4 event)))
+           (presses 1))
+      (when (and delta (not mwheel-coalesce-scroll-events)
+                 ;; X11 and pgtk report a mouse notch as several rows
+                 ;; of pixels with no line count.
+                 (not (and (fboundp 'device-class) ; Emacs 29+
+                           (eq (device-class last-event-frame
+                                             last-event-device)
+                               'mouse))))
+        (let* ((row-px (with-selected-window (ghostel--event-window event)
+                         (default-line-height)))
+               (pending (+ ghostel--scroll-pending delta))
+               (rows (truncate pending row-px)))
+          ;; LINES is 0 for a sub-row trackpad tick, but macOS reports a notch
+          ;; as one line and fewer pixels than a row when `line-spacing' is set.
+          (setq presses (max (abs rows) (min 1 (or (nth 3 event) 0)))
+                ghostel--scroll-pending (- pending (* rows row-px)))))
+      (dotimes (_ presses)
+        (ghostel--mouse-event ghostel--term
+                              0  ; press
+                              button
+                              (cdr col-row) (car col-row)
+                              (ghostel--mouse-mods event)))
+      t)))
 
 (defun ghostel--mouse-press (event)
   "Handle mouse button press EVENT for terminal mouse tracking.
