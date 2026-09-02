@@ -12,6 +12,14 @@ All notable changes to this project will be documented in this file.
   `bottom` moves it all above the grid, `top` (the default) keeps it
   below.  Graphical frames on Emacs 29+ only.
 
+### Fixed
+- `evil-ghostel`: `C-c C-t` now enters copy mode in Evil normal state and
+  printable Vim navigation keys no longer trigger Ghostel's read-only fast
+  exit.  Copy mode stays frozen until `C-c C-t` or another explicit
+  input-mode switch exits it; accidentally entering insert state remains
+  recoverable with `ESC`, including on legacy TTY frames and over an
+  alt-screen terminal.
+
 ## [0.52.0] — 2026-08-31
 
 ### Added

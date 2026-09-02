@@ -1496,6 +1496,12 @@ subdirectory inside the ghostel monorepo:
 When =evil-ghostel-mode= is active:
 
 - Ghostel starts in *insert state* (terminal input works normally).
+- =C-c C-t= enters frozen copy mode in *normal state*, so Vim navigation keys
+  move through the buffer without leaving copy mode.  Press =C-c C-t= again (or
+  use another explicit input-mode switch) to exit; printable keys do not exit
+  Ghostel's read-only modes while =evil-ghostel-mode= is active.  If you enter
+  insert state in a read-only mode, =ESC= returns to normal state without
+  unfreezing or exiting it.
 - Pressing *ESC* enters normal state and snaps point to the terminal cursor
   (outside alt-screen; see [[#evil-escape-routing][ESC routing]] below).
 - Normal-mode navigation (=h=, =j=, =k=, =l=, =w=, =b=, =e=, =0=, =$=, ...) works as expected.
