@@ -12,6 +12,11 @@ All notable changes to this project will be documented in this file.
   `bottom` moves it all above the grid, `top` (the default) keeps it
   below.  Graphical frames on Emacs 29+ only.
 
+### Changed
+- Incremental redraws now start at the first dirty terminal row instead of
+  traversing clean rows above it, reducing redraw work when changes occur near
+  the bottom of the viewport.
+
 ## [0.52.0] — 2026-08-31
 
 ### Added
