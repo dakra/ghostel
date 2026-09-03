@@ -215,6 +215,42 @@ Covers OSC 2 with ST and BEL terminators and the OSC 0 form."
       (ghostel-test--wait-until
        (lambda () (equal "AFTER" ghostel-title)) proc 5))))
 
+(ert-deftest ghostel-test-title-restored-after-command ()
+  "A title set while a command runs is restored when the command finishes."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-echo-buffer (buf proc)
+      (ghostel--write-vt ghostel--term "\e]133;C\e\\\e]2;Command Title\e\\")
+      (ghostel-test--wait-until
+       (lambda () (equal "Command Title" ghostel-title)) proc 5)
+      (ghostel--write-vt ghostel--term "\e]133;D;0\e\\")
+      (ghostel-test--wait-until
+       (lambda () (null ghostel-title)) proc 5))))
+
+(ert-deftest ghostel-test-title-restore-scope ()
+  "Scoping rules for `ghostel-restore-title-after-command'.
+A title set during a command is restored when it finishes; a
+prompt-redraw D leaves a prompt-set title alone; nil disables
+the restore."
+  (with-temp-buffer
+    (let ((ghostel-buffer-name-function nil)
+          (ghostel-buffer-identification-format nil))
+      (ghostel--set-title "before")
+      (ghostel--osc133-marker "C" nil)
+      (ghostel--set-title "during")
+      (ghostel--osc133-marker "D" "0")
+      (should (equal "before" ghostel-title))
+      ;; D without a command (prompt redraw): the title stays.
+      (ghostel--set-title "prompt title")
+      (ghostel--osc133-marker "D" "0")
+      (should (equal "prompt title" ghostel-title))
+      ;; Option off: the command's title stays.
+      (let ((ghostel-restore-title-after-command nil))
+        (ghostel--osc133-marker "C" nil)
+        (ghostel--set-title "sticky")
+        (ghostel--osc133-marker "D" "0")
+        (should (equal "sticky" ghostel-title))))))
+
 (ert-deftest ghostel-test-osc9-notification ()
   "OSC 9 iTerm2-style notifications reach `ghostel-notification-function'."
   :tags '(native)
