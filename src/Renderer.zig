@@ -477,6 +477,19 @@ pub const SpanContent = struct {
             return if (self.text_end < buf.len - 1) buf[self.text_end] else null;
         }
 
+        fn followingCellProtected(self: *const @This(), span: *const SpanContent) bool {
+            const pos = self.char_end;
+            if (span.cursor_char_pos) |cursor_pos| {
+                if (cursor_pos == pos) return true;
+            }
+            for (span.runs.items) |run| {
+                if (pos >= run.start_char and pos < run.end_char) {
+                    return run.key != null;
+                }
+            }
+            return false;
+        }
+
         fn metricsKey(self: *const @This(), buf: []const u8) GlyphMetricsCache.Key {
             return .{
                 .page_serial = self.page_serial,
@@ -756,6 +769,7 @@ fn adjustWidth(
     const empty_before = preceding == null or preceding.? == ' ' or preceding.? == '\n';
     const empty_after = following == null or following.? == ' ' or following.? == '\n';
     if (!empty_before or !empty_after) return 1;
+    if (cell.followingCellProtected(&self.span)) return 1;
 
     // We can claim the space after, but if it's a space, we must first hide it.
     if (following) |c| {
