@@ -115,26 +115,38 @@ pub fn ptyWrite(self: *Self, env: emacs.Env, data: []const u8) !void {
 }
 
 pub fn ptyWriteFromTerminal(self: *Self, data: []const u8) void {
-    // This callback runs on the reader thread, which cannot retire the backend
-    // until the callback returns. Avoid the handoff mutex so shutdown can signal
-    // a blocked write through the backend's existing interrupt mechanism.
+    // This callback runs with the terminal locked. Serialize it behind
+    // cancellable Emacs input, but never wait for space in the PTY input queue.
     const backend = if (self.backend) |*backend| backend else return;
 
     self.write_mutex.lock(self.io) catch return;
     defer self.write_mutex.unlock(self.io);
 
+    const cancellation = backend_types.CancellationToken{
+        .context = self,
+        .check_fn = rejectTerminalReplyWait,
+        .poll_interval = .fromMilliseconds(0),
+    };
+
     var offset: usize = 0;
     while (offset < data.len) {
         if (@atomicLoad(bool, &self.quit, .monotonic)) return;
-        const write_result = backend.write(data[offset..], null) catch |err| {
-            log.err("ghostel: Failed to write to PTY from terminal: {any}", .{err});
-            return;
+        const write_result = backend.write(data[offset..], cancellation) catch |err| switch (err) {
+            error.TerminalReplyWouldBlock => return,
+            else => {
+                log.err("ghostel: Failed to write to PTY from terminal: {any}", .{err});
+                return;
+            },
         };
         switch (write_result) {
             .written => |n| offset += n,
             .interrupted => return,
         }
     }
+}
+
+fn rejectTerminalReplyWait(_: *const anyopaque) !void {
+    return error.TerminalReplyWouldBlock;
 }
 
 fn ptyWriteBackend(
