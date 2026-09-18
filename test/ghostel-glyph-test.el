@@ -427,7 +427,8 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
 (ert-deftest ghostel-test-glyph-adjust-standalone-icon-claims-trailing-cell ()
   "A standalone icon can claim the implicit trailing blank cell."
   :tags '(native)
-  (ghostel-test--with-oversized-icon-rendered "⏵"
+  ;; Park the cursor on the next row so the trailing cell is unused.
+  (ghostel-test--with-oversized-icon-rendered "⏵\e[2;1H"
     (should (equal (char-after) ?⏵))
     (should (equal (ghostel-test--display-min-width-at-point) '(2)))))
 
@@ -453,6 +454,28 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
     (forward-char 1)
     (should (equal (char-after) ?\s))
     (should-not (get-text-property (point) 'display))))
+
+(ert-deftest ghostel-test-glyph-adjust-standalone-icon-does-not-claim-cursor-space ()
+  "A standalone icon does not hide the following cursor cell."
+  :tags '(native)
+  (ghostel-test--with-oversized-icon-rendered "⏵ \e[D"
+    (should (equal (char-after) ?⏵))
+    (should (equal (ghostel-test--display-min-width-at-point) '(1)))
+    (forward-char 1)
+    (should (equal (char-after) ?\s))
+    (should-not (get-text-property (point) 'display))
+    (should (equal ghostel--cursor-char-pos (point)))))
+
+(ert-deftest ghostel-test-glyph-adjust-standalone-icon-does-not-claim-styled-space ()
+  "A standalone icon does not hide a visibly styled following space."
+  :tags '(native)
+  (ghostel-test--with-oversized-icon-rendered "⏵\e[7m \e[0mx"
+    (should (equal (char-after) ?⏵))
+    (should (equal (ghostel-test--display-min-width-at-point) '(1)))
+    (forward-char 1)
+    (should (equal (char-after) ?\s))
+    (should-not (equal (get-text-property (point) 'display) '(space :width 0)))
+    (should (get-text-property (point) 'face))))
 
 (ert-deftest ghostel-test-glyph-adjust-last-column-no-claim ()
   "A glyph at the last column does not claim out-of-bounds space."
