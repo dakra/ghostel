@@ -5087,6 +5087,9 @@ may change freely (`ghostel-compile' finalize relies on this)."
   (buffer-disable-undo)
   (font-lock-mode -1)
   (face-remap-add-relative 'default 'ghostel-default)
+  ;; Render no-break spaces like normal spaces instead of using a theme's
+  ;; visible whitespace face.
+  (face-remap-add-relative 'nobreak-space :inherit 'default)
   ;; `font-lock-mode' can still be re-enabled by user configuration that
   ;; forces `font-lock-defaults' globally (e.g. Doom Emacs).  When active,
   ;; JIT-lock calls `font-lock-unfontify-region' on every redraw, which
