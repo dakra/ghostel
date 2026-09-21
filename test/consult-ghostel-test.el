@@ -19,6 +19,8 @@
 (require 'ghostel)
 (require 'consult-ghostel)
 
+(consult-ghostel-mode 1)
+
 (defun consult-ghostel-test--fake-buffer (name)
   "Return a buffer NAME claiming `ghostel-mode' without the native module."
   (let ((buf (generate-new-buffer name)))
@@ -77,19 +79,19 @@ the other."
       (kill-buffer buf))))
 
 (ert-deftest consult-ghostel-test-marginalia-registered ()
-  "Loading with marginalia present registers the wrapper for both categories."
+  "The mode registers the wrapper for both categories when marginalia is present."
   (skip-unless (featurep 'marginalia))
   (dolist (category '(buffer project-buffer))
     (should (memq #'consult-ghostel-marginalia-annotate
                   (alist-get category marginalia-annotators)))))
 
 (ert-deftest consult-ghostel-test-bookmark-narrow-registered ()
-  "Loading adds a Ghostel group for ghostel's bookmark handler."
+  "The mode adds a Ghostel group for ghostel's bookmark handler."
   (should (member '(?g "Ghostel" ghostel-bookmark-handler)
                   consult-bookmark-narrow)))
 
 (ert-deftest consult-ghostel-test-hidden-sources-registered ()
-  "Loading registers the hidden sources in the global consult lists."
+  "The mode registers the hidden sources in the global consult lists."
   (should (memq 'consult-ghostel-source-hidden consult-buffer-sources))
   (should (memq 'consult-ghostel-project-source-hidden
                 consult-project-buffer-sources)))
@@ -454,11 +456,31 @@ Sent raw, its embedded newlines would act as Enter."
 ;;; consult-line over logical lines
 
 (ert-deftest consult-ghostel-test-line-candidates-advice-installed ()
-  "The logical-line candidate builder advises `consult--line-candidates'."
+  "The mode advises consult-line's candidate builder and point placement."
   (should (advice-member-p #'consult-ghostel--line-candidates
                            'consult--line-candidates))
   (should (advice-member-p #'consult-ghostel--line-point-placement
                            'consult--line-point-placement)))
+
+(ert-deftest consult-ghostel-test-mode-off-unregisters ()
+  "Disabling the mode removes every registration and advice it installed."
+  (unwind-protect
+      (progn
+        (consult-ghostel-mode -1)
+        (should-not (memq 'consult-ghostel-source-hidden consult-buffer-sources))
+        (should-not (memq 'consult-ghostel-project-source-hidden
+                          consult-project-buffer-sources))
+        (should-not (member '(?g "Ghostel" ghostel-bookmark-handler)
+                            consult-bookmark-narrow))
+        (when (boundp 'marginalia-annotators)
+          (dolist (category '(buffer project-buffer))
+            (should-not (memq #'consult-ghostel-marginalia-annotate
+                              (alist-get category marginalia-annotators)))))
+        (should-not (advice-member-p #'consult-ghostel--line-candidates
+                                     'consult--line-candidates))
+        (should-not (advice-member-p #'consult-ghostel--line-point-placement
+                                     'consult--line-point-placement)))
+    (consult-ghostel-mode 1)))
 
 (defun consult-ghostel-test--insert-rows (rows)
   "Insert ROWS, a list of (STRING . WRAPPED-P) conses.

@@ -1872,8 +1872,7 @@ the way =consult-buffer= does.  The built-in =ghostel-list-buffers= uses
 #+begin_src emacs-lisp
 (use-package consult-ghostel
   :ensure t
-  :after (ghostel consult)
-  :demand t
+  :hook (after-init . consult-ghostel-mode)
   :bind (("C-x m" . consult-ghostel)
          :map project-prefix-map
          ("m" . consult-ghostel-project)
@@ -1889,8 +1888,7 @@ subdirectory inside the ghostel monorepo:
   :vc (:url "https://github.com/dakra/ghostel"
        :lisp-dir "extensions/consult-ghostel"
        :rev :newest)
-  :after (ghostel consult)
-  :demand t
+  :hook (after-init . consult-ghostel-mode)
   :bind (("C-x m" . consult-ghostel)
          :map project-prefix-map
          ("m" . consult-ghostel-project)
@@ -1912,23 +1910,18 @@ instead: =C-u= creates a new terminal, a numeric argument picks that numbered
 terminal.  A /New/ group at the bottom of the picker offers the same
 default-named creation from inside the minibuffer (narrow key =n=).
 
-Loading the package also registers hidden sources in =consult-buffer= and
-=consult-project-buffer=: Ghostel buffers already appear in the default
-/Buffer/ view, so they stay invisible there until the =g= narrow key summons
-them exclusively.  To opt out:
+#+findex: consult-ghostel-mode
+=consult-ghostel-mode= registers hidden sources in =consult-buffer= and
+=consult-project-buffer=: Ghostel buffers already appear in the default /Buffer/
+view, so they stay invisible there until the =g= narrow key summons them
+exclusively.  The =g= narrow key (or any other source property) can be changed
+with =consult-customize=, e.g.
+~(consult-customize consult-ghostel-source-hidden :narrow ?t)~.
 
-#+begin_src emacs-lisp
-(setq consult-buffer-sources
-      (delq 'consult-ghostel-source-hidden consult-buffer-sources))
-#+end_src
-
-The =g= narrow key (or any other source property) can be changed with
-=consult-customize=, e.g. ~(consult-customize consult-ghostel-source-hidden :narrow ?t)~.
-
-Loading the package also makes =consult-line= match across soft line wraps in
-Ghostel buffers: rows joined by wrap newlines become one search candidate, so a
-path or command that wrapped mid-word is still found.  It also adds a /Ghostel/
-group to =consult-bookmark=, so the =g= narrow key restricts the candidates to
+The mode also makes =consult-line= match across soft line wraps in Ghostel
+buffers: rows joined by wrap newlines become one search candidate, so a path or
+command that wrapped mid-word is still found.  It also adds a /Ghostel/ group
+to =consult-bookmark=, so the =g= narrow key restricts the candidates to
 Ghostel bookmarks ([[#bookmarks][Bookmarks]]).
 
 #+findex: consult-ghostel-history

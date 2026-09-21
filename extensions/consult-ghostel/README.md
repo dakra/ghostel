@@ -23,6 +23,7 @@ Install from [MELPA](https://melpa.org/#/consult-ghostel):
 (use-package consult-ghostel
   :after (ghostel consult)
   :demand t
+  :config (consult-ghostel-mode)
   :bind (("C-x m" . consult-ghostel)
          :map project-prefix-map
          ("m" . consult-ghostel-project)
@@ -38,22 +39,15 @@ selection, which stays editable at the prompt. The history is retrieved per shel
 of the box; remote terminals query the remote host; history managers
 like [atuin](https://atuin.sh) plug in through the same alist).
 
-Loading the package also registers hidden sources in the regular
+`consult-ghostel-mode` registers hidden sources in the regular
 `consult-buffer` lists: ghostel buffers stay in the default *Buffer*
-view only, until the `g` narrow key summons them exclusively.  To opt
-out:
-
-```emacs-lisp
-(setq consult-buffer-sources
-      (delq 'consult-ghostel-source-hidden consult-buffer-sources))
-```
-
-The `g` narrow key (or any other source property) can be changed with
+view only, until the `g` narrow key summons them exclusively.  The `g`
+narrow key (or any other source property) can be changed with
 `consult-customize`, e.g.
 `(consult-customize consult-ghostel-source-hidden :narrow ?t)`.
 
-Loading the package also makes `consult-line` match across soft line
-wraps in ghostel buffers: rows joined by wrap newlines become one search
+The mode also makes `consult-line` match across soft line wraps in
+ghostel buffers: rows joined by wrap newlines become one search
 candidate, so a path or command that wrapped mid-word is still found.
 It also adds a `Ghostel` group to `consult-bookmark`, so the `g` narrow
 key restricts the candidates to ghostel bookmarks.

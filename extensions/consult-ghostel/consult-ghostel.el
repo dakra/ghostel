@@ -36,16 +36,12 @@
 ;; the selection into the terminal, completing or replacing the pending
 ;; command line.
 ;;
-;; Loading also registers hidden sources in `consult-buffer' and
-;; `consult-project-buffer' that enable the `g' narrow key: it
-;; restricts the view to ghostel buffers only.  Opt out with:
-;;
-;;   (setq consult-buffer-sources
-;;         (delq 'consult-ghostel-source-hidden consult-buffer-sources))
-;;
-;; Loading this package also makes `consult-line' match across soft
-;; line wraps in ghostel buffers: rows joined by wrap newlines become
-;; one candidate.  It also adds a "Ghostel" group to `consult-bookmark',
+;; `consult-ghostel-mode' wires ghostel into consult's own commands:
+;; it registers hidden sources in `consult-buffer' and
+;; `consult-project-buffer' that enable the `g' narrow key (restricting
+;; the view to ghostel buffers only), makes `consult-line' match across
+;; soft line wraps in ghostel buffers (rows joined by wrap newlines
+;; become one candidate), adds a "Ghostel" group to `consult-bookmark'
 ;; so the `g' narrow key restricts the candidates to ghostel bookmarks.
 ;;
 ;; Enable by adding to your init:
@@ -53,6 +49,7 @@
 ;;   (use-package consult-ghostel
 ;;     :after (ghostel consult)
 ;;     :demand t
+;;     :config (consult-ghostel-mode)
 ;;     :bind (("C-x m" . consult-ghostel)
 ;;            :map project-prefix-map
 ;;            ("m" . consult-ghostel-project)
@@ -152,19 +149,15 @@ Selecting the candidate behaves like \\[universal-argument] `ghostel-project'.")
 (defvar consult-ghostel-source-hidden
   `(:hidden t :narrow (?g . "Ghostel") ,@(copy-sequence consult-ghostel-source))
   "Like `consult-ghostel-source' but hidden by default.
-Registered in `consult-buffer-sources' at load: ghostel buffers stay
-in the default \"Buffer\" view and the `g' narrow key summons them
-exclusively.")
+`consult-ghostel-mode' registers it in `consult-buffer-sources':
+ghostel buffers stay in the default \"Buffer\" view and the `g' narrow
+key summons them exclusively.")
 
 (defvar consult-ghostel-project-source-hidden
   `( :hidden t :narrow (?g . "Ghostel")
      ,@(copy-sequence consult-ghostel-project-source))
   "Like `consult-ghostel-project-source' but hidden by default.
-Registered in `consult-project-buffer-sources' at load.")
-
-(add-to-list 'consult-buffer-sources 'consult-ghostel-source-hidden t)
-(add-to-list 'consult-project-buffer-sources
-             'consult-ghostel-project-source-hidden t)
+`consult-ghostel-mode' registers it in `consult-project-buffer-sources'.")
 
 (defun consult-ghostel--display (buffer &optional norecord)
   "Pop to BUFFER like ghostel's own buffer commands.
@@ -338,30 +331,12 @@ History comes from `ghostel-shell-history-commands'."
 
 ;;; Marginalia integration
 
-(declare-function marginalia-annotate-buffer "marginalia" (cand))
-(defvar marginalia-annotators)
-
 (defun consult-ghostel-marginalia-annotate (cand)
   "Annotate buffer CAND like marginalia, prefixed with the terminal title."
-  (concat (when-let* ((annotation (ghostel-annotate-buffer cand)))
-            (propertize annotation 'face 'marginalia-value))
-          (marginalia-annotate-buffer cand)))
-
-;; The registry variable gates the registration: `marginalia-annotators'
-;; only exists since marginalia 2.1.
-(when (boundp 'marginalia-annotators)
-  ;; Marginalia's own `buffer' annotator takes precedence over the
-  ;; sources' `:annotate', hiding the title, so prepend the title
-  ;; through marginalia's annotator registry instead.
-  (dolist (category '(buffer project-buffer))
-    (cl-pushnew #'consult-ghostel-marginalia-annotate
-                (alist-get category marginalia-annotators))))
-
-;;; consult-bookmark narrowing
-
-(unless (cl-member 'ghostel-bookmark-handler consult-bookmark-narrow
-                   :test #'memq)
-  (push '(?g "Ghostel" ghostel-bookmark-handler) consult-bookmark-narrow))
+  (when (fboundp 'marginalia-annotate-buffer)
+    (concat (when-let* ((annotation (ghostel-annotate-buffer cand)))
+              (propertize annotation 'face 'marginalia-value))
+            (marginalia-annotate-buffer cand))))
 
 ;;; consult-line over logical lines
 
@@ -419,9 +394,6 @@ buffers, call ORIG with TOP and CURR-LINE unchanged."
            (setcdr default-cand nil)
            (nconc before candidates)))))))
 
-(advice-add 'consult--line-candidates :around
-            #'consult-ghostel--line-candidates)
-
 (defun consult-ghostel--wrap-corrected-dest (pos offset)
   "Return the buffer position for OFFSET into POS's wrap-joined line.
 The candidate string has the wrap newlines spliced out while the buffer
@@ -461,8 +433,52 @@ IGNORED-FACES are as for `consult--line-point-placement'."
           (setq dest (move-marker (make-marker) dest buf)))
         (cons dest (cdr matches))))))
 
-(advice-add 'consult--line-point-placement :around
-            #'consult-ghostel--line-point-placement)
+;;; Minor mode
+
+;;;###autoload
+(define-minor-mode consult-ghostel-mode
+  "Wire ghostel into consult's buffer, bookmark, and line commands.
+Registers hidden ghostel sources in `consult-buffer' and
+`consult-project-buffer' (narrow key `g'), a \"Ghostel\" group in
+`consult-bookmark', the terminal-title marginalia annotator, and makes
+`consult-line' match across soft line wraps in ghostel buffers."
+  :global t
+  :group 'ghostel
+  (cond
+   (consult-ghostel-mode
+    (add-to-list 'consult-buffer-sources 'consult-ghostel-source-hidden t)
+    (add-to-list 'consult-project-buffer-sources
+                 'consult-ghostel-project-source-hidden t)
+    (cl-pushnew '(?g "Ghostel" ghostel-bookmark-handler) consult-bookmark-narrow
+                :test #'equal)
+    ;; Marginalia's own `buffer' annotator takes precedence over the
+    ;; sources' `:annotate', hiding the title, so prepend the title
+    ;; through its annotator registry instead (marginalia 2.1+).
+    (when (boundp 'marginalia-annotators)
+      (dolist (category '(buffer project-buffer))
+        (cl-pushnew #'consult-ghostel-marginalia-annotate
+                    (alist-get category marginalia-annotators))))
+    (advice-add 'consult--line-candidates :around
+                #'consult-ghostel--line-candidates)
+    (advice-add 'consult--line-point-placement :around
+                #'consult-ghostel--line-point-placement))
+   (t
+    (setq consult-buffer-sources
+          (delq 'consult-ghostel-source-hidden consult-buffer-sources))
+    (setq consult-project-buffer-sources
+          (delq 'consult-ghostel-project-source-hidden
+                consult-project-buffer-sources))
+    (setq consult-bookmark-narrow
+          (remove '(?g "Ghostel" ghostel-bookmark-handler) consult-bookmark-narrow))
+    (when (boundp 'marginalia-annotators)
+      (dolist (category '(buffer project-buffer))
+        (setf (alist-get category marginalia-annotators)
+              (delq #'consult-ghostel-marginalia-annotate
+                    (alist-get category marginalia-annotators)))))
+    (advice-remove 'consult--line-candidates
+                   #'consult-ghostel--line-candidates)
+    (advice-remove 'consult--line-point-placement
+                   #'consult-ghostel--line-point-placement))))
 
 (provide 'consult-ghostel)
 ;;; consult-ghostel.el ends here

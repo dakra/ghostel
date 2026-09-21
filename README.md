@@ -129,8 +129,7 @@ with a prefix argument the pickers behave like `ghostel` / `ghostel-project`
 
 ```emacs-lisp
 (use-package consult-ghostel
-  :after (ghostel consult)
-  :demand t
+  :hook (after-init . consult-ghostel-mode)
   :bind (("C-x m" . consult-ghostel)
          :map project-prefix-map
          ("m" . consult-ghostel-project)
@@ -150,9 +149,9 @@ shell's entry in `ghostel-shell-history-commands` at it, e.g. for
       "atuin history list --cmd-only --print0 --reverse false")
 ```
 
-Loading consult-ghostel also adds a `Ghostel` group to `consult-bookmark`
-(narrow with `g`) and makes `consult-line` match across soft line wraps in
-ghostel buffers.
+`consult-ghostel-mode` adds a `Ghostel` group to `consult-bookmark` (narrow
+with `g`), hidden ghostel sources to `consult-buffer`, and makes `consult-line`
+match across soft line wraps in ghostel buffers.
 
 ## Evil
 If you're an evil user you can install the [evil-ghostel](https://melpa.org/#/evil-ghostel) extension:
