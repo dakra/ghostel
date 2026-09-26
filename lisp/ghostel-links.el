@@ -32,6 +32,7 @@
 (require 'thingatpt)
 
 (declare-function ghostel--enter-readonly-input-mode "ghostel")
+(declare-function ghostel--local-host-p "ghostel" (host))
 (defvar ghostel--input-mode)
 (defvar ghostel--cursor-char-pos)
 
@@ -165,7 +166,7 @@ For `eldoc-documentation-functions'."
 
 (defun ghostel--open-link (url)
   "Open URL, dispatching by scheme.
-file:// URIs open in Emacs; http(s) and other schemes use `browse-url'.
+Local file: URIs open in Emacs; non-local URIs use `browse-url'.
 fileref: URIs (from auto-detected file[:line[:col]] patterns) open
 the file at the given position in another window.  A fileref without
 a line suffix opens at the start of the file or directory."
@@ -183,8 +184,19 @@ a line suffix opens at the start of the file or directory."
             (goto-char (point-min))
             (forward-line (1- (max 1 line)))
             (when col (move-to-column (max 0 (1- col))))))))
-     ((string-match "\\`file://\\(?:localhost\\)?\\(/.*\\)" url)
-      (find-file (url-unhex-string (match-string 1 url))))
+     ((let ((case-fold-search t))
+        (string-match "\\`file:\\(?://\\([^/]*\\)\\)?\\(/[^?#]*\\)" url))
+      (let* ((host (match-string 1 url))
+             (path (match-string 2 url))
+             (file (decode-coding-string
+                    (url-unhex-string (encode-coding-string path 'utf-8) t)
+                    'utf-8-unix)))
+        (if (ghostel--local-host-p host)
+            (find-file (if (and (eq system-type 'windows-nt)
+                                (string-match-p "\\`/[[:alpha:]]:/" file))
+                           (substring file 1)
+                         file))
+          (browse-url url))))
      ((string-match-p "\\`[a-z]+://" url)
       (browse-url url)))))
 
