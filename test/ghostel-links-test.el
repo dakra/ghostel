@@ -157,6 +157,33 @@ row.  Navigation should land on the link only once, not on each chunk."
   (should (null (ghostel--open-link nil)))                 ; open-link returns nil for empty
   (should (null (ghostel--open-link 42))))
 
+(ert-deftest ghostel-test-open-file-uri-paths ()
+  "Local file URIs use their own drive on Windows, not the current one."
+  (let ((default-directory "Q:/")
+        opened)
+    (cl-letf (((symbol-function 'find-file)
+               (lambda (file) (setq opened (cons 'file file))))
+              ((symbol-function 'browse-url)
+               (lambda (url) (setq opened (cons 'browse url)))))
+      (dolist (case `((windows-nt "file:///C:/Users/tester/report.html"
+                                 (file . "C:/Users/tester/report.html"))
+                     (windows-nt "file://localhost/c:/a%20b.html"
+                                 (file . "c:/a b.html"))
+                     (windows-nt "FILE://LOCALHOST/D:/caf%C3%A9%23.html#section"
+                                 (file . "D:/caf\u00e9#.html"))
+                     (windows-nt ,(concat "file://" (system-name) "/E:/file.txt")
+                                 (file . "E:/file.txt"))
+                     (windows-nt "file:/F:/file.txt" (file . "F:/file.txt"))
+                     (windows-nt "file:///root/file.txt"
+                                 (file . "/root/file.txt"))
+                     (windows-nt "file://otherhost/share/file.txt"
+                                 (browse . "file://otherhost/share/file.txt"))
+                     (gnu/linux "file:///C:/file.txt" (file . "/C:/file.txt"))))
+        (let ((system-type (car case)))
+          (setq opened nil)
+          (ghostel--open-link (cadr case))
+          (should (equal opened (caddr case))))))))
+
 (ert-deftest ghostel-test-uri-at-pos-returns-string-help-echo ()
   "`ghostel--uri-at-pos' returns a string `help-echo'."
   (with-temp-buffer
