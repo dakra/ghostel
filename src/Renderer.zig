@@ -36,6 +36,8 @@ rendered_screen: ScreenId,
 
 /// Pin of the last rendered cursor position
 rendered_cursor: ?gt.Pin,
+/// Column of the last rendered cursor (for intra-row movement detection)
+rendered_cursor_x: u16 = 0,
 
 /// Number of libghostty rows already materialized into the Emacs buffer.
 rows_in_buffer: usize = 0,
@@ -927,11 +929,16 @@ fn isRowDirty(self: *Self, pin: gt.Pin) bool {
     if (pin.isDirty()) return true;
 
     const cursor: ?gt.Pin = self.term.screens.active.cursor.page_pin.*;
+    const cursor_x = self.term.screens.active.cursor.x;
 
     // Cursor movement requires rebuilding both the previous and current cursor rows.
     if (!std.meta.eql(cursor, self.rendered_cursor)) {
         if (cursor) |c| if (isSameRow(c, pin)) return true;
         if (self.rendered_cursor) |c| if (isSameRow(c, pin)) return true;
+    } else if (cursor_x != self.rendered_cursor_x) {
+        // Cursor moved within the same row (column only) — pin unchanged but
+        // the row must be re-rendered so cursor_char_pos is updated correctly.
+        if (cursor) |c| if (isSameRow(c, pin)) return true;
     }
 
     return false;
@@ -1008,6 +1015,7 @@ fn renderCursor(self: *Self, env: emacs.Env) !void {
     const screen = self.term.screens.active;
     _ = env.set("ghostel--cursor-pos", env.cons(screen.cursor.x, screen.cursor.y));
     self.rendered_cursor = screen.cursor.page_pin.*;
+    self.rendered_cursor_x = screen.cursor.x;
 
     if (self.term.modes.get(.cursor_visible)) {
         env.set(
