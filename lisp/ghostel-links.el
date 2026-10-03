@@ -747,6 +747,68 @@ single newlines whose neighbor continues the same link."
                     (setq end (1+ end)))))
       (cons beg end))))
 
+(defvar ghostel--link-hover-target nil
+  "The hyperlink under the mouse, as (WINDOW ID URI WINDOW-START), or nil.")
+
+(defvar ghostel--link-hover-overlays nil
+  "Overlays highlighting every fragment of the hovered hyperlink.")
+
+(defun ghostel--link-hover (help)
+  "Highlight every visible fragment of the hyperlink under the mouse.
+HELP is the `help-echo' string the tooltip functions get, nil once
+the mouse leaves it.  Unlike `mouse-face', this covers fragments on
+other rows sharing the URI and `ghostel-link-id'."
+  (let ((target
+         (when-let* (((stringp help))
+                     (mouse (mouse-pixel-position))
+                     ((natnump (cadr mouse)))
+                     ((natnump (cddr mouse)))
+                     (posn (posn-at-x-y (cadr mouse) (cddr mouse) (car mouse)))
+                     ((null (posn-area posn)))
+                     (win (posn-window posn))
+                     ((windowp win))
+                     (pos (posn-point posn))
+                     (buf (window-buffer win))
+                     ;; POS comes from the last redisplay; the buffer
+                     ;; may have shrunk since.
+                     ((<= pos (buffer-size buf)))
+                     (id (get-text-property pos 'ghostel-link-id buf)))
+           (list win id (get-text-property pos 'help-echo buf)
+                 (window-start win)))))
+    ;; Every mouse motion over a link lands here.
+    (unless (equal target ghostel--link-hover-target)
+      (setq ghostel--link-hover-target target)
+      (ghostel--link-hover-highlight))))
+
+(defun ghostel--link-hover-scrolled (window start)
+  "Drop the hover highlight when WINDOW scrolls to START.
+For `window-scroll-functions': scrolling moves the link away from the
+mouse without a new help event.  Redraws run this hook with START unchanged."
+  (when (and (eq window (car ghostel--link-hover-target))
+             (/= start (nth 3 ghostel--link-hover-target)))
+    (ghostel--link-hover nil)))
+
+(defun ghostel--link-hover-highlight ()
+  "Overlay `highlight' on the visible fragments of the hovered hyperlink.
+Rerun after a redraw, which replaces the text the overlays covered."
+  (mapc #'delete-overlay ghostel--link-hover-overlays)
+  (setq ghostel--link-hover-overlays nil)
+  (pcase-let ((`(,win ,id ,uri) ghostel--link-hover-target))
+    (when (window-live-p win)
+      (with-current-buffer (window-buffer win)
+        (let ((beg (window-start win))
+              (end (window-end win)))
+          (while (< beg end)
+            (let ((next (next-single-property-change beg 'ghostel-link-id
+                                                     nil end)))
+              (when (and (equal id (get-text-property beg 'ghostel-link-id))
+                         (equal uri (get-text-property beg 'help-echo)))
+                (let ((ov (make-overlay beg next)))
+                  (overlay-put ov 'face 'highlight)
+                  (overlay-put ov 'window win)
+                  (push ov ghostel--link-hover-overlays)))
+              (setq beg next))))))))
+
 (defun ghostel--bounds-of-file-link-at-point ()
   "Bounds of the detected file link at point, or nil.
 For `bounds-of-thing-at-point-provider-alist'."
@@ -865,7 +927,11 @@ stopped on is output rather than a prompt to leave alone."
                           (existing-filename . ghostel--bounds-of-file-link-at-point)
                           (url . ghostel--bounds-of-url-link-at-point))
                         bounds-of-thing-at-point-provider-alist)))
-  (add-hook 'file-name-at-point-functions #'ghostel--fileref-file-at-point nil t))
+  (add-hook 'file-name-at-point-functions #'ghostel--fileref-file-at-point nil t)
+  (add-hook 'window-scroll-functions #'ghostel--link-hover-scrolled nil t)
+  ;; Advise the functions, not the variable: `tooltip-mode' resets it.
+  (advice-add 'tooltip-show-help :before #'ghostel--link-hover)
+  (advice-add 'tooltip-show-help-non-mode :before #'ghostel--link-hover))
 
 (provide 'ghostel-links)
 ;;; ghostel-links.el ends here

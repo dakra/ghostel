@@ -4768,6 +4768,10 @@ them during synchronized output or when BUFFER has no render window."
                     (message
                      "ghostel: line-mode prompt lost; input forwarded raw"))))
               (when rendered (ghostel--deactivate-repainted-region))
+              (when (and rendered ghostel--link-hover-target
+                         (eq (window-buffer (car ghostel--link-hover-target))
+                             (current-buffer)))
+                (ghostel--link-hover-highlight))
               (ghostel--schedule-link-detection))
             ;; Resume line mode if alt-screen just turned off, and update the
             ;; alt-screen-prev cache for the next cycle.

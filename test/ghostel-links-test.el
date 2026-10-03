@@ -106,6 +106,65 @@ row.  Navigation should land on the link only once, not on each chunk."
                                           ;; and lands on chunk1, the URL's first chunk.
                                           (should (equal chunk1 (ghostel--find-previous-link other)))))))
 
+(ert-deftest ghostel-test-osc8-hover-highlights-all-fragments ()
+  "Hovering one OSC 8 fragment highlights every fragment with its URI and id.
+The highlight survives a redraw of the link rows and clears on leave."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buf term 5 80 1000)
+                                      (let ((inhibit-read-only t)
+                                            (win (selected-window))
+                                            (ghostel--link-hover-target nil)
+                                            (ghostel--link-hover-overlays nil)
+                                            (native-comp-enable-subr-trampolines nil)
+                                            (mouse '(0 . 0))
+                                            hover)
+                                        (ghostel--write-vt
+                                         term
+                                         (concat
+                                          "\e]8;id=7;https://wrapped.example\e\\https://wra\e]8;;\e\\\r\n"
+                                          "  \e]8;id=7;https://wrapped.example\e\\pped.example\e]8;;\e\\ "
+                                          "\e]8;id=8;https://wrapped.example\e\\other\e]8;;\e\\ "
+                                          "\e]8;id=7;https://decoy.example\e\\decoy\e]8;;\e\\"))
+                                        (ghostel--redraw term t)
+                                        (set-window-buffer win buf)
+                                        (goto-char (point-min))
+                                        (setq hover (1+ (search-forward "pped")))
+                                        (cl-letf (((symbol-function 'mouse-pixel-position)
+                                                   (lambda () (cons (selected-frame) mouse)))
+                                                  ((symbol-function 'posn-at-x-y)
+                                                   (lambda (x y &rest _)
+                                                     (cl-check-type x natnum)
+                                                     (cl-check-type y natnum)
+                                                     (list win hover '(0 . 0) 0 nil hover))))
+                                          (let ((highlighted
+                                                 (lambda ()
+                                                   (sort (mapcar (lambda (ov)
+                                                                   (buffer-substring (overlay-start ov)
+                                                                                     (overlay-end ov)))
+                                                                 ghostel--link-hover-overlays)
+                                                         #'string<))))
+                                            (ghostel--link-hover "https://wrapped.example")
+                                            (should (equal '("https://wra" "pped.example")
+                                                           (funcall highlighted)))
+                                            ;; Repaint both link rows: cursor up onto row 1, then print.
+                                            (ghostel--write-vt term "\e[1;30HX\e[2;40HY")
+                                            (ghostel--redraw-now buf t)
+                                            (should (equal '("https://wra" "pped.example")
+                                                           (funcall highlighted)))
+                                            ;; The hook also runs with an unchanged start after a redraw.
+                                            (ghostel--link-hover-scrolled win (window-start win))
+                                            (should (funcall highlighted))
+                                            (ghostel--link-hover-scrolled win (1+ (window-start win)))
+                                            (should-not (funcall highlighted))
+                                            ;; Above the frame (menu-bar hover on macOS): no error.
+                                            (setq mouse '(10 . -20))
+                                            (ghostel--link-hover "menu help")
+                                            (setq mouse '(0 . 0))
+                                            (ghostel--link-hover "https://wrapped.example")
+                                            (ghostel--link-hover nil)
+                                            (should-not (seq-some (lambda (ov) (overlay-get ov 'face))
+                                                                  (overlays-in (point-min) (point-max)))))))))
+
 (ert-deftest ghostel-test-osc8-help-echo-two-links ()
   "OSC8 links store the correct URI string on each `help-echo'."
   :tags '(native)
