@@ -54,6 +54,15 @@
   :type 'integer
   :group 'ghostel)
 
+(defcustom ghostel-line-mode-send-functions nil
+  "Abnormal hook run by `ghostel-line-mode-send' before the input is sent.
+Each function is called with the input text while it is still in the buffer.
+The first one returning non-nil has taken over, and the input is neither
+deleted nor sent.  A function that decides to send after
+all calls `ghostel-line-mode-send-input' itself."
+  :type 'hook
+  :group 'ghostel)
+
 (defcustom ghostel-line-mode-completion-at-point-functions
   '(comint-completion-at-point)
   "Capfs activated for \\=`TAB\\=' in `ghostel-line-mode'.
@@ -707,27 +716,33 @@ accept the same CR as `accept-line'."
   (unless (eq ghostel--input-mode 'line)
     (user-error "Not in line mode"))
   (let ((input (ghostel--line-mode-input-text)))
-    (ghostel--line-mode-delete-input)
-    (when (and (> (length input) 0)
-               (or (null ghostel--line-mode-history)
-                   (not (string= input (car ghostel--line-mode-history)))))
-      (push input ghostel--line-mode-history)
-      (when (> (length ghostel--line-mode-history)
-               ghostel-line-mode-history-size)
-        (setcdr (nthcdr (1- ghostel-line-mode-history-size)
-                        ghostel--line-mode-history)
-                nil)))
-    (setq ghostel--line-mode-history-index nil)
-    ;; Erase any prefix the shell already had in its readline buffer
-    ;; (adopted on line-mode entry) before sending — otherwise the
-    ;; shell would concatenate ours after that prefix and echo a
-    ;; duplicated line.
-    (ghostel--line-mode-clear-shell-readline)
-    (when (> (length input) 0)
-      (ghostel--write-pty ghostel--term input))
-    (ghostel--send-encoded "return" "")
-    ;; Drop this line's undo history so the next line starts clean.
-    (setq buffer-undo-list nil)))
+    (unless (run-hook-with-args-until-success
+             'ghostel-line-mode-send-functions input)
+      (ghostel-line-mode-send-input input))))
+
+(defun ghostel-line-mode-send-input (input)
+  "Delete the line-mode input region and write INPUT plus Return to the PTY.
+Bypasses `ghostel-line-mode-send-functions'."
+  (ghostel--line-mode-delete-input)
+  (when (and (> (length input) 0)
+             (or (null ghostel--line-mode-history)
+                 (not (string= input (car ghostel--line-mode-history)))))
+    (push input ghostel--line-mode-history)
+    (when (> (length ghostel--line-mode-history)
+             ghostel-line-mode-history-size)
+      (setcdr (nthcdr (1- ghostel-line-mode-history-size)
+                      ghostel--line-mode-history)
+              nil)))
+  (setq ghostel--line-mode-history-index nil)
+  ;; Erase any prefix the shell already had in its readline buffer
+  ;; (adopted on line-mode entry) before sending, otherwise the shell
+  ;; would concatenate ours after that prefix and echo a duplicated line.
+  (ghostel--line-mode-clear-shell-readline)
+  (when (> (length input) 0)
+    (ghostel--write-pty ghostel--term input))
+  (ghostel--send-encoded "return" "")
+  ;; Drop this line's undo history so the next line starts clean.
+  (setq buffer-undo-list nil))
 
 (defun ghostel-line-mode-interrupt ()
   "Discard local input and send SIGINT (\\`C-c') to the shell.

@@ -350,6 +350,43 @@ but the cursor is at the end of the REPL's prompt."
             (should (equal encoded "return"))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-line-mode-send-functions-take-over ()
+  "A non-nil `ghostel-line-mode-send-functions' result keeps the input unsent.
+The function sees the input text; a nil result falls through to the PTY."
+  (let ((buf (generate-new-buffer " *ghostel-test-line-send-functions*"))
+        (sent nil)
+        (seen nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (ghostel-test--insert-rendered ">>> \n")
+          (setq ghostel--term 'fake)
+          (setq ghostel--term-rows 1)
+          (setq ghostel--process 'fake-proc)
+          (cl-letf (((symbol-function 'ghostel--alt-screen-p)
+                     (lambda (&rest _) nil))
+                    (ghostel--cursor-char-pos 4)
+                    ((symbol-function 'process-live-p) (lambda (_p) t))
+                    ((symbol-function 'ghostel--write-pty)
+                     (lambda (_term s) (setq sent s)))
+                    ((symbol-function 'ghostel--send-encoded) #'ignore)
+                    ((symbol-function 'ghostel--redraw) #'ignore)
+                    ((symbol-function 'ghostel--invalidate) #'ignore))
+            (ghostel-line-mode)
+            (goto-char (marker-position ghostel--line-input-end))
+            (insert "1+1")
+            (let ((ghostel-line-mode-send-functions
+                   (list (lambda (input) (setq seen input) t))))
+              (ghostel-line-mode-send))
+            (should (equal seen "1+1"))
+            (should-not sent)
+            (should (equal (ghostel--line-mode-input-text) "1+1"))
+            (let ((ghostel-line-mode-send-functions (list #'ignore)))
+              (ghostel-line-mode-send))
+            (should (equal sent "1+1"))
+            (should (equal (ghostel--line-mode-input-text) ""))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-copy-to-line-restarts-redraw-timer ()
   "Copy → line transition re-arms the redraw timer.
 Copy mode freezes the timer; line mode is live, so redraws must resume
