@@ -4,17 +4,56 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.57.0] — 2026-10-09
+
 ### Added
+- Foreground-process detection without shell integration: the new
+  `ghostel-foreground-pid` reports the PTY's foreground process-group id
+  (via `tcgetpgrp` on the native path, `process-running-child-p` on the
+  Emacs PTY path), and `ghostel-command-running-p` combines it with the
+  OSC 133 command state.
+- New abnormal hook `ghostel-foreground-change-functions`, called with
+  the buffer, process-group id, and process name whenever the PTY's
+  foreground process group changes — e.g. to run elisp when a specific
+  program starts or exits in the terminal.
+- `ghostel-line-mode-send-functions`, run by `ghostel-line-mode-send`
+  with the input while it is still in the buffer.  A function returning
+  non-nil takes over; it can send later with
+  `ghostel-line-mode-send-input`.
 - `ghostel-prompt-navigation-input-mode` accepts nil to keep prompt
   navigation in the current input mode.
 - `ghostel-readonly-enter-hook`, run after entering copy or Emacs mode.
 
 ### Changed
+- `ghostel-query-before-killing`'s `auto` setting no longer requires
+  OSC 133 shell integration: it asks whenever something other than the
+  shell holds the foreground, including an ssh client or nested shell
+  at its prompt.  This also gates the `save-buffers-kill-emacs`
+  confirmation.  A program run directly (`ghostel-exec`,
+  `ghostel-compile`) is the baseline itself, so only its own children
+  count.  Remote (TRAMP) commands still need OSC 133.
+- A bookmark jump types `cd` into a reused shell, and consult-ghostel
+  inserts history, only while the shell itself holds the foreground, so
+  neither types into an ssh client or nested shell.  Shell integration
+  is no longer required.
+- consult-ghostel: loading the package no longer registers anything.
+  Enable the new global `consult-ghostel-mode` for the hidden
+  `consult-buffer` sources, the `consult-bookmark` group, the marginalia
+  annotator, and wrap-tolerant `consult-line`.
+- `file://HOST/PATH` links to a remote host open over TRAMP instead of
+  `browse-url`.  File links open in another window.
 - Exiting copy or Emacs mode always leaves read-only mode, even after
   switching between the two, so a key typed in copy mode entered from
   Emacs mode reaches the terminal.
 
 ### Fixed
+- Non-ASCII blanks (NBSP, ideographic space) and hyphens render with the
+  terminal's colors instead of Emacs's `nobreak-space` /
+  `nobreak-hyphen` highlight.
+- An oversized icon no longer claims the following cell when the cursor
+  sits there or the space is visibly styled.
+- Windows: `file:` URIs with a drive letter (`file:///C:/…`) open on that
+  drive; the path is percent-decoded as UTF-8.
 - evil-ghostel: entering insert state from copy or Emacs mode returns to
   the terminal, at point's column when point is on the cursor row, instead
   of leaving a read-only buffer.  In normal state, prompt jumps (`[[`,
@@ -38,24 +77,6 @@ All notable changes to this project will be documented in this file.
   and slant, so softening `bold` for a light default face reaches
   terminal output.
   Fixes [#700](https://github.com/dakra/ghostel/issues/700).
-- Foreground-process detection without shell integration: the new
-  `ghostel-foreground-pid` reports the PTY's foreground process-group id
-  (via `tcgetpgrp` on the native path, `process-running-child-p` on the
-  Emacs PTY path), and `ghostel-command-running-p` combines it with the
-  OSC 133 command state.
-- New abnormal hook `ghostel-foreground-change-functions`, called with
-  the buffer, process-group id, and process name whenever the PTY's
-  foreground process group changes — e.g. to run elisp when a specific
-  program starts or exits in the terminal.
-
-### Changed
-- `ghostel-query-before-killing`'s `auto` setting no longer requires
-  OSC 133 shell integration: it asks whenever something other than the
-  shell holds the foreground, including an ssh client or nested shell
-  at its prompt.  This also gates the `save-buffers-kill-emacs`
-  confirmation.  A program run directly (`ghostel-exec`,
-  `ghostel-compile`) is the baseline itself, so only its own children
-  count.  Remote (TRAMP) commands still need OSC 133.
 
 ### Fixed
 - Kitty graphics placements with a source rect (`x`, `y`, `w`, `h`) show
