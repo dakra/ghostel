@@ -133,29 +133,29 @@ modes (47 / 1047 / 1049) are handled uniformly."
   "Test `ghostel--cursor-pos' set to correct (COL . ROW)."
   :tags '(native)
   (let ((term (ghostel--new 25 80 1000)))
-    (ghostel--redraw term)
+    (ghostel-test--redraw term)
 
     ;; Origin
     (should (equal '(0 . 0) ghostel--cursor-pos))
 
     ;; After writing text
     (ghostel--write-vt term "hello")
-    (ghostel--redraw term)
+    (ghostel-test--redraw term)
     (should (equal '(5 . 0) ghostel--cursor-pos))
 
     ;; After cursor movement
     (ghostel--write-vt term "\e[3D")
-    (ghostel--redraw term)
+    (ghostel-test--redraw term)
     (should (equal '(2 . 0) ghostel--cursor-pos))
 
     ;; After CRLF — cursor on row 1 at column 0
     (ghostel--write-vt term "\r\nworld")
-    (ghostel--redraw term)
+    (ghostel-test--redraw term)
     (should (equal '(5 . 1) ghostel--cursor-pos))
 
     ;; Absolute positioning
     (ghostel--write-vt term "\e[4;6H")
-    (ghostel--redraw term)
+    (ghostel-test--redraw term)
     (should (equal '(5 . 3) ghostel--cursor-pos))))
 
 (ert-deftest ghostel-test-redraw-publishes-cursor-style-buffer-locals ()
@@ -165,7 +165,7 @@ modes (47 / 1047 / 1049) are handled uniformly."
     (let ((term (ghostel--new 25 80 1000)))
       (setq-local cursor-type 'box)
       (ghostel--write-vt term "\e[?25l")
-      (ghostel--redraw term)
+      (ghostel-test--redraw term)
       (should-not ghostel--cursor-style)
       (should (equal cursor-type 'box)))))
 

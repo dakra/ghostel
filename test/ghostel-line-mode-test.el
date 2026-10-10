@@ -74,7 +74,7 @@ not clobbered."
       ;; Exit cleans up state.
       (ghostel-semi-char-mode)
       (should-not (text-property-any (point-min) (point-max)
-                                     'read-only t)))))
+                                     'rear-nonsticky nil)))))
 
 (ert-deftest ghostel-test-mouse-1-drag-no-tracking-line-mode-no-copy-mode ()
   "Drag-end in line mode does not enter copy mode.
@@ -108,12 +108,12 @@ available (unit tests, native module not loaded)."
     (insert "plain text")
     (should-not (ghostel-input-start-point))
     ;; With prompt property
-    (erase-buffer)
+    (ghostel-test--with-rendered-output (erase-buffer))
     (ghostel-test--insert-rendered (propertize "$ " 'ghostel-prompt t))
     (insert "")  ; cursor right after prompt
     (should (= (ghostel-input-start-point) 3))
     ;; With prompt property followed by user-typed content
-    (erase-buffer)
+    (ghostel-test--with-rendered-output (erase-buffer))
     (ghostel-test--insert-rendered (propertize "$ " 'ghostel-prompt t))
     (insert "ls -la")
     (should (= (ghostel-input-start-point) 3))))
@@ -508,9 +508,9 @@ preserved."
               (should-not (string-match-p "ls" (buffer-string)))
               ;; Input region was extracted from the buffer.
               (should-not (markerp ghostel--line-input-start))
-              ;; Read-only props from line-mode entry are gone.
+              ;; The scrollback is rear-nonsticky again after line mode.
               (should-not (text-property-any (point-min) (point-max)
-                                             'read-only t)))))
+                                             'rear-nonsticky nil)))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-line-mode-resumes-on-alt-screen-off ()
@@ -1154,9 +1154,9 @@ user can continue editing at the shell prompt."
               ;; The abandoned input is gone from the buffer.
               (should-not (string-match-p "abandoned"
                                           (buffer-string)))
-              ;; The read-only property is cleared too.
+              ;; The scrollback is rear-nonsticky again too.
               (should-not (text-property-any (point-min) (point-max)
-                                             'read-only t)))))
+                                             'rear-nonsticky nil)))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-line-mode-scrollback-read-only ()
@@ -1193,10 +1193,10 @@ normally."
               (goto-char (marker-position ghostel--line-input-start))
               (insert "ls")
               (should (equal (ghostel--line-mode-input-text) "ls"))
-              ;; Exit: the read-only property goes away.
+              ;; Exit: the scrollback is rear-nonsticky again.
               (ghostel-semi-char-mode)
               (should-not (text-property-any (point-min) (point-max)
-                                             'read-only t)))))
+                                             'rear-nonsticky nil)))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-line-mode-self-insert-snaps-from-scrollback ()
@@ -1546,7 +1546,7 @@ ambiguous)."
                 ;; preamble.
                 (ghostel-test--with-rendered-output
                   (erase-buffer)
-                  (insert "background line\n")
+                  (ghostel-test--insert-rendered "background line\n")
                   (ghostel-test--insert-rendered (propertize "$ " 'ghostel-prompt t)))
                 (should (ghostel--line-mode-restore snap))
                 ;; Input is back, marker points at the new prompt-end.
@@ -1703,7 +1703,10 @@ instead of being discarded."
                          (marker-position ghostel--line-input-end)))
               ;; The adopted span carries `ghostel-input'.
               (let ((start (marker-position ghostel--line-input-start)))
-                (should (eq (get-text-property start 'ghostel-input) t))))))
+                (should (eq (get-text-property start 'ghostel-input) t)))
+              ;; Adopted text is editable.
+              (delete-char -1)
+              (should (equal (ghostel--line-mode-input-text) "cd sr")))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-line-mode-preserves-status-below-prompt ()

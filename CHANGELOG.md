@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Looping deletion commands such as `delete-indentation` no longer hang
+  Emacs in live terminal-input modes.  Rendered text carries the
+  `read-only` text property, so a foreign deletion signals
+  `text-read-only`; insertions between rendered characters are still
+  forwarded to the PTY.  `kill-region` on terminal text copies to the
+  kill ring and then signals.
+
 ## [0.57.0] — 2026-10-09
 
 ### Added

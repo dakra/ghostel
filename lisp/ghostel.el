@@ -1788,26 +1788,16 @@ Also suppresses automatic input-mode switching (point-leave, mark-activation).")
        (not (run-hook-with-args-until-success
              'ghostel-inhibit-input-forwarding-functions))))
 
-(defun ghostel--forward-inserts-after-change (beg end old-len)
+(defun ghostel--forward-inserts-after-change (beg end _old-len)
   "Forward a foreign insertion BEG..END to the PTY and remove it from the buffer.
-Text containing a line break is sent as a bracketed paste.  An edit that removed
-renderer-owned text (OLD-LEN non-zero) is instead repaired by a full redraw
-restoring the terminal contents, with point realigned to the VT cursor."
-  (when (ghostel--forward-inserts-p)
-    (if (> old-len 0)
-        (progn
-          (ghostel--redraw ghostel--term t t)
-          (ghostel--schedule-link-detection)
-          ;; The reverted edit must not move point either; realign it.
-          (when ghostel--cursor-char-pos
-            (goto-char ghostel--cursor-char-pos)))
-      (when (> end beg)
-        (let ((text (buffer-substring-no-properties beg end)))
-          (delete-region beg end)
-          (ghostel--on-user-input)
-          (if (string-match-p "[\n\r]" text)
-              (ghostel--paste-text text)
-            (ghostel--send-string (encode-coding-string text 'utf-8))))))))
+Text containing a line break is sent as a bracketed paste."
+  (when (and (> end beg) (ghostel--forward-inserts-p))
+    (let ((text (buffer-substring-no-properties beg end)))
+      (delete-region beg end)
+      (ghostel--on-user-input)
+      (if (string-match-p "[\n\r]" text)
+          (ghostel--paste-text text)
+        (ghostel--send-string (encode-coding-string text 'utf-8))))))
 
 (defun ghostel--sync-read-only ()
   "Set `buffer-read-only' from the terminal state.
@@ -2888,11 +2878,15 @@ These are newlines with the `ghostel-wrap' text property."
     (string-join (nreverse chunks))))
 
 (defun ghostel--clean-copy-text (text)
-  "Clean TEXT for copying: remove soft-wrap newlines, strip trailing whitespace."
+  "Clean TEXT for copying: remove soft-wrap newlines, strip trailing whitespace.
+Strip the renderer's protection properties so yanked text is editable."
   (let* ((unwrapped (ghostel--filter-soft-wraps text))
          (lines (split-string unwrapped "\n"))
-         (trimmed (mapcar (lambda (line) (string-trim-right line)) lines)))
-    (mapconcat #'identity trimmed "\n")))
+         (trimmed (mapcar (lambda (line) (string-trim-right line)) lines))
+         (copy (mapconcat #'identity trimmed "\n")))
+    (remove-list-of-text-properties 0 (length copy)
+                                    '(read-only rear-nonsticky) copy)
+    copy))
 
 (defun ghostel--filter-buffer-substring (beg end delete)
   "Filter Ghostel buffer text between BEG and END for copying.
@@ -5196,11 +5190,10 @@ may change freely (`ghostel-compile' finalize relies on this)."
   ;; The terminal renderer owns the buffer contents.  Read-only until
   ;; a process spawn runs `ghostel--sync-read-only'.
   (setq buffer-read-only t)
-  ;; Live terminal-input modes clear `buffer-read-only' and instead
-  ;; intercept foreign edits here: insertions are forwarded to the PTY,
-  ;; deletions repaired by a redraw; see `ghostel--sync-read-only'.
-  ;; Depth 90 so other hook members still see an insertion before the
-  ;; forwarding removes it.
+  ;; Live terminal-input modes clear `buffer-read-only'; rendered text stays
+  ;; protected by its `read-only' property and insertions are forwarded to
+  ;; the PTY here (see `ghostel--sync-read-only').  Depth 90 so other hook
+  ;; members still see an insertion before the forwarding removes it.
   (add-hook 'after-change-functions
             #'ghostel--forward-inserts-after-change 90 t)
   (setq-local scroll-margin 0)
