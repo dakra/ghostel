@@ -1019,6 +1019,10 @@ local code should not assume it is signalable unless the process is local.")
 (defvar-local ghostel--force-next-redraw nil
   "When non-nil, redraw regardless of synchronized output mode.")
 
+(defvar-local ghostel--repair-pending nil
+  "Non-nil after a foreign edit removed rendered text.
+The next redraw is full and realigns point to the terminal cursor.")
+
 (defvar-local ghostel--last-send-time nil
   "Time of the last `ghostel--send-string' call, for immediate-redraw detection.")
 
@@ -1791,23 +1795,33 @@ Also suppresses automatic input-mode switching (point-leave, mark-activation).")
 (defun ghostel--forward-inserts-after-change (beg end old-len)
   "Forward a foreign insertion BEG..END to the PTY and remove it from the buffer.
 Text containing a line break is sent as a bracketed paste.  An edit that removed
-renderer-owned text (OLD-LEN non-zero) is instead repaired by a full redraw
-restoring the terminal contents, with point realigned to the VT cursor."
+renderer-owned text (OLD-LEN non-zero) is repaired by a full redraw after the
+current command; insertions made meanwhile are dropped with it."
   (when (ghostel--forward-inserts-p)
-    (if (> old-len 0)
-        (progn
-          (ghostel--redraw ghostel--term t t)
-          (ghostel--schedule-link-detection)
-          ;; The reverted edit must not move point either; realign it.
-          (when ghostel--cursor-char-pos
-            (goto-char ghostel--cursor-char-pos)))
-      (when (> end beg)
-        (let ((text (buffer-substring-no-properties beg end)))
-          (delete-region beg end)
-          (ghostel--on-user-input)
-          (if (string-match-p "[\n\r]" text)
-              (ghostel--paste-text text)
-            (ghostel--send-string (encode-coding-string text 'utf-8))))))))
+    (cond
+     ((> old-len 0) (ghostel--schedule-repair))
+     (ghostel--repair-pending nil)
+     ((> end beg)
+      (let ((text (buffer-substring-no-properties beg end)))
+        (delete-region beg end)
+        (ghostel--on-user-input)
+        (if (string-match-p "[\n\r]" text)
+            (ghostel--paste-text text)
+          (ghostel--send-string (encode-coding-string text 'utf-8))))))))
+
+(defun ghostel--schedule-repair ()
+  "Repair foreign-deleted rendered text after the current command.
+Deferred so a looping deletion command can finish;
+`ghostel--pending-redraw' covers a deletion made outside a command."
+  (setq ghostel--repair-pending t
+        ghostel--pending-redraw t)
+  (add-hook 'post-command-hook #'ghostel--repair-after-command nil t))
+
+(defun ghostel--repair-after-command ()
+  "One-shot `post-command-hook' member: redraw after a foreign deletion."
+  (remove-hook 'post-command-hook #'ghostel--repair-after-command t)
+  (when ghostel--repair-pending
+    (ghostel--redraw-now (current-buffer) t)))
 
 (defun ghostel--sync-read-only ()
   "Set `buffer-read-only' from the terminal state.
@@ -4846,11 +4860,15 @@ them during synchronized output or when BUFFER has no render window."
                     (with-selected-window render-win
                       ;; FULL and FORCE-SYNC are separate native policies.
                       (ghostel--redraw ghostel--term
-                                       (eq ghostel--input-mode 'line)
+                                       (or ghostel--repair-pending
+                                           (eq ghostel--input-mode 'line))
                                        ghostel--force-next-redraw)))
               (when rendered
+                (when (and ghostel--repair-pending ghostel--cursor-char-pos)
+                  (goto-char ghostel--cursor-char-pos))
                 (setq ghostel--pending-redraw nil
-                      ghostel--force-next-redraw nil))
+                      ghostel--force-next-redraw nil
+                      ghostel--repair-pending nil))
               (ghostel--apply-cursor-style)
               ;; FOLLOWING=t: the render advanced the cursor while preserving
               ;; window-point, so the pre-render snapshot carries the Emacs-mode
@@ -5198,7 +5216,8 @@ may change freely (`ghostel-compile' finalize relies on this)."
   (setq buffer-read-only t)
   ;; Live terminal-input modes clear `buffer-read-only' and instead
   ;; intercept foreign edits here: insertions are forwarded to the PTY,
-  ;; deletions repaired by a redraw; see `ghostel--sync-read-only'.
+  ;; deletions repaired by a full redraw after the command;
+  ;; see `ghostel--sync-read-only'.
   ;; Depth 90 so other hook members still see an insertion before the
   ;; forwarding removes it.
   (add-hook 'after-change-functions
@@ -5431,6 +5450,7 @@ spawn after initialization."
           ghostel--pending-redraw nil
           ghostel--plain-link-detection-timer nil
           ghostel--force-next-redraw nil
+          ghostel--repair-pending nil
           ghostel--cursor-pos nil
           ghostel--cursor-char-pos nil
           ghostel--repainted-region nil)

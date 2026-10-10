@@ -4,9 +4,9 @@
 
 ;; Programmatic insert forwarding: foreign buffer insertions in
 ;; terminal-input modes are routed to the PTY (`emoji-insert',
-;; `insert-char', …), deletions are repaired by a full redraw, and the
-;; read-only barrier comes back in copy/Emacs modes and on process
-;; exit.
+;; `insert-char', …), deletions are repaired by a full redraw once the
+;; deleting command ends, and the read-only barrier comes back in
+;; copy/Emacs modes and on process exit.
 
 ;;; Code:
 
@@ -69,47 +69,92 @@ these commands make are intercepted by the after-change hook."
     (should (equal (buffer-string) ""))
     (should (equal sent '("hi")))))
 
+(defmacro ghostel-insert-forward-test--with-fake-repair (redraws &rest body)
+  "Run BODY with `ghostel--redraw-now' stubbed to restore \"abc\".
+REDRAWS collects the stub's (BUFFER FORCE) arguments, newest first."
+  (declare (indent 1) (debug t))
+  `(cl-letf (((symbol-function 'ghostel--redraw-now)
+              (lambda (buf &optional force)
+                (push (list buf force) ,redraws)
+                (erase-buffer)
+                (insert "abc")
+                (setq ghostel--repair-pending nil))))
+     ,@body))
+
 (ert-deftest ghostel-test-insert-forward-repairs-deletions ()
-  "Deleting renderer-owned text triggers a full repair redraw.
-Nothing is forwarded to the PTY, point is realigned to the VT cursor,
-and the change hook stays armed for subsequent insertions."
+  "Deleting rendered text schedules one forced repair for after the command."
   (ghostel-insert-forward-test--with-live-buffer
     (ghostel-test--insert-rendered "abc")
-    (setq ghostel--cursor-char-pos 4)
     (let ((redraws '()))
-      (cl-letf (((symbol-function 'ghostel--redraw)
-                 (lambda (term full force-sync)
-                   (push (list term full force-sync) redraws)
-                   (erase-buffer)
-                   (insert "abc"))))
-        (goto-char (point-min))
+      (ghostel-insert-forward-test--with-fake-repair redraws
         (delete-region (point-min) (point-max))
-        (should (equal redraws '((fake t t))))
+        (should (equal (buffer-string) ""))
+        (should (null redraws))
+        (should (memq #'ghostel--repair-after-command post-command-hook))
+        (run-hooks 'post-command-hook)
+        (should (equal redraws (list (list (current-buffer) t))))
         (should (equal (buffer-string) "abc"))
-        (should (= (point) 4))
+        (should-not (memq #'ghostel--repair-after-command post-command-hook))
         (should (null sent))
         (insert "z")
         (should (equal sent '("z")))
-        (should (equal redraws '((fake t t))))))))
+        (should (= (length redraws) 1))))))
 
-(ert-deftest ghostel-test-insert-forward-repairs-replacements ()
-  "A replacement of renderer-owned text is repaired, never forwarded."
+(ert-deftest ghostel-test-insert-forward-repairs-on-redisplay-without-command ()
+  "A deletion made outside a command is repaired when the buffer is redisplayed."
   (ghostel-insert-forward-test--with-live-buffer
     (ghostel-test--insert-rendered "abc")
-    (setq ghostel--cursor-char-pos 4)
     (let ((redraws '()))
-      (cl-letf (((symbol-function 'ghostel--redraw)
-                 (lambda (term full force-sync)
-                   (push (list term full force-sync) redraws)
-                   (erase-buffer)
-                   (insert "abc"))))
+      (ghostel-insert-forward-test--with-fake-repair redraws
+        (delete-region (point-min) (point-max))
+        (should ghostel--pending-redraw)
+        (ghostel--pre-redisplay nil)
+        (should (equal redraws (list (list (current-buffer) nil))))
+        (should (equal (buffer-string) "abc"))))))
+
+(ert-deftest ghostel-test-insert-forward-repairs-replacements ()
+  "A replacement of rendered text is repaired, never forwarded."
+  (ghostel-insert-forward-test--with-live-buffer
+    (ghostel-test--insert-rendered "abc")
+    (let ((redraws '()))
+      (ghostel-insert-forward-test--with-fake-repair redraws
         (goto-char (point-min))
         (search-forward "b")
         (replace-match "X")
-        (should (equal redraws '((fake t t))))
+        (should (equal (buffer-string) "aXc"))
+        (run-hooks 'post-command-hook)
+        (should (equal redraws (list (list (current-buffer) t))))
         (should (equal (buffer-string) "abc"))
         (should (null sent))
         (should (null pasted))))))
+
+(ert-deftest ghostel-test-insert-forward-drops-inserts-while-repair-pending ()
+  "An insertion after a deletion in the same command is not forwarded."
+  (ghostel-insert-forward-test--with-live-buffer
+    (ghostel-test--insert-rendered "abc")
+    (let ((redraws '()))
+      (ghostel-insert-forward-test--with-fake-repair redraws
+        (goto-char (point-min))
+        (delete-char 1)
+        (insert "x")
+        (should (equal (buffer-string) "xbc"))
+        (should (null sent))
+        (run-hooks 'post-command-hook)
+        (should (equal (buffer-string) "abc"))))))
+
+(ert-deftest ghostel-test-insert-forward-looping-deletion-finishes ()
+  "`delete-indentation' returns: the repair waits for the command to end."
+  (ghostel-insert-forward-test--with-live-buffer
+    (ghostel-test--insert-rendered "ab\ncd")
+    (let ((redraws '()))
+      (ghostel-insert-forward-test--with-fake-repair redraws
+        (goto-char (point-max))
+        (call-interactively #'delete-indentation)
+        (should (equal (buffer-string) "ab cd"))
+        (should (null redraws))
+        (should (null sent))
+        (run-hooks 'post-command-hook)
+        (should (equal (buffer-string) "abc"))))))
 
 (ert-deftest ghostel-test-insert-forward-cr-uses-paste ()
   "A carriage return in a foreign insertion is paste-protected.
@@ -120,12 +165,13 @@ Sent raw, a \\r would execute the pending input in the shell."
     (should (null sent))))
 
 (ert-deftest ghostel-test-insert-forward-repair-restores-render ()
-  "The repair redraw re-renders foreign-deleted text from the native grid."
+  "The deferred repair re-renders foreign-deleted text and realigns point."
   :tags '(native)
   (let ((buf (generate-new-buffer " *ghostel-repair*")))
     (unwind-protect
         (with-current-buffer buf
           (ghostel-mode)
+          (set-window-buffer (selected-window) buf)
           (let ((proc (ghostel-test--dummy-process "ghostel-repair" buf)))
             (unwind-protect
                 (progn
@@ -137,8 +183,11 @@ Sent raw, a \\r would execute the pending input in the shell."
                   (let ((before (buffer-string)))
                     (should (string-match-p "hello world" before))
                     (delete-region (point-min) (point-max))
+                    (should (equal (buffer-string) ""))
+                    (run-hooks 'post-command-hook)
                     (should (equal (buffer-string) before))
-                    (should (= (point) ghostel--cursor-char-pos))))
+                    (should (= (point) ghostel--cursor-char-pos))
+                    (should-not ghostel--repair-pending)))
               (when (process-live-p proc)
                 (delete-process proc)))))
       (kill-buffer buf))))
