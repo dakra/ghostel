@@ -553,6 +553,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         \\
         \\Return non-nil when rendering completed.  Unless FORCE-SYNC is
         \\non-nil, return nil without rendering during synchronized output.
+        \\Rendered text is `read-only'; callers must bind `inhibit-read-only'.
         ,
         .impl = struct {
             pub fn call(env: emacs.Env, nargs: isize, args: [*c]emacs.Value) !emacs.Value {

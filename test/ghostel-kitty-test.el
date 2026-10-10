@@ -571,11 +571,11 @@ by an unforced redraw; only the last redraw's callbacks are returned."
               (ghostel--write-vt term (concat ghostel-test--kitty-png-2x2
                                               (or place "\e_Ga=p,i=1,U=1,c=2,r=2,q=1\e\\")
                                               vt))
-              (ghostel--redraw term t)
+              (ghostel-test--redraw term t)
               (dolist (more after)
                 (ghostel--write-vt term more)
                 (setq calls nil)
-                (ghostel--redraw term nil)))
+                (ghostel-test--redraw term)))
             (nreverse calls)))
       (kill-buffer buf))))
 

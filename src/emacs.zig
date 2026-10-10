@@ -548,6 +548,8 @@ const interned_symbols = [_][:0]const u8{
     "puthash",
     "query-font",
     "quit",
+    "read-only",
+    "rear-nonsticky",
     "reverse",
     "run-at-time",
     "selected-window",

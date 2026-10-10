@@ -265,19 +265,14 @@ WINDOW's buffer must be current."
         (= wp (point-max)))))
 
 (defun ghostel--line-mode-apply-readonly (marker-pos)
-  "Mark `[point-min, MARKER-POS)' read-only with the rear-nonsticky trick.
-The non-sticky flag lands on the last protected character so
-insertion at MARKER-POS itself stays legal while edits inside the
-region still signal `text-read-only'.  Setting `rear-nonsticky' to
-t also stops typed input from inheriting the prompt char's `face'
-\(and any other rendered-style properties libghostty painted on
-it) — without this, text typed after a colored prompt picks up
-the prompt's color until RET."
-  (let ((inhibit-read-only t))
-    (put-text-property (point-min) marker-pos 'read-only t)
-    (when (> marker-pos (point-min))
-      (put-text-property (1- marker-pos) marker-pos
-                         'rear-nonsticky t))))
+  "Confine typing to the input: make `read-only' rear-sticky before MARKER-POS.
+Clearing the renderer's `rear-nonsticky' in the scrollback makes insertions
+there signal `text-read-only'.  The last protected character keeps the flag
+so insertion at MARKER-POS stays legal and inherits no `face'."
+  (when (> marker-pos (point-min))
+    (let ((inhibit-read-only t))
+      (put-text-property (point-min) (1- marker-pos) 'rear-nonsticky nil)
+      (put-text-property (1- marker-pos) marker-pos 'rear-nonsticky t))))
 
 (defun ghostel--line-mode-input-end-pos (start)
   "Return the position right after the contiguous `ghostel-input' span at START.
@@ -454,22 +449,18 @@ in line mode (the interactive entry validates these)."
       (use-local-map ghostel-line-mode-map)
       (setq ghostel--mode-line-tag (ghostel--mode-line-tag-make 'line ":Line"))
       (ghostel--mode-line-refresh)
-      ;; Protect everything before the input marker with a read-only
-      ;; text property so commands that would modify the buffer
-      ;; (self-insert, delete-char, yank, …) signal `text-read-only'
-      ;; when point is in the scrollback / previous output region.
-      ;; The redraw path binds `inhibit-read-only' so it is
-      ;; unaffected.
       (ghostel--line-mode-apply-readonly
        (marker-position ghostel--line-input-start))
-      ;; Make sure the adopted input carries `ghostel-input' (the
-      ;; renderer should have applied it for PTY-typed cells; reapply
-      ;; for consistency, and so URL detection skips the region even
-      ;; if the property was missed for some cells).
+      ;; The adopted input is editable from now on: drop the renderer's
+      ;; `read-only' and make sure it carries `ghostel-input' (the renderer
+      ;; should have applied it for PTY-typed cells; reapply for consistency,
+      ;; and so URL detection skips the region even if the property was
+      ;; missed for some cells).
       (let ((start-pos (marker-position ghostel--line-input-start))
             (end-pos (marker-position ghostel--line-input-end)))
         (when (< start-pos end-pos)
           (let ((inhibit-read-only t))
+            (remove-text-properties start-pos end-pos '(read-only nil))
             (put-text-property start-pos end-pos 'ghostel-input t))))
       ;; Place point at end of (any adopted) input so the user
       ;; continues typing where the shell left them.
@@ -593,12 +584,9 @@ which discards any type-ahead and runs inside `ghostel--redraw-now'."
       (when (> (length input) 0)
         (ghostel--write-pty ghostel--term input))))
   (ghostel--line-mode-delete-input)
-  ;; Drop the `read-only' and `rear-nonsticky' properties that
-  ;; protected the scrollback region during line mode; after this teardown
-  ;; the whole ghostel buffer returns to the default renderer-owned lock.
+  ;; Restore `rear-nonsticky' so insert forwarding works in the scrollback again.
   (let ((inhibit-read-only t))
-    (remove-text-properties (point-min) (point-max)
-                            '(read-only nil rear-nonsticky nil)))
+    (put-text-property (point-min) (point-max) 'rear-nonsticky t))
   (setq buffer-read-only t)
   (when (markerp ghostel--line-input-start)
     (set-marker ghostel--line-input-start nil))

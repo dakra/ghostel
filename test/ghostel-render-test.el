@@ -53,7 +53,7 @@ The `ghostel-test-clean' property is placed by
             (ghostel--set-size term 7 30)
             (should (= ghostel--term-rows 5))
             (should (= ghostel--term-cols 40))
-            (ghostel--redraw term)
+            (ghostel-test--redraw term)
             (should (= ghostel--term-rows 7))
             (should (= ghostel--term-cols 30))))
       (kill-buffer buf))))
@@ -69,7 +69,7 @@ either of which would snap every marker in the buffer to `point-min'."
           (let* ((term (ghostel--new 5 40 1000))
                  (inhibit-read-only t))
             (ghostel--write-vt term "line one\r\nline two\r\nline three")
-            (ghostel--redraw term t)
+            (ghostel-test--redraw term t)
             ;; Anchor mark to "two" so its position sits well past point-min.
             (goto-char (point-min))
             (search-forward "two")
@@ -77,7 +77,7 @@ either of which would snap every marker in the buffer to `point-min'."
               (set-marker (mark-marker) target)
               ;; Trigger a full redraw (erase-buffer path).
               (ghostel--write-vt term " more")
-              (ghostel--redraw term t)
+              (ghostel-test--redraw term t)
               (should (= target (marker-position (mark-marker)))))))
       (kill-buffer buf))))
 
@@ -98,12 +98,12 @@ either of which would snap every marker in the buffer to `point-min'."
                             (setq entered t)
                             (setq caught
                                   (condition-case err
-                                      (progn (ghostel--redraw term) nil)
+                                      (progn (ghostel-test--redraw term) nil)
                                     (error err))))
                           (if buffer
                               (funcall orig-mark-marker buffer)
                             (funcall orig-mark-marker)))))
-              (ghostel--redraw term t))
+              (ghostel-test--redraw term t))
             (should caught)
             (should (string-match-p "ReentrantRedraw"
                                     (error-message-string caught)))))

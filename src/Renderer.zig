@@ -881,11 +881,16 @@ fn addRowToSpan(self: *Self, row_pin: gt.Pin) !usize {
 
 fn flushSpan(self: *Self, env: emacs.Env) !void {
     if (self.span.text.items.len == 0) return;
+    const s = emacs.sym;
 
     const span_start = env.cast(usize, env.f("point", .{}));
     _ = env.f("insert", .{self.span.text.items});
 
     const span_end = span_start + self.span.char_len;
+    // Rear-nonsticky keeps insertions between rendered characters legal
+    // (live modes forward them to the PTY) and free of inherited properties.
+    _ = env.f("put-text-property", .{ span_start, span_end, s.@"read-only", env.t() });
+    _ = env.f("put-text-property", .{ span_start, span_end, s.@"rear-nonsticky", env.t() });
     self.repainted = if (self.repainted) |r| .{
         .min = @min(r.min, span_start),
         .max = @max(r.max, span_end),

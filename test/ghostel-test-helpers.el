@@ -100,9 +100,12 @@ through the production `ghostel--create' path."
      ,@body))
 
 (defun ghostel-test--insert-rendered (&rest args)
-  "Insert ARGS as fake renderer-owned output in the current buffer."
+  "Insert ARGS as fake renderer-owned output in the current buffer.
+Like the renderer, the text is `read-only' and `rear-nonsticky'."
   (ghostel-test--with-rendered-output
-    (apply #'insert args)))
+    (let ((start (point)))
+      (apply #'insert args)
+      (add-text-properties start (point) '(read-only t rear-nonsticky t)))))
 
 (defun ghostel-test--redraw (term &optional full)
   "Redraw TERM as renderer-owned test output.
