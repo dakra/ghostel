@@ -252,23 +252,12 @@ fn pollWithRetry(pollfds: []sys.pollfd, timeout: c_int) c_int {
     }
 }
 
-var pty_exec_path: [1024:0]u8 = undefined;
-var pty_exec_state: enum { unknown, found, missing } = .unknown;
-
-fn ptyExecPath() ?[*:0]const u8 {
-    if (pty_exec_state == .unknown) {
-        pty_exec_state = .missing;
-        var info: c.Dl_info = undefined;
-        if (c.dladdr(@ptrCast(&ptyExecPath), &info) != 0 and info.dli_fname != null) {
-            const module_path = std.mem.span(info.dli_fname);
-            if (std.fs.path.dirname(module_path)) |dir| {
-                if (std.fmt.bufPrintZ(&pty_exec_path, "{s}/ghostel-pty-exec", .{dir})) |path| {
-                    if (c.access(path.ptr, c.X_OK) == 0) pty_exec_state = .found;
-                } else |_| {}
-            }
-        }
-    }
-    return if (pty_exec_state == .found) &pty_exec_path else null;
+fn ptyExecPath(buf: *[std.fs.max_path_bytes:0]u8) ?[:0]const u8 {
+    var info: c.Dl_info = undefined;
+    if (c.dladdr(@ptrCast(&ptyExecPath), &info) == 0 or info.dli_fname == null) return null;
+    const module_dir = std.fs.path.dirname(std.mem.span(info.dli_fname)) orelse return null;
+    const path = std.fmt.bufPrintZ(buf, "{s}/ghostel-pty-exec", .{module_dir}) catch return null;
+    return if (c.access(path.ptr, c.X_OK) == 0) path else null;
 }
 
 fn failChild(msg: []const u8, err: []const u8) noreturn {
@@ -312,7 +301,8 @@ pub fn init(alloc: Allocator, _: std.Io, size: backend_types.WinSize, params: ba
     );
 
     if (builtin.os.tag.isDarwin()) {
-        if (ptyExecPath()) |ctty_helper| {
+        var ctty_helper_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+        if (ptyExecPath(&ctty_helper_buf)) |ctty_helper| {
             if (self.pty.spawnReplica(ctty_helper, params.file, args, env.slice, params.cwd, arena)) |pid| {
                 self.pty.closeReplica();
                 self.pid = pid;

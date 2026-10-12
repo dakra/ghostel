@@ -137,12 +137,14 @@ pub fn build(b: *std.Build) void {
         const pty_exec = b.addExecutable(.{
             .name = "ghostel-pty-exec",
             .root_module = b.createModule(.{
+                .root_source_file = b.path("src/pty_exec.zig"),
                 .target = target,
                 .optimize = optimize,
                 .link_libc = true,
+                .strip = if (is_release) true else null,
+                .imports = &.{platform_c},
             }),
         });
-        pty_exec.root_module.addCSourceFile(.{ .file = b.path("src/pty_exec.c") });
         const copy_pty_exec = b.addInstallFile(pty_exec.getEmittedBin(), "ghostel-pty-exec");
         b.getInstallStep().dependOn(&copy_pty_exec.step);
     }
