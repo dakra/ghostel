@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- On macOS the native PTY path starts its program with `posix_spawn`
+  instead of `fork`.  A fork copies Emacs's address space, which took
+  30-45 ms per terminal in a large Emacs; a spawn takes 2-4 ms however
+  large Emacs grows.  The program no longer inherits Emacs's file
+  descriptors that lack close-on-exec.
 - Loading `ghostel.el` without the native module no longer logs a
   "Native module not found" warning.  Byte-compiling the package at
   install time loads the file before the module exists, so every fresh

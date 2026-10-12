@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const sys = std.posix.system;
 
@@ -121,6 +122,54 @@ const Pty = struct {
         }
     }
 
+    /// Start FILE on the replica without copying the parent's address
+    /// space, which `fork' does and which grows with the size of Emacs.
+    /// The new session leader opens the replica by name, making it the
+    /// controlling terminal as `setsid' and `TIOCSCTTY' do after a fork.
+    pub fn spawnReplica(
+        self: *@This(),
+        file: [*:0]const u8,
+        args: [*:null]const ?[*:0]const u8,
+        envp: [*:null]const ?[*:0]const u8,
+        cwd: ?[:0]const u8,
+    ) !sys.pid_t {
+        var attr: c.posix_spawnattr_t = undefined;
+        if (c.posix_spawnattr_init(&attr) != 0) return error.SpawnFailed;
+        defer _ = c.posix_spawnattr_destroy(&attr);
+        var actions: c.posix_spawn_file_actions_t = undefined;
+        if (c.posix_spawn_file_actions_init(&actions) != 0) return error.SpawnFailed;
+        defer _ = c.posix_spawn_file_actions_destroy(&actions);
+
+        var empty: c.sigset_t = undefined;
+        var all: c.sigset_t = undefined;
+        _ = c.sigemptyset(&empty);
+        _ = c.sigfillset(&all);
+        const flags = c.POSIX_SPAWN_SETSID | c.POSIX_SPAWN_CLOEXEC_DEFAULT |
+            c.POSIX_SPAWN_SETSIGMASK | c.POSIX_SPAWN_SETSIGDEF;
+        if (c.posix_spawnattr_setflags(&attr, @intCast(flags)) != 0 or
+            c.posix_spawnattr_setsigmask(&attr, &empty) != 0 or
+            c.posix_spawnattr_setsigdefault(&attr, &all) != 0)
+        {
+            return error.SpawnFailed;
+        }
+
+        if (cwd) |dir| {
+            if (c.posix_spawn_file_actions_addchdir_np(&actions, dir.ptr) != 0) return error.SpawnFailed;
+        }
+        if (c.posix_spawn_file_actions_addopen(&actions, sys.STDIN_FILENO, &self.replica_name, c.O_RDWR, 0) != 0 or
+            c.posix_spawn_file_actions_adddup2(&actions, sys.STDIN_FILENO, sys.STDOUT_FILENO) != 0 or
+            c.posix_spawn_file_actions_adddup2(&actions, sys.STDIN_FILENO, sys.STDERR_FILENO) != 0)
+        {
+            return error.SpawnFailed;
+        }
+
+        var pid: c.pid_t = undefined;
+        if (c.posix_spawn(&pid, file, &actions, &attr, @ptrCast(@constCast(args)), @ptrCast(@constCast(envp))) != 0) {
+            return error.SpawnFailed;
+        }
+        return pid;
+    }
+
     pub fn deinit(self: *@This()) void {
         self.closePrimary();
         self.closeReplica();
@@ -239,6 +288,14 @@ pub fn init(alloc: Allocator, _: std.Io, size: backend_types.WinSize, params: ba
         sys.F.SETFL,
         flags | @as(u32, @bitCast(sys.O{ .NONBLOCK = true })),
     );
+
+    if (builtin.os.tag.isDarwin()) {
+        if (self.pty.spawnReplica(params.file, args, env.slice, params.cwd)) |pid| {
+            self.pty.closeReplica();
+            self.pid = pid;
+            return self;
+        } else |_| {}
+    }
 
     const pid = sys.fork();
     if (sys.errno(pid) != .SUCCESS) return error.ForkFailed;
