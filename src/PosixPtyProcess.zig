@@ -122,17 +122,20 @@ const Pty = struct {
         }
     }
 
-    /// Start FILE on the replica without copying the parent's address
-    /// space, which `fork' does and which grows with the size of Emacs.
-    /// The new session leader opens the replica by name, making it the
-    /// controlling terminal as `setsid' and `TIOCSCTTY' do after a fork.
     pub fn spawnReplica(
         self: *@This(),
+        ctty_helper: [*:0]const u8,
         file: [*:0]const u8,
-        args: [*:null]const ?[*:0]const u8,
+        args: []const ?[*:0]const u8,
         envp: [*:null]const ?[*:0]const u8,
         cwd: ?[:0]const u8,
+        alloc: Allocator,
     ) !sys.pid_t {
+        const argv = try alloc.allocSentinel(?[*:0]const u8, args.len + 2, null);
+        argv[0] = ctty_helper;
+        argv[1] = file;
+        @memcpy(argv[2..], args);
+
         var attr: c.posix_spawnattr_t = undefined;
         if (c.posix_spawnattr_init(&attr) != 0) return error.SpawnFailed;
         defer _ = c.posix_spawnattr_destroy(&attr);
@@ -156,15 +159,15 @@ const Pty = struct {
         if (cwd) |dir| {
             if (c.posix_spawn_file_actions_addchdir_np(&actions, dir.ptr) != 0) return error.SpawnFailed;
         }
-        if (c.posix_spawn_file_actions_addopen(&actions, sys.STDIN_FILENO, &self.replica_name, c.O_RDWR, 0) != 0 or
-            c.posix_spawn_file_actions_adddup2(&actions, sys.STDIN_FILENO, sys.STDOUT_FILENO) != 0 or
-            c.posix_spawn_file_actions_adddup2(&actions, sys.STDIN_FILENO, sys.STDERR_FILENO) != 0)
+        if (c.posix_spawn_file_actions_adddup2(&actions, self.replica_fd, sys.STDIN_FILENO) != 0 or
+            c.posix_spawn_file_actions_adddup2(&actions, self.replica_fd, sys.STDOUT_FILENO) != 0 or
+            c.posix_spawn_file_actions_adddup2(&actions, self.replica_fd, sys.STDERR_FILENO) != 0)
         {
             return error.SpawnFailed;
         }
 
         var pid: c.pid_t = undefined;
-        if (c.posix_spawn(&pid, file, &actions, &attr, @ptrCast(@constCast(args)), @ptrCast(@constCast(envp))) != 0) {
+        if (c.posix_spawn(&pid, ctty_helper, &actions, &attr, @ptrCast(argv.ptr), @ptrCast(@constCast(envp))) != 0) {
             return error.SpawnFailed;
         }
         return pid;
@@ -249,6 +252,25 @@ fn pollWithRetry(pollfds: []sys.pollfd, timeout: c_int) c_int {
     }
 }
 
+var pty_exec_path: [1024:0]u8 = undefined;
+var pty_exec_state: enum { unknown, found, missing } = .unknown;
+
+fn ptyExecPath() ?[*:0]const u8 {
+    if (pty_exec_state == .unknown) {
+        pty_exec_state = .missing;
+        var info: c.Dl_info = undefined;
+        if (c.dladdr(@ptrCast(&ptyExecPath), &info) != 0 and info.dli_fname != null) {
+            const module_path = std.mem.span(info.dli_fname);
+            if (std.fs.path.dirname(module_path)) |dir| {
+                if (std.fmt.bufPrintZ(&pty_exec_path, "{s}/ghostel-pty-exec", .{dir})) |path| {
+                    if (c.access(path.ptr, c.X_OK) == 0) pty_exec_state = .found;
+                } else |_| {}
+            }
+        }
+    }
+    return if (pty_exec_state == .found) &pty_exec_path else null;
+}
+
 fn failChild(msg: []const u8, err: []const u8) noreturn {
     _ = sys.write(sys.STDERR_FILENO, msg.ptr, msg.len);
     _ = sys.write(sys.STDERR_FILENO, ": ", 2);
@@ -290,11 +312,13 @@ pub fn init(alloc: Allocator, _: std.Io, size: backend_types.WinSize, params: ba
     );
 
     if (builtin.os.tag.isDarwin()) {
-        if (self.pty.spawnReplica(params.file, args, env.slice, params.cwd)) |pid| {
-            self.pty.closeReplica();
-            self.pid = pid;
-            return self;
-        } else |_| {}
+        if (ptyExecPath()) |ctty_helper| {
+            if (self.pty.spawnReplica(ctty_helper, params.file, args, env.slice, params.cwd, arena)) |pid| {
+                self.pty.closeReplica();
+                self.pid = pid;
+                return self;
+            } else |_| {}
+        }
     }
 
     const pid = sys.fork();

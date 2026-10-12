@@ -1787,6 +1787,39 @@ showing up in the rendered ghostel buffer."
                (nth (min (1- n) (floor (* n 0.99))) vals)
                (car (last vals))))))
 
+(defvar ghostel-bench-spawn-ballast-mb '(0 800)
+  "Heap ballast, in megabytes, each spawn scenario runs with.")
+
+(defun ghostel-bench--spawn-ms (iterations)
+  "Return the milliseconds of each of ITERATIONS `ghostel-exec' calls."
+  (let (times)
+    (dotimes (_ iterations (nreverse times))
+      (let ((buffer (generate-new-buffer " *ghostel-bench-spawn*"))
+            (start (float-time)))
+        (ghostel-exec buffer "/usr/bin/true" nil)
+        (push (* 1000 (- (float-time) start)) times)
+        (let ((kill-buffer-query-functions nil))
+          (kill-buffer buffer))))))
+
+(defun ghostel-bench--run-spawn-scenarios ()
+  "Benchmark how long `ghostel-exec' blocks Emacs starting a program.
+Ballast strings grow the heap, since a fork copies the parent's address
+space and so slows as Emacs grows."
+  (message "\n--- Spawn (ghostel-exec of /usr/bin/true) ---")
+  (message "  %-20s %5s  %10s  %10s" "BALLAST" "ITERS" "MEDIAN(ms)" "MAX(ms)")
+  (message "  %s" (make-string 52 ?-))
+  (let ((gc-cons-threshold most-positive-fixnum)
+        (iterations (* ghostel-bench-iterations 10))
+        ballast)
+    (dolist (mb ghostel-bench-spawn-ballast-mb)
+      (dotimes (_ (- (* mb 256) (length ballast)))
+        (push (make-string 4000 ?x) ballast))
+      (ghostel-bench--spawn-ms 1)
+      (let ((times (sort (ghostel-bench--spawn-ms iterations) #'<)))
+        (message "  %-20s %5d  %10.1f  %10.1f"
+                 (format "%d MB" mb) iterations
+                 (nth (/ iterations 2) times) (car (last times)))))))
+
 (provide 'ghostel-bench)
 
 ;;; ghostel-bench.el ends here

@@ -133,6 +133,20 @@ pub fn build(b: *std.Build) void {
     );
     b.getInstallStep().dependOn(&copy_step.step);
 
+    if (target_os == .macos) {
+        const pty_exec = b.addExecutable(.{
+            .name = "ghostel-pty-exec",
+            .root_module = b.createModule(.{
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        pty_exec.root_module.addCSourceFile(.{ .file = b.path("src/pty_exec.c") });
+        const copy_pty_exec = b.addInstallFile(pty_exec.getEmittedBin(), "ghostel-pty-exec");
+        b.getInstallStep().dependOn(&copy_pty_exec.step);
+    }
+
     // Sidecar version file sitting next to the binary.  The elisp loader
     // reads this before `module-load` to detect a stale module without
     // mapping it into the process.

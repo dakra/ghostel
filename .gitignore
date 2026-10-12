@@ -11,4 +11,5 @@ ghostel-autoloads.el
 ghostel-pkg.el
 ghostel-module.*
 !ghostel-module.zig
+ghostel-pty-exec
 public/

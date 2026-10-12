@@ -268,6 +268,7 @@ jobs:
           path: |
             ghostel-module${{ matrix.suffix }}
             ghostel-module.version
+            ghostel-pty-exec
             conpty.dll
             x64/OpenConsole.exe
             arm64/OpenConsole.exe
@@ -323,7 +324,9 @@ jobs:
         # checkout, so make would consider it stale w.r.t. src/*.zig and
         # try to re-invoke `zig build' (Zig isn't installed in this job).
         # Touching the artifact pins the Make dependency.
-        run: touch ghostel-module${{ matrix.suffix }}
+        run: |
+          touch ghostel-module${{ matrix.suffix }}
+          if [ -f ghostel-pty-exec ]; then chmod +x ghostel-pty-exec; fi
 
       - name: Install compat
         run: git clone --depth 1 https://github.com/emacs-compat/compat.git /tmp/compat
