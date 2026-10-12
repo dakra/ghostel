@@ -353,6 +353,62 @@ never fewer than one press."
                        ghostel--scroll-pending))
           (kill-local-variable var))))))
 
+(ert-deftest ghostel-test-scroll-intercept-accumulates-emacs-mac-deltas ()
+  "Travel emacs-mac keeps in the event's plist is banked too.
+emacs-mac sends every trackpad tick as its own event whatever
+`mwheel-coalesce-scroll-events' says.  A trackpad reports pixels as
+`:scrolling-delta-y', a mouse fractions of a line as `:delta-y'."
+  (let* ((win (selected-window))
+         (event-buf (window-buffer win))
+         (mwheel-coalesce-scroll-events t)
+         (unread-command-events nil)
+         (buttons nil)
+         (tick (lambda (dir plist)
+                 (funcall (if (eq dir 'up)
+                              #'ghostel--scroll-intercept-up
+                            #'ghostel--scroll-intercept-down)
+                          `(,(intern (format "wheel-%s" dir))
+                            (,win 1 (10 . 5) 0) 1 ,plist)))))
+    (with-current-buffer event-buf
+      (setq-local ghostel--term 'fake)
+      (setq-local ghostel--process 'fake)
+      (setq-local ghostel--input-mode 'semi-char)
+      (setq-local ghostel--scroll-intercept-active t)
+      (setq-local ghostel--scroll-pending 0.0))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--mouse-tracking-p)
+                   (lambda (_term) t))
+                  ((symbol-function 'ghostel--mouse-event)
+                   (lambda (_term _action button _row _col _mods)
+                     (push button buttons)
+                     t))
+                  ((symbol-function 'default-line-height) (lambda () 20))
+                  ((symbol-function 'device-class)
+                   (lambda (_frame _name) nil))
+                  ((symbol-function 'process-live-p) (lambda (_p) t)))
+          ;; 8 px ticks: first press on the third.
+          (dotimes (i 3)
+            (funcall tick 'up '(:scrolling-delta-y 8.0 :phase changed))
+            (should (equal (if (< i 2) nil '(4)) buttons)))
+          ;; The 4 px left over drains before a reversal sends.
+          (funcall tick 'down '(:scrolling-delta-y -4.0 :phase changed))
+          (should (equal '(4) buttons))
+          (funcall tick 'down '(:scrolling-delta-y -20.0 :phase changed))
+          (should (equal '(5 4) buttons))
+          ;; A tenth of a line per event: one press per ten events.
+          (setq buttons nil)
+          (dotimes (_ 10) (funcall tick 'up '(:delta-y 0.1 :phase changed)))
+          (should (equal '(4) buttons))
+          ;; A whole-line notch is a press.
+          (funcall tick 'up '(:delta-y 1.0 :phase changed))
+          (should (equal '(4 4) buttons))
+          (should-not unread-command-events))
+      (with-current-buffer event-buf
+        (dolist (var '(ghostel--term ghostel--process ghostel--input-mode
+                       ghostel--scroll-intercept-active
+                       ghostel--scroll-pending))
+          (kill-local-variable var))))))
+
 (ert-deftest ghostel-test-posn-cell-uses-event-window-metrics ()
   "Cells are measured in the event window's buffer, below any top sliver or pad."
   (with-temp-buffer
