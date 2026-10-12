@@ -12,10 +12,11 @@ All notable changes to this project will be documented in this file.
   points still install the module via `ghostel-module-auto-install`.
 
 ### Fixed
-- On emacs-mac, trackpad scrolling in mouse-tracking programs advances
-  one row per row of travel instead of one row per event.  emacs-mac
-  reports the travel as `:scrolling-delta-y` in the event's plist
-  rather than as its pixel delta.
+- On emacs-mac, scrolling in mouse-tracking programs advances one row
+  per row of travel instead of one row per event.  emacs-mac reports
+  the travel in the event's plist, as `:scrolling-delta-y` pixels for a
+  trackpad and `:delta-y` lines for a mouse, rather than as its pixel
+  delta, and sends every trackpad tick as its own event.
 - Looping deletion commands such as `delete-indentation` no longer hang
   Emacs in live terminal-input modes.  A foreign deletion of rendered
   text is repaired by one full redraw after the command ends, and

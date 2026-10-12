@@ -2161,32 +2161,32 @@ and the vscroll or pad above the first row."
 (defvar-local ghostel--scroll-pending 0.0
   "Wheel travel in pixels not yet forwarded as a whole terminal row.")
 
-(defun ghostel--wheel-pixel-delta (event button)
-  "Return the pixels wheel EVENT for mouse BUTTON travels, or nil.
-emacs-mac keeps a trackpad's travel in the plist it puts where other
-builds put the line count; elsewhere it is the event's PIXEL-DELTA.
-The sign follows BUTTON, positive for 4, as PIXEL-DELTA's does."
+(defun ghostel--wheel-pixel-delta (event row-px)
+  "Return the travel wheel EVENT reports in pixels, or nil.
+emacs-mac reports it in a plist where other builds put the line count:
+a trackpad's as `:scrolling-delta-y' pixels, a mouse's as `:delta-y'
+lines, converted with ROW-PX.  Elsewhere it is the event's PIXEL-DELTA."
   (let ((plist (nth 3 event)))
     (if (consp plist)
-        (when-let* ((dy (plist-get plist :scrolling-delta-y)))
-          (if (eql button 4) (abs dy) (- (abs dy))))
+        (or (plist-get plist :scrolling-delta-y)
+            (when-let* ((lines (plist-get plist :delta-y)))
+              (* lines row-px)))
       (cdr (nth 4 event)))))
 
 (defun ghostel--forward-scroll-event (event button)
   "Try to forward a scroll EVENT as mouse BUTTON to the terminal.
 Return non-nil if the terminal consumed the event.
 With `mwheel-coalesce-scroll-events' nil (`pixel-scroll-precision-mode',
-ultra-scroll) every trackpad tick is its own EVENT, so pixel deltas are
-accumulated and one press sent per full row of travel.
-A mouse-wheel notch is never fewer than one press."
+ultra-scroll) every trackpad tick is its own EVENT, as it always is on
+emacs-mac, so pixel deltas are accumulated and one press sent per full
+row of travel.  A mouse-wheel notch is never fewer than one press."
   (when (and event (ghostel--terminal-input-mode-p)
              (ghostel--mouse-tracking-p ghostel--term))
     (let* ((posn (event-start event))
            (col-row (ghostel--posn-cell posn))
-           (delta (ghostel--wheel-pixel-delta event button))
            (lines (nth 3 event))
            (presses 1))
-      (when (and delta (not mwheel-coalesce-scroll-events)
+      (when (and (or (consp lines) (not mwheel-coalesce-scroll-events))
                  ;; X11 and pgtk report a mouse notch as several rows
                  ;; of pixels with no line count.
                  (not (and (fboundp 'device-class) ; Emacs 29+
@@ -2195,12 +2195,15 @@ A mouse-wheel notch is never fewer than one press."
                                'mouse))))
         (let* ((row-px (with-selected-window (ghostel--event-window event)
                          (default-line-height)))
-               (pending (+ ghostel--scroll-pending delta))
-               (rows (truncate pending row-px)))
-          ;; LINES is 0 for a sub-row trackpad tick, but macOS reports a notch
-          ;; as one line and fewer pixels than a row when `line-spacing' is set.
-          (setq presses (max (abs rows) (if (numberp lines) (min 1 lines) 0))
-                ghostel--scroll-pending (- pending (* rows row-px)))))
+               (delta (ghostel--wheel-pixel-delta event row-px)))
+          (when delta
+            (let* ((pending (+ ghostel--scroll-pending delta))
+                   (rows (truncate pending row-px)))
+              ;; LINES is 0 for a sub-row trackpad tick, but macOS reports a
+              ;; notch as one line and fewer pixels than a row when
+              ;; `line-spacing' is set.
+              (setq presses (max (abs rows) (if (numberp lines) (min 1 lines) 0))
+                    ghostel--scroll-pending (- pending (* rows row-px)))))))
       (dotimes (_ presses)
         (ghostel--mouse-event ghostel--term
                               0  ; press
