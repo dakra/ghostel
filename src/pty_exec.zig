@@ -14,12 +14,12 @@ fn fail(msg: []const u8, reason: []const u8) noreturn {
 
 pub export fn main(argc: c_int, argv: [*:null]const ?[*:0]const u8) c_int {
     if (argc < 3) fail("Usage", usage);
-    const program = argv[1].?;
-    const program_argv = argv + 2;
+    const file = argv[1].?;
+    const args = argv + 2;
 
     const claimed = sys.errno(c.ioctl(sys.STDIN_FILENO, c.TIOCSCTTY, @as(c_int, 0)));
     if (claimed != .SUCCESS) fail("Failed to set up PTY replica", @tagName(claimed));
 
-    const exec_rc = std.c.execve(program, program_argv, std.c.environ);
+    const exec_rc = std.c.execve(file, args, std.c.environ);
     fail("Failed to start subprocess", @tagName(sys.errno(exec_rc)));
 }
