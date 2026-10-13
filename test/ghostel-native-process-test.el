@@ -258,6 +258,15 @@ must not leave `ghostel--event-buf' in a poisoned state."
             (should (ghostel-test--terminal-text-line-p "GHOSTEL_ACP_OK" text))))
       (delete-directory unicode-directory t))))
 
+(ert-deftest ghostel-test-native-process-gets-controlling-terminal ()
+  "A program that does not claim a terminal itself still has the PTY as one."
+  :tags '(native)
+  (skip-unless (not (ghostel-test--windows-p)))
+  (let ((text (ghostel-test-native-process--command-output
+               '("/bin/dd" "if=/dev/tty" "count=0"))))
+    (should (string-match-p "records in" text))
+    (should-not (string-match-p "not configured\\|No such device" text))))
+
 (ert-deftest ghostel-test-native-process-adds-display-for-graphical-frame ()
   "Native env builder mirrors Emacs' DISPLAY fallback for graphical frames."
   :tags '(native)

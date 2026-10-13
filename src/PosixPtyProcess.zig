@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const sys = std.posix.system;
 
@@ -121,6 +122,35 @@ const Pty = struct {
         }
     }
 
+    pub fn spawnReplica(
+        self: *@This(),
+        ctty_helper: [*:0]const u8,
+        file: [*:0]const u8,
+        args: []const ?[*:0]const u8,
+        envp: [*:null]const ?[*:0]const u8,
+        cwd: ?[:0]const u8,
+        alloc: Allocator,
+    ) !std.c.pid_t {
+        const argv = try alloc.allocSentinel(?[*:0]const u8, args.len + 2, null);
+        argv[0] = ctty_helper;
+        argv[1] = file;
+        @memcpy(argv[2..], args);
+
+        var attr: std.c.posix_spawnattr_t = undefined;
+        try checkSpawn("posix_spawnattr_init", std.c.posix_spawnattr_init(&attr));
+        defer _ = std.c.posix_spawnattr_destroy(&attr);
+        try setSpawnAttributes(&attr);
+
+        var actions: std.c.posix_spawn_file_actions_t = undefined;
+        try checkSpawn("posix_spawn_file_actions_init", std.c.posix_spawn_file_actions_init(&actions));
+        defer _ = std.c.posix_spawn_file_actions_destroy(&actions);
+        try addReplicaFileActions(&actions, self.replica_fd, cwd);
+
+        var pid: std.c.pid_t = undefined;
+        try checkSpawn("posix_spawn", std.c.posix_spawn(&pid, ctty_helper, &actions, &attr, argv, envp));
+        return pid;
+    }
+
     pub fn deinit(self: *@This()) void {
         self.closePrimary();
         self.closeReplica();
@@ -200,6 +230,49 @@ fn pollWithRetry(pollfds: []sys.pollfd, timeout: c_int) c_int {
     }
 }
 
+extern "c" fn posix_spawnattr_setsigmask(attr: *std.c.posix_spawnattr_t, mask: *const std.c.sigset_t) c_int;
+extern "c" fn posix_spawnattr_setsigdefault(attr: *std.c.posix_spawnattr_t, signals: *const std.c.sigset_t) c_int;
+
+fn checkSpawn(step: []const u8, rc: c_int) error{SpawnFailed}!void {
+    if (rc == 0) return;
+    log.warn("{s} failed, forking instead: {t}", .{ step, @as(std.c.E, @enumFromInt(rc)) });
+    return error.SpawnFailed;
+}
+
+fn setSpawnAttributes(attr: *std.c.posix_spawnattr_t) !void {
+    const no_signals = std.posix.sigemptyset();
+    const all_signals = std.posix.sigfillset();
+    try checkSpawn("posix_spawnattr_setflags", std.c.posix_spawnattr_setflags(attr, .{
+        .SETSID = true,
+        .CLOEXEC_DEFAULT = true,
+        .SETSIGMASK = true,
+        .SETSIGDEF = true,
+    }));
+    try checkSpawn("posix_spawnattr_setsigmask", posix_spawnattr_setsigmask(attr, &no_signals));
+    try checkSpawn("posix_spawnattr_setsigdefault", posix_spawnattr_setsigdefault(attr, &all_signals));
+}
+
+fn addReplicaFileActions(
+    actions: *std.c.posix_spawn_file_actions_t,
+    replica_fd: c_int,
+    cwd: ?[:0]const u8,
+) !void {
+    if (cwd) |dir| {
+        try checkSpawn("posix_spawn_file_actions_addchdir_np", std.c.posix_spawn_file_actions_addchdir_np(actions, dir));
+    }
+    for ([_]c_int{ sys.STDIN_FILENO, sys.STDOUT_FILENO, sys.STDERR_FILENO }) |fd| {
+        try checkSpawn("posix_spawn_file_actions_adddup2", std.c.posix_spawn_file_actions_adddup2(actions, replica_fd, fd));
+    }
+}
+
+fn cttyHelperPath(buf: *[std.fs.max_path_bytes:0]u8) ?[:0]const u8 {
+    var info: c.Dl_info = undefined;
+    if (c.dladdr(@ptrCast(&cttyHelperPath), &info) == 0 or info.dli_fname == null) return null;
+    const module_dir = std.fs.path.dirname(std.mem.span(info.dli_fname)) orelse return null;
+    const path = std.fmt.bufPrintZ(buf, "{s}/ghostel-pty-exec", .{module_dir}) catch return null;
+    return if (c.access(path.ptr, c.X_OK) == 0) path else null;
+}
+
 fn failChild(msg: []const u8, err: []const u8) noreturn {
     _ = sys.write(sys.STDERR_FILENO, msg.ptr, msg.len);
     _ = sys.write(sys.STDERR_FILENO, ": ", 2);
@@ -239,6 +312,17 @@ pub fn init(alloc: Allocator, _: std.Io, size: backend_types.WinSize, params: ba
         sys.F.SETFL,
         flags | @as(u32, @bitCast(sys.O{ .NONBLOCK = true })),
     );
+
+    if (builtin.os.tag.isDarwin()) {
+        var ctty_helper_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+        if (cttyHelperPath(&ctty_helper_buf)) |ctty_helper| {
+            if (self.pty.spawnReplica(ctty_helper, params.file, args, env.slice, params.cwd, arena)) |pid| {
+                self.pty.closeReplica();
+                self.pid = pid;
+                return self;
+            } else |_| {}
+        }
+    }
 
     const pid = sys.fork();
     if (sys.errno(pid) != .SUCCESS) return error.ForkFailed;

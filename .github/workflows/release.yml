@@ -84,13 +84,18 @@ jobs:
 
       - name: Strip non-exported symbols (macOS)
         if: runner.os == 'macOS'
-        run: strip -x ghostel-module${{ matrix.suffix }}
+        run: |
+          strip -x ghostel-module${{ matrix.suffix }}
+          strip ghostel-pty-exec
 
       - name: Rename artifact for release
         shell: bash
         run: |
           mv ghostel-module${{ matrix.suffix }} \
              ghostel-module-${{ matrix.platform }}${{ matrix.suffix }}
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            mv ghostel-pty-exec ghostel-pty-exec-${{ matrix.platform }}
+          fi
           if [ "${{ runner.os }}" = "Windows" ]; then
             mv conpty.dll ghostel-conpty-${{ matrix.platform }}.dll
             for host in x86 x64 arm64; do
@@ -107,6 +112,7 @@ jobs:
           name: ghostel-module-${{ matrix.platform }}
           path: |
             ghostel-module-${{ matrix.platform }}${{ matrix.suffix }}
+            ghostel-pty-exec-${{ matrix.platform }}
             ghostel-conpty-${{ matrix.platform }}.dll
             ghostel-openconsole-${{ matrix.platform }}-*.exe
 

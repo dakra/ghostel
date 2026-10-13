@@ -57,7 +57,7 @@ ZIG_BUILD_FLAGS := --prefix . -Doptimize=ReleaseFast -Dcpu=baseline $(ZIG_TARGET
 ZIG_SOURCES := $(wildcard src/*.zig src/*.c build.zig build.zig.zon symbols.map) \
                $(wildcard vendor/*.h)
 
-.PHONY: all build test test-native test-zig test-hypothesis test-hypothesis-cases test-all test-evil test-consult lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel melpazoid-consult-ghostel byte-compile checkdoc docquotes package-lint bench bench-quick bench-e2e bench-tui-partial html clean regen-terminfo
+.PHONY: all build test test-native test-zig test-hypothesis test-hypothesis-cases test-all test-evil test-consult lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel melpazoid-consult-ghostel byte-compile checkdoc docquotes package-lint bench bench-quick bench-e2e bench-spawn bench-tui-partial html clean regen-terminfo
 
 # Recommended invocation: `make -j$(nproc) all' on Linux,
 # `make -j$(sysctl -n hw.ncpu) all' on macOS.  GNU make 4+ also accepts
@@ -246,6 +246,10 @@ bench-quick:
 
 bench-e2e:
 	bash bench/run-bench.sh --e2e
+
+bench-spawn:
+	$(EMACS) --batch $(EMACSFLAGS) -Q -L lisp -l bench/ghostel-bench.el \
+		--eval '(progn (setq ghostel-bench-include-vterm nil ghostel-bench-include-eat nil ghostel-bench-include-term nil) (ghostel-bench--load-backends) (ghostel-bench--run-spawn-scenarios))'
 
 bench-tui-partial:
 	$(EMACS) --batch $(EMACSFLAGS) -Q -L lisp -l bench/ghostel-bench.el \

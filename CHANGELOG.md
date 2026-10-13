@@ -10,6 +10,13 @@ All notable changes to this project will be documented in this file.
   input-mode switches.
 
 ### Changed
+- On macOS the native PTY path starts programs with `posix_spawn`
+  through the new `ghostel-pty-exec` helper, which claims the PTY as
+  the controlling terminal and execs the program.  A fork copies
+  Emacs's address space and slows as Emacs grows (20 ms at 800 MB of
+  heap, `make bench-spawn`); a spawn takes 2 ms.  The program no longer
+  inherits Emacs's file descriptors that lack close-on-exec.  Without
+  the helper the module forks as before.
 - Loading `ghostel.el` without the native module no longer logs a
   "Native module not found" warning.  Byte-compiling the package at
   install time loads the file before the module exists, so every fresh

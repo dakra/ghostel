@@ -134,21 +134,37 @@ Each mapping is an (ASSET-NAME . RELATIVE-DESTINATION) pair."
                                 (format "%s/OpenConsole.exe" host)))
                         hosts)))))))
 
-(defun ghostel--install-support-assets (dir &optional version)
-  "Install Windows support release assets into DIR.
+(defun ghostel--macos-support-assets ()
+  "Return the PTY helper release asset mapping for macOS, or nil.
+The helper gives programs started without `fork' their controlling
+terminal; without it the module forks."
+  (when (eq system-type 'darwin)
+    (when-let* ((tag (ghostel--module-platform-tag)))
+      (list (cons (format "ghostel-pty-exec-%s" tag) "ghostel-pty-exec")))))
+
+(defun ghostel--install-support-assets (dir &optional version build-dir)
+  "Install the platform's support release assets into DIR.
+An asset BUILD-DIR holds is copied from there instead of downloaded.
 VERSION nil means the latest release.  Warn but continue on failure,
-since Ghostel can use the system ConPTY."
-  (dolist (asset (ghostel--windows-support-assets))
+since Ghostel can use the system ConPTY on Windows and fork on macOS."
+  (dolist (asset (append (ghostel--windows-support-assets)
+                         (ghostel--macos-support-assets)))
     (let* ((asset-name (car asset))
-           (url (ghostel--release-asset-url asset-name version))
-           (dest (expand-file-name (cdr asset) dir)))
-      (unless (string-prefix-p "https://" url)
-        (error "Refusing non-HTTPS download URL: %s" url))
+           (dest (expand-file-name (cdr asset) dir))
+           (built (and build-dir (expand-file-name (cdr asset) build-dir))))
       (make-directory (file-name-directory dest) t)
-      (message "ghostel: downloading support asset from %s..." url)
-      (unless (ghostel--download-file url dest)
-        (message "ghostel: warning: failed to download support asset %s"
-                 asset-name)))))
+      (if (and built (file-exists-p built))
+          (copy-file built dest t)
+        (let ((url (ghostel--release-asset-url asset-name version)))
+          (unless (string-prefix-p "https://" url)
+            (error "Refusing non-HTTPS download URL: %s" url))
+          (message "ghostel: downloading support asset from %s..." url)
+          (unless (ghostel--download-file url dest)
+            (message "ghostel: warning: failed to download support asset %s"
+                     asset-name))))))
+  (let ((helper (expand-file-name "ghostel-pty-exec" dir)))
+    (when (file-exists-p helper)
+      (set-file-modes helper #o755))))
 
 (defun ghostel--release-version-from-url (url)
   "Return the release version embedded in URL, or nil.
@@ -230,7 +246,7 @@ on success the produced module and its sidecar are moved into DEST-DIR."
                        built final
                        (expand-file-name "ghostel-module.version" build-dir)
                        (expand-file-name "ghostel-module.version" dest-dir))
-                      (ghostel--install-support-assets dest-dir)
+                      (ghostel--install-support-assets dest-dir nil build-dir)
                       (message "ghostel: native module compiled successfully"))))))
           (when (and build-dir (file-directory-p build-dir))
             (ignore-errors (delete-directory build-dir t))))
@@ -460,7 +476,7 @@ Leaving the prompt empty downloads the latest release."
                           (progn
                             (ghostel--install-module-pair
                              built final built-sidecar final-sidecar)
-                            (ghostel--install-support-assets dest-dir)
+                            (ghostel--install-support-assets dest-dir nil build-dir)
                             (message "ghostel: module installed at %s" final))
                         (error
                          (display-warning
