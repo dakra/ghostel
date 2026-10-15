@@ -1069,6 +1069,26 @@ Pin a specific handler explicitly:
 (setq ghostel-spinner-type 'horizontal-moving)
 #+end_src
 
+The *OSC 7501* Program Status Protocol lets a program say what it is doing:
+=idle=, =working=, =done=, =blocked= on the user (for =permission=, a =question= or
+=auth=), or =error=.  Coding agents such as Claude Code and Codex probe for it and
+report through it once ghostel answers.  Ghostel keeps each terminal's records in
+=ghostel-program-status-records=, an alist of =(ID . RECORD)= where RECORD is a
+plist like =(:state blocked :kind permission :msg "Approve edit")=, and runs
+=ghostel-program-status-functions= with the buffer after every change.  Working and
+blocked records are dropped when the program exits or a new OSC 133 prompt begins;
+how to show them is up to you:
+
+#+begin_src emacs-lisp
+(add-hook 'ghostel-program-status-functions
+          (lambda (buffer)
+            (with-current-buffer buffer
+              (when (eq (plist-get (alist-get nil ghostel-program-status-records)
+                                   :state)
+                        'blocked)
+                (message "%s needs you" (buffer-name))))))
+#+end_src
+
 ** Color palette
 :properties:
 :custom_id: color-palette
@@ -1477,6 +1497,7 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 |-------------------------------+-----------------------------------------------------+-----------------------------------------------------------------|
 | =ghostel-notification-function= | =ghostel-default-notify=                              | Handler for OSC 9 / OSC 777 notifications (nil disables).       |
 | =ghostel-progress-function=     | spinner if available, else =ghostel-default-progress= | Handler for OSC 9;4 progress (nil disables).                    |
+| =ghostel-program-status-functions= | nil                                              | Hook run after OSC 7501 program status records change.          |
 | =ghostel-spinner-type=          | =progress-bar=                                        | Spinner style for =ghostel-spinner-progress= (see =spinner-types=). |
 
 ** Input and interaction
@@ -2310,6 +2331,7 @@ while ghostel and vterm trade a compile step for a C/Zig engine.
 | Plain-text URL/file detection | ✅      | ❌       | ❌       |
 | OSC 9 / 777 notifications     | ✅      | ❌       | ❌       |
 | OSC 9;4 progress reports      | ✅      | ❌       | ❌       |
+| OSC 7501 program status       | ✅      | ❌       | ❌       |
 | Synchronized output (2026)    | ✅      | ❌       | ❌       |
 | Kitty keyboard protocol       | ✅      | ❌       | ❌       |
 | Mouse passthrough to TUI      | ✅      | ❌       | ✅       |

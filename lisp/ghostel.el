@@ -449,6 +449,16 @@ Each function is called with two arguments: the buffer and the
 exit event string."
   :type 'hook)
 
+(defcustom ghostel-program-status-functions nil
+  "Hook run after a program changes its OSC 7501 status records.
+Each function is called with one argument, the ghostel buffer, and
+reads the new records from `ghostel-program-status-records'.
+
+Runs synchronously on the VT-parser callpath, like
+`ghostel-progress-function', so a handler should only update cheap
+UI and defer anything slower with `run-at-time'."
+  :type 'hook)
+
 (defcustom ghostel-foreground-change-functions nil
   "Hook run when the PTY's foreground process group changes.
 Each function is called with three arguments: the buffer, the new
@@ -3631,6 +3641,112 @@ PROGRESS is an integer 0-100 or nil."
            (message "ghostel: progress handler error: %s"
                     (error-message-string err))))))))
 
+;;; Program status (OSC 7501)
+;;
+;; The Program Status Protocol lets a program say what it is doing:
+;; idle, working, done, blocked on the user, or failed.  See
+;; https://www.superlogical.com/rex/docs/build/program-status.  The
+;; native module validates each report, answers the `OSC 7501 ; ?'
+;; support query, and forwards reports here; ghostel keeps the records
+;; and leaves presentation to `ghostel-program-status-functions'.
+
+(defconst ghostel--program-status-states
+  '(("idle" . idle) ("working" . working) ("done" . done)
+    ("blocked" . blocked) ("error" . error) ("clear" . clear))
+  "OSC 7501 state names and the symbols ghostel records them as.")
+
+(defconst ghostel--program-status-kinds
+  '(("permission" . permission) ("question" . question) ("auth" . auth))
+  "OSC 7501 blocked kinds and the symbols ghostel records them as.")
+
+(defconst ghostel--program-status-max-records 256
+  "Most OSC 7501 records one terminal keeps, the protocol's minimum.")
+
+(defvar-local ghostel-program-status-records nil
+  "OSC 7501 records reported by the program in this terminal.
+An alist of (ID . RECORD), oldest record first.  ID is the record's
+slash-separated path, or nil for the program's own root record.
+RECORD is a plist with `:state' (`idle', `working', `done', `blocked'
+or `error'), and, when the program sent them, `:kind' (`permission',
+`question' or `auth', only while blocked), `:app', `:title', `:msg' and
+`:progress' (an integer 0-100, only while working or blocked).  A
+report replaces its record entirely.  Use `ghostel-program-status-app'
+to resolve an app inherited from an ancestor record.")
+
+(defun ghostel--program-status-within-p (id ancestor)
+  "Return non-nil when record ID is ANCESTOR or lies beneath it.
+A nil ANCESTOR contains every record."
+  (or (null ancestor)
+      (equal id ancestor)
+      (and id (string-prefix-p (concat ancestor "/") id))))
+
+(defun ghostel-program-status-app (id)
+  "Return the app of OSC 7501 record ID, inheriting from its ancestors.
+A record without an app takes the app of its nearest ancestor that has
+one; the root record, with ID nil, is every record's last ancestor."
+  (let (app)
+    (while (progn
+             (setq app (plist-get (cdr (assoc id ghostel-program-status-records))
+                                  :app))
+             (and (not app) id))
+      (setq id (and (string-match "/[^/]*\\'" id)
+                    (substring id 0 (match-beginning 0)))))
+    app))
+
+(defun ghostel--program-status-changed ()
+  "Notify `ghostel-program-status-functions' about the current buffer."
+  (ghostel--run-hook-safely 'ghostel-program-status-functions
+                            (current-buffer)))
+
+(defun ghostel--osc-program-status (state kind id app title msg progress)
+  "Record an OSC 7501 report from the native module.
+STATE and KIND are the protocol's names as strings; unknown names are
+dropped through an allowlist.  ID, APP, TITLE and MSG are strings or
+nil, with TITLE and MSG already decoded.  PROGRESS is an integer 0-100
+or nil.  The `clear' state removes record ID and every record beneath
+it, or every record when ID is nil."
+  (when-let* ((state (cdr (assoc state ghostel--program-status-states))))
+    (if (eq state 'clear)
+        (let ((kept (seq-remove
+                     (lambda (entry)
+                       (ghostel--program-status-within-p (car entry) id))
+                     ghostel-program-status-records)))
+          (unless (equal kept ghostel-program-status-records)
+            (setq ghostel-program-status-records kept)
+            (ghostel--program-status-changed)))
+      (let ((entry (assoc id ghostel-program-status-records))
+            (record (append
+                     (list :state state)
+                     (when-let* ((kind (cdr (assoc kind
+                                                   ghostel--program-status-kinds))))
+                       (list :kind kind))
+                     (and app (list :app app))
+                     (and title (list :title title))
+                     (and msg (list :msg msg))
+                     (and progress (list :progress progress)))))
+        (cond
+         (entry (setcdr entry record))
+         ((< (length ghostel-program-status-records)
+             ghostel--program-status-max-records)
+          (setq ghostel-program-status-records
+                (append ghostel-program-status-records
+                        (list (cons id record))))))
+        (when (or entry (assoc id ghostel-program-status-records))
+          (ghostel--program-status-changed))))))
+
+(defun ghostel--program-status-drop-live ()
+  "Drop OSC 7501 records that claim a program is still working or blocked.
+The protocol requires this when the program exits or a new shell prompt
+begins, since a program that is gone can no longer finish its report.
+Finished `done' and `error' records stay until something clears them."
+  (let ((kept (seq-remove
+               (lambda (entry)
+                 (memq (plist-get (cdr entry) :state) '(working blocked)))
+               ghostel-program-status-records)))
+    (unless (equal kept ghostel-program-status-records)
+      (setq ghostel-program-status-records kept)
+      (ghostel--program-status-changed))))
+
 (defun ghostel-buffer-name-by-title (title)
   "Return \"*ghostel: TITLE*\", or nil when TITLE is nil.
 A `ghostel-buffer-name-function' that names the buffer after the title."
@@ -4084,6 +4200,7 @@ EVENT is the state-change description passed by Emacs."
         (ghostel--spinner-stop)
         (remove-hook 'pre-redisplay-functions #'ghostel--fake-cursor-update t)
         (ghostel--fake-cursor-clear)
+        (ghostel--program-status-drop-live)
         (ghostel--run-hook-safely 'ghostel-exit-functions buf event))
       (when (buffer-live-p buf)
         (with-current-buffer buf

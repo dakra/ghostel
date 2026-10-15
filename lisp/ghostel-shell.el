@@ -35,6 +35,7 @@
 
 (declare-function ghostel--ensure-ghostel-buffer "ghostel")
 (declare-function ghostel--enter-readonly-input-mode "ghostel")
+(declare-function ghostel--program-status-drop-live "ghostel")
 (declare-function ghostel--resource-root "ghostel-module-install")
 (declare-function ghostel--run-hook-safely "ghostel")
 (declare-function ghostel--ssh-install-enabled-p "ghostel")
@@ -559,6 +560,9 @@ not here.  This handler only tracks prompt positions and exit status."
      ;; Prompt start — record line number.  P is the explicit
      ;; prompt-start marker (no fresh-line side effect); both mark
      ;; a navigable prompt position.
+     ;; A fresh prompt means the reporting program is gone (OSC 7501).
+     (when (equal type "A")
+       (ghostel--program-status-drop-live))
      (push (cons (count-lines (point-min) (point-max)) nil)
            ghostel--prompt-positions)
      ;; No D arrives for a command that replaced the shell (exec zsh).

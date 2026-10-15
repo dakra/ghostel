@@ -493,6 +493,7 @@ const interned_symbols = [_][:0]const u8{
     "ghostel--kitty-display-image",
     "ghostel--kitty-display-virtual",
     "ghostel--osc-progress",
+    "ghostel--osc-program-status",
     "ghostel--osc133-marker",
     "ghostel--osc52-eval",
     "ghostel--osc52-handle",

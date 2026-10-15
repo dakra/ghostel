@@ -41,6 +41,9 @@ pub fn GhostelHandler(Effects: type) type {
             self.inner.effects.device_attributes = &deviceAttributesCallback;
             self.inner.effects.title_changed = &titleChangedCallback;
             self.inner.effects.size = &sizeCallback;
+            // Installing this effect is also what makes the standard handler
+            // answer the `OSC 7501 ; ?` support query.
+            self.inner.effects.program_status = &programStatusCallback;
             return self;
         }
 
@@ -281,6 +284,57 @@ pub fn GhostelHandler(Effects: type) type {
             };
             const progress_val = if (v.progress) |p| p else null;
             self.effects.effect("ghostel--osc-progress", .{ state_str, progress_val });
+        }
+
+        // ---------------------------------------------------------------------------
+        // OSC 7501 — program status
+        // ---------------------------------------------------------------------------
+
+        const ProgramStatus = gt.osc.program_status;
+
+        /// Called by the standard handler for every valid report, including the
+        /// `clear` it synthesizes on a full reset (RIS).  The report's text
+        /// points into the parser's buffer, so it is decoded here and copied
+        /// into the event before the callback returns.
+        fn programStatusCallback(
+            handler: *gt.TerminalStream.Handler,
+            report: ProgramStatus.Report,
+        ) void {
+            const self: *Self = @fieldParentPtr("inner", handler);
+            self.handleProgramStatus(report);
+        }
+
+        /// Forward STATE, KIND, ID, APP, TITLE, MSG and PROGRESS to Elisp.
+        /// Absent keys arrive as nil; TITLE and MSG arrive decoded.
+        fn handleProgramStatus(self: *Self, report: ProgramStatus.Report) void {
+            var title_buf: [ProgramStatus.max_title_bytes]u8 = undefined;
+            var msg_buf: [ProgramStatus.max_msg_bytes]u8 = undefined;
+            const kind: ?[]const u8 = if (report.readOption(.kind)) |k| @tagName(k) else null;
+            self.effects.effect("ghostel--osc-program-status", .{
+                @as([]const u8, @tagName(report.state)),
+                kind,
+                report.readOption(.id),
+                report.readOption(.app),
+                decodedText(report, .title, &title_buf),
+                decodedText(report, .msg, &msg_buf),
+                report.readOption(.progress),
+            });
+        }
+
+        fn decodedText(
+            report: ProgramStatus.Report,
+            comptime option: ProgramStatus.Option,
+            buf: []u8,
+        ) ?[]const u8 {
+            if (report.readOption(option) == null) return null;
+            var writer: std.Io.Writer = .fixed(buf);
+            // The buffers hold the protocol's maximum decoded length, so this
+            // only fails if libghostty's limits and ours ever drift apart.
+            report.writeText(option, &writer) catch |err| {
+                log.err("program status {s} dropped: {s}", .{ @tagName(option), @errorName(err) });
+                return null;
+            };
+            return writer.buffered();
         }
     };
 }

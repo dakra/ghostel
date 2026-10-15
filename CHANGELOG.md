@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- OSC 7501 Program Status Protocol support.  Ghostel answers the
+  `OSC 7501 ; ?` support query, keeps each terminal's status records
+  in `ghostel-program-status-records`, and runs the new hook
+  `ghostel-program-status-functions` after every change.  Working and
+  blocked records are dropped when the program exits or a new OSC 133
+  prompt begins.  The bundled libghostty moves to ghostty-org/ghostty
+  a4aacd9, the commit that adds the protocol's parser.
 - New hook `ghostel-readonly-change-hook`, run whenever a ghostel
   buffer's `buffer-read-only` flips: process spawn and exit,
   input-mode switches.

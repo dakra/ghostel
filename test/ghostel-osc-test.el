@@ -405,6 +405,142 @@ ConEmu's CWD-reporting alias uses the same callback as OSC 7, so
     (let ((ghostel-progress-function nil))
       (should-not (ghostel--osc-progress "set" 10)))))
 
+;; OSC 7501 program status
+
+(ert-deftest ghostel-test-osc7501-program-status ()
+  "OSC 7501 reports become records in `ghostel-program-status-records'."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-echo-buffer (buf proc)
+      (let ((changes 0))
+        (add-hook 'ghostel-program-status-functions
+                  (lambda (_buffer) (setq changes (1+ changes)))
+                  nil t)
+        (cl-flet ((report (payload)
+                    (let ((before changes))
+                      (ghostel--write-pty ghostel--term payload)
+                      (ghostel-test--wait-until
+                       (lambda () (> changes before)) proc 5))))
+          ;; "Running tests" and "Approve deploy" in base64.
+          (report "\e]7501;state=working:app=cake:progress=40:msg=UnVubmluZyB0ZXN0cw\e\\")
+          (should (equal '((nil :state working :app "cake"
+                                :msg "Running tests" :progress 40))
+                         ghostel-program-status-records))
+          (report "\e]7501;state=blocked:kind=permission:id=deploy/eu:msg=QXBwcm92ZSBkZXBsb3k=\a")
+          (should (equal '(:state blocked :kind permission :msg "Approve deploy")
+                         (cdr (assoc "deploy/eu" ghostel-program-status-records))))
+          (should (equal "cake" (ghostel-program-status-app "deploy/eu")))
+          ;; Text arrives decoded as UTF-8, not as raw bytes.
+          (report "\e]7501;state=blocked:kind=question:id=ask:title=562J5b6F5om55YeGIOKckw==\e\\")
+          (let ((title (plist-get (cdr (assoc "ask" ghostel-program-status-records))
+                                  :title)))
+            (should (equal "等待批准 ✓" title))
+            (should (multibyte-string-p title)))
+          (report "\e]7501;state=clear:id=ask\e\\")
+          ;; A report replaces its record entirely.
+          (report "\e]7501;state=done\e\\")
+          (should (equal '(:state done)
+                         (cdr (assoc nil ghostel-program-status-records))))
+          ;; Clearing a parent removes the records beneath it.
+          (report "\e]7501;state=clear:id=deploy\e\\")
+          (should (equal '((nil :state done)) ghostel-program-status-records))
+          ;; An unknown state is ignored as a whole.
+          (let ((before changes))
+            (ghostel--write-pty ghostel--term "\e]7501;state=paused\e\\")
+            (ghostel--write-pty ghostel--term "\e]7501;state=clear\e\\")
+            (ghostel-test--wait-until (lambda () (> changes before)) proc 5)
+            (should (= (1+ before) changes)))
+          (should-not ghostel-program-status-records))))))
+
+(ert-deftest ghostel-test-osc7501-support-query ()
+  "The OSC 7501 support query is answered with the same sequence."
+  :tags '(native)
+  (let ((python (ghostel-test--python))
+        (payloads '("\e]7501;?\e\\" "\e]7501;?\a")))
+    (ghostel-test--with-pty-matrix backend
+      (ghostel-test--with-exec-buffer
+       (buf proc python
+            (append (list "-c" ghostel-test--pty-reply-probe-script
+                          (ghostel-test--fixture-directory) "0.15")
+                    (mapcar #'ghostel-test--hex-encode-string payloads)))
+       (cl-loop for payload in payloads
+                for i from 0
+                do (should (equal (ghostel-test--hex-encode-string payload)
+                                  (ghostel-test--wait-for-pty-reply i proc 6))))))))
+
+(ert-deftest ghostel-test-full-reset-clears-program-status ()
+  "RIS removes every OSC 7501 record."
+  :tags '(native)
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-raw-echo-buffer (buf proc)
+      (ghostel--write-vt ghostel--term "\e]7501;state=error:id=a\e\\")
+      (ghostel-test--wait-until (lambda () ghostel-program-status-records) proc 5)
+      (should (equal '(("a" :state error)) ghostel-program-status-records))
+      (ghostel--write-vt ghostel--term "\ec")
+      (ghostel-test--wait-until (lambda () (null ghostel-program-status-records))
+                                proc 5)
+      (should-not ghostel-program-status-records))))
+
+(ert-deftest ghostel-test-osc-program-status-dispatch ()
+  "`ghostel--osc-program-status' keeps records the way OSC 7501 requires."
+  (with-temp-buffer
+    (let ((changes 0))
+      (add-hook 'ghostel-program-status-functions
+                (lambda (buffer)
+                  (should (eq buffer (current-buffer)))
+                  (setq changes (1+ changes)))
+                nil t)
+      (ghostel--osc-program-status "working" nil nil "agent" nil nil nil)
+      (ghostel--osc-program-status "blocked" "question" "a" nil "Plan" nil 10)
+      (ghostel--osc-program-status "done" nil "a/b" nil nil "Built" nil)
+      (ghostel--osc-program-status "working" nil "c" "other" nil nil nil)
+      (should (= 4 changes))
+      (should (equal '((nil :state working :app "agent")
+                       ("a" :state blocked :kind question :title "Plan"
+                        :progress 10)
+                       ("a/b" :state done :msg "Built")
+                       ("c" :state working :app "other"))
+                     ghostel-program-status-records))
+      ;; Apps are inherited from the nearest ancestor that has one.
+      (should (equal "agent" (ghostel-program-status-app "a/b")))
+      (should (equal "other" (ghostel-program-status-app "c")))
+      ;; Unknown states and kinds never become symbols.
+      (ghostel--osc-program-status "bogus" nil nil nil nil nil nil)
+      (should (= 4 changes))
+      (ghostel--osc-program-status "blocked" "bogus" "c" nil nil nil nil)
+      (should (equal '(:state blocked) (cdr (assoc "c" ghostel-program-status-records))))
+      ;; A program that is gone can no longer be working or blocked.
+      (ghostel--program-status-drop-live)
+      (should (equal '(("a/b" :state done :msg "Built"))
+                     ghostel-program-status-records))
+      ;; Clearing a record that does not exist changes nothing.
+      (setq changes 0)
+      (ghostel--osc-program-status "clear" nil "missing" nil nil nil nil)
+      (should (= 0 changes))
+      (ghostel--osc-program-status "clear" nil "a" nil nil nil nil)
+      (should (= 1 changes))
+      (should-not ghostel-program-status-records))))
+
+(ert-deftest ghostel-test-osc-program-status-record-limit ()
+  "New OSC 7501 records beyond the limit are dropped; existing ones update."
+  (with-temp-buffer
+    (dotimes (i ghostel--program-status-max-records)
+      (ghostel--osc-program-status "working" nil (format "r%d" i) nil nil nil nil))
+    (ghostel--osc-program-status "working" nil "overflow" nil nil nil nil)
+    (should (= ghostel--program-status-max-records
+               (length ghostel-program-status-records)))
+    (should-not (assoc "overflow" ghostel-program-status-records))
+    (ghostel--osc-program-status "done" nil "r0" nil nil nil nil)
+    (should (equal '(:state done) (cdr (assoc "r0" ghostel-program-status-records))))))
+
+(ert-deftest ghostel-test-osc133-prompt-drops-live-program-status ()
+  "A new shell prompt drops working and blocked OSC 7501 records."
+  (with-temp-buffer
+    (ghostel--osc-program-status "working" nil nil nil nil nil nil)
+    (ghostel--osc-program-status "error" nil "x" nil nil nil nil)
+    (ghostel--osc133-marker "A" nil)
+    (should (equal '(("x" :state error)) ghostel-program-status-records))))
+
 (ert-deftest ghostel-test-osc777-notification ()
   "OSC 777 `notify;TITLE;BODY' reaches `ghostel-notification-function'."
   :tags '(native)
