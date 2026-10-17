@@ -465,5 +465,124 @@ unmodified so later visual buffers still send `q' to the program."
       (kill-buffer buf))))
 
 
+(ert-deftest ghostel-test-shell-command-uses-new-buffer-when-busy ()
+  "`ghostel-shell-command' honours `async-shell-command-buffer' and the shell vars."
+  (let* ((ghostel-shell-command-buffer-name " *ghostel-shell-command-test*")
+         (busy (get-buffer-create ghostel-shell-command-buffer-name))
+         (async-shell-command-buffer 'new-buffer)
+         (shell-file-name "/bin/sh")
+         (shell-command-switch "-c")
+         captured result)
+    (unwind-protect
+        (progn
+          (with-current-buffer busy
+            (setq ghostel--process 'fake-process))
+          (cl-letf (((symbol-function 'process-live-p)
+                     (lambda (p) (eq p 'fake-process)))
+                    ((symbol-function 'display-buffer) #'ignore)
+                    ((symbol-function 'ghostel-exec)
+                     (lambda (&rest args) (setq captured args) 'fake-proc)))
+            (setq result (ghostel-shell-command "echo hi")))
+          (should-not (eq result busy))
+          (should (equal (cdr captured)
+                         '("/bin/sh" ("-c" "echo hi")
+                           ((kind . shell-command)
+                            (command . ("/bin/sh" "-c" "echo hi"))))))
+          (should-not (buffer-local-value 'ghostel-kill-buffer-on-exit result)))
+      (kill-buffer busy)
+      (when (buffer-live-p result) (kill-buffer result)))))
+
+(ert-deftest ghostel-test-exec-exit-marker-follows-final-output ()
+  "The exit marker lands in the terminal after the command's last output."
+  :tags '(native)
+  (pcase-let ((`(,program . ,args)
+               (ghostel-test--shell-command "echo GHOSTEL_LAST_LINE")))
+    (ghostel-test--with-pty-matrix backend
+      (ghostel-test--with-exec-buffer (_buf proc program args)
+        (ghostel-test--wait-until
+         (lambda () (not (process-live-p proc))) nil 5)
+        (ghostel-test--wait-for-text "[Process exited]" nil 5)
+        (should (string-match-p "GHOSTEL_LAST_LINE\n+\\[Process exited\\]"
+                                (ghostel-test--terminal-text)))))))
+
+(ert-deftest ghostel-test-exec-exit-marker-renders-inside-open-sync-frame ()
+  "A child dying inside a mode 2026 frame does not block the exit marker."
+  :tags '(native)
+  (skip-unless (not (ghostel-test--windows-p)))
+  (ghostel-test--with-pty-matrix backend
+    (ghostel-test--with-exec-buffer
+        (_buf proc "/bin/sh" (list "-c" "printf 'GHOSTEL_SYNC\\033[?2026h'"))
+      (ghostel-test--wait-until
+       (lambda () (not (process-live-p proc))) nil 5)
+      (ghostel-test--wait-for-text "[Process exited]" nil 5)
+      (should (ghostel-test--redraw ghostel--term))
+      (should (string-match-p "GHOSTEL_SYNC" (buffer-string)))
+      (should (string-match-p "\\[Process exited\\]" (buffer-string))))))
+
+(ert-deftest ghostel-test-shell-command-strips-trailing-ampersand ()
+  "A trailing & is dropped so the command runs in the foreground."
+  (let ((ghostel-shell-command-buffer-name " *ghostel-shell-command-amp*")
+        (shell-file-name "/bin/sh")
+        (shell-command-switch "-c")
+        captured result)
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'display-buffer) #'ignore)
+                    ((symbol-function 'ghostel-exec)
+                     (lambda (&rest args) (setq captured args) 'fake-proc)))
+            (setq result (ghostel-shell-command "sleep 1 &")))
+          (should (equal (nth 2 captured) '("-c" "sleep 1"))))
+      (when (buffer-live-p result) (kill-buffer result)))))
+
+(ert-deftest ghostel-test-shell-command-kill-policy-replaces-busy-buffer ()
+  "`confirm-kill-process' asks once, ends the running command, reuses the name."
+  :tags '(native)
+  (skip-unless (not (ghostel-test--windows-p)))
+  (let ((ghostel-shell-command-buffer-name " *ghostel-shell-command-kill*")
+        (ghostel-detect-password-prompts nil)
+        (ghostel-query-before-killing t)
+        (async-shell-command-buffer 'confirm-kill-process)
+        (shell-file-name "/bin/sh")
+        (shell-command-switch "-c")
+        (prompts 0))
+    (ghostel-test--with-pty-matrix _backend
+      (setq prompts 0)
+      (let* ((busy (ghostel-shell-command "sleep 30"))
+             (busy-proc (buffer-local-value 'ghostel--process busy))
+             (fresh (cl-letf (((symbol-function 'yes-or-no-p)
+                               (lambda (&rest _) (cl-incf prompts) t)))
+                      (ghostel-shell-command "echo GHOSTEL_AFTER_KILL"))))
+        (unwind-protect
+            (progn
+              (should (= prompts 1))
+              (should-not (buffer-live-p busy))
+              (should (equal (buffer-name fresh) ghostel-shell-command-buffer-name))
+              (with-current-buffer fresh
+                (ghostel-test--wait-for-text "GHOSTEL_AFTER_KILL" nil 5))
+              (ghostel-test--wait-until
+               (lambda () (not (process-live-p busy-proc))) nil 5))
+          (when (buffer-live-p fresh) (kill-buffer fresh)))))))
+
+(ert-deftest ghostel-test-shell-command-keeps-buffer-after-exit ()
+  "`ghostel-shell-command' output stays readable after the command exits."
+  :tags '(native)
+  (skip-unless (not (ghostel-test--windows-p)))
+  (let ((ghostel-shell-command-buffer-name " *ghostel-shell-command-test*")
+        (ghostel-detect-password-prompts nil)
+        (shell-file-name "/bin/sh")
+        (shell-command-switch "-c"))
+    (ghostel-test--with-pty-matrix _backend
+      (let ((buf (ghostel-shell-command "echo GHOSTEL_SHELL_CMD_OUTPUT")))
+        (unwind-protect
+            (with-current-buffer buf
+              (let ((proc ghostel--process))
+                (ghostel-test--wait-for-text "GHOSTEL_SHELL_CMD_OUTPUT" nil 5)
+                (ghostel-test--wait-until
+                 (lambda () (not (process-live-p proc))) nil 5)
+                (should (buffer-live-p buf))
+                (should (string-match-p "GHOSTEL_SHELL_CMD_OUTPUT"
+                                        (ghostel-test--terminal-text)))))
+          (when (buffer-live-p buf) (kill-buffer buf)))))))
+
 (provide 'ghostel-exec-test)
 ;;; ghostel-exec-test.el ends here

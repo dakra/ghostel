@@ -48,11 +48,10 @@ OSC 0/2 title escapes rename the buffer via `ghostel-buffer-name-by-title'."
 
 (defun ghostel-eshell--visual-exit (buffer _event)
   "Post-exit cleanup for a visual-command BUFFER.
-Deferred via `run-at-time' so ghostel's sentinel has appended its
-\"[Process exited]\" marker first.  No-op if the buffer was killed
-\(i.e. `ghostel-kill-buffer-on-exit' was non-nil).  Otherwise snaps
-point and all windows showing BUFFER to `point-max' and binds `q'
-to dismiss the buffer."
+Deferred via `run-at-time' so ghostel's sentinel runs first.  No-op if
+the buffer was killed \(i.e. `ghostel-kill-buffer-on-exit' was non-nil).
+Otherwise snaps point and all windows showing BUFFER to `point-max' and
+binds `q' to dismiss the buffer."
   (run-at-time
    0 nil
    (lambda ()

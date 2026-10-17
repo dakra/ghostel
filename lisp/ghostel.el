@@ -367,6 +367,10 @@ call is considered interactive echo and redrawn immediately."
   "Default buffer name for ghostel terminals."
   :type 'string)
 
+(defcustom ghostel-shell-command-buffer-name "*Ghostel Shell Command*"
+  "Buffer name used by `ghostel-shell-command'."
+  :type 'string)
+
 (defcustom ghostel-project-buffer-scope 'both
   "How `ghostel-project-next', `-previous', and `-list-buffers' scope buffers.
 Controls which ghostel buffers are considered part of the current
@@ -3887,9 +3891,14 @@ EVENT is the state-change description passed by Emacs."
           (setq desktop-save-buffer nil)  ; Don't save/restore dead sessions
           (if ghostel-kill-buffer-on-exit
               (kill-buffer buf)
-            (let ((inhibit-read-only t))
-              (goto-char (point-max))
-              (insert "\n[Process exited]\n"))))))))
+            ;; Written into the terminal, not the buffer: a redraw still
+            ;; pending for the final output would otherwise overwrite it.
+            ;; DECSTR restores a readable charset and margins; leaving
+            ;; mode 2026 lets the renderer draw a frame the child never closed.
+            (when ghostel--term
+              (ghostel--write-vt ghostel--term
+                                 "\e[!p\e[?2026l\r\n[Process exited]\r\n")
+              (ghostel--invalidate))))))))
 
 (defun ghostel--resolve-local-executable (program)
   "Return the absolute local executable path for PROGRAM.
@@ -5403,6 +5412,60 @@ Signals `user-error' if BUFFER already has a live ghostel process."
                 `((kind . exec) (command . (,program . ,(copy-sequence args))))))
       (let ((remote-p (file-remote-p default-directory)))
         (ghostel--spawn-pty program args nil remote-p)))))
+
+;;;###autoload
+(defun ghostel-shell-command (command &optional buffer-name)
+  "Run shell COMMAND in a ghostel terminal, like `async-shell-command'.
+
+COMMAND goes to `shell-file-name' via `shell-command-switch', the remote
+host's for a TRAMP `default-directory'.  The buffer, BUFFER-NAME or
+`ghostel-shell-command-buffer-name', is kept after COMMAND exits.
+When it is still running a command, `async-shell-command-buffer' decides
+whether to kill that one, use a new buffer, or rename the old one.
+Returns the buffer."
+  (interactive (list (read-shell-command "Ghostel shell command: ")))
+  ;; A trailing & would background the job and lose its output.
+  (setq command (string-trim-right command "[ \t]*&[ \t]*"))
+  (pcase-let* ((name (or buffer-name ghostel-shell-command-buffer-name))
+               (buffer (get-buffer-create name))
+               (directory default-directory)
+               (`(,shell ,switch)
+                (with-connection-local-variables
+                 (list shell-file-name shell-command-switch))))
+    (when (process-live-p (buffer-local-value 'ghostel--process buffer))
+      (pcase-let ((`(,prompt . ,action)
+                   (pcase async-shell-command-buffer
+                     ('confirm-kill-process '("Kill it" . kill))
+                     ('confirm-new-buffer '("Use a new buffer" . new))
+                     ('new-buffer '(nil . new))
+                     ('confirm-rename-buffer '("Rename it" . rename))
+                     ('rename-buffer '(nil . rename)))))
+        (when (and prompt
+                   (not (yes-or-no-p (format "A command is running in %s.  %s? "
+                                             name prompt))))
+          (user-error "Shell command in progress"))
+        (pcase action
+          ;; Killing the buffer hangs up the child on both PTY backends.
+          ('kill (let ((kill-buffer-query-functions nil)
+                       (ghostel-query-before-killing nil))
+                   (kill-buffer buffer))
+                 (when (buffer-live-p buffer)
+                   (user-error "Shell command in progress"))
+                 (setq buffer (get-buffer-create name)))
+          ('new (setq buffer (generate-new-buffer name)))
+          ('rename (with-current-buffer buffer (rename-uniquely))
+                   (setq buffer (get-buffer-create name))))))
+    (with-current-buffer buffer
+      (setq default-directory directory)
+      ;; Before display, so `display-buffer-alist' rules can match the mode.
+      (unless (derived-mode-p 'ghostel-mode)
+        (ghostel-mode))
+      (setq-local ghostel-kill-buffer-on-exit nil))
+    (display-buffer buffer '(nil (allow-no-window . t)))
+    (ghostel-exec buffer shell (list switch command)
+                  `((kind . shell-command)
+                    (command . (,shell ,switch ,command))))
+    buffer))
 
 (defun ghostel-create (&optional name display identity)
   "Create and return a new ghostel terminal running `ghostel-shell'.

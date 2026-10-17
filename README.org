@@ -1639,6 +1639,22 @@ The binding is on the =<escape>= function key, which exists on GUI frames
 and, on a tty, in terminals speaking the kitty keyboard protocol with
 [[https://github.com/benjaminor/kkp][kkp.el]] enabled; on a legacy tty use =M-x evil-force-normal-state=.
 
+** Shell commands
+:properties:
+:custom_id: shell-commands
+:end:
+#+findex: ghostel-shell-command
+
+=ghostel-shell-command= is =async-shell-command= backed by a real TTY: it runs
+the command via =shell-file-name= and =shell-command-switch= in a ghostel buffer
+and keeps the buffer after the command exits.  Use it for programs that ignore
+=TERM=dumb= and misbehave under =M-&=.  The buffer is named
+=ghostel-shell-command-buffer-name= (default =*Ghostel Shell Command*=); when it is
+still running a command, =async-shell-command-buffer= decides whether to kill
+it, use a new buffer, or rename the old one.  Unlike =ghostel-compile= below,
+the buffer is a plain terminal: no header, footer, error parsing, or
+=compile-command= bookkeeping.
+
 ** Compilation mode
 :properties:
 :custom_id: compilation-mode
