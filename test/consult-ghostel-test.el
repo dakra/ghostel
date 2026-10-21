@@ -67,16 +67,22 @@ the other."
       (kill-buffer buf))))
 
 (ert-deftest consult-ghostel-test-marginalia-annotate ()
-  "The marginalia wrapper prepends the title to marginalia's annotation."
-  (let ((buf (consult-ghostel-test--fake-buffer " *consult-ghostel-marg*")))
+  "The marginalia wrapper prepends the status and title to marginalia's annotation.
+The status keeps its face ahead of `marginalia-value'."
+  (let ((buf (consult-ghostel-test--fake-buffer " *consult-ghostel-marg*"))
+        (ghostel-program-status-functions nil))
     (unwind-protect
         (cl-letf (((symbol-function 'marginalia-annotate-buffer)
                    (lambda (_) " orig")))
           (should (equal (consult-ghostel-marginalia-annotate buf) " orig"))
           (with-current-buffer buf
-            (setq ghostel-title "make -j8"))
-          (should (equal (consult-ghostel-marginalia-annotate buf)
-                         "  make -j8 orig")))
+            (setq ghostel-title "make -j8")
+            (ghostel--osc-program-status "done" nil nil nil nil nil nil))
+          (let ((text (consult-ghostel-marginalia-annotate buf)))
+            (should (equal text " [done]  make -j8 orig"))
+            (should (equal '(success marginalia-value)
+                           (get-text-property 1 'face text)))
+            (should (eq 'marginalia-value (get-text-property 10 'face text)))))
       (kill-buffer buf))))
 
 (ert-deftest consult-ghostel-test-marginalia-registered ()
@@ -109,6 +115,24 @@ the other."
           (should (equal (car (rassq a items)) (buffer-name a))))
       (kill-buffer a)
       (kill-buffer b))))
+
+(ert-deftest consult-ghostel-test-status-source-items ()
+  "`consult-ghostel-status-source' lists attention terminals most urgent first."
+  (let ((a (consult-ghostel-test--fake-buffer "*consult-ghostel-a*"))
+        (b (consult-ghostel-test--fake-buffer "*consult-ghostel-b*"))
+        (c (consult-ghostel-test--fake-buffer "*consult-ghostel-c*"))
+        (ghostel-program-status-functions nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer a (ghostel--osc-program-status "done" nil nil nil nil nil nil))
+          (with-current-buffer c (ghostel--osc-program-status "blocked" nil nil nil nil nil nil))
+          (should (equal (list (buffer-name c) (buffer-name a))
+                         (funcall (plist-get consult-ghostel-status-source :items))))
+          (should (eq (plist-get consult-ghostel-status-source :state)
+                      'consult--buffer-state)))
+      (kill-buffer a)
+      (kill-buffer b)
+      (kill-buffer c))))
 
 (ert-deftest consult-ghostel-test-pairs-current-last ()
   "`consult-ghostel--pairs' preserves the set and puts current buffer last."
@@ -469,6 +493,8 @@ Sent raw, its embedded newlines would act as Enter."
       (progn
         (consult-ghostel-mode -1)
         (should-not (memq 'consult-ghostel-source-hidden consult-buffer-sources))
+        (should-not (memq 'consult-ghostel-status-source-hidden
+                          consult-buffer-sources))
         (should-not (memq 'consult-ghostel-project-source-hidden
                           consult-project-buffer-sources))
         (should-not (member '(?g "Ghostel" ghostel-bookmark-handler)

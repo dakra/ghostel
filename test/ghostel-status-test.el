@@ -76,15 +76,190 @@
     (should (equal '("d" "c") (mapcar #'car ghostel-program-status)))))
 
 (ert-deftest ghostel-status-test-input-acknowledges-finished ()
-  "User input drops done and error records unless the option is off."
+  "User input drops done and error records unless the option is nil."
   (ghostel-status-test--with-log log
     (ghostel-status-test--report "done" "c")
     (ghostel-status-test--report "working" "a")
-    (let ((ghostel-status-acknowledge-on-input nil))
-      (ghostel-status--acknowledge)
+    (let ((ghostel-status-auto-acknowledge nil))
+      (ghostel-status--acknowledge-on-input)
       (should (= 2 (length ghostel-program-status))))
-    (ghostel-status--acknowledge)
+    (ghostel-status--acknowledge-on-input)
     (should (equal '("a") (mapcar #'car ghostel-program-status)))))
+
+(ert-deftest ghostel-status-test-acknowledge-command-drops-finished ()
+  "The command drops done and error records, keeps working and blocked."
+  (ghostel-status-test--with-log log
+    (ghostel-status-test--report "done" "c")
+    (ghostel-status-test--report "error" "d")
+    (ghostel-status-test--report "blocked" "b")
+    (ghostel-status-test--report "working" "a")
+    (ghostel-status-acknowledge)
+    (should (equal '("a" "b") (mapcar #'car ghostel-program-status)))
+    (should (member '("c" (:state done) nil) log))))
+
+(ert-deftest ghostel-status-test-seen-acknowledges-when-looked-at ()
+  "With `seen', finished records go once the buffer is looked at."
+  (let ((focused nil)
+        (ghostel-status-auto-acknowledge 'seen))
+    (cl-letf (((symbol-function 'ghostel--buffer-focused-p)
+               (lambda (_buf) focused)))
+      (ghostel-status-test--with-log log
+        (ghostel-status-test--report "done" "c")
+        (ghostel-status--acknowledge-seen)
+        (should (equal '("c") (mapcar #'car ghostel-program-status)))
+        (setq focused t)
+        (ghostel-status--acknowledge-seen)
+        (should-not ghostel-program-status)
+        ;; Arriving while looked at is seen at once.
+        (ghostel-status-test--report "error" "d")
+        (ghostel-status-test--report "working" "a")
+        (should (equal '("a") (mapcar #'car ghostel-program-status)))
+        (should (member '("d" (:state error) nil) log))))))
+
+(ert-deftest ghostel-status-test-kill-buffer-clears-records ()
+  "A terminal being killed drops every record through the hook."
+  (ghostel-status-test--with-log log
+    (ghostel-status-test--report "blocked" "b")
+    (ghostel-status-test--report "done")
+    (setq log nil)
+    (ghostel-status--kill-buffer)
+    (should-not ghostel-program-status)
+    (should (equal '(("b" (:state blocked) nil) ("" (:state done) nil))
+                   (sort log (lambda (a b) (string> (car a) (car b))))))))
+
+(ert-deftest ghostel-status-test-focused-p-counts-unknown-focus ()
+  "A buffer in the selected window is looked at unless the frame lost focus."
+  (let ((state 'unknown))
+    (cl-letf (((symbol-function 'frame-focus-state) (lambda (&optional _) state)))
+      (with-temp-buffer
+        (let ((buf (current-buffer)))
+          (set-window-buffer (selected-window) buf)
+          (should (ghostel--buffer-focused-p buf))
+          (setq state t)
+          (should (ghostel--buffer-focused-p buf))
+          (setq state nil)
+          (should-not (ghostel--buffer-focused-p buf))
+          (setq state t)
+          (set-window-buffer (selected-window) (get-buffer-create "*scratch*"))
+          (should-not (ghostel--buffer-focused-p buf)))))))
+
+;;; Across terminals
+
+(defmacro ghostel-status-test--with-terminals (names &rest body)
+  "Run BODY with fake ghostel buffers bound to NAMES, killing them after."
+  (declare (indent 1))
+  `(let ,(mapcar (lambda (name)
+                   `(,name (with-current-buffer
+                               (generate-new-buffer ,(format "*%s*" name))
+                             (setq major-mode 'ghostel-mode)
+                             (current-buffer))))
+                 names)
+     (unwind-protect (progn ,@body)
+       ,@(mapcar (lambda (name) `(kill-buffer ,name)) names))))
+
+(ert-deftest ghostel-status-test-buffer-state-most-urgent ()
+  "A terminal's state is its most urgent record state among the notify states."
+  (ghostel-status-test--with-log log
+    (should-not (ghostel-status-buffer-state (current-buffer)))
+    (ghostel-status-test--report "working")
+    (should-not (ghostel-status-buffer-state (current-buffer)))
+    (ghostel-status-test--report "done")
+    (should (eq 'done (ghostel-status-buffer-state (current-buffer))))
+    (ghostel-status-test--report "blocked" "child" "permission")
+    (should (eq 'blocked (ghostel-status-buffer-state (current-buffer))))
+    (let ((ghostel-status-notify-states '(done)))
+      (should (eq 'done (ghostel-status-buffer-state (current-buffer)))))))
+
+(ert-deftest ghostel-status-test-buffers-most-urgent-first ()
+  "`ghostel-status-buffers' orders by urgency, then by name, skipping the rest."
+  (ghostel-status-test--with-terminals (a b c d e)
+    (let ((ghostel-program-status-functions nil))
+      (with-current-buffer a (ghostel-status-test--report "done"))
+      (with-current-buffer b (ghostel-status-test--report "error"))
+      (with-current-buffer c (ghostel-status-test--report "blocked"))
+      (with-current-buffer d (ghostel-status-test--report "working"))
+      (with-current-buffer e (ghostel-status-test--report "done" "x"))
+      (should (equal (list c b a e) (ghostel-status-buffers))))))
+
+(ert-deftest ghostel-status-test-next-walks-attention-terminals ()
+  "`ghostel-status-next' cycles the attention terminals, most urgent first."
+  (ghostel-status-test--with-terminals (a b c)
+    (let ((ghostel-program-status-functions nil)
+          popped)
+      (should-error (ghostel-status-next) :type 'user-error)
+      (with-current-buffer a (ghostel-status-test--report "done"))
+      (with-current-buffer c (ghostel-status-test--report "blocked"))
+      (cl-letf (((symbol-function 'pop-to-buffer)
+                 (lambda (buf &rest _) (setq popped buf))))
+        (with-current-buffer b (ghostel-status-next))
+        (should (eq popped c))
+        (with-current-buffer c (ghostel-status-next))
+        (should (eq popped a))
+        (with-current-buffer a (ghostel-status-next))
+        (should (eq popped c))))))
+
+(ert-deftest ghostel-status-test-indicator-counts-terminals ()
+  "The indicator shows one label per distinct label with the terminal count."
+  (ghostel-status-test--with-terminals (a b c)
+    (unwind-protect
+        (let ((ghostel-program-status-functions nil))
+          (ghostel-status-indicator-mode 1)
+          (should (memq 'ghostel-status--indicator global-mode-string))
+          (should-not ghostel-status--indicator)
+          (with-current-buffer a
+            (ghostel-status-test--report "blocked" nil "permission" nil nil nil "Apply?"))
+          (with-current-buffer b (ghostel-status-test--report "blocked" "x" "question"))
+          (with-current-buffer c (ghostel-status-test--report "done"))
+          (should (equal " [blocked: permission] [blocked: question] [done]"
+                         ghostel-status--indicator))
+          (should (equal (format "%s: Apply?" (buffer-name a))
+                         (get-text-property 0 'help-echo ghostel-status--indicator)))
+          (should (eq ghostel-status--indicator-map
+                      (get-text-property 0 'local-map ghostel-status--indicator)))
+          (with-current-buffer c (ghostel-status--kill-buffer))
+          (with-current-buffer b (ghostel-status-test--report "blocked" "x" "permission"))
+          (should (equal " [blocked: permission ×2]" ghostel-status--indicator))
+          (should (equal (format "%s: Apply?\n%s: blocked" (buffer-name a) (buffer-name b))
+                         (get-text-property 0 'help-echo ghostel-status--indicator))))
+      (ghostel-status-indicator-mode -1)
+      (should-not (memq 'ghostel-status--indicator global-mode-string)))))
+
+(ert-deftest ghostel-status-test-indicator-states-own-list ()
+  "The indicator counts `ghostel-status-indicator-states', not the attention states."
+  (ghostel-status-test--with-terminals (a b)
+    (unwind-protect
+        (let ((ghostel-program-status-functions nil))
+          (ghostel-status-indicator-mode 1)
+          (with-current-buffer a (ghostel-status-test--report "working"))
+          (with-current-buffer b
+            (ghostel-status-test--report "working" nil nil 42)
+            ;; The root stands for the terminal over a newer child.
+            (ghostel-status-test--report "working" "child"))
+          (should (equal " [working] [42%%]" ghostel-status--indicator))
+          (should-not (ghostel-status-buffers))
+          (should (eq 'working (ghostel-status-buffer-state a '(working))))
+          (should (equal (list a b) (ghostel-status-buffers '(working))))
+          (with-current-buffer a (ghostel-status--drop-running))
+          (should (equal " [42%%]" ghostel-status--indicator))
+          (dolist (states '((done) nil))
+            (let ((ghostel-status-indicator-states states))
+              (ghostel-status--update-indicator)
+              (should-not ghostel-status--indicator))))
+      (ghostel-status-indicator-mode -1))))
+
+(ert-deftest ghostel-status-test-annotation-shows-status ()
+  "Picker annotations carry the mode-line status before the title."
+  (ghostel-status-test--with-terminals (a)
+    (let ((ghostel-program-status-functions nil))
+      (should-not (ghostel-annotate-buffer a))
+      (with-current-buffer a (setq ghostel-title "make"))
+      (should (equal "  make" (ghostel-annotate-buffer (buffer-name a))))
+      (with-current-buffer a (ghostel-status-test--report "done"))
+      (should (equal " [done]  make" (ghostel-annotate-buffer a)))
+      (with-current-buffer a (setq ghostel-title nil))
+      (should (equal " [done]" (ghostel-annotate-buffer a)))
+      (with-current-buffer a (ghostel-status-test--report "working" nil nil 42))
+      (should (equal " [42%]" (ghostel-annotate-buffer a))))))
 
 (ert-deftest ghostel-status-test-osc9-progress-maps-to-root ()
   "OSC 9;4 states become root record states."
@@ -128,7 +303,7 @@ A percent sign is doubled so the mode line prints it."
   (ghostel-status-test--with-mode-line
     (pcase-dolist (`(,state ,kind ,progress ,text)
                    '(("working" nil 42 " [42%%]")
-                     ("working" nil nil " [...]")
+                     ("working" nil nil " [working]")
                      ("blocked" "permission" nil " [blocked: permission]")
                      ("blocked" nil nil " [blocked]")
                      ("done" nil nil " [done]")
@@ -142,6 +317,25 @@ A percent sign is doubled so the mode line prints it."
                    (get-text-property 0 'help-echo ghostel--mode-line-status)))
     (ghostel-status-test--report "idle")
     (should (null mode-line-process))))
+
+(ert-deftest ghostel-status-test-mode-line-kind-labels-and-format ()
+  "A kind with its own label replaces the state label; the format frames it.
+A kind on another state is ignored, a percent in the format survives
+the mode line and the picker."
+  (let ((ghostel-status-mode-line-labels
+         '((blocked . "B") (permission . "P") (done . "D")))
+        (ghostel-status-mode-line-format " %%%l%n%c%x"))
+    (ghostel-status-test--with-mode-line
+      (ghostel-status-test--report "blocked" nil "permission")
+      (should (equal " %%P1" ghostel--mode-line-status))
+      (should (equal " %P1" (ghostel-annotate-buffer (buffer-name))))
+      (ghostel-status-test--report "blocked" nil "auth")
+      (should (equal " %%B: auth1" ghostel--mode-line-status))
+      (ghostel-status-test--report "blocked" "x" "auth")
+      (should (equal " %%B: auth22 ×2" ghostel--mode-line-status))
+      (ghostel-status-test--report "done" nil "permission")
+      (ghostel-status-test--report "clear" "x")
+      (should (equal " %%D1" ghostel--mode-line-status)))))
 
 (ert-deftest ghostel-status-test-mode-line-blocked-child-overrides-root ()
   "Blocked and error records show over the root, counted, with a tooltip line each."

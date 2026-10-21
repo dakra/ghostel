@@ -4,6 +4,44 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `ghostel-status-next` switches to the terminal whose program needs
+  attention most urgently (a `blocked`, `error` or `done` record, in
+  that order) and walks the rest on repeat.  `ghostel-status-indicator-mode`
+  counts terminals in every mode line, one label per distinct label,
+  naming them on hover.  It counts the states in
+  `ghostel-status-indicator-states`, by default also `working`.
+  `ghostel-status-buffers` and `ghostel-status-buffer-state` are the API
+  underneath, both taking an optional list of states.
+- `ghostel-status-acknowledge` drops the current terminal's `done` and
+  `error` records.
+- consult-ghostel: `consult-ghostel-status` picks a terminal needing
+  attention from `consult-ghostel-status-source`; `consult-ghostel-mode`
+  registers a hidden copy in `consult-buffer` under the `a` narrow key.
+- The buffer pickers show a terminal's program status before its title.
+- `ghostel-status-mode-line-format` frames the status labels, a
+  `format-spec` string with the label and three count specs, and
+  `ghostel-status-mode-line-labels` takes the blocked kinds as keys so
+  an icon can stand for each.
+
+### Changed
+- The default `working` label reads `working` instead of `...`.
+- URL links keep a balanced `(...)` group, so a Wikipedia-style
+  `https://w.org/Rust_(language)` links in full.  A `(` or `)` that is
+  not part of a balanced pair ends the URL, so the trailing `)` in
+  `(see https://example.com)` is still left out.
+- A path inside a URL that names an existing file, such as
+  `https://host/upload(/tmp/a.log)`, links to the file.  The rest of
+  the URL still opens the full URL.
+- `ghostel-status-acknowledge-on-input` is replaced by
+  `ghostel-status-auto-acknowledge`: `input` (the default) drops `done` and
+  `error` records when you send input, `seen` as soon as the terminal is
+  the buffer you look at, nil never.
+- A terminal shown in the selected window of a frame whose focus Emacs
+  cannot tell, as on a tty without focus reporting, counts as looked
+  at: program status notifications are no longer sent for it, and it
+  receives terminal focus events.
+
 ### Fixed
 - evil-ghostel landed the shell cursor one cell off per oversized prompt
   icon when `i`, `a`, `0`, `$` and friends drove it to point.
@@ -16,15 +54,6 @@ All notable changes to this project will be documented in this file.
   host half of a scheme-less URL such as npm's `//registry.example.com/`
   warnings.  On Windows it names a network share, and looking up the
   host froze Emacs for seconds.
-
-### Changed
-- URL links keep a balanced `(...)` group, so a Wikipedia-style
-  `https://w.org/Rust_(language)` links in full.  A `(` or `)` that is
-  not part of a balanced pair ends the URL, so the trailing `)` in
-  `(see https://example.com)` is still left out.
-- A path inside a URL that names an existing file, such as
-  `https://host/upload(/tmp/a.log)`, links to the file.  The rest of
-  the URL still opens the full URL.
 
 ## [0.59.0] — 2026-10-19
 

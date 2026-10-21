@@ -45,6 +45,7 @@
 ;;   M-x ghostel-project-next / ghostel-project-previous /
 ;;       ghostel-project-list-buffers
 ;;                             Same, scoped to the current project
+;;   M-x ghostel-status-next   Switch to the next terminal needing attention
 ;;
 ;; Key bindings in the terminal buffer:
 ;;
@@ -1484,6 +1485,7 @@ A child map, so `ghostel-menu' is not also active via the local map.")
     ["Next Terminal" ghostel-next]
     ["Previous Terminal" ghostel-previous]
     ["List Terminals" ghostel-list-buffers]
+    ["Next Needing Attention" ghostel-status-next]
     "--"
     ["Sync Theme" ghostel-sync-theme]
     ["Force Redraw" ghostel-force-redraw]
@@ -1617,7 +1619,7 @@ Returns the sequence string, or nil for unknown keys."
 (defun ghostel--on-user-input ()
   "Handle common state before explicit user input reaches the terminal."
   (deactivate-mark)
-  (ghostel-status--acknowledge)
+  (ghostel-status--acknowledge-on-input)
   (when (and ghostel--readonly-fast-exit
              (memq ghostel--input-mode '(copy emacs)))
     (ghostel-readonly-exit))
@@ -3765,13 +3767,12 @@ Non-nil means a focus-in event was delivered.  Only updated when
 enabling 1004 after a focus change still lets the next event fire.")
 
 (defun ghostel--buffer-focused-p (buf)
-  "Return non-nil if BUF is logically focused.
-BUF is focused when it is displayed in the selected window of a
-frame whose focus state is t (i.e. the frame has keyboard focus
-and the buffer is the active selection within it)."
+  "Return non-nil if BUF is the buffer being looked at.
+That is, BUF is shown in the selected window of a frame that has keyboard
+focus or whose focus Emacs cannot tell, as on a tty without focus reporting."
   (seq-some (lambda (win)
               (let ((frame (window-frame win)))
-                (and (eq (frame-focus-state frame) t)
+                (and (memq (frame-focus-state frame) '(t unknown))
                      (eq win (frame-selected-window frame)))))
             (get-buffer-window-list buf nil t)))
 
@@ -3797,7 +3798,9 @@ logical focus state transitions.  Further gates on terminal mode 1004."
           (let ((focused (and (ghostel--buffer-focused-p buf) t)))
             (when (and (not (eq focused ghostel--focus-state))
                        (ghostel--focus-event ghostel--term focused))
-              (setq ghostel--focus-state focused))))))))
+              (setq ghostel--focus-state focused))
+            (when focused
+              (ghostel-status--acknowledge-seen))))))))
 
 
 ;;; Process management
@@ -5113,6 +5116,7 @@ may change freely (`ghostel-compile' finalize relies on this)."
   (add-hook 'window-buffer-change-functions #'ghostel--window-buffer-change nil t)
   (add-hook 'window-buffer-change-functions #'ghostel--sync-tty-composition nil t)
   (add-hook 'window-buffer-change-functions #'ghostel--tty-esc-window-change nil t)
+  (add-hook 'kill-buffer-hook #'ghostel-status--kill-buffer nil t)
   (add-hook 'pre-redisplay-functions #'ghostel--pre-redisplay nil t)
   (add-hook 'window-size-change-functions #'ghostel--adjust-size nil t)
   (add-hook 'minibuffer-exit-hook #'ghostel--minibuffer-exit)
@@ -5541,14 +5545,20 @@ the first or last entry depending on DIRECTION."
 
 (defun ghostel-annotate-buffer (name)
   "Return a completion annotation for the ghostel buffer named NAME, or nil.
-The annotation is the terminal title, capped at
-`ghostel-annotation-title-width' columns."
-  (when-let* ((buffer (get-buffer name))
-              (title (buffer-local-value 'ghostel-title buffer)))
-    (concat "  " (if ghostel-annotation-title-width
-                     (truncate-string-to-width
-                      title ghostel-annotation-title-width nil nil t)
-                   title))))
+The program status as in the buffer's mode line, then the terminal
+title capped at `ghostel-annotation-title-width' columns."
+  (when-let* ((buffer (get-buffer name)))
+    (let ((status (with-current-buffer buffer
+                    (ghostel-status--label (ghostel-status--shown))))
+          (title (buffer-local-value 'ghostel-title buffer)))
+      (when (or status title)
+        ;; The label quotes percents for the mode line.
+        (concat (and status (string-replace "%%" "%" status))
+                (when title
+                  (concat "  " (if ghostel-annotation-title-width
+                                   (truncate-string-to-width
+                                    title ghostel-annotation-title-width nil nil t)
+                                 title))))))))
 
 (defun ghostel--read-buffer (prompt bufs)
   "Prompt with PROMPT for one of BUFS via `read-buffer'.
