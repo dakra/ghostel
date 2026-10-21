@@ -4,12 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Fixed
-- File link detection skips paths starting with `//`.  Such text is a
-  `//` code comment, which used to link to the root directory, or the
-  host half of a scheme-less URL such as npm's `//registry.example.com/`
-  warnings.  On Windows it names a network share, and looking up the
-  host froze Emacs for seconds.
+### Added
+- `ghostel-status-next` switches to the terminal whose program needs
+  attention most urgently (a `blocked`, `error` or `done` record, in
+  that order) and walks the rest on repeat.  `ghostel-status-indicator-mode`
+  counts those terminals in every mode line, one label per state,
+  naming them on hover.  `ghostel-status-buffers` and
+  `ghostel-status-buffer-state` are the API underneath.
+- `ghostel-status-acknowledge` drops the current terminal's `done` and
+  `error` records.
+- consult-ghostel: `consult-ghostel-status` picks a terminal needing
+  attention from `consult-ghostel-status-source`; `consult-ghostel-mode`
+  registers a hidden copy in `consult-buffer` under the `a` narrow key.
+- The buffer pickers show a terminal's program status before its title.
 
 ### Changed
 - URL links keep a balanced `(...)` group, so a Wikipedia-style
@@ -19,6 +26,21 @@ All notable changes to this project will be documented in this file.
 - A path inside a URL that names an existing file, such as
   `https://host/upload(/tmp/a.log)`, links to the file.  The rest of
   the URL still opens the full URL.
+- `ghostel-status-acknowledge-on-input` is replaced by
+  `ghostel-status-acknowledge`: `input` (the default) drops `done` and
+  `error` records when you send input, `seen` as soon as the terminal is
+  the buffer you look at, nil never.
+- A terminal shown in the selected window of a frame whose focus Emacs
+  cannot tell, as on a tty without focus reporting, counts as looked
+  at: program status notifications are no longer sent for it, and it
+  receives terminal focus events.
+
+### Fixed
+- File link detection skips paths starting with `//`.  Such text is a
+  `//` code comment, which used to link to the root directory, or the
+  host half of a scheme-less URL such as npm's `//registry.example.com/`
+  warnings.  On Windows it names a network share, and looking up the
+  host froze Emacs for seconds.
 
 ## [0.59.0] — 2026-10-19
 

@@ -55,6 +55,7 @@ or custom functions that interact with the Ghostel buffer.
 
 ```emacs-lisp
 (use-package ghostel
+  :hook (after-init . ghostel-status-indicator-mode)
   :bind (("C-x m" . ghostel)
          :map ghostel-semi-char-mode-map
          ("C-s"  . consult-line)

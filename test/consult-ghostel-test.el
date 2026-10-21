@@ -110,6 +110,24 @@ the other."
       (kill-buffer a)
       (kill-buffer b))))
 
+(ert-deftest consult-ghostel-test-status-source-items ()
+  "`consult-ghostel-status-source' lists attention terminals most urgent first."
+  (let ((a (consult-ghostel-test--fake-buffer "*consult-ghostel-a*"))
+        (b (consult-ghostel-test--fake-buffer "*consult-ghostel-b*"))
+        (c (consult-ghostel-test--fake-buffer "*consult-ghostel-c*"))
+        (ghostel-program-status-functions nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer a (ghostel--osc-program-status "done" nil nil nil nil nil nil))
+          (with-current-buffer c (ghostel--osc-program-status "blocked" nil nil nil nil nil nil))
+          (should (equal (list (buffer-name c) (buffer-name a))
+                         (funcall (plist-get consult-ghostel-status-source :items))))
+          (should (eq (plist-get consult-ghostel-status-source :state)
+                      'consult--buffer-state)))
+      (kill-buffer a)
+      (kill-buffer b)
+      (kill-buffer c))))
+
 (ert-deftest consult-ghostel-test-pairs-current-last ()
   "`consult-ghostel--pairs' preserves the set and puts current buffer last."
   (let ((a (generate-new-buffer "*consult-ghostel-arrange-a*"))
@@ -469,6 +487,8 @@ Sent raw, its embedded newlines would act as Enter."
       (progn
         (consult-ghostel-mode -1)
         (should-not (memq 'consult-ghostel-source-hidden consult-buffer-sources))
+        (should-not (memq 'consult-ghostel-status-source-hidden
+                          consult-buffer-sources))
         (should-not (memq 'consult-ghostel-project-source-hidden
                           consult-project-buffer-sources))
         (should-not (member '(?g "Ghostel" ghostel-bookmark-handler)

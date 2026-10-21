@@ -31,6 +31,11 @@ Install from [MELPA](https://melpa.org/#/consult-ghostel):
          ("C-c h" . consult-ghostel-history)))
 ```
 
+`M-x consult-ghostel-status` picks a terminal that needs attention, most
+urgent first: one whose program reported `blocked`, `error` or `done`
+through OSC 7501 (the states in `ghostel-status-notify-states`).  With
+`consult-ghostel-mode` the `a` narrow key shows them in `consult-buffer`.
+
 `M-x consult-ghostel-history` picks from the shell's own command history
 and types the selection into the terminal: the typed input before the
 cursor pre-fills the minibuffer and is completed or replaced by the
@@ -41,7 +46,8 @@ like [atuin](https://atuin.sh) plug in through the same alist).
 
 `consult-ghostel-mode` registers hidden sources in the regular
 `consult-buffer` lists: ghostel buffers stay in the default *Buffer*
-view only, until the `g` narrow key summons them exclusively.  The `g`
+view only, until the `g` narrow key summons them exclusively; the `a`
+narrow key shows the terminals needing attention.  The `g`
 narrow key (or any other source property) can be changed with
 `consult-customize`, e.g.
 `(consult-customize consult-ghostel-source-hidden :narrow ?t)`.
