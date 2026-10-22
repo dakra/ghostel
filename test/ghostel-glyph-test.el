@@ -172,6 +172,34 @@ SPECS is a plist with these keys:
                (should-not (get-text-property (point) 'display))))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-glyph-adjust-min-width-follows-remapped-font ()
+  "Padding is emitted in the remapped default font's pixels, not frame columns."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-glyph-remapped-min-width*")))
+    (unwind-protect
+        (save-window-excursion
+          (with-selected-window (display-buffer buf)
+            (ghostel-mode)
+            (let* ((term (ghostel--new 5 80 1000))
+                   (ghostel--term term)
+                   (ghostel--term-rows 5)
+                   (inhibit-read-only t)
+                   (base (ghostel-test--make-font ghostel-test--default-font-info))
+                   (remapped (ghostel-test--make-font
+                              ["MockRemappedDefault" "mock.ttf" 24 240 20 20 20 20 0]))
+                   (glyph-font (ghostel-test--make-font
+                                ["MockGlyph" "mock.ttf" 24 240 20 20 36 36 0]
+                                [[0 1 ?あ 0 36 0 0 20 20 0]])))
+              (ghostel--write-vt term "あ")
+              (ghostel-test--with-glyph-mocks
+               (:default-font base
+                              :remapped-default-font remapped
+                              :glyph-font glyph-font)
+               (ghostel--redraw term t)
+               (goto-char (point-min))
+               (should (equal (ghostel-test--display-min-width-at-point) '((40))))))))
+      (kill-buffer buf))))
+
 (ert-deftest ghostel-test-glyph-adjust-uses-composition-gstring ()
   "A composed glyph uses `find-composition' metrics for adjustment."
   :tags '(native)
@@ -199,7 +227,7 @@ SPECS is a plist with these keys:
                (goto-char (point-min))
                (let ((disp (get-text-property (point) 'display)))
                  (should disp)
-                 (should (equal (cadr (assq 'min-width disp)) '(2))))))))
+                 (should (equal (cadr (assq 'min-width disp)) '((20)))))))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-glyph-adjust-clamps-on-ascent ()
@@ -335,7 +363,7 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
                (let ((disp (get-text-property (point) 'display)))
                  (should disp)
                  (let ((min-w (cadr (assq 'min-width disp))))
-                   (should (equal min-w '(2)))))))))
+                   (should (equal min-w '((20))))))))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-glyph-adjust-cjk-never-claims-extra-space ()
@@ -365,14 +393,14 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
                (goto-char (point-min))
                (let ((disp-before-space (get-text-property (point) 'display)))
                  (should disp-before-space)
-                 (should (equal (cadr (assq 'min-width disp-before-space)) '(2))))
+                 (should (equal (cadr (assq 'min-width disp-before-space)) '((20)))))
                (forward-char 1)
                (should (equal (char-after) ?\s))
                (should-not (get-text-property (point) 'display))
                (forward-line 1)
                (let ((disp-at-eol (get-text-property (point) 'display)))
                  (should disp-at-eol)
-                 (should (equal (cadr (assq 'min-width disp-at-eol)) '(2))))))))
+                 (should (equal (cadr (assq 'min-width disp-at-eol)) '((20)))))))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-glyph-adjust-identical-metrics ()
@@ -406,7 +434,7 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
   :tags '(native)
   (ghostel-test--with-oversized-icon-rendered "⏵ x"
     (should (equal (char-after) ?⏵))
-    (should (equal (ghostel-test--display-min-width-at-point) '(2)))
+    (should (equal (ghostel-test--display-min-width-at-point) '((20))))
     (forward-char 1)
     (should (equal (char-after) ?\s))
     (should (equal (get-text-property (point) 'display) '(space :width 0)))))
@@ -419,7 +447,7 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
     (should-not (get-text-property (point) 'display))
     (forward-char 1)
     (should (equal (char-after) ?⏵))
-    (should (equal (ghostel-test--display-min-width-at-point) '(2)))
+    (should (equal (ghostel-test--display-min-width-at-point) '((20))))
     (forward-char 1)
     (should (equal (char-after) ?\s))
     (should (equal (get-text-property (point) 'display) '(space :width 0)))))
@@ -430,27 +458,27 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
   ;; Park the cursor on the next row so the trailing cell is unused.
   (ghostel-test--with-oversized-icon-rendered "⏵\e[2;1H"
     (should (equal (char-after) ?⏵))
-    (should (equal (ghostel-test--display-min-width-at-point) '(2)))))
+    (should (equal (ghostel-test--display-min-width-at-point) '((20))))))
 
 (ert-deftest ghostel-test-glyph-adjust-adjacent-icons-do-not-claim-trailing-cell ()
   "Adjacent icons stay one cell wide, including the icon at EOL."
   :tags '(native)
   (ghostel-test--with-oversized-icon-rendered "⏵⏵"
     (should (equal (char-after) ?⏵))
-    (should (equal (ghostel-test--display-min-width-at-point) '(1)))
+    (should (equal (ghostel-test--display-min-width-at-point) '((10))))
     (forward-char 1)
     (should (equal (char-after) ?⏵))
-    (should (equal (ghostel-test--display-min-width-at-point) '(1)))))
+    (should (equal (ghostel-test--display-min-width-at-point) '((10))))))
 
 (ert-deftest ghostel-test-glyph-adjust-adjacent-icons-do-not-claim-following-space ()
   "An icon in an adjacent run does not claim a following blank cell."
   :tags '(native)
   (ghostel-test--with-oversized-icon-rendered "⏵⏵ x"
     (should (equal (char-after) ?⏵))
-    (should (equal (ghostel-test--display-min-width-at-point) '(1)))
+    (should (equal (ghostel-test--display-min-width-at-point) '((10))))
     (forward-char 1)
     (should (equal (char-after) ?⏵))
-    (should (equal (ghostel-test--display-min-width-at-point) '(1)))
+    (should (equal (ghostel-test--display-min-width-at-point) '((10))))
     (forward-char 1)
     (should (equal (char-after) ?\s))
     (should-not (get-text-property (point) 'display))))
@@ -460,7 +488,7 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
   :tags '(native)
   (ghostel-test--with-oversized-icon-rendered "⏵ \e[D"
     (should (equal (char-after) ?⏵))
-    (should (equal (ghostel-test--display-min-width-at-point) '(1)))
+    (should (equal (ghostel-test--display-min-width-at-point) '((10))))
     (forward-char 1)
     (should (equal (char-after) ?\s))
     (should-not (get-text-property (point) 'display))
@@ -471,7 +499,7 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
   :tags '(native)
   (ghostel-test--with-oversized-icon-rendered "⏵\e[7m \e[0mx"
     (should (equal (char-after) ?⏵))
-    (should (equal (ghostel-test--display-min-width-at-point) '(1)))
+    (should (equal (ghostel-test--display-min-width-at-point) '((10))))
     (forward-char 1)
     (should (equal (char-after) ?\s))
     (should-not (equal (get-text-property (point) 'display) '(space :width 0)))
@@ -482,7 +510,7 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
   :tags '(native)
   (ghostel-test--with-oversized-icon-rendered "\e[1m⏵ x"
     (should (equal (char-after) ?⏵))
-    (should (equal (ghostel-test--display-min-width-at-point) '(2)))
+    (should (equal (ghostel-test--display-min-width-at-point) '((20))))
     (forward-char 1)
     (should (equal (get-text-property (point) 'display) '(space :width 0)))))
 
@@ -491,7 +519,7 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
   :tags '(native)
   (ghostel-test--with-oversized-icon-rendered "\e[34m⏵ x"
     (should (equal (char-after) ?⏵))
-    (should (equal (ghostel-test--display-min-width-at-point) '(2)))
+    (should (equal (ghostel-test--display-min-width-at-point) '((20))))
     (forward-char 1)
     (should (equal (get-text-property (point) 'display) '(space :width 0)))))
 
@@ -500,7 +528,7 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
   :tags '(native)
   (ghostel-test--with-oversized-icon-rendered "\e]133;A\a⏵ x"
     (should (equal (char-after) ?⏵))
-    (should (equal (ghostel-test--display-min-width-at-point) '(2)))
+    (should (equal (ghostel-test--display-min-width-at-point) '((20))))
     (forward-char 1)
     (should (equal (get-text-property (point) 'display) '(space :width 0)))))
 
@@ -509,7 +537,7 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
   :tags '(native)
   (ghostel-test--with-oversized-icon-rendered "⏵\e[44m \e[0mx"
     (should (equal (char-after) ?⏵))
-    (should (equal (ghostel-test--display-min-width-at-point) '(1)))
+    (should (equal (ghostel-test--display-min-width-at-point) '((10))))
     (forward-char 1)
     (should-not (equal (get-text-property (point) 'display) '(space :width 0)))))
 
@@ -518,7 +546,7 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
   :tags '(native)
   (ghostel-test--with-oversized-icon-rendered "⏵\e[44m\e[K\e[0m\e[2;1H"
     (should (equal (char-after) ?⏵))
-    (should (equal (ghostel-test--display-min-width-at-point) '(1)))
+    (should (equal (ghostel-test--display-min-width-at-point) '((10))))
     (forward-char 1)
     (should-not (equal (get-text-property (point) 'display) '(space :width 0)))))
 
@@ -527,7 +555,7 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
   :tags '(native)
   (ghostel-test--with-oversized-icon-rendered "⏵\e[4m \e[0mx"
     (should (equal (char-after) ?⏵))
-    (should (equal (ghostel-test--display-min-width-at-point) '(1)))
+    (should (equal (ghostel-test--display-min-width-at-point) '((10))))
     (forward-char 1)
     (should-not (equal (get-text-property (point) 'display) '(space :width 0)))))
 
@@ -558,7 +586,7 @@ request floor(12 * 10/13) / 12 = 0.75 instead."
                (let ((disp (get-text-property (1- (point)) 'display)))
                  (should disp)
                  (let ((min-w (cadr (assq 'min-width disp))))
-                   (should (equal min-w '(1)))))))))
+                   (should (equal min-w '((10))))))))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-glyph-scale-floor-clamps-scale ()

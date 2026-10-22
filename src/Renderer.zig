@@ -742,7 +742,7 @@ fn adjustGlyph(
     const pixel_size: f64 = @floatFromInt(metrics.pixel_size);
     const quantized_scale = @floor(pixel_size * scale) / pixel_size;
 
-    const min_width_spec = env.list(.{ s.@"min-width", env.list(.{char_width}) });
+    const min_width_spec = env.list(.{ s.@"min-width", env.list(.{env.list(.{slot_width})}) });
     const scale_spec = env.list(.{ s.height, quantized_scale });
     const display_spec = env.list(.{ min_width_spec, scale_spec });
     _ = env.f("put-text-property", .{
