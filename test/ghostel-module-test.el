@@ -1039,5 +1039,11 @@ both the .so/.dylib and ghostel-module.version next to it."
         (system-type 'gnu/linux))
     (should (equal (ghostel--module-platform-tag) "aarch64-linux"))))
 
+(ert-deftest ghostel-test-platform-tag-detects-freebsd ()
+  "Test that FreeBSD builds get a `freebsd' tag."
+  (let ((system-configuration "amd64-portbld-freebsd15.0")
+        (system-type 'berkeley-unix))
+    (should (equal (ghostel--module-platform-tag) "x86_64-freebsd"))))
+
 (provide 'ghostel-module-test)
 ;;; ghostel-module-test.el ends here

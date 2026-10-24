@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- The native module installer now selects the `x86_64-freebsd` release on FreeBSD.
 - File link detection skips paths starting with `//`.  Such text is a
   `//` code comment, which used to link to the root directory, or the
   host half of a scheme-less URL such as npm's `//registry.example.com/`
