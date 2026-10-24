@@ -11,6 +11,15 @@ All notable changes to this project will be documented in this file.
   warnings.  On Windows it names a network share, and looking up the
   host froze Emacs for seconds.
 
+### Changed
+- URL links keep a balanced `(...)` group, so a Wikipedia-style
+  `https://w.org/Rust_(language)` links in full.  A `(` or `)` that is
+  not part of a balanced pair ends the URL, so the trailing `)` in
+  `(see https://example.com)` is still left out.
+- A path inside a URL that names an existing file, such as
+  `https://host/upload(/tmp/a.log)`, links to the file.  The rest of
+  the URL still opens the full URL.
+
 ## [0.59.0] — 2026-10-19
 
 ### Added

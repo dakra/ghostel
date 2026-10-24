@@ -17,11 +17,9 @@
 ;;   the find-file `M-n' default, and ffap-style commands see whole
 ;;   targets across soft-wrapped rows.
 ;;
-;; `ghostel.el' requires this file eagerly (the renderer attaches
-;; `ghostel-link-map' to OSC 8 spans as it renders) and calls
-;; `ghostel-links-setup' from its mode setup.  Core state this code
-;; reads lives in `ghostel.el'; this file only forward-declares it, so
-;; the require introduces no cycle.
+;; `ghostel.el' requires this file (the renderer attaches
+;; `ghostel-link-map' to OSC 8 spans) and calls `ghostel-links-setup'
+;; from its mode setup.
 
 ;;; Code:
 
@@ -43,47 +41,34 @@
 ;;; Options
 
 (defcustom ghostel-enable-url-detection t
-  "Automatically detect and linkify URLs in terminal output.
-When non-nil, plain-text URLs (http:// and https://) are made
-clickable even if the program did not use OSC 8 hyperlink escapes."
+  "Make plain-text http(s) URLs in terminal output clickable."
   :type 'boolean
   :group 'ghostel)
 
 (defcustom ghostel-enable-file-detection t
-  "Automatically detect and linkify file:line references in terminal output.
-When non-nil, patterns like /path/to/file.el:42 are made clickable,
-opening the file at the given line in another window.  Automatically
-disabled when `default-directory' is a TRAMP path, because each
-candidate would require a remote `file-exists-p' round-trip per
-redraw."
+  "Make file:line[:col] references in terminal output clickable.
+Off while `default-directory' is remote: each candidate would cost a
+TRAMP round trip per redraw."
   :type 'boolean
   :group 'ghostel)
 
 (defcustom ghostel-plain-link-detection-delay 0.1
-  "Delay in seconds before redraw-triggered plain-text link detection runs.
-Redraws queue URL/file detection through
-`ghostel--schedule-link-detection' so multiple updates can be
-coalesced into a single scan.  Set to 0 to scan immediately after each
-redraw.  Native OSC-8 hyperlinks remain applied during redraw."
+  "Delay in seconds before a redraw's plain-text link detection runs.
+Redraws within the delay share one scan; a value of 0 scans after every redraw.
+OSC 8 hyperlinks are applied during the redraw itself."
   :type 'number
   :group 'ghostel)
 
 (defcustom ghostel-file-detection-path-regex
   "[~[:alnum:]_.-]*/[^] \t\n\r:\"<>(){}[`']*[^] \t\n\r:\"<>(){}[`'.,;!?]"
   "Regex matching the PATH portion of a file:line[:col] reference.
-Ghostel adds the leading path-boundary anchor and the optional
-`:LINE[:COL]' tail itself, so the value must contain neither.
-The final character class excludes sentence punctuation so a
-path ending a sentence links without the trailing mark.
-
-The match is resolved against `default-directory' and linkified only
-when that file exists.  The default matches any path with at least one
-char after a `/': absolute, `./', `~/', or bare relative like `src/main.rs'.
-
-Every distinct match costs a `file-exists-p' per scan, so broadening
-the pattern (e.g. to bare `file.go' without a `/') is expensive on
-slow or network filesystems.  Avoid unbounded backtracking;
-the scan covers every changed region."
+Ghostel adds the leading boundary anchor and the `:LINE[:COL]' tail,
+so the value must contain neither.  The final class excludes sentence
+punctuation so a path ending a sentence links without the mark.
+A match is resolved against `default-directory' and linked only if the file
+exists; every distinct match costs a `file-exists-p' per scan, so a pattern
+broad enough to match a bare `file.go' is expensive on slow filesystems.
+Avoid unbounded backtracking: the scan covers every changed region."
   :type 'regexp
   :group 'ghostel)
 
@@ -93,13 +78,16 @@ the scan covers every changed region."
 
 (defconst ghostel--file-detection-tail
   "\\(?::[0-9]+\\(?::[0-9]+\\)?\\)?"
-  "Fixed optional `:LINE[:COL]' tail.
-When absent, the match is linkified as a bare file/directory
-reference opened at its start.")
+  "Fixed optional `:LINE[:COL]' tail.")
 
 (defconst ghostel--url-regex
-  "https?://[^ \t\n\r\"<>]*[^ \t\n\r\"<>.,;:!?)>]"
-  "Regex matching a plain-text http(s) URL.")
+  (let ((chars "[^ \t\n\r\"<>()]")
+        (group "([^ \t\n\r\"<>()]*)"))
+    (concat "https?://" chars "*\\(?:" group chars "*\\)*"
+            "\\(?:[^ \t\n\r\"<>.,;:!?()]\\|" group "\\)"))
+  "Regex matching a plain-text http(s) URL.
+A balanced `(...)' group is part of the URL, so a trailing `)' closing
+one is kept while an unbalanced one, as in `(see https://x)', is not.")
 
 (defconst ghostel--fileref-regex
   "\\`fileref:\\(.*?\\)\\(?::\\([0-9]+\\)\\(?::\\([0-9]+\\)\\)?\\)?\\'"
@@ -128,27 +116,20 @@ A marker, for the reason given at `ghostel--plain-link-detection-begin'.")
 
 (defvar ghostel--inhibit-active-line-skip nil
   "When non-nil, `ghostel--detect-urls' scans the cursor's line too.
-That line is normally left alone as the prompt being typed at.  A
-terminal that has exited has no prompt, and its last row is ordinary
-output — often the one row a command that printed no trailing
-newline ended on.")
+That line is normally the prompt being typed at; a terminal that has
+exited has no prompt, and its last row is output.")
 
 (defconst ghostel--link-detection-chunk 100000
   "Characters `ghostel--run-queued-plain-link-detection' scans per tick.
-A single redraw can materialize megabytes of output at once; scanning
-all of it in one pass would block Emacs for as long as that takes.
-The drain takes this much from the newest end of the queued range and
-re-arms for the rest.")
+One redraw can materialize megabytes; scanning it all would block Emacs.")
 
 
 ;;; Hyperlinks (OSC 8)
 
 (defvar-keymap ghostel-link-map
   :doc "Keymap for clickable hyperlinks in ghostel buffers.
-Mouse clicks on a linkified cell open the link in any input mode.
-
-RET not bound here so a misdetected link inside a typed command in
-semi-char/char mode never hijacks the key away from the PTY."
+RET is not bound here, so a misdetected link inside a typed command
+in semi-char/char mode never hijacks the key away from the PTY."
   "<mouse-1>" #'ghostel-open-link-at-click
   "<mouse-2>" #'ghostel-open-link-at-click)
 
@@ -177,12 +158,11 @@ For `eldoc-documentation-functions'."
       (when col (move-to-column (max 0 (1- (string-to-number col))))))))
 
 (defun ghostel--open-link (url)
-  "Open URL, dispatching by scheme.
-file:// and fileref: URIs open in another window.
-A fileref: (auto-detected file[:line[:col]]) opens at its position.
-Other schemes use `browse-url'.
-A bare path[:line[:col]] resolves against `default-directory'."
-  (when (and url (stringp url))
+  "Open URL by scheme.
+`fileref:' and `file://' open in another window, a fileref at its line
+and column.  A bare path[:LINE[:COL]] resolves against `default-directory'.
+Anything else goes to `browse-url'."
+  (when (stringp url)
     (cond
      ((string-match ghostel--fileref-regex url)
       (ghostel--open-file-at (match-string 1 url)
@@ -263,8 +243,7 @@ lands at its start, not its last chunk."
 
 (defun ghostel--find-next-link (from)
   "Return start position of the first hyperlink after FROM, or nil.
-A hyperlink is any region with a non-nil `help-echo' property.
-Covers OSC 8 links, auto-detected URLs, and `fileref:' references."
+A hyperlink is any region with a non-nil `help-echo' property."
   (ghostel--find-link-1 'next from))
 
 (defun ghostel--find-previous-link (from)
@@ -275,13 +254,10 @@ Covers OSC 8 links, auto-detected URLs, and `fileref:' references."
   "Jump to the next/previous hyperlink.  DIRECTION is `next' or `previous'.
 Wraps around when no link is found in the requested direction.
 Signals `user-error' if the buffer has no hyperlinks at all."
-  (let* ((search (if (eq direction 'next)
-                     #'ghostel--find-next-link
-                   #'ghostel--find-previous-link))
-         (target (funcall search (point))))
+  (let ((target (ghostel--find-link-1 direction (point))))
     (unless target
       (let ((wrap-from (if (eq direction 'next) (point-min) (point-max))))
-        (setq target (funcall search wrap-from))
+        (setq target (ghostel--find-link-1 direction wrap-from))
         (when target (message "Wrapped"))))
     (if target
         (goto-char target)
@@ -289,9 +265,7 @@ Signals `user-error' if the buffer has no hyperlinks at all."
 
 (defun ghostel-next-hyperlink (&optional n)
   "Enter `ghostel-readonly-default-mode' and move to the Nth next hyperlink.
-A hyperlink is any OSC 8 link, auto-detected URL, or `file:line'
-reference in the buffer.  Wraps to `point-min' when no link is found
-after point.  Press RET to follow the link at point."
+Wraps to `point-min' when no link follows point."
   (interactive "p")
   (unless (memq ghostel--input-mode '(copy emacs))
     (ghostel--enter-readonly-input-mode 'default))
@@ -300,7 +274,7 @@ after point.  Press RET to follow the link at point."
 
 (defun ghostel-previous-hyperlink (&optional n)
   "Enter `ghostel-readonly-default-mode' and move to the Nth previous hyperlink.
-Wraps to `point-max' when no link is found before point."
+Wraps to `point-max' when no link precedes point."
   (interactive "p")
   (unless (memq ghostel--input-mode '(copy emacs))
     (ghostel--enter-readonly-input-mode 'default))
@@ -363,10 +337,8 @@ STRING is the region's text as the terminal program wrote it, so a
 value split across rows matches as one token.  CHUNKS maps it back:
 a vector of (STRING-OFFSET . BUFFER-POS) pairs, one per row, ascending.
 
-LIMIT bounds how many rows may be joined into one line, which keeps a
-megabyte-long line of output from becoming one unbroken token for the
-regexps to chew through.  The count is per logical line: a hard
-newline in the region ends one line and starts the next from zero."
+LIMIT caps the rows joined into one logical line; a hard newline in
+the region starts a new line and resets the count."
   (let ((chunks nil)
         (parts nil)
         (offset 0)
@@ -423,22 +395,10 @@ are left out so link properties never cover a row break."
           (setq pos end))))
     (nreverse fragments)))
 
-(defun ghostel--url-link-p (pos)
-  "Non-nil when POS carries a URL link this scan attached.
-The file pattern also matches the `//host/path' half of a URL, so the file
-pass has to recognise a URL link to leave it alone, including one an earlier
-scan attached, when URL detection has since been switched off."
-  (let ((echo (get-text-property pos 'help-echo)))
-    (and (ghostel--detected-link-p pos)
-         (stringp echo)
-         (not (string-prefix-p "fileref:" echo)))))
-
 (defun ghostel--range-overlaps-p (beg end ranges)
   "Non-nil when BEG..END overlaps any (START . STOP) cons in RANGES."
-  (and (seq-find (lambda (range)
-                   (and (< beg (cdr range)) (> end (car range))))
-                 ranges)
-       t))
+  (seq-find (lambda (range) (and (< beg (cdr range)) (> end (car range))))
+            ranges))
 
 (defun ghostel--linkify (fragments uri raw)
   "Mark FRAGMENTS as a hyperlink to URI.
@@ -477,16 +437,12 @@ matches, so the whole range is checked, not just its first cell."
 
 (defun ghostel--skip-match-p (fragments raw active-bounds)
   "Return non-nil if the link over FRAGMENTS should not be applied.
-RAW is the text this match is made of.  Leaves alone what another
-source owns (an OSC 8 span), the prompt, the line the cursor is on,
-and a match whose link already covers this same text.  A match whose
-text changed, or that is only partly marked, is re-applied: the
-renderer repaints the rows that changed, so the rows of a wrapped
-link that did not change would otherwise keep pointing at text they
-no longer hold.  The test is on the text rather than on the resolved
-target, so a `cd' — which moves `default-directory' under output that
-never changed — leaves existing links pointing where they did.
-ACTIVE-BOUNDS is a (BOL . EOL) cons covering the cursor's line."
+RAW is the match's text, ACTIVE-BOUNDS the (BOL . EOL) of the cursor's line,
+or nil to scan it too.  Skips an OSC 8 span, the prompt, the cursor's line,
+and a link already covering this same text.  A partly marked or changed match
+is re-applied: the renderer repaints only changed rows, so the other rows of
+a wrapped link would otherwise keep a stale target.
+The test is on text, not target, so a `cd' leaves existing links as they are."
   (let ((skip nil)
         (current t))
     (pcase-dolist (`(,start . ,stop) fragments)
@@ -527,29 +483,19 @@ scanned for is unexamined, not stranded."
 
 (defun ghostel--detect-urls (&optional begin end)
   "Scan a buffer region for plain-text URLs and file:line references.
-BEGIN and END default to `point-min' and `point-max' respectively.
-Skips regions that already have a `help-echo' property (e.g. from OSC 8)
-and the user's active input on the current prompt line.
-Bounding the scan keeps streaming output from re-scanning the entire
-materialized scrollback on every redraw.
-Binds `inhibit-read-only' and suppresses modification hooks so the scan
-can attach text properties when called from the deferred-detection timer
-outside the redraw scope.
-
-Returns the (BEGIN . END) actually covered, which the caller-supplied
-bounds widened to whole logical lines."
-  (let* (;; Whole logical lines: a value the terminal split across rows is
-         ;; only recognisable once the rows are joined, and starting mid-line
-         ;; would let the `^' anchor below match where there is no line start.
+BEGIN and END default to `point-min' and `point-max'.  OSC 8 links,
+the prompt and the cursor's line are left alone.
+Return the \(BEGIN . END) covered, the bounds widened to whole logical lines."
+  (let* (;; Whole logical lines: a wrapped value is only whole once rows are
+         ;; joined, and a mid-line start lets the `^' anchor match mid-line.
          (begin (ghostel--soft-wrap-line-beginning
                  (or begin (point-min)) ghostel--soft-wrap-row-limit))
          (end (ghostel--soft-wrap-line-end
                (or end (point-max)) ghostel--soft-wrap-row-limit))
          (inhibit-read-only t)
          (inhibit-modification-hooks t)
-         ;; `ghostel--cursor-char-pos' is the live terminal cursor after a redraw;
-         ;; its line is the prompt the user is currently editing.  Capture as
-         ;; buffer-position bounds so the per-match skip check is O(1).
+         ;; The cursor's line is the prompt being edited.  Captured once as
+         ;; buffer positions so the per-match skip test is O(1).
          (active-bounds
           (unless ghostel--inhibit-active-line-skip
             (let ((active-pos (or ghostel--cursor-char-pos (point))))
@@ -561,13 +507,11 @@ bounds widened to whole logical lines."
                   begin end ghostel--soft-wrap-row-limit))
          (text (car joined))
          (chunks (cdr joined))
-         ;; Disable file detection over TRAMP
          (files (and ghostel-enable-file-detection
                      (not (file-remote-p default-directory))))
-         ;; Every range a pattern matched, whether or not it was linkified.
-         ;; What no pattern covers any more is a leftover to clear.
-         (matched nil)
-         (url-ranges nil))
+         ;; Ranges a pattern matched, linkified or not; a detected link
+         ;; outside them is stranded and dropped.
+         (matched nil))
     ;; Pass 1: http(s) URLs
     (when ghostel-enable-url-detection
       (let ((offset 0))
@@ -576,19 +520,12 @@ bounds widened to whole logical lines."
           (let* ((beg (ghostel--wrap-offset-to-pos (match-beginning 0) chunks))
                  (mend (ghostel--wrap-offset-to-pos (match-end 0) chunks))
                  (url (match-string-no-properties 0 text))
-                 (fragments (ghostel--wrap-fragments beg mend))
-                 (range (cons beg mend)))
-            (push range url-ranges)
-            (push range matched)
+                 (fragments (ghostel--wrap-fragments beg mend)))
+            (push (cons beg mend) matched)
             (unless (ghostel--skip-match-p fragments url active-bounds)
               (ghostel--linkify fragments url url))))))
-    ;; Pass 2: file:line[:col] references (e.g. "./foo.el:42",
-    ;; "/tmp/bar.rs:10", or bare relative paths like "src/main.rs:42:4"
-    ;; from compiler output).  The full regex is assembled from fixed anchor
-    ;; + user-tunable path + fixed `:LINE[:COL]' tail so group 1 (path) and
-    ;; group 2 (line[:col]) are always present — no nil-guarding needed in
-    ;; the hot loop.  A small hash memoizes `file-exists-p' so repeated paths
-    ;; in a redraw (common in multi-line compiler diagnostics) don't re-stat.
+    ;; Pass 2: file[:LINE[:COL]] references such as "src/main.rs:42:4".
+    ;; Group 1 is the path, group 2 the tail; both always match.
     (when files
       (let ((full-regex (concat ghostel--file-detection-leading-anchor
                                 "\\(" ghostel-file-detection-path-regex "\\)"
@@ -603,19 +540,10 @@ bounds widened to whole logical lines."
                  (loc (match-string-no-properties 2 text))
                  (raw (concat path loc))
                  (fragments (ghostel--wrap-fragments beg mend)))
-            ;; A URL owns its whole span: its `//host/path' half also looks
-            ;; like a path, and re-marking it would replace the link with a
-            ;; local file — and stat that file on every scan.
-            (unless (or (ghostel--range-overlaps-p beg mend url-ranges)
-                        ;; With the URL pass switched off nothing recorded a
-                        ;; range, so fall back to the link already there.
-                        ;; When it did run its ranges are the whole truth,
-                        ;; and a leftover URL link is about to be cleared.
-                        (and (not ghostel-enable-url-detection)
-                             (ghostel--url-link-p beg))
-                        ;; `//' usually starts a comment or URL, not a file; on
-                        ;; Windows it names a share whose lookup can hang Emacs.
-                        (string-prefix-p "//" path))
+            ;; `//' starts a comment or the host half of a URL, not a file;
+            ;; this alone keeps a URL's `//host/path' out of the file pass.
+            ;; On Windows it names a share whose lookup can hang Emacs.
+            (unless (string-prefix-p "//" path)
               (if (ghostel--skip-match-p fragments raw active-bounds)
                   ;; Whatever is there stays; it must not count as stranded.
                   (push (cons beg mend) matched)
@@ -624,16 +552,13 @@ bounds widened to whole logical lines."
                        (exists (if (eq cached 'unset)
                                    (puthash abs-path (file-exists-p abs-path) seen)
                                  cached)))
-                  ;; A candidate that names no file leaves the range
-                  ;; uncovered, so a link left over from the text it used
-                  ;; to hold is cleared.
+                  ;; A missing file leaves the range uncovered, so a stale
+                  ;; link over it is dropped.
                   (when exists
                     (push (cons beg mend) matched)
                     (ghostel--linkify
                      fragments
-                     (if (> (length loc) 0)
-                         (concat "fileref:" abs-path ":" (substring loc 1))
-                       (concat "fileref:" abs-path))
+                     (concat "fileref:" abs-path loc)
                      raw)))))))))
     (ghostel--drop-stranded-links
      begin end matched ghostel-enable-url-detection files)
@@ -696,10 +621,8 @@ The `keymap' check tells ghostel's own links from a foreign
        (ghostel--uri-at-pos (point))))
 
 (defun ghostel--fileref-file-at-point ()
-  "Return the absolute file name of the detected file link at point.
-Nil when point is not on a `fileref:' link.  The name was resolved
-against `default-directory' and checked for existence when the link
-was detected.  Suitable for `file-name-at-point-functions'."
+  "Return the absolute file name of the detected file link at point, or nil.
+For `file-name-at-point-functions'."
   (let ((uri (ghostel--link-uri-at-point)))
     (and uri
          (string-match ghostel--fileref-regex uri)
@@ -723,9 +646,8 @@ a wrapped line, the filename-character run around point."
 
 (defun ghostel--thing-at-point-url ()
   "Return the URL at point, crossing soft-wrapped rows.
-For `thing-at-point-provider-alist'.  On a URL link (OSC 8 or
-detected) this is the link target; elsewhere on a wrapped line, the
-URL match around point."
+For `thing-at-point-provider-alist'.  On a URL link (OSC 8 or detected) this
+is the link target; elsewhere on a wrapped line, the URL match around point."
   (let ((uri (ghostel--link-uri-at-point)))
     (cond
      ((and uri (not (string-prefix-p "fileref:" uri))) uri)
@@ -790,8 +712,8 @@ For `bounds-of-thing-at-point-provider-alist'."
   "Open the hyperlink at point, or fall back to `find-file-at-point'.
 A detected file reference opens at its recorded line and column even
 when the path is split across soft-wrapped rows, which plain `ffap'
-resolves to only the fragment before the row break.  A detected
-file deleted since detection falls back as well."
+resolves to only the fragment before the row break.
+A detected file deleted since detection falls back as well."
   (interactive)
   (let* ((uri (ghostel--link-uri-at-point))
          (file (and uri
@@ -867,12 +789,11 @@ stopped on is output rather than a prompt to leave alone."
                               #'ghostel--run-queued-plain-link-detection
                               (current-buffer)))))))
 
-
+
 ;;; Mode setup
 
 (defun ghostel-links-setup ()
   "Wire the link integrations into the current ghostel buffer."
-  ;; Show the hyperlink URI at point in eldoc.
   (add-hook 'eldoc-documentation-functions #'ghostel--eldoc-link nil t)
   ;; Serve whole targets to thing-at-point (and through it embark,
   ;; `existing-filename', etc.) and to the find-file `M-n' default,

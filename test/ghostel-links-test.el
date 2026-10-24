@@ -341,6 +341,19 @@ E.g. `compilation-mode' error loci in `ghostel-compile-view-mode'."
       (ghostel--detect-urls))
     (should (equal "https://example.com/path"              ; url strips trailing dot
                    (get-text-property 5 'help-echo))))
+  ;; A balanced paren group stays; an unbalanced `)' does not.
+  (pcase-dolist (`(,text . ,url)
+                 '(("https://w.org/Rust_(language) x" . "https://w.org/Rust_(language)")
+                   ("https://x.org/a(b)c." . "https://x.org/a(b)c")
+                   ("(see https://x.org/a)" . "https://x.org/a")
+                   ("[t](https://x.org/a_(b))" . "https://x.org/a_(b)")
+                   ("https://x.org/a)b" . "https://x.org/a")))
+    (with-temp-buffer
+      (insert text "\n")
+      (let ((ghostel-enable-url-detection t))
+        (ghostel--detect-urls))
+      (should (equal url (get-text-property (1+ (string-search "https" text))
+                                            'help-echo)))))
   ;; A path ending a sentence is matched without the trailing mark.
   (let ((test-file (locate-library "ghostel")))
     (dolist (mark '("." "," ";" "!" "?"))
@@ -1366,18 +1379,21 @@ the file must not be stat'ed on every scan."
         (should (equal url (get-text-property 12 'help-echo)))
         (should (= 1 (length (ghostel-test--link-runs))))))))
 
-(ert-deftest ghostel-test-detect-url-owns-the-path-inside-it ()
-  "A URL keeps the file pass out of the `//host/path' half it contains.
-The path inside this URL names a file that exists, so only the URL's
-claim on the span stops it becoming a local-file link."
+(ert-deftest ghostel-test-detect-links-path-inside-url-as-file ()
+  "A file named inside a URL links to the file; the rest keeps the URL.
+The host, scheme and closing paren still carry the whole URL, so a
+click there opens it in full."
   (ghostel-test--with-link-fixture (dir file)
     (with-temp-buffer
-      (insert " https:/" file ":9 end\n")
+      (insert " https://example.com/upload(" file ") end\n")
       (goto-char (point-max))
       (ghostel--detect-urls)
-      (should-not (seq-find (lambda (run)
-                              (string-prefix-p "fileref:" (cadr run)))
-                            (ghostel-test--link-runs)))
+      (let ((url (concat "https://example.com/upload(" file ")")))
+        (should (equal url (get-text-property 10 'help-echo)))
+        (should (equal (concat "fileref:" file)
+                       (get-text-property (+ 2 (length "https://example.com/upload("))
+                                          'help-echo)))
+        (should (equal url (get-text-property (+ 1 (length url)) 'help-echo))))
       (ignore dir))))
 
 (ert-deftest ghostel-test-detect-skips-double-slash-paths ()
