@@ -525,6 +525,28 @@ scanned for is unexamined, not stranded."
                                               ghostel-link-text nil)))
         (setq pos stop)))))
 
+(defun ghostel--share-host (file)
+  "Return the host of FILE, downcased, if FILE is on a network share.
+On MS-Windows and Cygwin, //HOST/SHARE/... names a file on HOST."
+  (and (memq system-type '(windows-nt cygwin))
+       (string-prefix-p "//" file)
+       (downcase (substring file 2 (string-search "/" file 2)))))
+
+(defun ghostel--file-exists-p (file)
+  "Return non-nil if FILE, an absolute file name, names an existing file.
+A FILE on a network share counts as missing without asking its host,
+unless `default-directory' is on that host too.  Checking a share
+connects to its host, which blocks Emacs until the host answers or the
+connection times out, 21 seconds for a host that drops SMB traffic.
+Terminal output is full of text that looks like one:
+`//registry.example.com/' in npm warnings, the `//localhost' half of a
+ws:// URL, a `// comment'.  The host a shell on a share runs on has
+just answered, so files there still link."
+  (let ((host (ghostel--share-host file)))
+    (and (or (not host)
+             (equal host (ghostel--share-host default-directory)))
+         (file-exists-p file))))
+
 (defun ghostel--detect-urls (&optional begin end)
   "Scan a buffer region for plain-text URLs and file:line references.
 BEGIN and END default to `point-min' and `point-max' respectively.
@@ -619,7 +641,9 @@ bounds widened to whole logical lines."
                 (let* ((abs-path (expand-file-name path))
                        (cached (gethash abs-path seen 'unset))
                        (exists (if (eq cached 'unset)
-                                   (puthash abs-path (file-exists-p abs-path) seen)
+                                   (puthash abs-path
+                                            (ghostel--file-exists-p abs-path)
+                                            seen)
                                  cached)))
                   ;; A candidate that names no file leaves the range
                   ;; uncovered, so a link left over from the text it used

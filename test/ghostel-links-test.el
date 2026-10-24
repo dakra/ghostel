@@ -1380,6 +1380,58 @@ claim on the span stops it becoming a local-file link."
                             (ghostel-test--link-runs)))
       (ignore dir))))
 
+(ert-deftest ghostel-test-file-exists-p-skips-network-paths ()
+  "On Windows and Cygwin a //HOST/... file is missing without asking HOST.
+Checking it connects to HOST, which blocks Emacs until that times out.
+A file on the host `default-directory' is on is checked: a shell there
+has just reached it.  Elsewhere a leading // is a local file name."
+  (cl-letf (((symbol-function 'file-exists-p) (lambda (_) t)))
+    (dolist (system-type '(windows-nt cygwin))
+      (let ((default-directory "c:/src/"))
+        (should-not (ghostel--file-exists-p "//registry.example.com/api/"))
+        (should (ghostel--file-exists-p "c:/src/a.el"))
+        (should (ghostel--file-exists-p "/tmp//a.el")))
+      (let ((default-directory "//server/share/proj/"))
+        (should (ghostel--file-exists-p "//server/share/proj/a.el"))
+        (should (ghostel--file-exists-p "//SERVER/other/a.el"))
+        (should-not (ghostel--file-exists-p "//registry.example.com/api/"))
+        (should-not (ghostel--file-exists-p "//"))))
+    (let ((system-type 'gnu/linux))
+      (should (ghostel--file-exists-p "//tmp/a.el")))))
+
+(ert-deftest ghostel-test-detect-does-not-check-network-paths ()
+  "A //HOST/... match in output is not checked and does not link.
+The text is from an npm warning; checking it on Windows froze Emacs
+for 21 seconds per scan."
+  (skip-unless (memq system-type '(windows-nt cygwin)))
+  (with-temp-buffer
+    (insert "npm warn config `//registry.example.com/api/` is deprecated\n")
+    (goto-char (point-max))
+    (let ((checked nil))
+      (cl-letf (((symbol-function 'file-exists-p)
+                 (lambda (f) (push f checked) t)))
+        (ghostel--detect-urls))
+      (should-not (seq-find (lambda (f) (string-prefix-p "//" f)) checked))
+      (should-not (ghostel-test--link-runs)))))
+
+(ert-deftest ghostel-test-detect-links-files-on-the-shells-share ()
+  "A shell on a network share gets links to files on that host.
+Its relative paths expand onto the share too.  A //HOST/... path on
+another host in its output is still not checked."
+  (skip-unless (memq system-type '(windows-nt cygwin)))
+  (with-temp-buffer
+    (setq default-directory "//server/share/proj/")
+    (insert "./a.el:3 //server/share/proj/b.el `//registry.example.com/api/`\n")
+    (goto-char (point-max))
+    (let ((checked nil))
+      (cl-letf (((symbol-function 'file-exists-p)
+                 (lambda (f) (push f checked) t)))
+        (ghostel--detect-urls))
+      (should-not (member "//registry.example.com/api/" checked))
+      (should (equal '("fileref://server/share/proj/a.el:3"
+                       "fileref://server/share/proj/b.el")
+                     (mapcar #'cadr (ghostel-test--link-runs)))))))
+
 (ert-deftest ghostel-test-detect-replaces-stale-url-link-in-one-scan ()
   "A leftover URL link over what is now a path becomes the path link.
 One scan is enough: the file pass must not treat a URL link no URL

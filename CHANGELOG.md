@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Windows: file link detection no longer freezes Emacs for up to 21
+  seconds on output with `//HOST/...` text, such as npm's
+  `//registry.example.com/` warnings.  Such a path names a network
+  share, and checking whether it exists connected to HOST.  Now only
+  paths on the host the terminal's directory is on are checked, so a
+  shell on a share still links its files.
+
 ## [0.59.0] — 2026-10-19
 
 ### Added
