@@ -19,6 +19,7 @@
 ;;
 ;;   `consult-ghostel'          all ghostel buffers
 ;;   `consult-ghostel-project'  ghostel buffers in this project
+;;   `consult-ghostel-status'   ghostel buffers needing attention
 ;;   `consult-ghostel-history'  pick from the shell's command history
 ;;
 ;; Candidates are ordered for switching (recently-used first, current
@@ -39,10 +40,12 @@
 ;; `consult-ghostel-mode' wires ghostel into consult's own commands:
 ;; it registers hidden sources in `consult-buffer' and
 ;; `consult-project-buffer' that enable the `g' narrow key (restricting
-;; the view to ghostel buffers only), makes `consult-line' match across
-;; soft line wraps in ghostel buffers (rows joined by wrap newlines
-;; become one candidate), adds a "Ghostel" group to `consult-bookmark'
-;; so the `g' narrow key restricts the candidates to ghostel bookmarks.
+;; the view to ghostel buffers only) and the `a' narrow key in
+;; `consult-buffer' (terminals needing attention), makes `consult-line'
+;; match across soft line wraps in ghostel buffers (rows joined by wrap
+;; newlines become one candidate), adds a "Ghostel" group to
+;; `consult-bookmark' so the `g' narrow key restricts the candidates to
+;; ghostel bookmarks.
 ;;
 ;; Enable by adding to your init:
 ;;
@@ -126,6 +129,18 @@ Runs BUFFERS through `consult--buffer-query', so its visibility sort,
   "`consult' source for ghostel buffers in the current project.
 Project membership is determined by `ghostel-project-buffer-scope'.")
 
+(defvar consult-ghostel-status-source
+  `( :name     "Needs attention"
+     :narrow   ?a
+     :category buffer
+     :face     consult-buffer
+     :history  buffer-name-history
+     :annotate ,#'ghostel-annotate-buffer
+     :state    ,#'consult--buffer-state
+     :items    ,(lambda () (mapcar #'buffer-name (ghostel-status-buffers))))
+  "`consult' source for the ghostel buffers needing attention.
+Most urgent first, as `ghostel-status-buffers' orders them.")
+
 (defvar consult-ghostel-source-new
   `( :name     "New"
      :narrow   ?n
@@ -161,6 +176,13 @@ key summons them exclusively.")
      ,@(copy-sequence consult-ghostel-project-source))
   "Like `consult-ghostel-project-source' but hidden by default.
 `consult-ghostel-mode' registers it in `consult-project-buffer-sources'.")
+
+(defvar consult-ghostel-status-source-hidden
+  `( :hidden t :narrow (?a . "Needs attention")
+     ,@(copy-sequence consult-ghostel-status-source))
+  "Like `consult-ghostel-status-source' but hidden by default.
+`consult-ghostel-mode' registers it in `consult-buffer-sources':
+the `a' narrow key shows the terminals needing attention.")
 
 (defun consult-ghostel--display (buffer &optional norecord)
   "Pop to BUFFER like ghostel's own buffer commands.
@@ -204,6 +226,12 @@ that numbered terminal)."
     (consult-ghostel--switch
      '(consult-ghostel-source consult-ghostel-source-new)
      "Ghostel buffer: ")))
+
+;;;###autoload
+(defun consult-ghostel-status ()
+  "Switch to a ghostel buffer needing attention, most urgent first."
+  (interactive)
+  (consult-ghostel--switch '(consult-ghostel-status-source) "Needs attention: "))
 
 ;;;###autoload
 (defun consult-ghostel-project (&optional arg)
@@ -450,6 +478,7 @@ Registers hidden ghostel sources in `consult-buffer' and
   (cond
    (consult-ghostel-mode
     (add-to-list 'consult-buffer-sources 'consult-ghostel-source-hidden t)
+    (add-to-list 'consult-buffer-sources 'consult-ghostel-status-source-hidden t)
     (add-to-list 'consult-project-buffer-sources
                  'consult-ghostel-project-source-hidden t)
     (cl-pushnew '(?g "Ghostel" ghostel-bookmark-handler) consult-bookmark-narrow
@@ -467,7 +496,8 @@ Registers hidden ghostel sources in `consult-buffer' and
                 #'consult-ghostel--line-point-placement))
    (t
     (setq consult-buffer-sources
-          (delq 'consult-ghostel-source-hidden consult-buffer-sources))
+          (delq 'consult-ghostel-status-source-hidden
+                (delq 'consult-ghostel-source-hidden consult-buffer-sources)))
     (setq consult-project-buffer-sources
           (delq 'consult-ghostel-project-source-hidden
                 consult-project-buffer-sources))

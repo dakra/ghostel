@@ -41,6 +41,7 @@ toolchain is required for the common case.  Open a terminal with =M-x ghostel=.
 
 #+begin_src emacs-lisp
 (use-package ghostel
+  :hook (after-init . ghostel-status-indicator-mode)
   :bind (("C-x m" . ghostel)
          :map ghostel-semi-char-mode-map
          ("C-s"  . consult-line)
@@ -1066,8 +1067,11 @@ program uses OSC 7501.
 Each terminal keeps one record per report id in =ghostel-program-status=, the
 program itself under the root id.  A new prompt or the process exit drops
 =working= and =blocked= records.  =done= and =error= stay until you send input to
-that terminal (=ghostel-status-acknowledge-on-input=), so a buffer you were not
-looking at still shows how its command ended.
+that terminal (=ghostel-status-acknowledge=, default =input=), so a buffer you
+were not looking at still shows how its command ended.  Set it to =seen= to drop
+them as soon as the terminal is the buffer you are looking at, or to nil to
+keep them until =M-x ghostel-status-acknowledge= or the program itself clears
+them.
 
 Every change runs =ghostel-program-status-functions= with =(ID OLD NEW)=.  The
 default members:
@@ -1078,7 +1082,12 @@ default members:
   count when there are several (=[blocked: permission ×2]=, one tooltip line
   each).  =working= without a percentage animates via [[https://github.com/Malabarba/spinner.el][spinner.el]] when it is
   installed (=ghostel-spinner-type=; nil shows the plain =[...]=).  The words
-  come from =ghostel-status-mode-line-labels=.
+  come from =ghostel-status-mode-line-labels=, which the global indicator and
+  the picker annotations use too; any string works, e.g.
+  #+begin_src emacs-lisp
+  (setq ghostel-status-mode-line-labels
+        '((working . "⏳") (blocked . "✋") (done . "✅") (error . "❌")))
+  #+end_src
 - =ghostel-status-notify= sends a desktop notification through
   =ghostel-notification-functions= when any record enters a state in
   =ghostel-status-notify-states= (default: blocked, done, error) while its
@@ -1088,6 +1097,35 @@ default members:
 
 A root record's =title= takes the place of the OSC 2 title in =ghostel-title=
 and the buffer name.
+
+*** Terminals needing attention
+:properties:
+:custom_id: terminals-needing-attention
+:end:
+#+findex: ghostel-status-next
+#+findex: ghostel-status-indicator-mode
+#+findex: ghostel-status-buffers
+#+findex: ghostel-status-buffer-state
+
+A terminal needs attention while it holds a record in a state of
+=ghostel-status-notify-states=, with =blocked= more urgent than =error= than
+=done=.  Running several agents at once, this is how you find the one that
+waits for you:
+
+- =M-x ghostel-status-next= switches to the most urgent such terminal and, on
+  repeat, walks the rest.
+- =ghostel-status-indicator-mode= counts them in every mode line, one label per
+  state like =[blocked: permission ×2] [done]=, naming the terminals on hover.
+  A click runs =ghostel-status-next=.  Enable it in your init:
+  #+begin_src emacs-lisp
+  (ghostel-status-indicator-mode 1)
+  #+end_src
+- The buffer pickers show each terminal's status before its title
+  ([[#picker-annotations][Picker annotations]]); [[#consult-integration][consult-ghostel]] adds =consult-ghostel-status=.
+
+The two functions underneath, =ghostel-status-buffers= (attention terminals
+most urgent first) and =ghostel-status-buffer-state= (a terminal's most urgent
+such state), are the API for your own tools.
 
 ** Color palette
 :properties:
@@ -1499,7 +1537,7 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 | =ghostel-bell-functions=              | =(ghostel-ding)=               | Hook for the terminal bell.                                     |
 | =ghostel-program-status-functions=    | mode line and notify members | Hook for OSC 7501 / OSC 9;4 status records, =(ID OLD NEW)=.       |
 | =ghostel-status-notify-states=        | =(blocked done error)=         | States that send a notification when entered.                   |
-| =ghostel-status-acknowledge-on-input= | =t=                            | Drop done and error records when you send input.                |
+| =ghostel-status-acknowledge=          | =input=                        | Drop done and error records on =input=, when =seen=, or never.      |
 | =ghostel-status-mode-line-labels=     | words per state              | Mode-line label per state.                                      |
 | =ghostel-spinner-type=                | =progress-bar=                 | Spinner while working without a percentage; nil for plain text. |
 
@@ -1972,6 +2010,9 @@ subdirectory inside the ghostel monorepo:
 
 - =M-x consult-ghostel= - pick any Ghostel terminal.
 - =M-x consult-ghostel-project= - pick a terminal in the current project.
+- =M-x consult-ghostel-status= - pick a terminal needing attention, most urgent
+  first ([[#terminals-needing-attention][Terminals needing attention]]).  With =consult-ghostel-mode= the =a=
+  narrow key shows them in =consult-buffer=.
 
 Candidates are ordered for switching (recently-used first, the current buffer
 last) and annotated with the terminal title ([[#picker-annotations][Picker annotations]]).
@@ -1988,7 +2029,8 @@ default-named creation from inside the minibuffer (narrow key =n=).
 =consult-ghostel-mode= registers hidden sources in =consult-buffer= and
 =consult-project-buffer=: Ghostel buffers already appear in the default /Buffer/
 view, so they stay invisible there until the =g= narrow key summons them
-exclusively.  The =g= narrow key (or any other source property) can be changed
+exclusively; the =a= narrow key shows the terminals needing attention.  The =g=
+narrow key (or any other source property) can be changed
 with =consult-customize=, e.g.
 ~(consult-customize consult-ghostel-source-hidden :narrow ?t)~.
 
@@ -2067,6 +2109,9 @@ over:
 | =M-x ghostel-project-next=             | Cycle to the next ghostel buffer in the current project.                  |
 | =M-x ghostel-project-previous=         | Cycle to the previous ghostel buffer in the current project.              |
 | =M-x ghostel-project-list-buffers=     | Pick a project-scoped ghostel buffer.                                     |
+| =M-x ghostel-status-next=              | Switch to the next terminal needing attention, most urgent first.         |
+| =M-x ghostel-status-indicator-mode=    | Count the terminals needing attention in every mode line.                 |
+| =M-x ghostel-status-acknowledge=       | Drop the done and error records of the current terminal.                  |
 | =M-x ghostel-clear=                    | Clear the visible screen, keeping scrollback.                             |
 | =M-x ghostel-clear-scrollback=         | Clear screen and scrollback.                                              |
 | =M-x ghostel-semi-char-mode=           | Switch to semi-char input mode (default).                                 |
@@ -2109,7 +2154,8 @@ cleared.  Read another terminal buffer's title with
 The buffer pickers (=ghostel-list-buffers= etc.) annotate each candidate with
 the terminal title, i.e. whatever the shell or a program set via OSC 2
 (typically the current command or working directory).  This makes same-named
-terminals like =*ghostel*= and =*ghostel*<2>= easy to tell apart.
+terminals like =*ghostel*= and =*ghostel*<2>= easy to tell apart.  A program
+status ([[#notifications-and-progress][Notifications and Progress]]) comes first, as in the terminal's mode line.
 =ghostel-annotation-title-width= caps the title at 30 columns; set it to nil
 for the full title.
 

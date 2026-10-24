@@ -11,6 +11,11 @@
 ;; it).  The native module calls `ghostel--bell',
 ;; `ghostel--handle-notification', `ghostel--osc-program-status',
 ;; `ghostel--osc-progress' and `ghostel--program-status-reset'.
+;;
+;; Across terminals, `ghostel-status-buffers' lists those needing
+;; attention most urgent first, `ghostel-status-next' switches to them
+;; in turn and `ghostel-status-indicator-mode' counts them in every
+;; mode line.
 
 ;;; Code:
 
@@ -22,6 +27,8 @@
 (declare-function spinner-start "spinner")
 (declare-function spinner-stop "spinner")
 (declare-function ghostel--buffer-focused-p "ghostel")
+(declare-function ghostel--cycle "ghostel")
+(declare-function ghostel-buffer-list "ghostel")
 (declare-function ghostel--defer "ghostel")
 (declare-function ghostel--mode-line-refresh "ghostel")
 (declare-function ghostel--run-hook-safely "ghostel")
@@ -65,21 +72,28 @@ Runs on the terminal output path, so keep handlers cheap."
   :group 'ghostel)
 
 (defcustom ghostel-status-notify-states '(blocked done error)
-  "States a record enters that run `ghostel-notification-functions'.
-No notification is sent while the buffer is the one shown in the
-selected window of a focused frame."
+  "States that need your attention.
+A record entering one runs `ghostel-notification-functions' unless its
+buffer is the one you are looking at; a terminal holding one counts in
+`ghostel-status-buffers', `ghostel-status-next' and
+`ghostel-status-indicator-mode'."
   :type '(set (const blocked) (const done) (const error)
               (const working) (const idle))
   :group 'ghostel)
 
-(defcustom ghostel-status-acknowledge-on-input t
-  "Non-nil drops `done' and `error' records when the user sends input."
-  :type 'boolean
+(defcustom ghostel-status-acknowledge 'input
+  "When a terminal's `done' and `error' records are dropped.
+`input' when you send input to the terminal, `seen' as soon as it is
+the buffer you are looking at, nil only by the command
+`ghostel-status-acknowledge' or the program itself."
+  :type '(choice (const :tag "On input" input)
+                 (const :tag "When seen" seen)
+                 (const :tag "Never" nil))
   :group 'ghostel)
 
 (defcustom ghostel-status-mode-line-labels
   '((working . "...") (blocked . "blocked") (done . "done") (error . "error"))
-  "Mode-line label per program status state.
+  "Label per program status state, in mode lines and picker annotations.
 `working' with a percentage shows the percentage instead, `blocked'
 with a kind appends it.  A state without an entry shows nothing."
   :type '(alist :key-type symbol :value-type string)
@@ -182,7 +196,9 @@ Each element is (ID . RECORD); see `ghostel-program-status-functions'.")
       (let ((evicted (car (last ghostel-program-status))))
         (setq ghostel-program-status (butlast ghostel-program-status))
         (ghostel-status--change (car evicted) (cdr evicted) nil)))
-    (ghostel-status--change id old record)))
+    (ghostel-status--change id old record)
+    (when (memq (plist-get record :state) '(done error))
+      (ghostel-status--acknowledge-seen))))
 
 (defun ghostel-status--remove-if (pred)
   "Remove every (ID . RECORD) entry satisfying PRED."
@@ -207,11 +223,60 @@ Each element is (ID . RECORD); see `ghostel-program-status-functions'.")
   (ghostel-status--remove-if
    (lambda (entry) (memq (plist-get (cdr entry) :state) '(working blocked)))))
 
-(defun ghostel-status--acknowledge ()
-  "Remove `done' and `error' records on user input when enabled."
-  (when ghostel-status-acknowledge-on-input
-    (ghostel-status--remove-if
-     (lambda (entry) (memq (plist-get (cdr entry) :state) '(done error))))))
+(defun ghostel-status-acknowledge ()
+  "Drop the `done' and `error' records of the current terminal."
+  (interactive)
+  (ghostel-status--remove-if
+   (lambda (entry) (memq (plist-get (cdr entry) :state) '(done error)))))
+
+(defun ghostel-status--acknowledge-on-input ()
+  "Acknowledge on user input unless `ghostel-status-acknowledge' is nil."
+  (when ghostel-status-acknowledge
+    (ghostel-status-acknowledge)))
+
+(defun ghostel-status--acknowledge-seen ()
+  "Acknowledge when `ghostel-status-acknowledge' is `seen' and you look at it."
+  (when (and (eq ghostel-status-acknowledge 'seen)
+             ghostel-program-status
+             (ghostel--buffer-focused-p (current-buffer)))
+    (ghostel-status-acknowledge)))
+
+(defun ghostel-status--kill-buffer ()
+  "Drop every record of the terminal being killed, so nothing counts it."
+  (ghostel-status--clear ""))
+
+
+;;; Terminals needing attention
+
+(defconst ghostel-status--urgency '(blocked error done working idle)
+  "States most urgent first.")
+
+(defun ghostel-status-buffer-state (buffer)
+  "Return BUFFER's most urgent state in `ghostel-status-notify-states', or nil."
+  (let ((states (mapcar (lambda (entry) (plist-get (cdr entry) :state))
+                        (buffer-local-value 'ghostel-program-status buffer))))
+    (seq-find (lambda (state) (and (memq state ghostel-status-notify-states)
+                                   (memq state states)))
+              ghostel-status--urgency)))
+
+(defun ghostel-status-buffers ()
+  "Return the terminals needing attention, most urgent first.
+Those with a `ghostel-status-buffer-state', ordered by it, equal states
+in `ghostel-buffer-list' order."
+  (let ((rank (lambda (buf)
+                (cl-position (ghostel-status-buffer-state buf)
+                             ghostel-status--urgency))))
+    (sort (cl-remove-if-not #'ghostel-status-buffer-state (ghostel-buffer-list))
+          (lambda (a b) (< (funcall rank a) (funcall rank b))))))
+
+(defun ghostel-status-next ()
+  "Switch to the next terminal needing attention, most urgent first.
+Repeating walks the terminals in that order and wraps; a terminal
+dropped by `ghostel-status-acknowledge' leaves the walk."
+  (interactive)
+  (ghostel--cycle (ghostel-status-buffers) +1
+                  "No terminal needs attention"
+                  "Only this terminal needs attention"))
 
 (defun ghostel-status-app (id)
   "Return the app of record ID, inherited from the nearest ancestor that has one."
@@ -286,14 +351,19 @@ The `blocked' and `error' records when there are any, else the root."
       (when-let* ((root (assoc "" ghostel-program-status)))
         (list root))))
 
-(defun ghostel-status--label (entries)
-  "Return the mode-line text for the (ID . RECORD) list ENTRIES, or nil."
+(defun ghostel-status--describe (entry)
+  "Return the message, title or app of the (ID . RECORD) ENTRY, or nil."
+  (or (plist-get (cdr entry) :msg)
+      (plist-get (cdr entry) :title)
+      (ghostel-status-app (car entry))))
+
+(defun ghostel-status--label (entries &optional tip)
+  "Return the mode-line text for the (ID . RECORD) list ENTRIES, or nil.
+The first entry's record gives the state; the others only add to the
+count.  TIP is the list of help-echo lines, by default what
+`ghostel-status--describe' says of each entry."
   (let* ((record (cdar entries))
-         (tip (delq nil (mapcar (lambda (entry)
-                                  (or (plist-get (cdr entry) :msg)
-                                      (plist-get (cdr entry) :title)
-                                      (ghostel-status-app (car entry))))
-                                entries)))
+         (tip (or tip (delq nil (mapcar #'ghostel-status--describe entries))))
          (state (plist-get record :state))
          (progress (plist-get record :progress))
          (kind (plist-get record :kind))
@@ -352,6 +422,83 @@ one being looked at."
            (if-let* ((kind (plist-get new :kind)))
                (format "%s: %s" state kind)
              (symbol-name state)))))))
+
+
+;;; Indicator across terminals
+
+(defvar ghostel-status--indicator nil
+  "Mode-line text of `ghostel-status-indicator-mode', or nil.")
+(put 'ghostel-status--indicator 'risky-local-variable t)
+
+(defun ghostel-status--indicator-click (event)
+  "Run `ghostel-status-next' in the window whose mode line got EVENT."
+  (interactive "e")
+  (with-selected-window (posn-window (event-start event))
+    (ghostel-status-next)))
+
+(defvar ghostel-status--indicator-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mode-line mouse-1] #'ghostel-status--indicator-click)
+    map)
+  "Keymap of the indicator; a click runs `ghostel-status-next'.")
+
+(defun ghostel-status--indicator-text ()
+  "Return one label per attention state across all terminals, or nil."
+  (let (parts)
+    (pcase-dolist (`(,state . ,bufs)
+                   (seq-group-by #'ghostel-status-buffer-state
+                                 (ghostel-status-buffers)))
+      (let ((entries (mapcar (lambda (buf)
+                               (cl-find state
+                                        (buffer-local-value 'ghostel-program-status buf)
+                                        :key (lambda (entry)
+                                               (plist-get (cdr entry) :state))))
+                             bufs)))
+        (push (ghostel-status--label
+               entries
+               (cl-mapcar (lambda (buf entry)
+                            (format "%s: %s" (buffer-name buf)
+                                    (or (with-current-buffer buf
+                                          (ghostel-status--describe entry))
+                                        state)))
+                          bufs entries))
+              parts)))
+    (when parts
+      (propertize (apply #'concat (nreverse parts))
+                  'mouse-face 'mode-line-highlight
+                  'local-map ghostel-status--indicator-map))))
+
+(defun ghostel-status--update-indicator (&rest _)
+  "Recompute the indicator; a member of `ghostel-program-status-functions'."
+  (let ((text (ghostel-status--indicator-text)))
+    (unless (equal-including-properties text ghostel-status--indicator)
+      (setq ghostel-status--indicator text)
+      (force-mode-line-update t))))
+
+;;;###autoload
+(define-minor-mode ghostel-status-indicator-mode
+  "Count the terminals needing attention in every mode line.
+One label per state in `ghostel-status-notify-states', as in the
+terminal's own mode line, after × the number of terminals; hovering
+names them.  A click runs `ghostel-status-next'.  Hidden while no
+terminal needs attention."
+  :global t
+  :group 'ghostel
+  (if ghostel-status-indicator-mode
+      (progn
+        (require 'ghostel)  ; Mode is autoloaded, ghostel may not be loaded yet.
+        (add-hook 'ghostel-program-status-functions
+                  #'ghostel-status--update-indicator)
+        (or global-mode-string (setq global-mode-string '("")))
+        (unless (memq 'ghostel-status--indicator global-mode-string)
+          (setq global-mode-string
+                (append global-mode-string '(ghostel-status--indicator))))
+        (ghostel-status--update-indicator))
+    (remove-hook 'ghostel-program-status-functions
+                 #'ghostel-status--update-indicator)
+    (setq global-mode-string
+          (delq 'ghostel-status--indicator global-mode-string))
+    (force-mode-line-update t)))
 
 (provide 'ghostel-status)
 ;;; ghostel-status.el ends here
