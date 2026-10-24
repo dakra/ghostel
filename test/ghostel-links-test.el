@@ -1380,6 +1380,24 @@ claim on the span stops it becoming a local-file link."
                             (ghostel-test--link-runs)))
       (ignore dir))))
 
+(ert-deftest ghostel-test-detect-skips-double-slash-paths ()
+  "A `//' candidate is a comment or URL half, never checked or linked.
+On Windows it would name a network share and block on its host.
+A single leading slash and relative paths still link."
+  (ghostel-test--with-link-fixture (dir file)
+    (with-temp-buffer
+      (insert "npm warn `//registry.example.com/api/` // " file "\n")
+      (goto-char (point-max))
+      (let ((checked nil))
+        (cl-letf* ((exists (symbol-function 'file-exists-p))
+                   ((symbol-function 'file-exists-p)
+                    (lambda (f) (push f checked) (funcall exists f))))
+          (ghostel--detect-urls))
+        (should-not (seq-find (lambda (f) (string-prefix-p "//" f)) checked)))
+      (should (equal (list (concat "fileref:" file))
+                     (mapcar #'cadr (ghostel-test--link-runs))))
+      (ignore dir))))
+
 (ert-deftest ghostel-test-detect-replaces-stale-url-link-in-one-scan ()
   "A leftover URL link over what is now a path becomes the path link.
 One scan is enough: the file pass must not treat a URL link no URL

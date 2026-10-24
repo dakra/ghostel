@@ -612,7 +612,10 @@ bounds widened to whole logical lines."
                         ;; When it did run its ranges are the whole truth,
                         ;; and a leftover URL link is about to be cleared.
                         (and (not ghostel-enable-url-detection)
-                             (ghostel--url-link-p beg)))
+                             (ghostel--url-link-p beg))
+                        ;; `//' usually starts a comment or URL, not a file; on
+                        ;; Windows it names a share whose lookup can hang Emacs.
+                        (string-prefix-p "//" path))
               (if (ghostel--skip-match-p fragments raw active-bounds)
                   ;; Whatever is there stays; it must not count as stranded.
                   (push (cons beg mend) matched)
