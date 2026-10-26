@@ -157,7 +157,14 @@ pub fn GhostelHandler(Effects: type) type {
         fn titleChangedCallback(handler: *gt.TerminalStream.Handler) void {
             const self: *Self = @fieldParentPtr("inner", handler);
             const title = handler.terminal.getTitle() orelse "";
-            self.effects.effect("ghostel--set-title", .{title});
+            // Native event delivery may release the terminal lock. Keep a
+            // snapshot so a concurrent VT write cannot invalidate the title.
+            const snapshot = self.alloc.dupe(u8, title) catch |err| {
+                log.warn("title notification dropped: {}", .{err});
+                return;
+            };
+            defer self.alloc.free(snapshot);
+            self.effects.effect("ghostel--set-title", .{snapshot});
         }
 
         // ---------------------------------------------------------------------------
@@ -319,4 +326,36 @@ pub fn GhostelHandler(Effects: type) type {
             self.effects.effect("ghostel--osc-progress", .{ state_str, progress_val });
         }
     };
+}
+
+test "title notification survives terminal mutation during delivery" {
+    const testing = std.testing;
+    const Effects = struct {
+        terminal: *gt.Terminal,
+        original_received: bool = false,
+
+        pub fn effect(self: *@This(), comptime _: []const u8, args: anytype) void {
+            // Reuse the title's storage so a borrowed argument changes in place.
+            self.terminal.setTitle("modified") catch @panic("setting test title failed");
+            self.original_received = std.mem.eql(u8, "original", args[0]);
+        }
+    };
+
+    var terminal: gt.Terminal = try .init(testing.io, testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer terminal.deinit(testing.allocator);
+    try terminal.setTitle("original");
+    var effects: Effects = .{ .terminal = &terminal };
+    var handler: GhostelHandler(*Effects) = .{
+        .alloc = testing.allocator,
+        .term = undefined,
+        .effects = &effects,
+        .inner = .init(&terminal),
+        .title_stack = @splat(null),
+        .title_stack_len = 0,
+    };
+    defer handler.deinit();
+
+    GhostelHandler(*Effects).titleChangedCallback(&handler.inner);
+    try testing.expect(effects.original_received);
+    try testing.expectEqualStrings("modified", terminal.getTitle().?);
 }

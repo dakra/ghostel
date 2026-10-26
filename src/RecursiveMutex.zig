@@ -26,6 +26,7 @@ pub fn lockUncancelable(self: *Self, io: std.Io) void {
 }
 
 pub fn unlock(self: *Self, io: std.Io) void {
+    std.debug.assert(@atomicLoad(std.Thread.Id, &self.thread_id, .unordered) == std.Thread.getCurrentId());
     self.lock_count -= 1;
     if (self.lock_count == 0) {
         @atomicStore(std.Thread.Id, &self.thread_id, unlocked, .unordered);
