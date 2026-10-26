@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- evil-ghostel landed the shell cursor one cell off per oversized prompt
+  icon when `i`, `a`, `0`, `$` and friends drove it to point.
 - The native module installer now selects the `x86_64-freebsd` release on FreeBSD.
 - File link detection skips paths starting with `//`.  Such text is a
   `//` code comment, which used to link to the root directory, or the

@@ -164,12 +164,13 @@ and `ghostel--line-input-end', so evil's operators apply directly."
   (max 0 (- (count-lines (point-min) (point-max)) ghostel--term-rows)))
 
 (defun evil-ghostel--reset-cursor-point ()
-  "Move Emacs point to the terminal cursor.
-`ghostel--cursor-pos' is viewport-relative; its row is offset by scrollback."
-  (when (and ghostel--term ghostel--term-rows ghostel--cursor-pos)
+  "Move Emacs point to the terminal cursor."
+  (cond
+   (ghostel--cursor-char-pos (goto-char ghostel--cursor-char-pos))
+   ((and ghostel--term ghostel--term-rows ghostel--cursor-pos)
     (goto-char (point-min))
     (forward-line (+ (evil-ghostel--scrollback-lines) (cdr ghostel--cursor-pos)))
-    (move-to-column (car ghostel--cursor-pos))))
+    (move-to-column (car ghostel--cursor-pos)))))
 
 (defun evil-ghostel--point-viewport-row ()
   "Return the viewport row of point, 0-indexed, or nil.
@@ -434,9 +435,15 @@ Loops `accept-process-output' (capped by
 On the cursor row a rightward target is clamped to `evil-ghostel--input-end',
 so the move never right-arrows across a trailing autosuggestion, which the
 shell would accept (zsh-autosuggestions / fish).  Only meaningful in
-semi-char mode.  Returns non-nil when it ran."
+semi-char mode.  Returns non-nil when it ran.
+Both ends of the horizontal move are measured in buffer columns, so a
+cell the renderer hides under an oversized glyph counts the same for
+the cursor and the target."
   (when (and ghostel--term ghostel--cursor-pos)
-    (let* ((start-col (car ghostel--cursor-pos))
+    (let* ((start-col (if ghostel--cursor-char-pos
+                          (save-excursion (goto-char ghostel--cursor-char-pos)
+                                          (current-column))
+                        (car ghostel--cursor-pos)))
            (start-row-vp (cdr ghostel--cursor-pos))
            (target-row-vp (or (ghostel--viewport-row-at pos) start-row-vp))
            (dy (- target-row-vp start-row-vp)))

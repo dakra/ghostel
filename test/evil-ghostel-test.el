@@ -1168,6 +1168,22 @@ without a real native module."
       (should (= 6 (length keys-sent)))
       (should (cl-every (lambda (k) (equal k "left")) keys-sent)))))
 
+(ert-deftest evil-ghostel-test-goto-input-position-ignores-hidden-cell ()
+  "A cell hidden under an oversized prompt glyph does not shift the arrow count.
+The renderer hides the blank cell a standalone icon claims with `(space :width 0)'."
+  (evil-ghostel-test--with-input-fixture "⏵ $ " "1234"
+    ;; The fixture took `ghostel--cursor-pos' before the cell was hidden,
+    ;; so it still holds the terminal column, one past `current-column'.
+    (let ((inhibit-read-only t))
+      (put-text-property 2 3 'display '(space :width 0)))
+    (let ((keys-sent '()))
+      (cl-letf (((symbol-function 'ghostel--send-encoded)
+                 (lambda (key _mods &rest _)
+                   (push key keys-sent))))
+        (evil-ghostel-goto-input-position 5)) ; start of "1234"
+      (should (= 4 (length keys-sent)))
+      (should (cl-every (lambda (k) (equal k "left")) keys-sent)))))
+
 (ert-deftest evil-ghostel-test-goto-input-position-no-op-at-target ()
   "No keys are sent when point already matches the terminal cursor."
   (evil-ghostel-test--with-input-fixture "$ " "hello"
