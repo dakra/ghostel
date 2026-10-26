@@ -209,7 +209,7 @@ first real focus event."
         (ghostel--scroll-intercept-active t)
         (mouse-event-args nil)
         ;; Fake wheel-up event at row 5, col 10
-        (fake-event `(wheel-up (,(selected-window) 1 (10 . 5) 0))))
+        (fake-event `(wheel-up (,(selected-window) nil (10 . 5) 0))))
     (cl-letf (((symbol-function 'ghostel--mouse-tracking-p) (lambda (_term) t))
               ((symbol-function 'ghostel--mouse-event)
                (lambda (_term action button row col mods)
@@ -226,7 +226,7 @@ first real focus event."
       (should-not unread-command-events))
     ;; Reset and test scroll-down with a wheel-down event
     (setq mouse-event-args nil)
-    (let ((fake-down-event `(wheel-down (,(selected-window) 1 (10 . 5) 0))))
+    (let ((fake-down-event `(wheel-down (,(selected-window) nil (10 . 5) 0))))
       (cl-letf (((symbol-function 'ghostel--mouse-tracking-p) (lambda (_term) t))
                 ((symbol-function 'ghostel--mouse-event)
                  (lambda (_term action button row col mods)
@@ -354,32 +354,35 @@ never fewer than one press."
           (kill-local-variable var))))))
 
 (ert-deftest ghostel-test-posn-cell-uses-event-window-metrics ()
-  "Cells are measured in the event window's buffer, below any top sliver or pad."
+  "Columns use the event window's font; rows come from the buffer line."
   (with-temp-buffer
-    (let ((buf (current-buffer))
-          (vscroll 0))
+    (let ((buf (current-buffer)))
+      ;; Two scrollback lines above a three-row viewport.
+      (insert "s0\ns1\nr0\nr1\nr2\n")
+      (setq-local ghostel--term-rows 3)
       (save-window-excursion
         (let ((win (split-window)))
           (set-window-buffer win buf)
           (cl-letf (((symbol-function 'default-font-width)
                      (lambda () (if (eq (current-buffer) buf) 14 7)))
                     ((symbol-function 'default-line-height)
-                     (lambda () (if (eq (current-buffer) buf) 28 14)))
-                    ((symbol-function 'window-vscroll)
-                     (lambda (&rest _) vscroll)))
-            (should (equal '(5 . 3)
+                     (lambda () (if (eq (current-buffer) buf) 28 14))))
+            ;; Row from the line, whatever the pixel Y (e.g. a taller row).
+            (should (equal '(5 . 2)
                            (with-temp-buffer
-                             (ghostel--posn-cell `(,win 1 (70 . 84) 0)))))
+                             (ghostel--posn-cell `(,win 13 (70 . 9) 0)))))
+            ;; A scrollback line clamps to the first row.
+            (should (equal 0 (cdr (ghostel--posn-cell `(,win 1 (0 . 0) 0)))))
+            ;; A fringe position still carries its buffer line.
+            (should (equal 2 (cdr (ghostel--posn-cell
+                                   `(,win left-fringe (0 . 9) 0 nil 13)))))
+            ;; Without a buffer position the row is estimated from pixels.
+            (should (equal 3 (cdr (ghostel--posn-cell
+                                   `(,win mode-line (0 . 90) 0 nil nil)))))
             ;; A position on the frame resolves through its selected window.
             (should (equal '(10 . 6)
-                           (ghostel--posn-cell `(,(selected-frame) nil (70 . 84) 0))))
-            ;; 18 px of a 28 px row scrolled off: a 10 px sliver above row 0.
-            (setq vscroll 18)
-            (should (equal 2 (cdr (ghostel--posn-cell `(,win 1 (0 . 93) 0)))))
-            ;; Same geometry from a top pad.
-            (setq vscroll 0)
-            (setq-local ghostel--top-pad 10)
-            (should (equal 2 (cdr (ghostel--posn-cell `(,win 1 (0 . 93) 0)))))))))))
+                           (ghostel--posn-cell
+                            `(,(selected-frame) nil (70 . 84) 0))))))))))
 
 (ert-deftest ghostel-test-scroll-intercept-frame-posn ()
   "A wheel event positioned on the frame re-dispatches instead of erroring."
@@ -1292,11 +1295,11 @@ cell so the PTY is not flooded."
                 ((symbol-function 'process-live-p) (lambda (_p) t)))
         ;; First movement at (col 10 . row 5) forwards a motion (action 2)
         ;; tagged with the held button 1.
-        (ghostel--mouse-drag-motion `(mouse-movement (,(selected-window) 1 (10 . 5) 0)))
+        (ghostel--mouse-drag-motion `(mouse-movement (,(selected-window) nil (10 . 5) 0)))
         ;; Same cell again: deduped, no new forward.
-        (ghostel--mouse-drag-motion `(mouse-movement (,(selected-window) 1 (10 . 5) 0)))
+        (ghostel--mouse-drag-motion `(mouse-movement (,(selected-window) nil (10 . 5) 0)))
         ;; New cell: forwarded.
-        (ghostel--mouse-drag-motion `(mouse-movement (,(selected-window) 1 (11 . 6) 0))))
+        (ghostel--mouse-drag-motion `(mouse-movement (,(selected-window) nil (11 . 6) 0))))
       (setq forwards (nreverse forwards))
       (should (equal 2 (length forwards)))
       (should (equal '(2 1 5 10) (butlast (nth 0 forwards))))
@@ -1330,12 +1333,12 @@ Guards against stray movement events arriving outside a drag."
                    (setq mouse-event-args (list action button row col mods))
                    t))
                 ((symbol-function 'process-live-p) (lambda (_p) t)))
-        (ghostel--mouse-drag-motion `(mouse-movement (,(selected-window) 1 (10 . 5) 0))))
+        (ghostel--mouse-drag-motion `(mouse-movement (,(selected-window) nil (10 . 5) 0))))
       (should (equal '(2 1 5 10 0) mouse-event-args)))))
 
 (ert-deftest ghostel-test-mouse-release-continues-after-mode-switch ()
   "Release for an accepted terminal drag continues outside input mode."
-  (let ((fake-event `(mouse-1 (,(selected-window) 1 (10 . 5) 0)))
+  (let ((fake-event `(mouse-1 (,(selected-window) nil (10 . 5) 0)))
         (mouse-event-args nil))
     (with-temp-buffer
       (setq-local ghostel--term 'fake)
@@ -1353,8 +1356,8 @@ Guards against stray movement events arriving outside a drag."
 (ert-deftest ghostel-test-mouse-drag-release-continues-after-mode-switch ()
   "Drag-end release for an accepted terminal drag continues outside input mode."
   (let ((fake-event `(drag-mouse-1
-                      (,(selected-window) 1 (5 . 2) 0)
-                      (,(selected-window) 7 (10 . 4) 0)))
+                      (,(selected-window) nil (5 . 2) 0)
+                      (,(selected-window) nil (10 . 4) 0)))
         (mouse-event-args nil))
     (with-temp-buffer
       (setq-local ghostel--term 'fake)
@@ -1373,7 +1376,7 @@ Guards against stray movement events arriving outside a drag."
   "Left-press with active mouse-tracking forwards to libghostty.
 Never enters copy mode and never hands off to `mouse-drag-region'."
   :tags '(native)
-  (let ((fake-event `(down-mouse-1 (,(selected-window) 1 (10 . 5) 0)))
+  (let ((fake-event `(down-mouse-1 (,(selected-window) nil (10 . 5) 0)))
         (copy-mode-called nil)
         (drag-region-called nil)
         (mouse-event-args nil))
