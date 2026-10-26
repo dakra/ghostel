@@ -856,6 +856,10 @@ renderer when the terminal is created or a resize is committed.")
 Updated by the native renderer when the terminal is created or a
 resize is committed.")
 
+(defvar-local ghostel--repair-pending nil
+  "Non-nil after a foreign edit removed rendered text.
+The next redraw is full and realigns point to the terminal cursor.")
+
 (defcustom ghostel-bold-color nil
   "Configure how bold text is colored.
 
@@ -884,10 +888,8 @@ Matches Ghostty 1.2.0's `bold-color' configuration."
            (with-current-buffer buf
              (when (and (derived-mode-p 'ghostel-mode) ghostel--term)
                (ghostel--apply-bold-config ghostel--term)
-               (let ((inhibit-read-only t)
-                     (inhibit-modification-hooks t))
-                 (ghostel--redraw ghostel--term t t))
-               (ghostel--schedule-link-detection)
+               (setq ghostel--repair-pending t)
+               (ghostel--redraw-now buf t)
                (ghostel--apply-cursor-style))))))
 
 (defvar-local ghostel--cursor-pos nil
@@ -958,10 +960,6 @@ local code should not assume it is signalable unless the process is local.")
 
 (defvar-local ghostel--force-next-redraw nil
   "When non-nil, redraw regardless of synchronized output mode.")
-
-(defvar-local ghostel--repair-pending nil
-  "Non-nil after a foreign edit removed rendered text.
-The next redraw is full and realigns point to the terminal cursor.")
 
 (defvar-local ghostel--last-send-time nil
   "Time of the last `ghostel--send-string' call, for immediate-redraw detection.")
