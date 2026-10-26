@@ -374,4 +374,84 @@ must not leave a poisoned tail on the pipe."
                                payloads)
                        (reverse titles)))))))
 
+(defun ghostel-test-native-process--event-backpressure ()
+  "Fill the event pipe, then take the terminal lock without draining it.
+The reader must release the terminal lock while its event write blocks,
+otherwise Emacs waits for the lock and can never resume draining the pipe."
+  (ghostel-test--with-terminal-buffer (buf term 24 80 1000)
+    (let* ((directory (make-temp-file "ghostel-native-events-" t))
+           (ready (expand-file-name "ready" directory))
+           (script (string-join
+                    '("import pathlib, sys"
+                      "sys.path.insert(0, sys.argv[1])"
+                      "from pty_setup import read_for, set_raw_stdio, start_reader, write_all"
+                      "set_raw_stdio()"
+                      "pathlib.Path(sys.argv[2]).touch()"
+                      "write_all(b'\\x1b]52;c;' + b'm' * (512 * 1024) + b'\\x1b\\\\')"
+                      "# Keep the PTY open until Emacs has checked the event."
+                      "read_for(start_reader(), 30, 1)")
+                    "\n"))
+           (pipe (make-pipe-process
+                  :name "ghostel-native-events" :buffer buf
+                  :filter #'ghostel--events-filter :noquery t))
+           pid received)
+      (unwind-protect
+          (cl-letf (((symbol-function 'ghostel--osc52-handle)
+                     (lambda (_selection data) (setq received data))))
+            (setq pid (ghostel--spawn-native-process
+                       term (list (ghostel-test--python) "-u" "-c" script
+                                  (ghostel-test--fixture-directory) ready)
+                       pipe))
+            ;; Wait out of band: accepting process output here would drain
+            ;; the very pipe we need to fill.
+            (let ((deadline (+ (float-time)
+                               (* 5 ghostel-test--timeout-scale))))
+              (while (and (not (file-exists-p ready))
+                          (< (float-time) deadline))))
+            (should (file-exists-p ready))
+            ;; Give the reader time to overflow its 16 KiB event buffer and
+            ;; block on the undrained pipe; sleeping would service that pipe.
+            (let ((deadline (+ (float-time) 0.5)))
+              (while (< (float-time) deadline)))
+            ;; This triggers the deadlock if the reader still holds the
+            ;; terminal lock: Emacs waits for that lock while the reader
+            ;; waits for Emacs to drain the event pipe.
+            (ghostel--focus-event term t)
+            (ghostel-test--wait-until (lambda () received) pipe 5)
+            (should (equal received (make-string (* 512 1024) ?m))))
+        (when pid (ignore-errors (signal-process pid 9)))
+        ;; Close the pipe before joining the reader, including on failure.
+        (when (process-live-p pipe) (delete-process pipe))
+        (ghostel--kill-native-process term)
+        (delete-directory directory t)))))
+
+(ert-deftest ghostel-test-native-process-event-pipe-backpressure ()
+  "A full event pipe does not deadlock terminal access or lose OSC 52 data."
+  :tags '(native)
+  ;; An Emacs timer cannot interrupt a native mutex wait. Keep the timeout
+  ;; in a separate Emacs so a regression fails instead of hanging the suite.
+  (let* ((output (generate-new-buffer " *ghostel-native-events-output*"))
+         (process
+          (make-process
+           :name "ghostel-native-events-emacs" :buffer output
+           :connection-type 'pipe :noquery t :sentinel #'ignore
+           :command
+           (list (expand-file-name invocation-name invocation-directory)
+                 "--batch" "-Q"
+                 "--eval" (prin1-to-string
+                           `(setq load-path ',load-path
+                                  load-prefer-newer t
+                                  ghostel-module-directory
+                                  ,(ghostel--module-directory)))
+                 "-l" (locate-library "ghostel-native-process-test")
+                 "-f" "ghostel-test-native-process--event-backpressure"))))
+    (unwind-protect
+        (progn
+          (ghostel-test--wait-until
+           (lambda () (not (process-live-p process))) process 20)
+          (ert-info ((with-current-buffer output (buffer-string)))
+            (should (= (process-exit-status process) 0))))
+      (when (process-live-p process) (delete-process process))
+      (kill-buffer output))))
+
 ;;; ghostel-native-process-test.el ends here

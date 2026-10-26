@@ -150,7 +150,7 @@ pub fn build(b: *std.Build) void {
     // ----------------------------------------------------------------
     // `zig build test` — pure-Zig unit tests.
     //
-    // Modules that don't depend on emacs-module are covered here. End-to-end
+    // Tests that don't require a running Emacs are covered here. End-to-end
     // tests through the C API run via `make test-native`.
     // ----------------------------------------------------------------
     const test_step = b.step("test", "Run Zig unit tests");
@@ -161,6 +161,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
+            .{ .name = "emacs_c", .module = emacs_c },
             .{ .name = "ghostty-vt", .module = ghostty_vt },
             platform_c,
             .{ .name = "stb_image_c", .module = stb_image_c },

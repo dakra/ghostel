@@ -183,6 +183,8 @@ pub fn foregroundPgid(self: *Self) !?i32 {
     return null;
 }
 
+// Overflow flushing may release the terminal lock. Arguments must remain
+// valid and unchanged while Emacs accesses the terminal.
 pub fn effect(self: *Self, comptime func: []const u8, args: anytype) void {
     self.effectFallible(func, args) catch |err| {
         log.err("ghostel: Failed to write to event pipe: {s}", .{@errorName(err)});
@@ -313,6 +315,12 @@ fn writeEvent(self: *Self, data: []const u8) !void {
     while (written < data.len) {
         const space = self.event_buf.unusedCapacity();
         if (space == 0) {
+            // Only effects can overflow this buffer, under LockedStream's
+            // single terminal lock. notifyVtUpdate writes "()" into an empty
+            // buffer. Emacs may need the terminal lock to drain the pipe.
+            std.debug.assert(self.owner.mutex.lock_count == 1);
+            self.owner.unlock();
+            defer self.owner.mutex.lockUncancelable(self.io);
             try self.flushEvents();
             continue;
         }
