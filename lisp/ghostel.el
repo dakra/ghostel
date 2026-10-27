@@ -3378,10 +3378,12 @@ Parses the command and arguments, looks up the command in
 (defun ghostel--osc52-handle (_selection base64-data)
   "Handle an OSC 52 clipboard set request.
 SELECTION is the target (e.g. \"c\" for clipboard).
-BASE64-DATA is the base64-encoded text.
+BASE64-DATA is the base64-encoded UTF-8 text.
 Only acts when `ghostel-enable-osc52' is non-nil."
   (when ghostel-enable-osc52
-    (let ((text (ignore-errors (base64-decode-string base64-data))))
+    (let ((text (ignore-errors
+                  (decode-coding-string (base64-decode-string base64-data)
+                                        'utf-8-unix))))
       (when (and text (> (length text) 0))
         (kill-new text)
         (when (fboundp 'gui-set-selection)

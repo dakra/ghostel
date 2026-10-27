@@ -8,6 +8,9 @@ All notable changes to this project will be documented in this file.
 - evil-ghostel landed the shell cursor one cell off per oversized prompt
   icon when `i`, `a`, `0`, `$` and friends drove it to point.
 - The native module installer now selects the `x86_64-freebsd` release on FreeBSD.
+- OSC 52 clipboard text is decoded as UTF-8, so non-ASCII text copied
+  from a program in the terminal, such as tmux copy mode, no longer
+  yanks into Emacs as octal escapes like `\355\225\234`.
 - File link detection skips paths starting with `//`.  Such text is a
   `//` code comment, which used to link to the root directory, or the
   host half of a scheme-less URL such as npm's `//registry.example.com/`

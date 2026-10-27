@@ -50,6 +50,23 @@ so waiting for text would let one step's clipboard write land in the next."
           (drain "osc52-query")
           (should (equal nil kill-ring)))))))
 
+(ert-deftest ghostel-test-osc52-utf8 ()
+  "OSC 52 clipboard text is decoded as UTF-8, not left as raw bytes.
+Line endings are kept as sent."
+  (dolist (text '("héllo 한글 👍" "a\r\nb\r\n" "a\rb\r"))
+    (let ((base64-data (base64-encode-string
+                        (encode-coding-string text 'utf-8-unix)))
+          (ghostel-enable-osc52 t)
+          (kill-ring nil)
+          (interprogram-cut-function nil)
+          selected)
+      (cl-letf (((symbol-function 'gui-set-selection)
+                 (lambda (_type data) (setq selected data))))
+        (ghostel--osc52-handle "c" base64-data))
+      (should (equal text (car kill-ring)))
+      (should (multibyte-string-p (car kill-ring)))
+      (should (equal text selected)))))
+
 (ert-deftest ghostel-test-osc2-title-tracking ()
   "OSC 2 child output updates title state and title-tracks the buffer name."
   :tags '(native)
