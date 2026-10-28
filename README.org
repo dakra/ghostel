@@ -488,6 +488,8 @@ touch" view: self-insert, =RET=, =TAB=, =DEL= fall through to the read-only
 buffer and trigger =text-read-only=, so a stray keystroke cannot land at the
 prompt; switch to semi-char mode (=C-c C-j=) to type to the shell.  =C-y= pastes
 via bracketed paste either way and snaps point back to the live cursor.
+=C-u C-c C-e= enters with fast exit off for that visit, and toggles it when
+already in Emacs mode.
 
 =C-c C-e= toggles Emacs mode off again (returning to the mode active before
 entering read-only mode), and
@@ -507,7 +509,8 @@ Entered with =C-c C-t=.  The terminal is *frozen* - no live output updates the
 buffer until you exit.  Use this when you want to select text precisely without
 the terminal scrolling underneath your cursor.  The aggressive copy-mode keymap
 exits on self-insert, so typing a letter sends it to the terminal and returns to
-semi-char mode (controlled by =ghostel-readonly-fast-exit=).
+semi-char mode (controlled by =ghostel-readonly-fast-exit=).  =C-u C-c C-t=
+enters with fast exit off for that visit, and toggles it when already in copy mode.
 
 =C-c C-t= toggles copy mode off again, and =C-c C-e= switches to Emacs mode -
 read-only but live, so output resumes - without going through semi-char.

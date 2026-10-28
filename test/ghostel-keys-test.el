@@ -448,7 +448,7 @@ key in `ghostel-keymap-exceptions' unbinds it so the global
   (let ((call-order nil)
         (send-args nil)
         (ghostel--input-mode 'copy)
-        (ghostel-readonly-fast-exit t))
+        (ghostel--readonly-fast-exit t))
     (cl-letf (((symbol-function 'ghostel-readonly-exit)
                (lambda () (push 'exit call-order)))
               ((symbol-function 'ghostel--send-string)
@@ -463,7 +463,7 @@ key in `ghostel-keymap-exceptions' unbinds it so the global
   "The interrupt prefix stays in copy/Emacs mode when fast exit is off."
   (let ((exit-called nil)
         (ghostel--input-mode 'copy)
-        (ghostel-readonly-fast-exit nil))
+        (ghostel--readonly-fast-exit nil))
     (cl-letf (((symbol-function 'ghostel-readonly-exit)
                (lambda () (setq exit-called t)))
               ((symbol-function 'ghostel--send-string) #'ignore))
@@ -931,7 +931,7 @@ inject raw bytes a kitty-protocol child cannot parse."
   "Send-next-key exits copy/Emacs mode before forwarding the key."
   (let ((call-order nil)
         (ghostel--input-mode 'copy)
-        (ghostel-readonly-fast-exit t))
+        (ghostel--readonly-fast-exit t))
     (cl-letf (((symbol-function 'ghostel-readonly-exit)
                (lambda () (push 'exit call-order)))
               ((symbol-function 'ghostel--send-encoded)
@@ -945,7 +945,7 @@ inject raw bytes a kitty-protocol child cannot parse."
   "Send-next-key stays in copy/Emacs mode when fast exit is off."
   (let ((exit-called nil)
         (ghostel--input-mode 'copy)
-        (ghostel-readonly-fast-exit nil))
+        (ghostel--readonly-fast-exit nil))
     (cl-letf (((symbol-function 'ghostel-readonly-exit)
                (lambda () (setq exit-called t)))
               ((symbol-function 'ghostel--send-encoded) #'ignore))

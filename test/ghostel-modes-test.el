@@ -784,13 +784,13 @@ buffer does not pull point off the content end."
         (should (string-match-p "mouse-1" text))))))
 
 (ert-deftest ghostel-test-mode-line-tag-help-echo-respects-fast-exit ()
-  "Copy/Emacs tooltips list `q'/`C-g' only when `ghostel-readonly-fast-exit' is on."
-  (let ((ghostel-readonly-fast-exit t))
+  "Copy/Emacs tooltips list `q'/`C-g' only when fast exit is on."
+  (let ((ghostel--readonly-fast-exit t))
     (dolist (mode '(copy emacs))
       (let ((text (ghostel--mode-line-tag-help-echo-text mode)))
         (should (string-match-p "\\bq\\b" text))
         (should (string-match-p "C-g" text)))))
-  (let ((ghostel-readonly-fast-exit nil))
+  (let ((ghostel--readonly-fast-exit nil))
     (dolist (mode '(copy emacs))
       (let ((text (ghostel--mode-line-tag-help-echo-text mode)))
         ;; Without fast-exit, q is not an exit key — must not appear.
@@ -974,6 +974,38 @@ scrollback."
               (ghostel-readonly-exit-and-send)
               (should (eq ghostel--input-mode 'semi-char))
               (should sent))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-readonly-prefix-arg-overrides-fast-exit ()
+  "A prefix argument enters with fast exit off and toggles it inside the mode."
+  (let ((buf (generate-new-buffer " *ghostel-test-sticky*"))
+        (ghostel-readonly-fast-exit t))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (let ((ghostel--term 'fake)
+                (ghostel-detect-password-prompts nil)
+                (ghostel--redraw-timer nil))
+            (cl-letf (((symbol-function 'ghostel--invalidate) #'ignore)
+                      ((symbol-function 'ghostel--anchor-window) #'ignore))
+              (ghostel-copy-mode '(4))
+              (should (eq ghostel--input-mode 'copy))
+              (should (eq (current-local-map) ghostel-readonly-mode-map))
+              ;; Yank-style input stays in the mode.
+              (ghostel--on-user-input)
+              (should (eq ghostel--input-mode 'copy))
+              ;; Inside the mode the prefix toggles instead of exiting.
+              (ghostel-copy-mode '(4))
+              (should (eq ghostel--input-mode 'copy))
+              (should (eq (current-local-map)
+                          ghostel-readonly-fast-exit-mode-map))
+              ;; Switching read-only modes without a prefix keeps the override.
+              (ghostel-copy-mode '(4))
+              (ghostel-emacs-mode)
+              (should (eq ghostel--input-mode 'emacs))
+              (should-not ghostel--readonly-fast-exit)
+              (ghostel-emacs-mode)
+              (should (eq ghostel--input-mode 'semi-char)))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-readonly-enter-hook ()

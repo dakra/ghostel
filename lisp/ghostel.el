@@ -299,12 +299,11 @@ box-drawing borders, block characters and kitty graphics image rows."
   :initialize #'custom-initialize-default
   :set (lambda (sym val)
          (set-default sym val)
-         (dolist (buf (buffer-list))
+         (dolist (buf (ghostel-buffer-list))
            (with-current-buffer buf
-             (when (derived-mode-p 'ghostel-mode)
-               (setq-local line-spacing val)
-               (dolist (window (get-buffer-window-list buf nil t))
-                 (ghostel--adjust-size window t)))))))
+             (setq-local line-spacing val)
+             (dolist (window (get-buffer-window-list buf nil t))
+               (ghostel--adjust-size window t))))))
 
 (defcustom ghostel-timer-delay 0.033
   "Delay in seconds before redrawing after output (roughly 30fps).
@@ -578,6 +577,9 @@ default value."
 ;; Forward declaration for the `ghostel-readonly-fast-exit' :set function.
 (defvar ghostel--input-mode)
 
+(defvar-local ghostel--readonly-fast-exit nil
+  "Per-visit value of `ghostel-readonly-fast-exit' in copy or Emacs mode.")
+
 (defcustom ghostel-readonly-fast-exit t
   "When non-nil, copy and Emacs modes exit on `q', `C-g', or any self-insert key.
 The triggering character is forwarded to the terminal.
@@ -587,17 +589,16 @@ When nil, exit only via an explicit input-mode switch
 self-inserting keys still hit the read-only barrier and produce
 the usual \"Buffer is read-only\" signal.
 
-Toggling this through `customize-variable' or `setopt' rebinds
-the local map in every buffer currently in copy or Emacs mode, so
-the change takes effect immediately.  Plain `setq' bypasses the custom setter
-and affected buffers will pick up the new value on the next mode transition."
+A prefix argument to `ghostel-copy-mode' or `ghostel-emacs-mode'
+overrides this per visit."
   :type 'boolean
   :initialize #'custom-initialize-default
   :set (lambda (sym newval)
          (set-default sym newval)
-         (dolist (buf (buffer-list))
+         (dolist (buf (ghostel-buffer-list))
            (with-current-buffer buf
              (when (memq ghostel--input-mode '(copy emacs))
+               (setq ghostel--readonly-fast-exit newval)
                (use-local-map (ghostel--readonly-keymap)))))))
 
 (defcustom ghostel-readonly-fake-cursor t
@@ -882,11 +883,12 @@ Matches Ghostty 1.2.0's `bold-color' configuration."
                                        (string-match-p
                                         "\\`#[0-9A-Fa-f]\\{6\\}\\'" val)))))
   :group 'ghostel
+  :initialize #'custom-initialize-default
   :set (lambda (sym val)
          (set-default sym val)
-         (dolist (buf (buffer-list))
+         (dolist (buf (ghostel-buffer-list))
            (with-current-buffer buf
-             (when (and (derived-mode-p 'ghostel-mode) ghostel--term)
+             (when ghostel--term
                (ghostel--apply-bold-config ghostel--term)
                (setq ghostel--repair-pending t)
                (ghostel--redraw-now buf t)
@@ -1616,7 +1618,7 @@ Returns the sequence string, or nil for unknown keys."
   "Handle common state before explicit user input reaches the terminal."
   (deactivate-mark)
   (ghostel-status--acknowledge)
-  (when (and ghostel-readonly-fast-exit
+  (when (and ghostel--readonly-fast-exit
              (memq ghostel--input-mode '(copy emacs)))
     (ghostel-readonly-exit))
   (when (and ghostel-scroll-on-input ghostel--term)
@@ -2385,7 +2387,7 @@ MODE is one of `char', `line', `copy', `emacs'."
       "Ghostel line-mode: \\<ghostel-line-mode-map>\\[ghostel-semi-char-mode] or mouse-1 to exit")
      ((or 'copy 'emacs)
       (let ((name (if (eq mode 'copy) "copy" "emacs"))
-            (exit (if ghostel-readonly-fast-exit
+            (exit (if ghostel--readonly-fast-exit
                       "\\`q' / \\`C-g' / mouse-1 to exit"
                     "\\<ghostel-mode-map>\\[ghostel-semi-char-mode] or mouse-1 to exit")))
         (format "Ghostel %s-mode: %s" name exit))))))
@@ -2393,8 +2395,9 @@ MODE is one of `char', `line', `copy', `emacs'."
 (defun ghostel--mode-line-tag-make (mode label)
   "Return LABEL propertized as a clickable mode-line tag for MODE."
   (propertize label
-              'help-echo (lambda (&rest _)
-                           (ghostel--mode-line-tag-help-echo-text mode))
+              'help-echo (lambda (window &rest _)
+                           (with-current-buffer (window-buffer window)
+                             (ghostel--mode-line-tag-help-echo-text mode)))
               'mouse-face 'mode-line-highlight
               'local-map ghostel--mode-line-tag-mouse-map))
 
@@ -2603,7 +2606,7 @@ whose exit must restore the view keymap rather than a terminal input mode.")
 
 (defun ghostel--readonly-keymap ()
   "Return the keymap to use for the current read-only mode."
-  (if ghostel-readonly-fast-exit
+  (if ghostel--readonly-fast-exit
       ghostel-readonly-fast-exit-mode-map
     ghostel-readonly-mode-map))
 
@@ -2615,39 +2618,54 @@ whose exit must restore the view keymap rather than a terminal input mode.")
     ('copy  (ghostel-copy-mode))
     ('emacs (ghostel-emacs-mode))))
 
-(defun ghostel-readonly-enter ()
-  "Enter the read-only mode configured in `ghostel-readonly-default-mode'."
-  (interactive)
+(defun ghostel-readonly-enter (&optional sticky)
+  "Enter the read-only mode configured in `ghostel-readonly-default-mode'.
+STICKY (the prefix argument) is passed to that mode's command."
+  (interactive "P")
   (ghostel--ensure-ghostel-buffer)
-  (ghostel--enter-readonly-input-mode 'default))
+  (if (eq ghostel-readonly-default-mode 'emacs)
+      (ghostel-emacs-mode sticky)
+    (ghostel-copy-mode sticky)))
 
-(defun ghostel--enter-readonly (mode freeze label entry-message)
+(defun ghostel--readonly-entry-message (mode)
+  "Return the message shown on entering read-only MODE."
+  (let ((head (if (eq mode 'copy) "Copy mode:" "Emacs mode: terminal live,"))
+        (semi-char (substitute-command-keys "\\[ghostel-semi-char-mode]")))
+    (cond (ghostel--readonly-fast-exit
+           (format "%s press any printable key to exit" head))
+          ((eq mode 'copy)
+           (format "%s %s or %s to exit" head
+                   (substitute-command-keys "\\[ghostel-copy-mode]") semi-char))
+          (t (format "%s %s to exit" head semi-char)))))
+
+(defun ghostel--enter-readonly (mode freeze label &optional sticky)
   "Enter or transition between read-only modes.
 MODE is `copy' or `emacs'.  FREEZE non-nil pauses live terminal
 output (copy mode); nil keeps it streaming (Emacs mode).  LABEL is
-the `mode-line-process' tag.  ENTRY-MESSAGE is shown on entry from
-a non-read-only mode."
+the `mode-line-process' tag.  STICKY non-nil enters with fast exit
+off, or toggles fast exit when already in a read-only mode."
   ;; Manual mode switch — see `ghostel-semi-char-mode' for why.
   (setq ghostel--line-mode-paused nil)
-  (let ((from ghostel--input-mode))
+  (let* ((from ghostel--input-mode)
+         (readonly-p (memq from '(copy emacs))))
     ;; Track the last non-read-only mode so a later exit returns to it.
     ;; Line mode is stateful and not safely resumable — fall back
     ;; to semi-char when exiting copy or Emacs in that case.
-    (unless (memq from '(copy emacs))
+    (unless readonly-p
       (setq ghostel--pre-readonly-mode
             (if (eq from 'line) 'semi-char from)))
-    (cond
-     ;; Toggle between the two read-only modes — buffer is already
-     ;; read-only, just adjust the freeze state, mode-line, and keymap.
-     ((memq from '(copy emacs)) nil)
-     ;; First entry from a non-read-only mode.
-     (t
+    (setq ghostel--readonly-fast-exit
+          (cond ((not readonly-p) (and (not sticky) ghostel-readonly-fast-exit))
+                (sticky (not ghostel--readonly-fast-exit))
+                (t ghostel--readonly-fast-exit)))
+    (unless readonly-p
       (pcase from
         ('line (ghostel--line-mode-teardown)
                (ghostel--enter-readonly-state))
         (_     (ghostel--enter-readonly-state)))
-      (setq ghostel--char-mode-override-active nil)
-      (message "%s" entry-message)))
+      (setq ghostel--char-mode-override-active nil))
+    (when (or (not readonly-p) sticky)
+      (message "%s" (ghostel--readonly-entry-message mode)))
     (if freeze
         (ghostel--freeze-terminal)
       ;; Live mode: the redraw timer must be running so output keeps
@@ -2663,7 +2681,7 @@ a non-read-only mode."
     (ghostel--fake-cursor-update)
     (run-hooks 'ghostel-readonly-enter-hook)))
 
-(defun ghostel-emacs-mode ()
+(defun ghostel-emacs-mode (&optional sticky)
   "Toggle Emacs mode — read-only buffer with the terminal still running.
 The terminal keeps running and scrollback keeps growing.
 The buffer is read-only, so standard Emacs commands like `isearch', `occur',
@@ -2671,34 +2689,29 @@ The buffer is read-only, so standard Emacs commands like `isearch', `occur',
 materialised scrollback.  While point sits on the live terminal cursor the
 window follows new output.
 Moving point off the cursor stops scrolling until point returns to the cursor.
-When already in Emacs mode this exits read-only mode."
-  (interactive)
+When already in Emacs mode this exits read-only mode.
+With prefix argument STICKY, enter with `ghostel-readonly-fast-exit'
+off; already in Emacs mode, toggle fast exit instead of exiting."
+  (interactive "P")
   (ghostel--ensure-ghostel-buffer)
-  (if (eq ghostel--input-mode 'emacs)
+  (if (and (eq ghostel--input-mode 'emacs) (not sticky))
       (ghostel-readonly-exit)
-    (ghostel--enter-readonly
-     'emacs nil ":Emacs"
-     (format "Emacs mode: terminal live, %s to exit"
-             (substitute-command-keys "\\[ghostel-semi-char-mode]")))))
+    (ghostel--enter-readonly 'emacs nil ":Emacs" sticky)))
 
-(defun ghostel-copy-mode ()
+(defun ghostel-copy-mode (&optional sticky)
   "Enter copy mode for selecting and copying terminal text.
 Freezes the terminal (live output is paused) and makes the buffer
 read-only.  Standard Emacs navigation, search, and marking work
 across the full scrollback.  When `ghostel-readonly-fast-exit' is
 non-nil press \\`q' or \\[ghostel-readonly-exit] to exit; exiting
-returns to the input mode active before entering read-only mode."
-  (interactive)
+returns to the input mode active before entering read-only mode.
+With prefix argument STICKY, enter with `ghostel-readonly-fast-exit'
+off; already in copy mode, toggle fast exit instead of exiting."
+  (interactive "P")
   (ghostel--ensure-ghostel-buffer)
-  (if (eq ghostel--input-mode 'copy)
+  (if (and (eq ghostel--input-mode 'copy) (not sticky))
       (ghostel-readonly-exit)
-    (ghostel--enter-readonly
-     'copy t ":Copy"
-     (if ghostel-readonly-fast-exit
-         "Copy mode: press any printable key to exit"
-       (format "Copy mode: %s or %s to exit"
-               (substitute-command-keys "\\[ghostel-copy-mode]")
-               (substitute-command-keys "\\[ghostel-semi-char-mode]"))))))
+    (ghostel--enter-readonly 'copy t ":Copy" sticky)))
 
 (defun ghostel--mark-activated ()
   "Switch input mode when the region becomes active in semi-char mode.
@@ -2848,7 +2861,7 @@ When `ghostel-readonly-fast-exit' is non-nil, also exits read-only mode."
   (interactive)
   (when (use-region-p)
     (kill-ring-save (region-beginning) (region-end)))
-  (when ghostel-readonly-fast-exit
+  (when ghostel--readonly-fast-exit
     (ghostel-readonly-exit)))
 
 (defun ghostel-copy-all ()
