@@ -70,7 +70,8 @@ the other."
   "The marginalia wrapper prepends the status and title to marginalia's annotation.
 The status keeps its face ahead of `marginalia-value'."
   (let ((buf (consult-ghostel-test--fake-buffer " *consult-ghostel-marg*"))
-        (ghostel-program-status-functions nil))
+        (ghostel-program-status-functions nil)
+        (ghostel-status-mode-line-labels 'words))
     (unwind-protect
         (cl-letf (((symbol-function 'marginalia-annotate-buffer)
                    (lambda (_) " orig")))

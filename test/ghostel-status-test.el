@@ -81,9 +81,9 @@
     (ghostel-status-test--report "done" "c")
     (ghostel-status-test--report "working" "a")
     (let ((ghostel-status-auto-acknowledge nil))
-      (ghostel-status--acknowledge-on-input)
+      (ghostel--on-user-input)
       (should (= 2 (length ghostel-program-status))))
-    (ghostel-status--acknowledge-on-input)
+    (ghostel--on-user-input)
     (should (equal '("a") (mapcar #'car ghostel-program-status)))))
 
 (ert-deftest ghostel-status-test-acknowledge-command-drops-finished ()
@@ -202,7 +202,8 @@
   "The indicator shows one label per distinct label with the terminal count."
   (ghostel-status-test--with-terminals (a b c)
     (unwind-protect
-        (let ((ghostel-program-status-functions nil))
+        (let ((ghostel-program-status-functions nil)
+              (ghostel-status-mode-line-labels 'words))
           (ghostel-status-indicator-mode 1)
           (should (memq 'ghostel-status--indicator global-mode-string))
           (should-not ghostel-status--indicator)
@@ -228,7 +229,8 @@
   "The indicator counts `ghostel-status-indicator-states', not the attention states."
   (ghostel-status-test--with-terminals (a b)
     (unwind-protect
-        (let ((ghostel-program-status-functions nil))
+        (let ((ghostel-program-status-functions nil)
+              (ghostel-status-mode-line-labels 'words))
           (ghostel-status-indicator-mode 1)
           (with-current-buffer a (ghostel-status-test--report "working"))
           (with-current-buffer b
@@ -250,7 +252,8 @@
 (ert-deftest ghostel-status-test-annotation-shows-status ()
   "Picker annotations carry the mode-line status before the title."
   (ghostel-status-test--with-terminals (a)
-    (let ((ghostel-program-status-functions nil))
+    (let ((ghostel-program-status-functions nil)
+          (ghostel-status-mode-line-labels 'words))
       (should-not (ghostel-annotate-buffer a))
       (with-current-buffer a (setq ghostel-title "make"))
       (should (equal "  make" (ghostel-annotate-buffer (buffer-name a))))
@@ -294,6 +297,7 @@
   "Run BODY in a temp buffer with only the mode-line member and no spinner."
   (declare (indent 0))
   `(let ((ghostel-program-status-functions '(ghostel-status-mode-line))
+         (ghostel-status-mode-line-labels 'words)
          (ghostel-spinner-type nil))
      (with-temp-buffer ,@body)))
 
@@ -318,42 +322,67 @@ A percent sign is doubled so the mode line prints it."
     (ghostel-status-test--report "idle")
     (should (null mode-line-process))))
 
-(ert-deftest ghostel-status-test-mode-line-kind-labels-and-format ()
-  "A kind with its own label replaces the state label; the format frames it.
-A kind on another state is ignored, a percent in the format survives
-the mode line and the picker."
-  (let ((ghostel-status-mode-line-labels
-         '((blocked . "B") (permission . "P") (done . "D")))
-        (ghostel-status-mode-line-format " %%%l%n%c%x"))
-    (ghostel-status-test--with-mode-line
-      (ghostel-status-test--report "blocked" nil "permission")
-      (should (equal " %%P1" ghostel--mode-line-status))
-      (should (equal " %P1" (ghostel-annotate-buffer (buffer-name))))
-      (ghostel-status-test--report "blocked" nil "auth")
-      (should (equal " %%B: auth1" ghostel--mode-line-status))
-      (ghostel-status-test--report "blocked" "x" "auth")
-      (should (equal " %%B: auth22 ×2" ghostel--mode-line-status))
-      (ghostel-status-test--report "done" nil "permission")
-      (ghostel-status-test--report "clear" "x")
-      (should (equal " %%D1" ghostel--mode-line-status)))))
+(ert-deftest ghostel-status-test-mode-line-user-labels ()
+  "A user alist gives `format-spec' labels per kind, progress and state.
+A kind on another state is ignored, a literal percent survives the
+mode line and the picker."
+  (ghostel-status-test--with-mode-line
+    (setq ghostel-status-mode-line-labels
+          '((blocked . "%%B%k%x") (permission . "%%P%n")
+            (progress . "%%%p") (done . "%%D%c")))
+    (ghostel-status-test--report "blocked" nil "permission")
+    (should (equal " %%P1" ghostel--mode-line-status))
+    (should (equal " %P1" (ghostel-annotate-buffer (buffer-name))))
+    (ghostel-status-test--report "blocked" nil "auth")
+    (should (equal " %%Bauth" ghostel--mode-line-status))
+    (ghostel-status-test--report "blocked" "x" "auth")
+    (should (equal " %%Bauth ×2" ghostel--mode-line-status))
+    (ghostel-status-test--report "done" nil "permission")
+    (ghostel-status-test--report "clear" "x")
+    (should (equal " %%D" ghostel--mode-line-status))
+    (ghostel-status-test--report "working" nil nil 42)
+    (should (equal " %%42" ghostel--mode-line-status))))
 
-(ert-deftest ghostel-status-test-mode-line-blocked-child-overrides-root ()
-  "Blocked and error records show over the root, counted, with a tooltip line each."
+(ert-deftest ghostel-status-test-mode-line-emoji-preset-and-fallback ()
+  "The default emoji labels count compactly; words stand in where they cannot show."
+  (let ((ghostel-program-status-functions '(ghostel-status-mode-line))
+        (ghostel-spinner-type nil))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'char-displayable-p) (lambda (_) t)))
+        (ghostel-status-test--report "working" nil nil 42)
+        (ghostel-status-test--report "blocked" "a" "permission")
+        (ghostel-status-test--report "done" "b")
+        (ghostel-status-test--report "done" "c")
+        (should (equal " 🔒 ✅2 42%%" ghostel--mode-line-status)))
+      (cl-letf (((symbol-function 'char-displayable-p) (lambda (_) nil)))
+        (ghostel-status-test--report "done" "c")
+        (should (equal " [blocked: permission] [done ×2] [42%%]"
+                       ghostel--mode-line-status))))))
+
+(ert-deftest ghostel-status-test-mode-line-groups-records-by-urgency ()
+  "Every record shows, one label per distinct label most urgent first.
+Equal labels count together with a tooltip line each."
   (ghostel-status-test--with-mode-line
     (ghostel-status-test--report "working" nil nil 42 "deploy")
     (ghostel-status-test--report "blocked" "eu" "permission" nil nil nil "Approve eu")
-    (should (equal " [blocked: permission]" ghostel--mode-line-status))
+    (should (equal " [blocked: permission] [42%%]" ghostel--mode-line-status))
     (should (equal "Approve eu"
                    (get-text-property 0 'help-echo ghostel--mode-line-status)))
     (ghostel-status-test--report "error" "us")
-    (should (equal " [error ×2]" ghostel--mode-line-status))
+    (ghostel-status-test--report "working" "ap")
+    (should (equal " [blocked: permission] [error] [working] [42%%]"
+                   ghostel--mode-line-status))
     ;; The error child without text names its inherited app.
-    (should (equal "deploy\nApprove eu"
-                   (get-text-property 0 'help-echo ghostel--mode-line-status)))
+    (should (equal "deploy"
+                   (get-text-property 23 'help-echo ghostel--mode-line-status)))
     (ghostel-status-test--report "done" "us")
-    (should (equal " [blocked: permission]" ghostel--mode-line-status))
+    (ghostel-status-test--report "done" "ap")
+    (should (equal " [blocked: permission] [done ×2] [42%%]" ghostel--mode-line-status))
+    (should (equal "deploy\ndeploy"
+                   (get-text-property 23 'help-echo ghostel--mode-line-status)))
     (ghostel-status-test--report "clear" "eu")
-    (should (equal " [42%%]" ghostel--mode-line-status))))
+    (ghostel-status-test--report "idle" "us")
+    (should (equal " [done] [42%%]" ghostel--mode-line-status))))
 
 (ert-deftest ghostel-status-test-app-inherited-from-ancestors ()
   "A record without an app takes the nearest ancestor's, down to the root."
@@ -390,6 +419,7 @@ the mode line and the picker."
               ((symbol-function 'spinner-stop)
                (lambda (&rest _) (cl-incf stops))))
       (let ((ghostel-program-status-functions '(ghostel-status-mode-line))
+            (ghostel-status-mode-line-labels 'words)
             (ghostel-status--spinner-available t)
             (ghostel-spinner-type 'progress-bar))
         (with-temp-buffer
@@ -404,6 +434,18 @@ the mode line and the picker."
           (should-not ghostel--spinner-active)
           (should (equal '(":Char" (" [75%%]")) mode-line-process))
           (ghostel--osc-progress "remove" nil)
+          (should (equal ":Char" mode-line-process))
+          ;; A second record shows as text beside the root instead.
+          (ghostel-status-test--report "working")
+          (should (equal '((progress-bar) (progress-bar)) starts))
+          (ghostel-status-test--report "working" "c")
+          (should (= 2 stops))
+          (should (equal '(":Char" (" [working ×2]")) mode-line-process))
+          (ghostel-status-test--report "clear" "c")
+          (should (= 3 (length starts)))
+          (should ghostel--spinner-active)
+          (ghostel-status-test--report "clear")
+          (should (= 3 stops))
           (should (equal ":Char" mode-line-process)))))))
 
 (ert-deftest ghostel-status-test-notify-on-transition-when-not-looked-at ()

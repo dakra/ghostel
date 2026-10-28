@@ -1084,24 +1084,30 @@ them.
 Every change runs =ghostel-program-status-functions= with =(ID OLD NEW)=.  The
 default members:
 
-- =ghostel-status-mode-line= shows the status in =mode-line-process=: =[42%]=,
-  =[blocked: permission]=, =[done]=, =[error]=, with the message as tooltip.
-  A =blocked= or =error= record anywhere shows over the root record, with a
-  count when there are several (=[blocked: permission ×2]=, one tooltip line
-  each).  =working= without a percentage animates via [[https://github.com/Malabarba/spinner.el][spinner.el]] when it is
-  installed (=ghostel-spinner-type=; nil shows the plain =[working]=).  The words
-  come from =ghostel-status-mode-line-labels= and the frame around them from
-  =ghostel-status-mode-line-format=; the global indicator and the picker
-  annotations use both.  The alist also takes the =blocked= kinds
-  =permission=, =question= and =auth= as keys, which replace the state label
-  and the appended kind.  The format is a =format-spec= string: =%l= the
-  label, =%n= the count, =%c= the count only when there are several, =%x=
-  =" ×N"= only then.  Icons and a compact count, =🔒2 ✅1= in the indicator:
+- =ghostel-status-mode-line= shows the status in =mode-line-process=: =42%=,
+  =🔒=, =✅=, =❌=, with the message as tooltip.  Every record shows, one label
+  per distinct label most urgent first, with a count when several read the
+  same (=🔒2 ✅ 42%=, one tooltip line each).  A lone =working= root without a
+  percentage animates via [[https://github.com/Malabarba/spinner.el][spinner.el]] when it is installed
+  (=ghostel-spinner-type=; nil shows the plain =⏳=).  The labels come from
+  =ghostel-status-mode-line-labels=, which the global indicator and the
+  picker annotations use too.  The default =emoji= falls back to =words=
+  when the selected frame cannot display the emoji (a tty cannot be
+  probed, so set =words= there).  =words= gives =[blocked: permission ×2]
+  [done] [42%]=.  An alist gives your own labels, keyed by state, by the
+  =blocked= kinds =permission=, =question= and =auth=, and by =progress= for
+  =working= with a percentage; a kind or =progress= without an entry uses
+  the state's.  Values are =format-spec= strings: =%p= the percentage, =%k=
+  the kind, =%n= the count, =%c= the count only when there are several, =%x=
+  =" ×N"= only then.  Words instead of emoji:
+  #+begin_src emacs-lisp
+  (setq ghostel-status-mode-line-labels 'words)
+  #+end_src
+  Short words with the kind and a compact count, =permission? ok2 42%=:
   #+begin_src emacs-lisp
   (setq ghostel-status-mode-line-labels
-        '((working . "⏳") (permission . "🔒") (question . "❓") (auth . "🔑")
-          (blocked . "✋") (done . "✅") (error . "❌"))
-        ghostel-status-mode-line-format " %l%n")
+        '((working . "run%c") (progress . "%p%%") (blocked . "%k?%c")
+          (done . "ok%c") (error . "err%c")))
   #+end_src
 - =ghostel-status-notify= sends a desktop notification through
   =ghostel-notification-functions= when any record enters a state in
@@ -1563,14 +1569,13 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 
 | Variable                            | Default                      | Description                                                     |
 |-------------------------------------+------------------------------+-----------------------------------------------------------------|
-| =ghostel-notification-functions=      | =(ghostel-default-notify)=     | Hook for OSC 9 / OSC 777 notifications.                         |
+| =ghostel-notification-functions=      | =(ghostel-default-notify)=     | Hook for OSC 9 / OSC 777 and program status notifications.      |
 | =ghostel-bell-functions=              | =(ghostel-ding)=               | Hook for the terminal bell.                                     |
 | =ghostel-program-status-functions=    | mode line and notify members | Hook for OSC 7501 / OSC 9;4 status records, =(ID OLD NEW)=.       |
-| =ghostel-status-notify-states=        | =(blocked done error)=         | States that send a notification when entered.                   |
+| =ghostel-status-notify-states=        | =(blocked done error)=         | Attention states: notify, =ghostel-status-next= and pickers.      |
 | =ghostel-status-indicator-states=     | =(blocked done error working)= | States =ghostel-status-indicator-mode= counts terminals in.       |
 | =ghostel-status-auto-acknowledge=     | =input=                        | Drop done and error records on =input=, when =seen=, or never.      |
-| =ghostel-status-mode-line-labels=     | words per state              | Label per state, or per blocked kind.                           |
-| =ghostel-status-mode-line-format=     | =" [%l%x]"=                    | Frame around a label: =%l= label, =%n=/=%c=/=%x= counts.                |
+| =ghostel-status-mode-line-labels=     | =emoji=                        | =emoji=, =words= or an alist of =format-spec= labels.                 |
 | =ghostel-spinner-type=                | =progress-bar=                 | Spinner while working without a percentage; nil for plain text. |
 
 ** Input and interaction
@@ -2142,7 +2147,7 @@ over:
 | =M-x ghostel-project-previous=         | Cycle to the previous ghostel buffer in the current project.              |
 | =M-x ghostel-project-list-buffers=     | Pick a project-scoped ghostel buffer.                                     |
 | =M-x ghostel-status-next=              | Switch to the next terminal needing attention, most urgent first.         |
-| =M-x ghostel-status-indicator-mode=    | Count the terminals needing attention in every mode line.                 |
+| =M-x ghostel-status-indicator-mode=    | Count terminals by program status in every mode line.                     |
 | =M-x ghostel-status-acknowledge=       | Drop the done and error records of the current terminal.                  |
 | =M-x ghostel-clear=                    | Clear the visible screen, keeping scrollback.                             |
 | =M-x ghostel-clear-scrollback=         | Clear screen and scrollback.                                              |

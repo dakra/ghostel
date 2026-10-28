@@ -22,13 +22,20 @@ All notable changes to this project will be documented in this file.
   attention from `consult-ghostel-status-source`; `consult-ghostel-mode`
   registers a hidden copy in `consult-buffer` under the `a` narrow key.
 - The buffer pickers show a terminal's program status before its title.
-- `ghostel-status-mode-line-format` frames the status labels, a
-  `format-spec` string with the label and three count specs, and
-  `ghostel-status-mode-line-labels` takes the blocked kinds as keys so
-  an icon can stand for each.
+- `ghostel-status-mode-line-labels` shows emoji by default (`🔒2 ✅ 42%`),
+  words where a frame cannot display them, `words` for
+  `[blocked: permission ×2] [done] [42%]`, or an alist of `format-spec`
+  labels keyed by state, blocked kind and `progress`.
 
 ### Changed
-- The default `working` label reads `working` instead of `...`.
+- The terminal mode line shows every status record, one label per
+  distinct label most urgent first with a count, instead of only the
+  `blocked` and `error` records or the root.  The spinner runs only
+  while the root record is the sole record.
+- The `working` word label reads `working` instead of `...`.
+- A `ghostel-status-mode-line-labels` alist no longer gets a ` [... ×N]`
+  frame or a `: kind` suffix around its strings; both now live in the
+  `format-spec` labels themselves.
 - OSC 9 / OSC 777 notifications are ignored while the program reports
   its status with OSC 7501, so Claude Code's permission prompt no
   longer notifies twice.  A root `clear`, a new prompt or the process

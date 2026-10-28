@@ -97,22 +97,33 @@ the buffer you are looking at, nil only by the command
                  (const :tag "Never" nil))
   :group 'ghostel)
 
-(defcustom ghostel-status-mode-line-labels
-  '((working . "working") (blocked . "blocked") (done . "done") (error . "error"))
-  "Label per program status state, in mode lines and picker annotations.
-`working' with a percentage shows the percentage instead, `blocked' with a kind
-appends it unless the kind (`permission', `question' or `auth') has an entry
-of its own, which then replaces both.  A state without an entry shows nothing."
-  :type '(alist :key-type symbol :value-type string)
-  :group 'ghostel)
+(defconst ghostel-status-word-labels
+  '((working . "[working%x]") (progress . "[%p%%%x]")
+    (blocked . "[blocked%x]") (permission . "[blocked: permission%x]")
+    (question . "[blocked: question%x]") (auth . "[blocked: auth%x]")
+    (done . "[done%x]") (error . "[error%x]"))
+  "Word labels for `ghostel-status-mode-line-labels'.")
 
-(defcustom ghostel-status-mode-line-format " [%l%x]"
-  "Frame around a label, a `format-spec' string.
-%l is the label, %n the number of records or terminals it stands for,
-%c that number only when there are several and %x \" ×N\" only then.
-The labels of the indicator are concatenated, so a leading space is
-the separator."
-  :type 'string
+(defconst ghostel-status-emoji-labels
+  '((working . "⏳%c") (progress . "%p%%%c") (blocked . "✋%c")
+    (permission . "🔒%c") (question . "❓%c") (auth . "🔑%c")
+    (done . "✅%c") (error . "❌%c"))
+  "Emoji labels for `ghostel-status-mode-line-labels'.")
+
+(defcustom ghostel-status-mode-line-labels 'emoji
+  "Labels per program status, in mode lines and picker annotations.
+`emoji' (`ghostel-status-emoji-labels', `words' when the selected frame
+cannot display them), `words' (`ghostel-status-word-labels'), or an alist keyed
+by state, by the `blocked' kinds `permission', `question' and `auth',
+and by `progress' for `working' with a percentage.  Values are
+`format-spec' strings: %p the percentage, %k the kind, %n the number of
+records or terminals the label stands for, %c that number only when
+there are several, %x \" ×N\" only then.  A kind or `progress' without
+an entry uses the state's; a state without one shows nothing.  Each
+label is preceded by a space."
+  :type '(choice (const :tag "Emoji, words where they cannot show" emoji)
+                 (const :tag "Words" words)
+                 (alist :key-type symbol :value-type string))
   :group 'ghostel)
 
 (defcustom ghostel-spinner-type 'progress-bar
@@ -244,11 +255,6 @@ Each element is (ID . RECORD); see `ghostel-program-status-functions'.")
   (ghostel-status--remove-if
    (lambda (entry) (memq (plist-get (cdr entry) :state) '(done error)))))
 
-(defun ghostel-status--acknowledge-on-input ()
-  "Acknowledge on user input unless `ghostel-status-auto-acknowledge' is nil."
-  (when ghostel-status-auto-acknowledge
-    (ghostel-status-acknowledge)))
-
 (defun ghostel-status--acknowledge-seen ()
   "Acknowledge when `ghostel-status-auto-acknowledge' is `seen' and looked at."
   (when (and (eq ghostel-status-auto-acknowledge 'seen)
@@ -279,12 +285,11 @@ STATES defaults to `ghostel-status-notify-states'."
   "Return the terminals holding a state in STATES, most urgent first.
 Ordered by `ghostel-status-buffer-state', which also gives the default STATES;
 equal states keep `ghostel-buffer-list' order."
-  (let ((rank (lambda (buf)
-                (cl-position (ghostel-status-buffer-state buf states)
-                             ghostel-status--urgency))))
-    (sort (cl-remove-if-not (lambda (buf) (ghostel-status-buffer-state buf states))
-                            (ghostel-buffer-list))
-          (lambda (a b) (< (funcall rank a) (funcall rank b))))))
+  (let (ranked)
+    (dolist (buf (ghostel-buffer-list))
+      (when-let* ((state (ghostel-status-buffer-state buf states)))
+        (push (cons (cl-position state ghostel-status--urgency) buf) ranked)))
+    (mapcar #'cdr (sort (nreverse ranked) (lambda (a b) (< (car a) (car b)))))))
 
 (defun ghostel-status-next ()
   "Switch to the next terminal needing attention, most urgent first.
@@ -359,20 +364,21 @@ libghostty reports `clear' for every record on RIS by itself."
 (defvar ghostel-status--spinner-available (locate-library "spinner")
   "Non-nil when spinner.el was on `load-path' at load time.")
 
-(defun ghostel-status--shown ()
-  "Return the (ID . RECORD) entries the mode line shows, newest first.
-The `blocked' and `error' records when there are any, else the root."
-  (or (cl-remove-if-not
-       (lambda (entry) (memq (plist-get (cdr entry) :state) '(blocked error)))
-       ghostel-program-status)
-      (when-let* ((root (assoc "" ghostel-program-status)))
-        (list root))))
-
 (defun ghostel-status--describe (entry)
   "Return the message, title or app of the (ID . RECORD) ENTRY, or nil."
   (or (plist-get (cdr entry) :msg)
       (plist-get (cdr entry) :title)
       (ghostel-status-app (car entry))))
+
+(defun ghostel-status--labels-alist ()
+  "Return the label alist `ghostel-status-mode-line-labels' selects."
+  (pcase ghostel-status-mode-line-labels
+    ('words ghostel-status-word-labels)
+    ('emoji (if (seq-every-p #'char-displayable-p
+                             (mapconcat #'cdr ghostel-status-emoji-labels ""))
+                ghostel-status-emoji-labels
+              ghostel-status-word-labels))
+    (alist alist)))
 
 (defun ghostel-status--label (entries &optional tip)
   "Return the mode-line text for the (ID . RECORD) list ENTRIES, or nil.
@@ -384,39 +390,64 @@ TIP is the list of help-echo lines, by default what
          (state (plist-get record :state))
          (progress (plist-get record :progress))
          (kind (plist-get record :kind))
-         (label (alist-get state ghostel-status-mode-line-labels))
-         (text (pcase state
-                 ('working (if progress (format "%d%%" progress) label))
-                 ('blocked (or (and kind (alist-get kind ghostel-status-mode-line-labels))
-                               (and label kind (format "%s: %s" label kind))
-                               label))
-                 (_ label)))
+         (labels (ghostel-status--labels-alist))
+         (spec (or (and (eq state 'blocked) kind (alist-get kind labels))
+                   (and (eq state 'working) progress (alist-get 'progress labels))
+                   (alist-get state labels)))
          (count (length entries))
          (several (> count 1)))
-    (when text
+    (when spec
       ;; The mode line reads "%]" as a construct; a bare percent is lost.
-      (propertize (string-replace
-                   "%" "%%"
-                   (format-spec ghostel-status-mode-line-format
-                                `((?l . ,text) (?n . ,count)
-                                  (?c . ,(if several count ""))
-                                  (?x . ,(if several (format " ×%d" count) "")))))
+      (propertize (concat
+                   " "
+                   (string-replace
+                    "%" "%%"
+                    (format-spec spec `((?p . ,(or progress 0))
+                                        (?k . ,(if kind (symbol-name kind) ""))
+                                        (?n . ,count)
+                                        (?c . ,(if several count ""))
+                                        (?x . ,(if several (format " ×%d" count) ""))))))
                   'face (pcase state
                           ('blocked 'warning)
                           ('error 'error)
                           ('done 'success))
                   'help-echo (and tip (string-join tip "\n"))))))
 
+(defun ghostel-status--labels (items)
+  "Return one label per distinct label among ITEMS, counted, or nil.
+ITEMS are (ENTRY . TIP) most urgent first, ENTRY an (ID . RECORD) and
+TIP its help-echo line, nil for what `ghostel-status--describe' says."
+  (let ((parts (delq nil (mapcar
+                          (lambda (group)
+                            (ghostel-status--label
+                             (mapcar #'car (cdr group))
+                             (delq nil (mapcar #'cdr (cdr group)))))
+                          (seq-group-by
+                           (lambda (item)
+                             (ghostel-status--label (list (car item)) '("")))
+                           items)))))
+    (and parts (apply #'concat parts))))
+
+(defun ghostel-status--text ()
+  "Return the mode-line text for the records of the current terminal, or nil.
+One label per distinct label, most urgent first, counted when several
+records read the same."
+  (ghostel-status--labels
+   (mapcar #'list (seq-sort-by
+                   (lambda (entry)
+                     (cl-position (plist-get (cdr entry) :state)
+                                  ghostel-status--urgency))
+                   #'< ghostel-program-status))))
+
 (defun ghostel-status-mode-line (_id _old _new)
   "Show the program status in `mode-line-process'.
-A `blocked' or `error' record anywhere takes precedence, with a count
-when there are several; otherwise the root record shows.  Working
-without a percentage runs a spinner when `ghostel-spinner-type' names
-one and spinner.el is installed."
-  (let* ((shown (ghostel-status--shown))
-         (record (cdar shown)))
+Every record shows, one label per distinct label most urgent first.  A
+lone root record working without a percentage runs a spinner when
+`ghostel-spinner-type' names one and spinner.el is installed."
+  (let ((record (cdr (assoc "" ghostel-program-status))))
     (if (and (eq (plist-get record :state) 'working)
              (null (plist-get record :progress))
+             (null (cdr ghostel-program-status))
              ghostel-spinner-type
              ghostel-status--spinner-available
              (require 'spinner nil t))
@@ -427,7 +458,7 @@ one and spinner.el is installed."
       (when ghostel--spinner-active
         (ignore-errors (spinner-stop))
         (setq ghostel--spinner-active nil))
-      (setq ghostel--mode-line-status (ghostel-status--label shown)))
+      (setq ghostel--mode-line-status (ghostel-status--text)))
     (ghostel--mode-line-refresh)))
 
 
@@ -476,44 +507,32 @@ its app, and its message, else its state, deferred;
     map)
   "Keymap of the indicator; a click runs `ghostel-status-next'.")
 
-(defun ghostel-status--indicator-entry (buffer states)
-  "Return the (ID . RECORD) entry the indicator shows for BUFFER.
-The root when it holds BUFFER's most urgent state among STATES,
-else the newest record that does."
-  (let* ((state (ghostel-status-buffer-state buffer states))
-         (entries (buffer-local-value 'ghostel-program-status buffer))
-         (root (assoc "" entries)))
-    (if (eq state (plist-get (cdr root) :state))
-        root
-      (cl-find state entries
-               :key (lambda (entry) (plist-get (cdr entry) :state))))))
+(defun ghostel-status--indicator-item (buffer states)
+  "Return the (ENTRY . TIP) item of `ghostel-status--labels' for BUFFER.
+ENTRY is the root when it holds BUFFER's most urgent state among STATES,
+else the newest record that does; TIP names BUFFER and the record."
+  (with-current-buffer buffer
+    (let* ((state (ghostel-status-buffer-state buffer states))
+           (root (assoc "" ghostel-program-status))
+           (entry (if (eq state (plist-get (cdr root) :state))
+                      root
+                    (cl-find state ghostel-program-status
+                             :key (lambda (entry)
+                                    (plist-get (cdr entry) :state))))))
+      (cons entry (format "%s: %s" (buffer-name)
+                          (or (ghostel-status--describe entry) state))))))
 
 (defun ghostel-status--indicator-text ()
   "Return one label per distinct terminal label, with its count, or nil.
-Terminals in a `ghostel-status-indicator-states' state whose
-`ghostel-status--indicator-entry' labels read the same are counted together."
-  (let ((states ghostel-status-indicator-states)
-        parts)
-    (when states
-      (pcase-dolist (`(,_ . ,pairs)
-                     (seq-group-by
-                      (lambda (pair)
-                        (with-current-buffer (car pair)
-                          (ghostel-status--label (list (cdr pair)))))
-                      (mapcar (lambda (buf)
-                                (cons buf (ghostel-status--indicator-entry buf states)))
-                              (ghostel-status-buffers states))))
-        (push (ghostel-status--label
-               (mapcar #'cdr pairs)
-               (mapcar (lambda (pair)
-                         (format "%s: %s" (buffer-name (car pair))
-                                 (or (with-current-buffer (car pair)
-                                       (ghostel-status--describe (cdr pair)))
-                                     (plist-get (cddr pair) :state))))
-                       pairs))
-              parts)))
-    (when parts
-      (propertize (apply #'concat (nreverse parts))
+Each terminal in a `ghostel-status-indicator-states' state contributes
+its `ghostel-status--indicator-item'."
+  (let ((states ghostel-status-indicator-states))
+    (when-let* ((text (and states
+                           (ghostel-status--labels
+                            (mapcar (lambda (buf)
+                                      (ghostel-status--indicator-item buf states))
+                                    (ghostel-status-buffers states))))))
+      (propertize text
                   'mouse-face 'mode-line-highlight
                   'local-map ghostel-status--indicator-map))))
 

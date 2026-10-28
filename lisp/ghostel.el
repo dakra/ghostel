@@ -1619,7 +1619,8 @@ Returns the sequence string, or nil for unknown keys."
 (defun ghostel--on-user-input ()
   "Handle common state before explicit user input reaches the terminal."
   (deactivate-mark)
-  (ghostel-status--acknowledge-on-input)
+  (when ghostel-status-auto-acknowledge
+    (ghostel-status-acknowledge))
   (when (and ghostel--readonly-fast-exit
              (memq ghostel--input-mode '(copy emacs)))
     (ghostel-readonly-exit))
@@ -5547,8 +5548,7 @@ the first or last entry depending on DIRECTION."
 The program status as in the buffer's mode line, then the terminal
 title capped at `ghostel-annotation-title-width' columns."
   (when-let* ((buffer (get-buffer name)))
-    (let ((status (with-current-buffer buffer
-                    (ghostel-status--label (ghostel-status--shown))))
+    (let ((status (with-current-buffer buffer (ghostel-status--text)))
           (title (buffer-local-value 'ghostel-title buffer)))
       (when (or status title)
         ;; The label quotes percents for the mode line.
