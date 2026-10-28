@@ -1046,6 +1046,11 @@ them elsewhere:
             (alert body :title (or title "ghostel") :category 'ghostel)))
 #+end_src
 
+From a program's first OSC 7501 report (below) until its root =clear=, the
+next shell-integration prompt or the process exit, OSC 9 / OSC 777 do not run
+the hook; the status changes run it instead.  Without shell integration, a
+program that exits without =clear= leaves them off until the shell exits.
+
 The terminal bell (=BEL=) runs =ghostel-bell-functions=; the default member
 =ghostel-ding= beeps.  Remove it to silence the bell.
 
@@ -1103,7 +1108,19 @@ default members:
   =ghostel-status-notify-states= (default: blocked, done, error) while its
   buffer is not the one you are looking at.  The title is the record's
   title, else its app; =ghostel-status-app= resolves an app inherited from
-  an ancestor record.
+  an ancestor record.  To notify with more than title and text, for example
+  buttons per kind, replace the member; =ghostel-status-attention-p= is its
+  condition:
+  #+begin_src emacs-lisp
+  (remove-hook 'ghostel-program-status-functions #'ghostel-status-notify)
+  (add-hook 'ghostel-program-status-functions
+            (lambda (id old new)
+              (when (ghostel-status-attention-p old new)
+                (my-notify (or (ghostel-status-app id) "ghostel")
+                           (or (plist-get new :msg)
+                               (symbol-name (plist-get new :state)))
+                           :buttons (eq (plist-get new :kind) 'permission)))))
+  #+end_src
 
 A root record's =title= takes the place of the OSC 2 title in =ghostel-title=
 and the buffer name.

@@ -76,7 +76,7 @@ pub fn GhostelHandler(Effects: type) type {
                     self.inner.vt(action, value);
                     // libghostty clears the title on RIS without firing title_changed.
                     if (had_title) titleChangedCallback(&self.inner);
-                    // libghostty clears the status records itself; this re-arms OSC 9;4.
+                    // libghostty clears the records itself; this only resets the OSC 7501 flag.
                     self.effects.effect("ghostel--program-status-reset", .{});
                 },
 

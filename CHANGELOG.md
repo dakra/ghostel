@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- `ghostel-status-attention-p` tells whether a program status change
+  needs attention, for members of `ghostel-program-status-functions`
+  that notify in their own way.
 - `ghostel-status-next` switches to the terminal whose program needs
   attention most urgently (a `blocked`, `error` or `done` record, in
   that order) and walks the rest on repeat.  `ghostel-status-indicator-mode`
@@ -26,6 +29,10 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - The default `working` label reads `working` instead of `...`.
+- OSC 9 / OSC 777 notifications are ignored while the program reports
+  its status with OSC 7501, so Claude Code's permission prompt no
+  longer notifies twice.  A root `clear`, a new prompt or the process
+  exit end that, for OSC 9;4 progress too.
 - URL links keep a balanced `(...)` group, so a Wikipedia-style
   `https://w.org/Rust_(language)` links in full.  A `(` or `)` that is
   not part of a balanced pair ends the URL, so the trailing `)` in

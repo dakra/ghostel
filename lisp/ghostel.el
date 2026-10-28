@@ -5274,7 +5274,6 @@ spawn after initialization."
           ghostel--last-directory nil
           ghostel-title nil
           ghostel--osc-title nil
-          ghostel-status--osc7501-seen nil
           ghostel--command-running nil
           ghostel--last-foreground nil
           ghostel--shell-comm nil

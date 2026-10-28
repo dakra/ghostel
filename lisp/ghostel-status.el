@@ -48,12 +48,13 @@ current.  Remove `ghostel-ding' to silence the bell."
   'ghostel-notification-functions "0.58.0")
 
 (defcustom ghostel-notification-functions '(ghostel-default-notify)
-  "Hook run for OSC 9 / OSC 777 desktop notifications.
-Each function is called with two string arguments, TITLE and BODY,
-with the originating terminal buffer current.  TITLE is empty for
-iTerm2-style OSC 9.  The hook runs asynchronously via `run-at-time',
-so handlers may block or spawn processes without stalling the
-terminal."
+  "Hook run for desktop notifications.
+Each function is called with TITLE and BODY, strings, the originating
+terminal buffer current.  Runs for OSC 9 / OSC 777, TITLE empty for
+OSC 9, and through `ghostel-status-notify' for program status changes.
+OSC 9 / OSC 777 are skipped from a program's first OSC 7501 report until
+its root `clear', the next shell-integration prompt or process exit.
+Runs via `run-at-time', so handlers may block without stalling the terminal."
   :type 'hook
   :group 'ghostel)
 
@@ -65,17 +66,17 @@ current.  ID is the record's id string, \"\" for the program itself.
 OLD and NEW are the record plists before and after the change: OLD
 is nil for a new record, NEW for a removed one.  A record has
 `:state' (`idle', `working', `done', `blocked' or `error') and the
-keys the program sent: `:kind' (`permission', `question' or
-`auth'), `:progress' (0-100), `:app', `:title' and `:msg'.
+keys the program sent: `:kind' (`permission', `question' or `auth'),
+`:progress' (0-100), `:app', `:title' and `:msg'.
 Runs on the terminal output path, so keep handlers cheap."
   :type 'hook
   :group 'ghostel)
 
 (defcustom ghostel-status-notify-states '(blocked done error)
   "States that need your attention.
-A record entering one runs `ghostel-notification-functions' unless its
-buffer is the one you are looking at; a terminal holding one counts in
-`ghostel-status-buffers' and `ghostel-status-next'."
+A record entering one notifies unless its buffer is the one you are
+looking at; a terminal holding one counts in `ghostel-status-buffers'
+and `ghostel-status-next'."
   :type '(set (const blocked) (const done) (const error)
               (const working) (const idle))
   :group 'ghostel)
@@ -135,17 +136,15 @@ A key of `spinner-types' from spinner.el, or nil for the plain
 
 ;;; Notifications
 
-(defun ghostel-default-notify (title body)
-  "Default handler for OSC 9 / OSC 777 notifications.
-Uses the `alert' package (https://github.com/jwiegley/alert) when
-available - it picks a sensible backend per platform (osascript on
-macOS, libnotify on Linux, Growl, terminal-notifier, etc.).  Falls
-back to `message' when alert isn't installed.  TITLE is the
-notification summary; when empty (iTerm2-style OSC 9) the buffer
-name is used.  BODY is the notification text.
+(defvar-local ghostel-status--osc7501-seen nil
+  "Non-nil while the program reports its status with OSC 7501.
+Set by a report, cleared by a root `clear', a new prompt, process exit or RIS.")
 
-Runs with the originating ghostel buffer current, so an empty
-TITLE falls back to that buffer's name."
+(defun ghostel-default-notify (title body)
+  "Show TITLE and BODY with `alert', else `message'.
+The alert package (https://github.com/jwiegley/alert) picks a backend
+per platform: osascript on macOS, libnotify on Linux, etc.  An empty
+TITLE, as in iTerm2-style OSC 9, shows the buffer name instead."
   (let ((summary (if (or (null title) (string-empty-p title))
                      (buffer-name)
                    title)))
@@ -154,7 +153,7 @@ TITLE falls back to that buffer's name."
       (message "%s: %s" summary body))))
 
 (defun ghostel-tty-forward-notify (title body)
-  "Forward OSC 9 / OSC 777 notifications to the outer terminal.
+  "Forward notifications to the outer terminal.
 On a tty frame, re-emit TITLE and BODY as OSC 9 (empty TITLE) or
 OSC 777 to the frame showing this buffer, else the selected frame.
 On a GUI frame, fall back to `ghostel-default-notify'.
@@ -173,8 +172,9 @@ Use in place of `ghostel-default-notify' in
   "Run `ghostel-notification-functions' with TITLE and BODY.
 Deferred via `ghostel--defer' so a slow backend (DBus, osascript)
 does not block terminal output."
-  (ghostel--defer #'ghostel--run-hook-safely
-                  'ghostel-notification-functions title body))
+  (unless ghostel-status--osc7501-seen
+    (ghostel--defer #'ghostel--run-hook-safely
+                    'ghostel-notification-functions title body)))
 
 
 ;;; Program status records
@@ -185,9 +185,6 @@ does not block terminal output."
 (defvar-local ghostel-program-status nil
   "Program status records, most recently updated first.
 Each element is (ID . RECORD); see `ghostel-program-status-functions'.")
-
-(defvar-local ghostel-status--osc7501-seen nil
-  "Non-nil once an OSC 7501 report arrived; OSC 9;4 is then ignored until RIS.")
 
 (defvar-local ghostel-status--title nil
   "Title of the root program status record, or nil.")
@@ -227,6 +224,8 @@ Each element is (ID . RECORD); see `ghostel-program-status-functions'.")
 (defun ghostel-status--clear (id)
   "Remove record ID and its children; \"\" removes every record."
   (let ((prefix (concat id "/")))
+    (when (string-empty-p id)
+      (setq ghostel-status--osc7501-seen nil))
     (ghostel-status--remove-if
      (lambda (entry)
        (or (string-empty-p id)
@@ -235,6 +234,7 @@ Each element is (ID . RECORD); see `ghostel-program-status-functions'.")
 
 (defun ghostel-status--drop-running ()
   "Remove `working' and `blocked' records, at a new prompt or process exit."
+  (setq ghostel-status--osc7501-seen nil)
   (ghostel-status--remove-if
    (lambda (entry) (memq (plist-get (cdr entry) :state) '(working blocked)))))
 
@@ -316,22 +316,22 @@ dropped by `ghostel-status-acknowledge' leaves the walk."
   "Apply an OSC 7501 report from the native module.
 STATE is the state name.  ID, KIND, APP, TITLE and MSG are strings or nil;
 PROGRESS is an integer or nil."
-  (when-let* ((state (car (memq (intern-soft state) ghostel-status--states))))
-    (setq ghostel-status--osc7501-seen t)
-    (let ((id (or id "")))
-      (if (eq state 'clear)
-          (ghostel-status--clear id)
-        (ghostel-status--set
+  (when-let* ((state (car (memq (intern-soft state) ghostel-status--states)))
+              (id (or id "")))
+    (if (eq state 'clear)
+        (ghostel-status--clear id)
+      (setq ghostel-status--osc7501-seen t)
+      (ghostel-status--set
          id (ghostel-status--record state
                                     :kind (car (memq (intern-soft kind)
                                                      ghostel-status--kinds))
                                     :progress progress :app app
-                                    :title title :msg msg))))))
+                                    :title title :msg msg)))))
 
 (defun ghostel--osc-progress (state progress)
   "Apply a ConEmu OSC 9;4 report from the native module to the root record.
 STATE is the ConEmu state name, PROGRESS an integer 0-100 or nil.
-Ignored once the program has used OSC 7501, until the next full reset."
+Ignored while the program reports its status with OSC 7501."
   (unless ghostel-status--osc7501-seen
     (pcase state
       ("remove" (ghostel-status--clear ""))
@@ -343,7 +343,7 @@ Ignored once the program has used OSC 7501, until the next full reset."
                 "" (ghostel-status--record 'blocked :progress progress))))))
 
 (defun ghostel--program-status-reset ()
-  "Accept OSC 9;4 again after a full reset (RIS).
+  "Accept OSC 9;4 and OSC 9 / OSC 777 again after a full reset (RIS).
 libghostty reports `clear' for every record on RIS by itself."
   (setq ghostel-status--osc7501-seen nil))
 
@@ -433,15 +433,24 @@ one and spinner.el is installed."
 
 ;;; Notifications for status changes
 
-(defun ghostel-status-notify (id old new)
-  "Notify when record ID enters a `ghostel-status-notify-states' state as NEW.
-Nothing is sent when OLD already had that state or the buffer is the
-one being looked at."
+(defun ghostel-status-attention-p (old new)
+  "Non-nil when a record changing from OLD to NEW needs your attention.
+That is, NEW enters a `ghostel-status-notify-states' state OLD did not
+have, and the current buffer is not the one being looked at."
   (let ((state (plist-get new :state)))
-    (when (and (memq state ghostel-status-notify-states)
-               (not (eq state (plist-get old :state)))
-               (not (ghostel--buffer-focused-p (current-buffer))))
-      (ghostel--handle-notification
+    (and (memq state ghostel-status-notify-states)
+         (not (eq state (plist-get old :state)))
+         (not (ghostel--buffer-focused-p (current-buffer))))))
+
+(defun ghostel-status-notify (id old new)
+  "Notify when record ID changing from OLD to NEW needs attention.
+Runs `ghostel-notification-functions' with the record's title, else
+its app, and its message, else its state, deferred;
+`ghostel-status-attention-p' is the condition."
+  (when (ghostel-status-attention-p old new)
+    (let ((state (plist-get new :state)))
+      (ghostel--defer
+       #'ghostel--run-hook-safely 'ghostel-notification-functions
        (or (plist-get new :title) (ghostel-status-app id) "")
        (or (plist-get new :msg)
            (if-let* ((kind (plist-get new :kind)))
