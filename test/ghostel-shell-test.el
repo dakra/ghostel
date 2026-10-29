@@ -2353,57 +2353,110 @@ prompt line (no `ghostel-prompt' property exists after point)."
                (concat (car (split-string (system-name) "\\.")) ".example.com")))
   (should-not (ghostel--local-host-p "remote-server.example.com")))
 
+(defun ghostel-test--remote-home (root)
+  "Create a temp HOME with ROOT's etc/shell and etc/terminfo pushed into it.
+Mirrors what `ghostel_ssh' leaves under ~/.local/share/ghostel."
+  (let* ((home (make-temp-file "ghostel-test-remote-" t))
+         (dir (expand-file-name ".local/share/ghostel/etc" home)))
+    (make-directory dir t)
+    (copy-directory (expand-file-name "etc/shell" root)
+                    (expand-file-name "shell" dir))
+    (copy-directory (expand-file-name "etc/terminfo" root)
+                    (expand-file-name "terminfo" dir))
+    home))
+
+(defun ghostel-test--run-remote-script (home script shell &rest args)
+  "Run SCRIPT from HOME's pushed etc/shell/remote with SHELL as login shell.
+Returns (EXIT-CODE OUTPUT)."
+  (let ((process-environment
+         (append (list (format "HOME=%s" home)
+                       (format "SHELL=%s" shell)
+                       "XDG_CONFIG_HOME" "XDG_DATA_HOME" "ENV" "ZDOTDIR" "HISTFILE")
+                 process-environment))
+        (default-directory home))
+    (with-temp-buffer
+      (list (apply #'call-process "sh" nil t nil
+                   (expand-file-name
+                    (concat ".local/share/ghostel/etc/shell/remote/" script) home)
+                   args)
+            (buffer-string)))))
+
 (ert-deftest ghostel-test-remote-install-script ()
-  "`etc/shell/remote-install.sh' hooks the login shell once and installs terminfo."
-  (let* ((root (ghostel--resource-root))
-         (home (make-temp-file "ghostel-test-remote-install-" t))
-         (dir (expand-file-name ".local/share/ghostel" home))
-         (script (expand-file-name "shell/remote-install.sh" dir)))
+  "`etc/shell/remote/install.sh' installs terminfo and hooks the shell with --hook."
+  (let ((home (ghostel-test--remote-home (ghostel--resource-root))))
     (unwind-protect
-        (cl-flet ((run (shell)
-                    (let ((process-environment
-                           (append (list (format "HOME=%s" home)
-                                         (format "SHELL=%s" shell)
-                                         "XDG_CONFIG_HOME" "XDG_DATA_HOME")
-                                   process-environment))
-                          (default-directory home))
-                      (with-temp-buffer
-                        (list (call-process "sh" nil t nil script)
-                              (buffer-string)))))
+        (cl-flet ((run (shell &rest args)
+                    (apply #'ghostel-test--run-remote-script home "install.sh" shell args))
                   (file-text (name)
                     (with-temp-buffer
                       (insert-file-contents (expand-file-name name home))
                       (buffer-string))))
-          (make-directory dir t)
-          (copy-directory (expand-file-name "etc/shell" root)
-                          (expand-file-name "shell" dir))
-          (copy-directory (expand-file-name "etc/terminfo" root)
-                          (expand-file-name "terminfo" dir))
-          ;; bash: marked block appended once, even when run twice.
+          ;; Without --hook (ghostel ssh): terminfo only, no rc file.
           (should (zerop (car (run "/bin/bash"))))
-          (should (zerop (car (run "/bin/bash"))))
-          (let ((rc (file-text ".bashrc")))
-            (should (= 2 (length (split-string rc "# >>> ghostel >>>"))))
-            (should (string-match-p
-                     "source ~/.local/share/ghostel/shell/ghostel.bash" rc)))
           (should (file-exists-p (expand-file-name ".terminfo/x/xterm-ghostty" home)))
           (should (file-exists-p (expand-file-name ".terminfo/78/xterm-ghostty" home)))
+          (should-not (file-exists-p (expand-file-name ".bashrc" home)))
+          ;; bash: an earlier marked block is replaced, the rest of the
+          ;; file kept, also when run twice.
+          (with-temp-file (expand-file-name ".bashrc" home)
+            (insert "export X=1\n# >>> ghostel >>>\nold hook\n# <<< ghostel <<<\n"))
+          (should (zerop (car (run "/bin/bash" "--hook"))))
+          (should (zerop (car (run "/bin/bash" "--hook"))))
+          (let ((rc (file-text ".bashrc")))
+            (should (= 2 (length (split-string rc "# >>> ghostel >>>"))))
+            (should (string-prefix-p "export X=1\n" rc))
+            (should-not (string-match-p "old hook" rc))
+            (should (string-match-p
+                     "source ~/.local/share/ghostel/etc/shell/ghostel.bash" rc)))
           ;; fish and nushell use drop-in files instead of an rc edit.
-          (should (zerop (car (run "/usr/bin/fish"))))
-          (should (string-match-p "shell/ghostel.fish"
+          (should (zerop (car (run "/usr/bin/fish" "--hook"))))
+          (should (string-match-p "etc/shell/ghostel.fish"
                                   (file-text ".config/fish/conf.d/ghostel.fish")))
           ;; The nushell drop-in path is platform-specific (asked from
           ;; `nu' when installed), so take it from the script's report.
-          (let ((res (run "/usr/bin/nu")))
+          (let ((res (run "/usr/bin/nu" "--hook")))
             (should (zerop (car res)))
             (should (string-match "^ghostel: wrote \\(.*/vendor/autoload/ghostel.nu\\)$"
                                   (cadr res)))
-            (should (string-match-p "shell/ghostel.nu"
+            (should (string-match-p "etc/shell/ghostel.nu"
                                     (file-text (match-string 1 (cadr res))))))
           ;; Unsupported login shell: files stay installed, non-zero exit.
-          (let ((res (run "/bin/tcsh")))
+          (let ((res (run "/bin/tcsh" "--hook")))
             (should (= 1 (car res)))
             (should (string-match-p "unsupported login shell" (cadr res)))))
+      (delete-directory home t))))
+
+(ert-deftest ghostel-test-remote-login-script ()
+  "`etc/shell/remote/login.sh' execs the login shell with the local bootstrap env."
+  (let* ((home (ghostel-test--remote-home (ghostel--resource-root)))
+         (fake (expand-file-name "fakeshell" home))
+         (root (expand-file-name ".local/share/ghostel" home)))
+    (unwind-protect
+        (cl-flet ((run (name)
+                    ;; A fake login shell that reports its argv and env.
+                    (let ((exe (expand-file-name name fake)))
+                      (with-temp-file exe
+                        (insert "#!/bin/sh\necho \"argv: $*\"\nenv\n"))
+                      (set-file-modes exe #o755)
+                      (cadr (ghostel-test--run-remote-script home "login.sh" exe)))))
+          (make-directory fake t)
+          (let ((out (run "bash")))
+            (should (string-match-p "^argv: --posix -l$" out))
+            (should (string-match-p (concat "^ENV=" root "/etc/shell/bootstrap/bash/inject.bash$") out))
+            (should (string-match-p "^GHOSTEL_BASH_INJECT=1$" out))
+            (should (string-match-p (concat "^EMACS_GHOSTEL_PATH=" root "$") out)))
+          (let ((out (run "zsh")))
+            (should (string-match-p "^argv: -l$" out))
+            (should (string-match-p (concat "^ZDOTDIR=" root "/etc/shell/bootstrap/zsh$") out)))
+          (let ((out (run "fish")))
+            (should (string-match-p (concat "^XDG_DATA_DIRS=" root "/etc/shell/bootstrap:") out))
+            (should (string-match-p "^GHOSTEL_SHELL_INTEGRATION_XDG_DIR=" out)))
+          (let ((out (run "nu")))
+            (should (string-match-p (concat "^XDG_DATA_DIRS=" root "/etc/shell/bootstrap:") out)))
+          ;; Unknown shell: plain login, no injection env.
+          (let ((out (run "tcsh")))
+            (should (string-match-p "^argv: -l$" out))
+            (should-not (string-match-p "^GHOSTEL_\\|^ENV=\\|^ZDOTDIR=" out))))
       (delete-directory home t))))
 
 (provide 'ghostel-shell-test)

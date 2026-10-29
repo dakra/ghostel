@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- `ghostel ssh HOST` in a ghostel shell gives the remote session ghostel's
+  shell integration and `xterm-ghostty` terminfo without touching any
+  file the remote's rc files read: the first contact pushes
+  `etc/shell/` and `etc/terminfo/` to `~/.local/share/ghostel/` on the
+  remote, later ones start the login shell through the pushed
+  `login.sh`.  `ghostel ssh-install HOST` pushes the same files and
+  hooks the remote login shell so a plain `ssh HOST` loads the
+  integration; re-running it refreshes files and hook.  `ghostel cmd`
+  and `ghostel help` round out the `ghostel` command; `ghostel_cmd`,
+  `ghostel_ssh` and `ghostel_ssh_install` are the functions behind it.
 - `ghostel-status-attention-p` tells whether a program status change
   needs attention, for members of `ghostel-program-status-functions`
   that notify in their own way.
@@ -28,6 +38,13 @@ All notable changes to this project will be documented in this file.
   labels keyed by state, blocked kind and `progress`.
 
 ### Changed
+- `ghostel_ssh` (and the `ssh` shadow `ghostel-ssh-install-terminfo`
+  enables) pushes the compiled terminfo with `tar` instead of compiling
+  it with `tic` on the remote, so a remote without `tic` works.  The
+  cache key hashes the pushed files, so a ghostel update re-pushes.
+- The TRAMP preamble and the manual remote setup look for the terminfo
+  under `~/.local/share/ghostel/etc/terminfo/` and the scripts under
+  `~/.local/share/ghostel/etc/shell/`, mirroring the repository layout.
 - The terminal mode line shows every status record, one label per
   distinct label most urgent first with a count, instead of only the
   `blocked` and `error` records or the root.  The spinner runs only

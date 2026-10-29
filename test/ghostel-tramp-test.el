@@ -24,7 +24,7 @@ TERM=dumb (issue #224).
 A single probe path covers every case: auto-integration (TERMINFO=
 already in env, points at the pushed terminfo dir),
 manually-installed (system, `~/.terminfo', or co-located with the
-shell-integration scripts under `~/.local/share/ghostel/terminfo'),
+shell-integration scripts under `~/.local/share/ghostel/etc/terminfo'),
 and absent (fall back to `xterm-256color' so echo works)."
   (let* ((ghostel-term "xterm-ghostty")
          (preamble (ghostel--remote-term-preamble)))
@@ -46,14 +46,14 @@ and absent (fall back to `xterm-256color' so echo works)."
     ;; scripts and the probe finds it without `tic` or
     ;; ~/.terminfo gymnastics.
     (should (string-match-p
-             "~/\\.local/share/ghostel/terminfo/x/xterm-ghostty"
+             "~/\\.local/share/ghostel/etc/terminfo/x/xterm-ghostty"
              preamble))
     (should (string-match-p
-             "~/\\.local/share/ghostel/terminfo/78/xterm-ghostty"
+             "~/\\.local/share/ghostel/etc/terminfo/78/xterm-ghostty"
              preamble))
     (should (string-match-p
              (regexp-quote
-              "TERMINFO_DIRS=~/.local/share/ghostel/terminfo")
+              "TERMINFO_DIRS=~/.local/share/ghostel/etc/terminfo")
              preamble))
     ;; Existing TERMINFO_DIRS must be preserved (prepend, not
     ;; replace) so a system-configured search list still works.
@@ -63,7 +63,7 @@ and absent (fall back to `xterm-256color' so echo works)."
     ;; BEFORE the `infocmp' probe, otherwise ncurses won't find the
     ;; co-located bundle and the probe falls back to xterm-256color.
     (should (< (string-match (regexp-quote
-                              "TERMINFO_DIRS=~/.local/share/ghostel/terminfo")
+                              "TERMINFO_DIRS=~/.local/share/ghostel/etc/terminfo")
                              preamble)
                (string-match "infocmp xterm-ghostty" preamble)))
     ;; Always exported.

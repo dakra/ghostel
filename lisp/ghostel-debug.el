@@ -1613,7 +1613,7 @@ the plist."
 Single round-trip via `process-file' + `/bin/sh -c' to keep latency
 predictable.  Probes the things the on-remote TERM preamble depends
 on: `infocmp' presence and the `xterm-ghostty'/`xterm-256color'
-terminfo entries, bundled `~/.local/share/ghostel/terminfo' paths,
+terminfo entries, pushed `~/.local/share/ghostel/etc/terminfo' paths,
 remote `/bin/sh' identity, login shell.
 
 Then runs ghostel's actual remote-term preamble inside the same
@@ -1648,8 +1648,8 @@ the actual rule file alongside the byte stream ghostel produces
            "  else echo 'xterm-256color terminfo: NOT FOUND'; fi; "
            "else echo 'infocmp: NOT ON PATH (preamble fallback always trips)'; fi; "
            "echo; echo '== bundled terminfo paths =='; "
-           "for p in ~/.local/share/ghostel/terminfo/x/xterm-ghostty "
-           "~/.local/share/ghostel/terminfo/78/xterm-ghostty; do "
+           "for p in ~/.local/share/ghostel/etc/terminfo/x/xterm-ghostty "
+           "~/.local/share/ghostel/etc/terminfo/78/xterm-ghostty; do "
            "  if [ -e \"$p\" ]; then echo \"  $p: exists\"; "
            "  else echo \"  $p: missing\"; fi; done; "
            ;; Run the actual preamble in a subshell, then print what

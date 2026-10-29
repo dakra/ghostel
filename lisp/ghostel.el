@@ -222,9 +222,9 @@ accepted without prompting."
   "Install xterm-ghostty terminfo on remote hosts as needed.
 Affects both `M-x ghostel' from a TRAMP `default-directory' (push
 over the existing TRAMP connection) and outbound `ssh' from a
-local ghostel buffer, which the shell integration shadows with
-`ghostel_ssh' (install via `tic' on first connection, cached in
-`~/.cache/ghostel/ssh-terminfo-cache').  `ghostel_ssh' itself is
+local ghostel buffer, which the shell integration then shadows with
+`ghostel_ssh' (pushes scripts and terminfo on first contact, cached
+in `~/.cache/ghostel/ssh-terminfo-cache').  `ghostel_ssh' itself is
 always available regardless of this setting.
 
 Values: `auto' (default; enabled when
@@ -4015,11 +4015,10 @@ TERM=dumb from TRAMP's connection shell, and disabling
 readline/ZLE/fish line editing on the remote (issue #224).
 
 When `ghostel-term' is the default \"xterm-ghostty\", the snippet:
-1. Prepends ~/.local/share/ghostel/terminfo to TERMINFO_DIRS when
-   that directory holds the bundled entry.  This lets manual
-   setups co-locate terminfo with the shell-integration scripts
-   (see README, \"Option 3: Manual setup\") in one place — no
-   `tic', no touching ~/.terminfo.
+1. Prepends ~/.local/share/ghostel/etc/terminfo to TERMINFO_DIRS
+   when that directory holds the bundled entry, i.e. the copy that
+   `ghostel ssh' / `ghostel ssh-install' or a manual setup (see
+   README, \"Option 3: Manual setup\") put there.
 2. Probes via `infocmp xterm-ghostty'.  The probe honors all of
    ncurses' standard lookup paths (the prepended dir, $TERMINFO,
    ~/.terminfo, $TERMINFO_DIRS, and the compiled defaults), so
@@ -4037,9 +4036,9 @@ verbatim.  `COLORTERM=truecolor' is exported unconditionally."
      ;; the shell integration scripts.  Tilde expands in assignment
      ;; context per POSIX; ${TERMINFO_DIRS:+:$TERMINFO_DIRS} preserves
      ;; any prior search list.
-     "if [ -e ~/.local/share/ghostel/terminfo/x/xterm-ghostty ] "
-     "|| [ -e ~/.local/share/ghostel/terminfo/78/xterm-ghostty ]; "
-     "then export TERMINFO_DIRS=~/.local/share/ghostel/terminfo"
+     "if [ -e ~/.local/share/ghostel/etc/terminfo/x/xterm-ghostty ] "
+     "|| [ -e ~/.local/share/ghostel/etc/terminfo/78/xterm-ghostty ]; "
+     "then export TERMINFO_DIRS=~/.local/share/ghostel/etc/terminfo"
      "${TERMINFO_DIRS:+:$TERMINFO_DIRS}; "
      "fi; "
      "TERM=xterm-256color; "

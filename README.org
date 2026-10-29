@@ -1293,31 +1293,36 @@ From any local ghostel buffer:
 ghostel ssh-install REMOTE          # any ssh options work: ghostel ssh-install -p 2222 REMOTE
 #+end_src
 
-This copies the integration scripts and the compiled =xterm-ghostty= terminfo to
-=~/.local/share/ghostel/= on the remote, copies the terminfo into =~/.terminfo/=
-there, and hooks the remote login shell: bash and zsh get a marked block appended
-to =~/.bashrc= / =~/.zshrc=, fish gets =~/.config/fish/conf.d/ghostel.fish=, and
-nushell gets a vendor-autoload file.  Running it again is harmless, and it clears
-the local =ghostel ssh= cache so the next connection re-probes.  After this, plain
-=ssh REMOTE= from ghostel loads the integration with no further setup.  It is the
-scripted form of Option 3 below.  The bash hook relies on the remote's
-=~/.bash_profile= (or =~/.profile=) sourcing =~/.bashrc=, which the usual distro
-skeletons do.
+This pushes ghostel's =etc/shell/= and =etc/terminfo/= to
+=~/.local/share/ghostel/= on the remote (the same push =ghostel ssh= does, see
+[[#outbound-ssh][Outbound ssh]]), copies the terminfo into =~/.terminfo/=, and hooks the remote
+login shell: bash and zsh get a marked block appended to =~/.bashrc= /
+=~/.zshrc=, fish gets =~/.config/fish/conf.d/ghostel.fish=, and nushell gets a
+vendor-autoload file.  Running it again is harmless and refreshes the pushed
+files and the hook.  After this, plain =ssh REMOTE= from ghostel loads the integration with no
+further setup.  It is the scripted form of Option 3 below.  The bash hook relies
+on the remote's =~/.bash_profile= (or =~/.profile=) sourcing =~/.bashrc=, which
+the usual distro skeletons do.
+
+If you only want the integration in sessions you start from ghostel, you do not
+need this: =ghostel ssh REMOTE= injects it per session without touching any rc
+file.
 
 *** Option 3: Manual setup
 
 Copy the integration scripts from ghostel's =etc/shell/= directory to each remote
-host (e.g. =~/.local/share/ghostel/shell/=) and source them from your shell
-configuration.  Optionally co-locate the bundled =xterm-ghostty= terminfo there
-too - the wrapper that launches a TRAMP-spawned remote shell prepends
-=~/.local/share/ghostel/terminfo= to the terminfo search path, so ghostty-aware
-apps (Claude Code, neovim, tmux, ...) get their fast paths without needing =tic=
-or =~/.terminfo= (see [[#manual-terminfo-install][Manual install]] for that alternative).  From a local shell:
+host (e.g. =~/.local/share/ghostel/etc/shell/=, the layout =ghostel ssh= uses) and
+source them from your shell configuration.  Optionally co-locate the bundled
+=xterm-ghostty= terminfo there too - the wrapper that launches a TRAMP-spawned
+remote shell prepends =~/.local/share/ghostel/etc/terminfo= to the terminfo search
+path, so ghostty-aware apps (Claude Code, neovim, tmux, ...) get their fast paths
+without needing =tic= or =~/.terminfo= (see [[#manual-terminfo-install][Manual install]] for that alternative).
+From a local shell:
 
 #+begin_src bash
-ssh REMOTE 'mkdir -p ~/.local/share/ghostel/shell ~/.local/share/ghostel/terminfo'
-scp "$EMACS_GHOSTEL_PATH"/etc/shell/ghostel.{bash,zsh,fish,nu} REMOTE:.local/share/ghostel/shell/
-scp -r "$EMACS_GHOSTEL_PATH"/etc/terminfo/{x,78} REMOTE:.local/share/ghostel/terminfo/
+ssh REMOTE 'mkdir -p ~/.local/share/ghostel/etc/shell ~/.local/share/ghostel/etc/terminfo'
+scp "$EMACS_GHOSTEL_PATH"/etc/shell/ghostel.{bash,zsh,fish,nu} REMOTE:.local/share/ghostel/etc/shell/
+scp -r "$EMACS_GHOSTEL_PATH"/etc/terminfo/{x,78} REMOTE:.local/share/ghostel/etc/terminfo/
 #+end_src
 
 (=$EMACS_GHOSTEL_PATH= is set inside ghostel buffers; outside, substitute the
@@ -1330,21 +1335,21 @@ Then add the appropriate gate to the remote shell config:
 #+begin_src bash
 # bash - ~/.bashrc on the remote host:
 if [[ "${INSIDE_EMACS%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' ]]; then
-    source ~/.local/share/ghostel/shell/ghostel.bash
+    source ~/.local/share/ghostel/etc/shell/ghostel.bash
 fi
 #+end_src
 
 #+begin_src sh
 # zsh - ~/.zshrc on the remote host:
 if [[ "${${INSIDE_EMACS-}%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' ]]; then
-    source ~/.local/share/ghostel/shell/ghostel.zsh
+    source ~/.local/share/ghostel/etc/shell/ghostel.zsh
 fi
 #+end_src
 
 #+begin_src fish
 # fish - ~/.config/fish/config.fish on the remote host:
 if string match -qr '^ghostel(,|$)' -- "$INSIDE_EMACS"; or test "$TERM" = 'xterm-ghostty'
-    source ~/.local/share/ghostel/shell/ghostel.fish
+    source ~/.local/share/ghostel/etc/shell/ghostel.fish
 end
 #+end_src
 
@@ -1352,7 +1357,7 @@ end
 # nushell - config.nu on the remote host.  nushell's `source' cannot be
 # gated at runtime, but ghostel.nu is inert until used, so source it
 # unconditionally (tilde expands at parse time):
-source ~/.local/share/ghostel/shell/ghostel.nu
+source ~/.local/share/ghostel/etc/shell/ghostel.nu
 #+end_src
 
 The two-clause gate covers both ways a remote ghostel shell can be reached:
@@ -1393,9 +1398,10 @@ value gets inherited by anything spawned inside the buffer - including =ssh
 REMOTE= and =M-x ghostel= from a TRAMP =default-directory=.  Remote hosts without
 the =xterm-ghostty= entry will then print =Error opening terminal: xterm-ghostty=.
 
-=ghostel-ssh-install-terminfo= (default =auto=) handles both cases.  =auto= is
-enabled when =ghostel-tramp-shell-integration= is on, so turning on remote
-integration also turns on terminfo install - one switch.
+=ghostel ssh= and =ghostel ssh-install= put the entry there.  For plain =ssh=,
+=ghostel-ssh-install-terminfo= (default =auto=) decides whether =ssh= itself is
+shadowed by =ghostel ssh=.  =auto= is enabled when =ghostel-tramp-shell-integration=
+is on, so turning on remote integration also turns on the shadow - one switch.
 
 *** TRAMP-launched ghostel
 
@@ -1407,25 +1413,35 @@ and macOS (=78/=, =67/=) layouts are written so any ncurses or BSD libcurses fin
 it.  Nothing persists on the remote.
 
 *** Outbound =ssh= from a local ghostel buffer
+:properties:
+:custom_id: outbound-ssh
+:end:
 
 The bundled bash/zsh/fish/nushell integration defines =ghostel_ssh= (also reachable
-as =ghostel ssh=), a drop-in for =ssh= that:
+as =ghostel ssh=), a drop-in for =ssh= that gives the remote session both the
+terminfo and ghostel's shell integration, without touching any rc file there:
 
 1. Resolves the canonical target via =ssh -G= (normalises =ssh_config= aliases).
 2. Looks up the target in =~/.cache/ghostel/ssh-terminfo-cache=.  The cache key
-   includes a hash of the local terminfo, so libghostty bumps automatically
-   invalidate it.  Cache hit → connect with the remembered =TERM=.
-3. On miss, runs a single setup ssh that probes whether the entry already exists
-   on the remote, and if not, installs it via =tic -x -= into =~/.terminfo/=.
-   Records =ok= (use =xterm-ghostty=) or =skip= (use =xterm-256color=) in the cache.
-4. Runs the user's actual ssh with the resolved =TERM=, plus =-o
-   SendEnv=INSIDE_EMACS= so a remote whose sshd accepts that variable can gate
-   its integration on it instead of =TERM=.
+   includes a hash of everything pushed (scripts and terminfo), so a ghostel or
+   libghostty update automatically re-pushes.
+3. On miss, runs one setup ssh that pushes =etc/shell/= and =etc/terminfo/= to
+   =~/.local/share/ghostel/= on the remote and copies the terminfo into
+   =~/.terminfo/= (no =tic= needed there, only =tar=).  Records =ok= or =skip=.
+4. On =ok=, connects with =TERM=xterm-ghostty= and starts the remote login shell
+   through the pushed =etc/shell/remote/login.sh=, which injects the integration
+   the same way a local spawn does (bash via =ENV=, zsh via =ZDOTDIR=, fish and
+   nushell via =XDG_DATA_DIRS=).  Because that is a remote command, sshd does not
+   print the motd.  A login shell ghostel does not know is started plainly.  On
+   =skip=, connects plainly with =TERM=xterm-256color=.  Either way =-o
+   SendEnv=INSIDE_EMACS= is passed so a remote whose sshd accepts that variable
+   can gate on it instead of =TERM=.
+
+A plain =ssh REMOTE= afterwards is unchanged: the pushed files are inert until
+=ghostel ssh-install= hooks the login shell.
 
 When =ghostel-ssh-install-terminfo= is enabled, plain =ssh= is shadowed by
-=ghostel_ssh=; otherwise nothing happens unless you call it by name.  Hosts set up
-with =ghostel ssh-install= already have the terminfo, so the probe records =ok=
-without installing anything.
+=ghostel_ssh=; otherwise nothing happens unless you call it by name.
 
 The setup ssh is one extra connection per new host.  Without ControlMaster you
 will see two auth prompts the first time.  Strongly recommended:
@@ -1444,23 +1460,23 @@ multiplexed session can only forward variables the master connection itself
 offered, so =INSIDE_EMACS= does not reach the remote through a master opened by
 a plain =ssh=.  The =TERM= gate is unaffected.
 
-The cache key includes a hash of the *local* terminfo, so libghostty bumps
-automatically invalidate the cache.  It does NOT notice when a remote's terminfo
-changes out-of-band (system update, manual =tic=).  Run =M-x
-ghostel-ssh-clear-terminfo-cache= to force a re-probe.
+The cache does not notice when the remote copy changes out-of-band.  If the
+pushed files are gone (a rebuilt host), the session falls back to a plain login
+shell and says so.  Run =M-x ghostel-ssh-clear-terminfo-cache= to force a
+re-push, or =ghostel ssh-install=, which always pushes.
 
-Verified working from macOS to Linux remotes.  Mixed macOS-to-macOS or BSD
-targets inherit =tic='s native hashed-dir layout (=~/.terminfo/<hex>/=); =infocmp=
-reads the same path so they pair correctly.
+Both Linux (=x/=, =g/=) and macOS (=78/=, =67/=) terminfo layouts are copied, so
+Linux, macOS and BSD remotes all find the entry.
 
-Skip-install heuristics:
+Pass-through cases (plain =ssh=, nothing pushed):
 
-- =ssh HOST cmd= (user passes a remote command): the wrapper skips install for
-  that call to avoid clashing with the user's command.  Connects with the cached
-  =TERM= if known, otherwise =xterm-256color=.  The next interactive =ssh HOST=
-  triggers install.
-- =ssh -V=, =ssh -h=, etc. (no host resolved): pass through.
-- No =infocmp= locally: pass through.
+- =ssh HOST cmd= (user passes a remote command): connects with the cached =TERM=
+  if known, otherwise =xterm-256color=.  The next interactive =ghostel ssh HOST=
+  pushes.
+- stdin is not a terminal (=ssh HOST < script.sh=): plain =ssh=, so the script
+  runs in the remote's normal shell, not under the injecting login.
+- =ssh -V=, =ssh -h=, etc. (no host resolved), and the =-G=, =-N=, =-O=, =-s=,
+  =-W= modes, which open no login session.
 
 Per-call escape: prefix with =GHOSTEL_SSH_KEEP_TERM=1= to bypass the wrapper
 entirely.

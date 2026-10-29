@@ -7,7 +7,7 @@
 # Remote `config.fish' (also gates on TERM, since ssh propagates it
 # natively and INSIDE_EMACS does not without server-side AcceptEnv):
 #   if string match -qr '^ghostel(,|$)' -- "$INSIDE_EMACS"; or test "$TERM" = 'xterm-ghostty'
-#       source ~/.local/share/ghostel/shell/ghostel.fish
+#       source ~/.local/share/ghostel/etc/shell/ghostel.fish
 #   end
 # See the README "Manual setup" section for the full rationale.
 
@@ -72,10 +72,51 @@ if not status test-feature mark-prompt 2>/dev/null
     end
 end
 
-# Outbound `ssh' with xterm-ghostty terminfo on the remote.  See
-# etc/shell/ghostel.bash for the design notes — this is the fish port.
+# Outbound `ssh' with ghostel's shell integration and xterm-ghostty
+# terminfo on the remote, for this session only.
+# Usage: ghostel_ssh [SSH-ARGS...]  (also `ghostel ssh').
+#
+# On first contact with a host one setup connection pushes etc/shell
+# and etc/terminfo to ~/.local/share/ghostel on the remote (mirroring
+# the repo layout) and copies the terminfo into ~/.terminfo; the
+# outcome is cached under $XDG_CACHE_HOME/ghostel/ssh-terminfo-cache,
+# keyed by target and a hash of the pushed files so a ghostel update
+# re-pushes.  The real connection then starts the remote login shell
+# through etc/shell/remote/login.sh, which injects the integration the
+# way a local spawn does.  No rc file on the remote is touched; see
+# ghostel_ssh_install for that.  A failed push caches a skip marker
+# and falls back to plain ssh with TERM=xterm-256color.  INSIDE_EMACS
+# is offered via SendEnv so a remote whose sshd accepts it can gate on
+# that instead of TERM.
+#
+# Pass-through (plain ssh, nothing pushed): no host (`ssh -V'), a
+# remote command (`ssh HOST cmd'; the cached TERM still applies), and
+# the -G/-N/-O/-s/-W modes.  Prefix with GHOSTEL_SSH_KEEP_TERM=1 to
+# bypass the wrapper entirely.
+#
+# When the elisp side sets `ghostel-ssh-install-terminfo' (exported as
+# GHOSTEL_SSH_INSTALL_TERMINFO) plain `ssh' is shadowed by this function.
+
+# __ghostel_ssh_push INSTALL-ARGS SSH-ARGS...: tar etc/shell and
+# etc/terminfo into ~/.local/share/ghostel on the remote and run
+# etc/shell/remote/install.sh INSTALL-ARGS there.  Stdin is the tar
+# stream, so this is never the interactive connection.
+function __ghostel_ssh_push
+    set -l _install_args $argv[1]
+    set -e argv[1]
+    COPYFILE_DISABLE=1 command tar c --format ustar -f - \
+            -C "$EMACS_GHOSTEL_PATH" etc/shell etc/terminfo \
+        | command ssh -o SendEnv=INSIDE_EMACS $argv "sh -c 'mkdir -p ~/.local/share/ghostel && tar xf - -C ~/.local/share/ghostel && sh ~/.local/share/ghostel/etc/shell/remote/install.sh $_install_args'"
+end
+
+# Hash of everything __ghostel_ssh_push ships.
+function __ghostel_ssh_hash
+    command find "$EMACS_GHOSTEL_PATH/etc/shell" "$EMACS_GHOSTEL_PATH/etc/terminfo" -type f -exec cksum '{}' + \
+        | LC_ALL=C command sort | command cksum | command awk '{print $1}'
+end
+
 function ghostel_ssh
-    if test -n "$GHOSTEL_SSH_KEEP_TERM"; or not command -q infocmp
+    if test -n "$GHOSTEL_SSH_KEEP_TERM"; or not isatty stdin; or not test -r "$EMACS_GHOSTEL_PATH/etc/shell/remote/login.sh"
         command ssh $argv
         return
     end
@@ -102,64 +143,74 @@ function ghostel_ssh
         command ssh $argv
         return
     end
-    set argv -o SendEnv=INSIDE_EMACS $argv
 
-    set -l _target "$_user@$_host:$_port"
-    set -l _hash (infocmp -0 -x xterm-ghostty 2>/dev/null | cksum 2>/dev/null | awk '{print $1}')
-    set -l _cache_dir (test -n "$XDG_CACHE_HOME"; and echo "$XDG_CACHE_HOME/ghostel"; or echo "$HOME/.cache/ghostel")
-    set -l _cache "$_cache_dir/ssh-terminfo-cache"
-    set -l _key "$_target:$_hash"
-
-    if test -r "$_cache"
-        if grep -Fxq "$_key ok" "$_cache" 2>/dev/null
-            TERM=xterm-ghostty command ssh $argv
-            return
-        end
-        if grep -Fxq "$_key skip" "$_cache" 2>/dev/null
-            TERM=xterm-256color command ssh $argv
-            return
-        end
-    end
-
-    # Skip install when user passed a remote command.
+    # Count positionals (host + remote command) and spot modes that
+    # open no login session.  Valued flags skip their argument.
     set -l _positional 0
     set -l _skip 0
+    set -l _plain 0
     for _arg in $argv
         if test $_skip -eq 1
             set _skip 0
             continue
         end
         switch $_arg
-            case '-b' '-c' '-D' '-E' '-e' '-F' '-I' '-i' '-J' '-L' '-l' '-m' '-O' '-o' '-P' '-p' '-Q' '-R' '-S' '-W' '-w'
+            case '-G' '-N' '-s' '-W*' '-O*'
+                set _plain 1
+            case '-b' '-B' '-c' '-D' '-E' '-e' '-F' '-I' '-i' '-J' '-L' '-l' '-m' '-o' '-P' '-p' '-Q' '-R' '-S' '-w'
                 set _skip 1
             case '-*'
             case '*'
                 set _positional (math $_positional + 1)
         end
     end
+    if test $_plain -eq 1
+        command ssh $argv
+        return
+    end
 
+    set -l _target "$_user@$_host:$_port"
+    set -l _hash (__ghostel_ssh_hash)
+    set -l _cache_dir (test -n "$XDG_CACHE_HOME"; and echo "$XDG_CACHE_HOME/ghostel"; or echo "$HOME/.cache/ghostel")
+    set -l _cache "$_cache_dir/ssh-terminfo-cache"
+    set -l _key "$_target:$_hash"
+    set -l _state ""
+    if test -r "$_cache"
+        if grep -Fxq "$_key ok" "$_cache" 2>/dev/null
+            set _state ok
+        else if grep -Fxq "$_key skip" "$_cache" 2>/dev/null
+            set _state skip
+        end
+    end
+
+    # A remote command runs plainly with the cached TERM.
     if test $_positional -gt 1
-        TERM=xterm-256color command ssh $argv
+        if test "$_state" = ok
+            TERM=xterm-ghostty command ssh -o SendEnv=INSIDE_EMACS $argv
+        else
+            TERM=xterm-256color command ssh -o SendEnv=INSIDE_EMACS $argv
+        end
         return
     end
 
-    command mkdir -p "$_cache_dir" 2>/dev/null
-    # Lock keyed on (target, hash) — see etc/ghostel.bash.
-    set -l _lock "$_cache_dir/.lock.$_target.$_hash"
-    if not command mkdir "$_lock" 2>/dev/null
-        TERM=xterm-256color command ssh $argv
-        return
+    if test -z "$_state"
+        command mkdir -p "$_cache_dir" 2>/dev/null
+        if __ghostel_ssh_push "" $argv >/dev/null 2>&1
+            set _state ok
+        else
+            echo "ghostel: could not push shell integration to $_host (no tar on the remote, or home not writable?), using plain ssh with xterm-256color." >&2
+            set _state skip
+        end
+        echo "$_key $_state" >> "$_cache"
     end
-    if infocmp -0 -x xterm-ghostty 2>/dev/null \
-            | command ssh $argv "sh -c 'infocmp xterm-ghostty >/dev/null 2>&1 && exit 0; command -v tic >/dev/null 2>&1 || exit 1; mkdir -p \"\$HOME/.terminfo\" && tic -x - >/dev/null 2>&1'" >/dev/null 2>&1
-        echo "$_key ok" >> "$_cache"
-        command rmdir "$_lock" 2>/dev/null
-        TERM=xterm-ghostty command ssh $argv
+
+    if test "$_state" = ok
+        # Falls back to a plain login shell when the pushed files are
+        # gone (rebuilt host) so a stale ok entry never locks you out.
+        set -l _login 'f=~/.local/share/ghostel/etc/shell/remote/login.sh; [ -r "$f" ] && exec sh "$f"; echo "ghostel: $f missing on this host, run M-x ghostel-ssh-clear-terminfo-cache to push again" >&2; exec "${SHELL:-sh}" -l'
+        TERM=xterm-ghostty command ssh -t -o SendEnv=INSIDE_EMACS $argv "sh -c '$_login'"
     else
-        echo "ghostel: failed to install xterm-ghostty terminfo on $_host (no \`tic' on remote?), using xterm-256color." >&2
-        echo "$_key skip" >> "$_cache"
-        command rmdir "$_lock" 2>/dev/null
-        TERM=xterm-256color command ssh $argv
+        TERM=xterm-256color command ssh -o SendEnv=INSIDE_EMACS $argv
     end
 end
 
@@ -170,21 +221,19 @@ if test -n "$GHOSTEL_SSH_INSTALL_TERMINFO"
 end
 
 # Install ghostel's shell integration and xterm-ghostty terminfo on a
-# remote host, permanently: scripts + terminfo go to
-# ~/.local/share/ghostel, terminfo is copied into ~/.terminfo, and the
-# login shell's startup file is hooked (see etc/shell/remote-install.sh).
+# remote host, permanently: the same push as ghostel_ssh, plus a hook
+# in the login shell's startup (see etc/shell/remote/install.sh) so a
+# plain `ssh HOST' loads the integration.
 # Usage: ghostel_ssh_install [SSH-OPTIONS] HOST  (also `ghostel ssh-install').
 function ghostel_ssh_install
-    set -l _etc "$EMACS_GHOSTEL_PATH/etc"
-    if not test -r "$_etc/shell/remote-install.sh"
+    if not test -r "$EMACS_GHOSTEL_PATH/etc/shell/remote/install.sh"
         echo "ghostel: EMACS_GHOSTEL_PATH does not point at a ghostel install" >&2
         return 1
     end
-    COPYFILE_DISABLE=1 command tar c --format ustar -f - -C "$_etc" shell/ghostel.bash shell/ghostel.zsh shell/ghostel.fish shell/ghostel.nu shell/remote-install.sh terminfo \
-        | command ssh -o SendEnv=INSIDE_EMACS $argv "sh -c 'mkdir -p ~/.local/share/ghostel && tar xf - -C ~/.local/share/ghostel && sh ~/.local/share/ghostel/shell/remote-install.sh'"
+    __ghostel_ssh_push --hook $argv
     or return
     # Drop the ghostel_ssh cache: a remembered `skip' for this host would
-    # otherwise keep hiding the terminfo just installed.
+    # otherwise keep hiding the files just installed.
     set -l _cache_dir (test -n "$XDG_CACHE_HOME"; and echo "$XDG_CACHE_HOME/ghostel"; or echo "$HOME/.cache/ghostel")
     command rm -f "$_cache_dir/ssh-terminfo-cache"
 end
