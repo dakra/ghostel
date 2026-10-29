@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const emacs = @import("emacs.zig");
 const GhostelTerm = @import("GhostelTerm.zig");
 const gt = @import("ghostty-vt");
+const png = @import("png.zig");
 const ppm = @import("ppm.zig");
 
 /// Query all visible kitty graphics placements from libghostty and
@@ -242,14 +243,14 @@ fn emitPinned(
     });
 }
 
-/// PPM bytes of the RECT sub-rectangle of IMAGE, owned by `alloc`.
+/// Image bytes of the RECT sub-rectangle of IMAGE, owned by `alloc`:
+/// PNG when RECT has a transparent pixel (PPM has no alpha), else PPM.
 fn getImageData(alloc: Allocator, image: *const gt.kitty.graphics.Image, rect: ppm.Rect) ![]const u8 {
     // Decompression happens at transmit time; anything else is a libghostty change.
     if (image.compression != .none) return error.UnsupportedCompression;
     // Chunked transmissions still in flight have no complete bytes yet.
     const data = image.renderData().bytes() orelse return error.EmptyImage;
     if (data.len == 0 or image.width == 0 or image.height == 0) return error.EmptyImage;
-    // Alpha is dropped, not composited (see ppm.createPpm doc comment).
     // PNG is decoded to RGBA at transmit time by the hook in module.zig.
     const channels: u32 = switch (image.format) {
         .png => unreachable,
@@ -258,5 +259,7 @@ fn getImageData(alloc: Allocator, image: *const gt.kitty.graphics.Image, rect: p
         .gray_alpha => 2,
         .gray => 1,
     };
+    if (png.hasTransparency(data, image.width, image.height, channels, rect))
+        return png.encode(alloc, data, image.width, image.height, channels, rect) orelse error.PngEncode;
     return ppm.createPpm(alloc, data, image.width, image.height, channels, rect) orelse error.PpmConvert;
 }

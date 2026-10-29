@@ -49,6 +49,13 @@ DUMMY non-nil fakes the daemon's initial frame."
   (should (eql ghostel-kitty-graphics-storage-limit
                (ghostel-test--kitty-init-storage-limit nil t))))
 
+(ert-deftest ghostel-test-kitty-image-type ()
+  "The module's PNG (transparent images) and PPM data map to their types."
+  (should (eq (ghostel--kitty-image-type
+               (unibyte-string #x89 ?P ?N ?G ?\r ?\n #x1a ?\n))
+              'png))
+  (should (eq (ghostel--kitty-image-type "P6\n1 1\n255\n\0\0\0") 'pbm)))
+
 (ert-deftest ghostel-test-detect-cell-pixel-scale-standard-dpi ()
   "96 DPI display resolves to ~1.0 (no scaling)."
   (cl-letf (((symbol-function 'display-graphic-p) (lambda () t))
