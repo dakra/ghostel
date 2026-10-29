@@ -110,7 +110,7 @@ jobs:
       - name: Publish the presentation
         if: steps.explainer.outputs.ready == 'true'
         continue-on-error: true
-        uses: bisque-cloud/presenter@v1
+        uses: bisque-cloud/presenter@7159a1bda766df3900465cdbcc532fc5a8de495f # v1.9.4
         with:
           source: pull-request
           presentation: ${{ runner.temp }}/explainer
