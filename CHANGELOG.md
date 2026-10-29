@@ -74,6 +74,10 @@ All notable changes to this project will be documented in this file.
   receives terminal focus events.
 
 ### Fixed
+- Kitty graphics images keep their transparency: an image with a
+  transparent pixel reaches Emacs as PNG instead of PPM, which has no
+  alpha, so transparent areas show the background instead of black
+  (custom emoji and logos on a light theme drew black boxes).
 - evil-ghostel landed the shell cursor one cell off per oversized prompt
   icon when `i`, `a`, `0`, `$` and friends drove it to point.
 - The native module installer now selects the `x86_64-freebsd` release on FreeBSD.
