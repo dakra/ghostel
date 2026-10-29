@@ -29,6 +29,8 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           track_progress: true
+          plugin_marketplaces: https://github.com/bisque-cloud/presenter.git
+          plugins: presenter@bisque-cloud
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.issue.number }}
@@ -86,6 +88,29 @@ jobs:
             Provide inline comments on specific lines. Use top-level
             comments for general observations.
 
+            ## After the review
+
+            Once the review is posted, decide whether it is worth a short video for someone who did not write it: yes for a design decision, a new command or option, a migration, or a change where the reasoning matters more than the diff; no for a dependency bump, formatting, a typo or a small fix. If it is, use the present skill from the presenter plugin to make a presentation of the pull request from what you have already read: what it changes, why, and what a reviewer should look at. Write index.html, context.md, assets/ and title.txt (one line, the title) to ${{ runner.temp }}/explainer. Run the skill's plan, pronunciation-report and narrate with --voice kokoro:af_heart and fix what they report. Do not run login or publish: the next step of this job publishes the folder and comments the link. If it is not worth a video, write nothing there.
+
           claude_args: |
             --model claude-opus-4-7
-            --allowedTools "Read,Grep,Glob,WebFetch,mcp__github_inline_comment__create_inline_comment,Bash(gh pr:*),Bash(gh api:*),Bash(gh release:*)"
+            --allowedTools "Read,Grep,Glob,WebFetch,mcp__github_inline_comment__create_inline_comment,Bash(gh pr:*),Bash(gh api:*),Bash(gh release:*),Skill,Write,Edit,Bash(node:*),Bash(mkdir:*)"
+
+      # Publishes the presentation the session above wrote, as this
+      # repository, to its bisque.today channel, and comments the link on the
+      # pull request. A separate step because claude-code-action keeps the
+      # token that publishes away from Claude's session. No folder, no publish.
+      - name: Check for a presentation
+        id: explainer
+        run: |
+          if [ -f "$RUNNER_TEMP/explainer/index.html" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish the presentation
+        if: steps.explainer.outputs.ready == 'true'
+        continue-on-error: true
+        uses: bisque-cloud/presenter@7159a1bda766df3900465cdbcc532fc5a8de495f # v1.9.4
+        with:
+          source: pull-request
+          presentation: ${{ runner.temp }}/explainer
