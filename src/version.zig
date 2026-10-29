@@ -1,3 +1,3 @@
 /// Module version — single source of truth for src/module.zig and build.zig.
 /// Keep in sync with `version` in build.zig.zon and `Version:` in lisp/ghostel.el.
-pub const version = "0.59.0";
+pub const version = "0.60.0";

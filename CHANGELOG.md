@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.60.0] — 2026-10-29
+
 ### Added
 - `ghostel ssh HOST` in a ghostel shell gives the remote session ghostel's
   shell integration and `xterm-ghostty` terminfo without touching any
@@ -36,6 +38,10 @@ All notable changes to this project will be documented in this file.
   words where a frame cannot display them, `words` for
   `[blocked: permission ×2] [done] [42%]`, or an alist of `format-spec`
   labels keyed by state, blocked kind and `progress`.
+- `ghostel-copy-mode`, `ghostel-emacs-mode` and `ghostel-readonly-enter`
+  take a prefix argument: entering with one turns
+  `ghostel-readonly-fast-exit` off for that visit, a prefix inside the
+  mode toggles it instead of exiting.
 
 ### Changed
 - `ghostel_ssh` (and the `ssh` shadow `ghostel-ssh-install-terminfo`
@@ -74,6 +80,13 @@ All notable changes to this project will be documented in this file.
   cannot tell, as on a tty without focus reporting, counts as looked
   at: program status notifications are no longer sent for it, and it
   receives terminal focus events.
+- Kitty graphics are disabled in terminal frames, so timg, icat and
+  similar tools fall back to their text rendering instead of sending
+  images a tty frame cannot show.
+- `ghostel-exit-functions` documents that the native PTY reports a
+  signalled child as the shell's `128+N` exit code, such as
+  "exited abnormally with code 143" for SIGTERM.
+  Closes [#750](https://github.com/dakra/ghostel/issues/750).
 
 ### Fixed
 - evil-ghostel landed the shell cursor one cell off per oversized prompt
@@ -87,6 +100,22 @@ All notable changes to this project will be documented in this file.
   host half of a scheme-less URL such as npm's `//registry.example.com/`
   warnings.  On Windows it names a network share, and looking up the
   host froze Emacs for seconds.
+- Mouse events sent to a mouse-tracking program landed one or more rows
+  too high while an enlarged minibuffer deferred the terminal resize or
+  a row was taller than the default; the row now comes from the buffer
+  line under the pointer.
+  Closes [#765](https://github.com/dakra/ghostel/issues/765).
+- Padded fallback glyphs were narrower or wider than their cells when
+  the buffer's text scale was not 1 (`text-scale-mode`,
+  `buffer-face-mode`), shifting the text after them.
+  Closes [#752](https://github.com/dakra/ghostel/issues/752).
+- Changing `ghostel-bold-color` from Customize left fallback glyphs
+  unscaled, so rows grew taller than the cell height and mouse events
+  landed on the wrong row.
+- The native module's event pipe could deadlock Emacs when the event
+  writer blocked, and killing a terminal buffer could hang on the
+  blocked writer; the PTY is now torn down asynchronously and the
+  reader reaps the child itself.
 
 ## [0.59.0] — 2026-10-19
 
