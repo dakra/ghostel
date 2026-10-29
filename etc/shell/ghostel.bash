@@ -7,7 +7,7 @@
 # Remote `~/.bashrc' (also gates on TERM, since ssh propagates it
 # natively and INSIDE_EMACS does not without server-side AcceptEnv):
 #   if [[ "${INSIDE_EMACS%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' ]]; then
-#       source ~/.local/share/ghostel/ghostel.bash
+#       source ~/.local/share/ghostel/shell/ghostel.bash
 #   fi
 # See the README "Manual setup" section for the full rationale.
 
@@ -251,121 +251,166 @@ else
 fi
 __ghostel_installed_ps0=""
 
-# Outbound `ssh' wrapper.  Activated when the elisp side sets
-# `ghostel-ssh-install-terminfo' (which exports
-# GHOSTEL_SSH_INSTALL_TERMINFO).
+# Outbound `ssh' with xterm-ghostty terminfo on the remote.
+# Usage: ghostel_ssh [SSH-ARGS...]  (also `ghostel ssh').
 #
-# On first connection to a host the wrapper probes whether
-# xterm-ghostty terminfo is present, installs it via `tic' if not,
-# caches the outcome under $XDG_CACHE_HOME/ghostel/ssh-terminfo-cache
-# (key includes a hash of the local terminfo so libghostty bumps
+# On first connection to a host it probes whether xterm-ghostty
+# terminfo is present, installs it via `tic' if not, caches the
+# outcome under $XDG_CACHE_HOME/ghostel/ssh-terminfo-cache (key
+# includes a hash of the local terminfo so libghostty bumps
 # auto-invalidate the cache), and connects with TERM=xterm-ghostty.
 # Subsequent connections hit the cache.  Failures (no `tic' on remote,
 # no write access) cache a skip marker and downgrade to xterm-256color.
+# INSIDE_EMACS is offered via SendEnv so a remote whose sshd accepts
+# it can gate its integration on that instead of TERM.
 #
-# Per-call escape hatch: prefix `ssh' with GHOSTEL_SSH_KEEP_TERM=1 to
-# bypass the wrapper entirely.
-if [[ -n "${GHOSTEL_SSH_INSTALL_TERMINFO:-}" ]]; then
-    # `function NAME { … }' rather than `NAME() { … }' so a user alias
-    # on `ssh' (aliases expand at parse time in zsh, and bash when the
-    # alias is already active while sourcing this file) can't turn the
-    # definition into a parse error.
-    function ssh {
-        # Escape hatch + need infocmp locally to do anything useful.
-        if [[ -n "${GHOSTEL_SSH_KEEP_TERM:-}" ]] || \
-               ! builtin command -v infocmp >/dev/null 2>&1; then
-            builtin command ssh "$@"
-            return
-        fi
+# When the elisp side sets `ghostel-ssh-install-terminfo' (exported as
+# GHOSTEL_SSH_INSTALL_TERMINFO) plain `ssh' is shadowed by this
+# function.  Per-call escape hatch: prefix with GHOSTEL_SSH_KEEP_TERM=1
+# to bypass it.
+function ghostel_ssh {
+    # Escape hatch + need infocmp locally to do anything useful.
+    if [[ -n "${GHOSTEL_SSH_KEEP_TERM:-}" ]] || \
+           ! builtin command -v infocmp >/dev/null 2>&1; then
+        builtin command ssh "$@"
+        return
+    fi
 
-        # Resolve the canonical target (normalises ssh_config aliases).
-        local _user="" _host="" _port="" _k _v
-        while IFS=' ' read -r _k _v; do
-            case "$_k" in
-                user)     _user=$_v ;;
-                hostname) _host=$_v ;;
-                port)     _port=$_v ;;
-            esac
-            [[ -n $_user && -n $_host && -n $_port ]] && break
-        done < <(builtin command ssh -G "$@" 2>/dev/null)
+    # Resolve the canonical target (normalises ssh_config aliases).
+    local _user="" _host="" _port="" _k _v
+    while IFS=' ' read -r _k _v; do
+        case "$_k" in
+            user)     _user=$_v ;;
+            hostname) _host=$_v ;;
+            port)     _port=$_v ;;
+        esac
+        [[ -n $_user && -n $_host && -n $_port ]] && break
+    done < <(builtin command ssh -G "$@" 2>/dev/null)
 
-        # No host (e.g. `ssh -V`, `ssh -h`): pass through.
-        if [[ -z $_host ]]; then
-            builtin command ssh "$@"
-            return
-        fi
+    # No host (e.g. `ssh -V`, `ssh -h`): pass through.
+    if [[ -z $_host ]]; then
+        builtin command ssh "$@"
+        return
+    fi
+    set -- -o SendEnv=INSIDE_EMACS "$@"
 
-        local _target="$_user@$_host:$_port"
-        local _hash
-        _hash=$(infocmp -0 -x xterm-ghostty 2>/dev/null \
-                    | cksum 2>/dev/null | awk '{print $1}')
-        local _cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/ghostel"
-        local _cache="$_cache_dir/ssh-terminfo-cache"
-        local _key="$_target:$_hash"
+    local _target="$_user@$_host:$_port"
+    local _hash
+    _hash=$(infocmp -0 -x xterm-ghostty 2>/dev/null \
+                | cksum 2>/dev/null | awk '{print $1}')
+    local _cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/ghostel"
+    local _cache="$_cache_dir/ssh-terminfo-cache"
+    local _key="$_target:$_hash"
 
-        # Cache hit?
-        if [[ -r $_cache ]]; then
-            if grep -Fxq "$_key ok" "$_cache" 2>/dev/null; then
-                TERM=xterm-ghostty builtin command ssh "$@"
-                return
-            fi
-            if grep -Fxq "$_key skip" "$_cache" 2>/dev/null; then
-                TERM=xterm-256color builtin command ssh "$@"
-                return
-            fi
-        fi
-
-        # Skip install when the user passed a remote command — combining
-        # our install script with their command via the same ssh
-        # invocation is fragile.  The next interactive `ssh HOST' will
-        # trigger install.
-        local _positional=0 _skip=0 _arg
-        for _arg in "$@"; do
-            if (( _skip )); then _skip=0; continue; fi
-            case "$_arg" in
-                -[bcDEeFIiJLlmOoPpQRSWw]) _skip=1 ;;
-                -*) ;;
-                *) ((_positional++)) ;;
-            esac
-        done
-
-        if (( _positional > 1 )); then
-            TERM=xterm-256color builtin command ssh "$@"
-            return
-        fi
-
-        # Combined probe + install in a single setup ssh invocation.
-        # Mkdir-as-lock so concurrent first-time `ssh HOST' from two
-        # ghostel buffers don't both spawn a setup connection.
-        builtin command mkdir -p "$_cache_dir" 2>/dev/null
-        # Lock keyed on (target, hash) so concurrent calls to the same
-        # target serialize, but different targets run in parallel.
-        local _lock="$_cache_dir/.lock.$_target.$_hash"
-        if ! builtin command mkdir "$_lock" 2>/dev/null; then
-            TERM=xterm-256color builtin command ssh "$@"
-            return
-        fi
-        # No `trap RETURN' — bash's RETURN trap is shell-global and
-        # would clobber any pre-existing user trap.  Cleanup is
-        # explicit at each return point.
-        if infocmp -0 -x xterm-ghostty 2>/dev/null \
-                | builtin command ssh "$@" '
-                    infocmp xterm-ghostty >/dev/null 2>&1 && exit 0
-                    command -v tic >/dev/null 2>&1 || exit 1
-                    mkdir -p "$HOME/.terminfo" && tic -x - >/dev/null 2>&1
-                  ' >/dev/null 2>&1; then
-            builtin echo "$_key ok" >> "$_cache"
-            builtin command rmdir "$_lock" 2>/dev/null
+    # Cache hit?
+    if [[ -r $_cache ]]; then
+        if grep -Fxq "$_key ok" "$_cache" 2>/dev/null; then
             TERM=xterm-ghostty builtin command ssh "$@"
-        else
-            builtin echo "ghostel: failed to install xterm-ghostty terminfo on $_host \
-(no \`tic' on remote?), using xterm-256color." >&2
-            builtin echo "$_key skip" >> "$_cache"
-            builtin command rmdir "$_lock" 2>/dev/null
-            TERM=xterm-256color builtin command ssh "$@"
+            return
         fi
-    }
+        if grep -Fxq "$_key skip" "$_cache" 2>/dev/null; then
+            TERM=xterm-256color builtin command ssh "$@"
+            return
+        fi
+    fi
+
+    # Skip install when the user passed a remote command — combining
+    # our install script with their command via the same ssh
+    # invocation is fragile.  The next interactive `ssh HOST' will
+    # trigger install.
+    local _positional=0 _skip=0 _arg
+    for _arg in "$@"; do
+        if (( _skip )); then _skip=0; continue; fi
+        case "$_arg" in
+            -[bcDEeFIiJLlmOoPpQRSWw]) _skip=1 ;;
+            -*) ;;
+            *) ((_positional++)) ;;
+        esac
+    done
+
+    if (( _positional > 1 )); then
+        TERM=xterm-256color builtin command ssh "$@"
+        return
+    fi
+
+    # Combined probe + install in a single setup ssh invocation,
+    # wrapped in `sh -c' because the remote login shell (fish, nushell,
+    # ...) parses the remote command.  Mkdir-as-lock so concurrent
+    # first-time `ssh HOST' from two ghostel buffers don't both spawn a
+    # setup connection.
+    builtin command mkdir -p "$_cache_dir" 2>/dev/null
+    # Lock keyed on (target, hash) so concurrent calls to the same
+    # target serialize, but different targets run in parallel.
+    local _lock="$_cache_dir/.lock.$_target.$_hash"
+    if ! builtin command mkdir "$_lock" 2>/dev/null; then
+        TERM=xterm-256color builtin command ssh "$@"
+        return
+    fi
+    # No `trap RETURN' — bash's RETURN trap is shell-global and
+    # would clobber any pre-existing user trap.  Cleanup is
+    # explicit at each return point.
+    if infocmp -0 -x xterm-ghostty 2>/dev/null \
+            | builtin command ssh "$@" "sh -c 'infocmp xterm-ghostty >/dev/null 2>&1 && exit 0; command -v tic >/dev/null 2>&1 || exit 1; mkdir -p \"\$HOME/.terminfo\" && tic -x - >/dev/null 2>&1'" >/dev/null 2>&1; then
+        builtin echo "$_key ok" >> "$_cache"
+        builtin command rmdir "$_lock" 2>/dev/null
+        TERM=xterm-ghostty builtin command ssh "$@"
+    else
+        builtin echo "ghostel: failed to install xterm-ghostty terminfo on $_host \
+(no \`tic' on remote?), using xterm-256color." >&2
+        builtin echo "$_key skip" >> "$_cache"
+        builtin command rmdir "$_lock" 2>/dev/null
+        TERM=xterm-256color builtin command ssh "$@"
+    fi
+}
+
+# `function NAME { … }' rather than `NAME() { … }' so a user alias
+# on `ssh' (aliases expand at parse time in zsh, and bash when the
+# alias is already active while sourcing this file) can't turn the
+# definition into a parse error.
+if [[ -n "${GHOSTEL_SSH_INSTALL_TERMINFO:-}" ]]; then
+    function ssh { ghostel_ssh "$@"; }
 fi
+
+# Install ghostel's shell integration and xterm-ghostty terminfo on a
+# remote host, permanently: scripts + terminfo go to
+# ~/.local/share/ghostel, terminfo is copied into ~/.terminfo, and the
+# login shell's startup file is hooked (see etc/shell/remote-install.sh).
+# Usage: ghostel_ssh_install [SSH-OPTIONS] HOST  (also `ghostel ssh-install').
+ghostel_ssh_install() {
+    local _etc="${EMACS_GHOSTEL_PATH:-}/etc"
+    if [[ ! -r "$_etc/shell/remote-install.sh" ]]; then
+        builtin echo "ghostel: EMACS_GHOSTEL_PATH does not point at a ghostel install" >&2
+        return 1
+    fi
+    COPYFILE_DISABLE=1 builtin command tar c --format ustar -f - -C "$_etc" shell/ghostel.bash shell/ghostel.zsh shell/ghostel.fish shell/ghostel.nu shell/remote-install.sh terminfo \
+        | builtin command ssh -o SendEnv=INSIDE_EMACS "$@" "sh -c 'mkdir -p ~/.local/share/ghostel && tar xf - -C ~/.local/share/ghostel && sh ~/.local/share/ghostel/shell/remote-install.sh'" \
+        || return
+    # Drop the ghostel_ssh cache: a remembered `skip' for this host would
+    # otherwise keep hiding the terminfo just installed.
+    builtin command rm -f "${XDG_CACHE_HOME:-$HOME/.cache}/ghostel/ssh-terminfo-cache"
+}
+
+# Subcommand front end: `ghostel cmd|ssh|ssh-install|help ...'.
+ghostel() {
+    local _sub=${1-help}
+    [[ $# -gt 0 ]] && shift
+    case "$_sub" in
+        cmd) ghostel_cmd "$@" ;;
+        ssh) ghostel_ssh "$@" ;;
+        ssh-install) ghostel_ssh_install "$@" ;;
+        help|-h|--help)
+            builtin printf '%s\n' \
+                'Usage: ghostel cmd FUNCTION [ARGS...]       call an Emacs function (see ghostel-eval-cmds)' \
+                '       ghostel ssh [SSH-ARGS...]            ssh with xterm-ghostty terminfo on the remote' \
+                '       ghostel ssh-install [SSH-OPTS] HOST  install shell integration + terminfo on HOST'
+            ;;
+        *)
+            builtin echo "ghostel: unknown subcommand '$_sub'" >&2
+            ghostel help >&2
+            return 2
+            ;;
+    esac
+}
 
 # Call an Emacs Elisp function from the shell.
 # Usage: ghostel_cmd FUNCTION [ARGS...]

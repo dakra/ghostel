@@ -222,8 +222,10 @@ accepted without prompting."
   "Install xterm-ghostty terminfo on remote hosts as needed.
 Affects both `M-x ghostel' from a TRAMP `default-directory' (push
 over the existing TRAMP connection) and outbound `ssh' from a
-local ghostel buffer (install via `tic' on first connection,
-cached in `~/.cache/ghostel/ssh-terminfo-cache').
+local ghostel buffer, which the shell integration shadows with
+`ghostel_ssh' (install via `tic' on first connection, cached in
+`~/.cache/ghostel/ssh-terminfo-cache').  `ghostel_ssh' itself is
+always available regardless of this setting.
 
 Values: `auto' (default; enabled when
 `ghostel-tramp-shell-integration' is non-nil), t, nil.  Always
@@ -4016,7 +4018,7 @@ When `ghostel-term' is the default \"xterm-ghostty\", the snippet:
 1. Prepends ~/.local/share/ghostel/terminfo to TERMINFO_DIRS when
    that directory holds the bundled entry.  This lets manual
    setups co-locate terminfo with the shell-integration scripts
-   (see README, \"Option 2: Manual setup\") in one place — no
+   (see README, \"Option 3: Manual setup\") in one place — no
    `tic', no touching ~/.terminfo.
 2. Probes via `infocmp xterm-ghostty'.  The probe honors all of
    ncurses' standard lookup paths (the prepended dir, $TERMINFO,

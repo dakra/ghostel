@@ -7,7 +7,7 @@
 # Remote `config.fish' (also gates on TERM, since ssh propagates it
 # natively and INSIDE_EMACS does not without server-side AcceptEnv):
 #   if string match -qr '^ghostel(,|$)' -- "$INSIDE_EMACS"; or test "$TERM" = 'xterm-ghostty'
-#       source ~/.local/share/ghostel/ghostel.fish
+#       source ~/.local/share/ghostel/shell/ghostel.fish
 #   end
 # See the README "Manual setup" section for the full rationale.
 
@@ -72,99 +72,143 @@ if not status test-feature mark-prompt 2>/dev/null
     end
 end
 
-# Outbound `ssh' wrapper.  See etc/ghostel.bash for the full design
-# notes — this is the fish port of the same install-and-cache logic.
+# Outbound `ssh' with xterm-ghostty terminfo on the remote.  See
+# etc/shell/ghostel.bash for the design notes — this is the fish port.
+function ghostel_ssh
+    if test -n "$GHOSTEL_SSH_KEEP_TERM"; or not command -q infocmp
+        command ssh $argv
+        return
+    end
+
+    set -l _user ""
+    set -l _host ""
+    set -l _port ""
+    for line in (command ssh -G $argv 2>/dev/null)
+        set -l parts (string split -m 1 ' ' -- $line)
+        switch $parts[1]
+            case user
+                set _user $parts[2]
+            case hostname
+                set _host $parts[2]
+            case port
+                set _port $parts[2]
+        end
+        if test -n "$_user"; and test -n "$_host"; and test -n "$_port"
+            break
+        end
+    end
+
+    if test -z "$_host"
+        command ssh $argv
+        return
+    end
+    set argv -o SendEnv=INSIDE_EMACS $argv
+
+    set -l _target "$_user@$_host:$_port"
+    set -l _hash (infocmp -0 -x xterm-ghostty 2>/dev/null | cksum 2>/dev/null | awk '{print $1}')
+    set -l _cache_dir (test -n "$XDG_CACHE_HOME"; and echo "$XDG_CACHE_HOME/ghostel"; or echo "$HOME/.cache/ghostel")
+    set -l _cache "$_cache_dir/ssh-terminfo-cache"
+    set -l _key "$_target:$_hash"
+
+    if test -r "$_cache"
+        if grep -Fxq "$_key ok" "$_cache" 2>/dev/null
+            TERM=xterm-ghostty command ssh $argv
+            return
+        end
+        if grep -Fxq "$_key skip" "$_cache" 2>/dev/null
+            TERM=xterm-256color command ssh $argv
+            return
+        end
+    end
+
+    # Skip install when user passed a remote command.
+    set -l _positional 0
+    set -l _skip 0
+    for _arg in $argv
+        if test $_skip -eq 1
+            set _skip 0
+            continue
+        end
+        switch $_arg
+            case '-b' '-c' '-D' '-E' '-e' '-F' '-I' '-i' '-J' '-L' '-l' '-m' '-O' '-o' '-P' '-p' '-Q' '-R' '-S' '-W' '-w'
+                set _skip 1
+            case '-*'
+            case '*'
+                set _positional (math $_positional + 1)
+        end
+    end
+
+    if test $_positional -gt 1
+        TERM=xterm-256color command ssh $argv
+        return
+    end
+
+    command mkdir -p "$_cache_dir" 2>/dev/null
+    # Lock keyed on (target, hash) — see etc/ghostel.bash.
+    set -l _lock "$_cache_dir/.lock.$_target.$_hash"
+    if not command mkdir "$_lock" 2>/dev/null
+        TERM=xterm-256color command ssh $argv
+        return
+    end
+    if infocmp -0 -x xterm-ghostty 2>/dev/null \
+            | command ssh $argv "sh -c 'infocmp xterm-ghostty >/dev/null 2>&1 && exit 0; command -v tic >/dev/null 2>&1 || exit 1; mkdir -p \"\$HOME/.terminfo\" && tic -x - >/dev/null 2>&1'" >/dev/null 2>&1
+        echo "$_key ok" >> "$_cache"
+        command rmdir "$_lock" 2>/dev/null
+        TERM=xterm-ghostty command ssh $argv
+    else
+        echo "ghostel: failed to install xterm-ghostty terminfo on $_host (no \`tic' on remote?), using xterm-256color." >&2
+        echo "$_key skip" >> "$_cache"
+        command rmdir "$_lock" 2>/dev/null
+        TERM=xterm-256color command ssh $argv
+    end
+end
+
 if test -n "$GHOSTEL_SSH_INSTALL_TERMINFO"
     function ssh
-        if test -n "$GHOSTEL_SSH_KEEP_TERM"; or not command -q infocmp
-            command ssh $argv
-            return
-        end
+        ghostel_ssh $argv
+    end
+end
 
-        set -l _user ""
-        set -l _host ""
-        set -l _port ""
-        for line in (command ssh -G $argv 2>/dev/null)
-            set -l parts (string split -m 1 ' ' -- $line)
-            switch $parts[1]
-                case user
-                    set _user $parts[2]
-                case hostname
-                    set _host $parts[2]
-                case port
-                    set _port $parts[2]
-            end
-            if test -n "$_user"; and test -n "$_host"; and test -n "$_port"
-                break
-            end
-        end
+# Install ghostel's shell integration and xterm-ghostty terminfo on a
+# remote host, permanently: scripts + terminfo go to
+# ~/.local/share/ghostel, terminfo is copied into ~/.terminfo, and the
+# login shell's startup file is hooked (see etc/shell/remote-install.sh).
+# Usage: ghostel_ssh_install [SSH-OPTIONS] HOST  (also `ghostel ssh-install').
+function ghostel_ssh_install
+    set -l _etc "$EMACS_GHOSTEL_PATH/etc"
+    if not test -r "$_etc/shell/remote-install.sh"
+        echo "ghostel: EMACS_GHOSTEL_PATH does not point at a ghostel install" >&2
+        return 1
+    end
+    COPYFILE_DISABLE=1 command tar c --format ustar -f - -C "$_etc" shell/ghostel.bash shell/ghostel.zsh shell/ghostel.fish shell/ghostel.nu shell/remote-install.sh terminfo \
+        | command ssh -o SendEnv=INSIDE_EMACS $argv "sh -c 'mkdir -p ~/.local/share/ghostel && tar xf - -C ~/.local/share/ghostel && sh ~/.local/share/ghostel/shell/remote-install.sh'"
+    or return
+    # Drop the ghostel_ssh cache: a remembered `skip' for this host would
+    # otherwise keep hiding the terminfo just installed.
+    set -l _cache_dir (test -n "$XDG_CACHE_HOME"; and echo "$XDG_CACHE_HOME/ghostel"; or echo "$HOME/.cache/ghostel")
+    command rm -f "$_cache_dir/ssh-terminfo-cache"
+end
 
-        if test -z "$_host"
-            command ssh $argv
-            return
-        end
-
-        set -l _target "$_user@$_host:$_port"
-        set -l _hash (infocmp -0 -x xterm-ghostty 2>/dev/null | cksum 2>/dev/null | awk '{print $1}')
-        set -l _cache_dir (test -n "$XDG_CACHE_HOME"; and echo "$XDG_CACHE_HOME/ghostel"; or echo "$HOME/.cache/ghostel")
-        set -l _cache "$_cache_dir/ssh-terminfo-cache"
-        set -l _key "$_target:$_hash"
-
-        if test -r "$_cache"
-            if grep -Fxq "$_key ok" "$_cache" 2>/dev/null
-                TERM=xterm-ghostty command ssh $argv
-                return
-            end
-            if grep -Fxq "$_key skip" "$_cache" 2>/dev/null
-                TERM=xterm-256color command ssh $argv
-                return
-            end
-        end
-
-        # Skip install when user passed a remote command.
-        set -l _positional 0
-        set -l _skip 0
-        for _arg in $argv
-            if test $_skip -eq 1
-                set _skip 0
-                continue
-            end
-            switch $_arg
-                case '-b' '-c' '-D' '-E' '-e' '-F' '-I' '-i' '-J' '-L' '-l' '-m' '-O' '-o' '-P' '-p' '-Q' '-R' '-S' '-W' '-w'
-                    set _skip 1
-                case '-*'
-                case '*'
-                    set _positional (math $_positional + 1)
-            end
-        end
-
-        if test $_positional -gt 1
-            TERM=xterm-256color command ssh $argv
-            return
-        end
-
-        command mkdir -p "$_cache_dir" 2>/dev/null
-        # Lock keyed on (target, hash) — see etc/ghostel.bash.
-        set -l _lock "$_cache_dir/.lock.$_target.$_hash"
-        if not command mkdir "$_lock" 2>/dev/null
-            TERM=xterm-256color command ssh $argv
-            return
-        end
-        if infocmp -0 -x xterm-ghostty 2>/dev/null \
-                | command ssh $argv '
-                    infocmp xterm-ghostty >/dev/null 2>&1 && exit 0
-                    command -v tic >/dev/null 2>&1 || exit 1
-                    mkdir -p "$HOME/.terminfo" && tic -x - >/dev/null 2>&1
-                  ' >/dev/null 2>&1
-            echo "$_key ok" >> "$_cache"
-            command rmdir "$_lock" 2>/dev/null
-            TERM=xterm-ghostty command ssh $argv
-        else
-            echo "ghostel: failed to install xterm-ghostty terminfo on $_host (no \`tic' on remote?), using xterm-256color." >&2
-            echo "$_key skip" >> "$_cache"
-            command rmdir "$_lock" 2>/dev/null
-            TERM=xterm-256color command ssh $argv
-        end
+# Subcommand front end: `ghostel cmd|ssh|ssh-install|help ...'.
+function ghostel
+    set -l _sub $argv[1]
+    set -l _rest $argv[2..-1]
+    switch "$_sub"
+        case cmd
+            ghostel_cmd $_rest
+        case ssh
+            ghostel_ssh $_rest
+        case ssh-install
+            ghostel_ssh_install $_rest
+        case '' help -h --help
+            printf '%s\n' \
+                'Usage: ghostel cmd FUNCTION [ARGS...]       call an Emacs function (see ghostel-eval-cmds)' \
+                '       ghostel ssh [SSH-ARGS...]            ssh with xterm-ghostty terminfo on the remote' \
+                '       ghostel ssh-install [SSH-OPTS] HOST  install shell integration + terminfo on HOST'
+        case '*'
+            echo "ghostel: unknown subcommand '$_sub'" >&2
+            ghostel help >&2
+            return 2
     end
 end
 

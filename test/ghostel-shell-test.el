@@ -177,6 +177,7 @@ newest-first list aligns with the buffer-order regions."
                        "functions -q __ghostel_osc7; and echo osc7=yes; or echo osc7=no\n"
                        "functions -q ghostel_cmd; and echo cmd=yes; or echo cmd=no\n"
                        "functions -q ssh; and echo ssh=yes; or echo ssh=no\n"
+                       "functions -q ghostel ghostel_ssh ghostel_ssh_install; and echo helpers=yes; or echo helpers=no\n"
                        "echo xdg=$XDG_DATA_DIRS\n"))
                (process-environment
                 (append (list (format "HOME=%s" fish-home)
@@ -202,6 +203,7 @@ newest-first list aligns with the buffer-order regions."
           ;; GHOSTEL_SSH_INSTALL_TERMINFO=1 must reach etc/shell/ghostel.fish so
           ;; the ssh install-and-cache wrapper is defined.
           (should (string-match-p "^ssh=yes$" output))
+          (should (string-match-p "^helpers=yes$" output))
           ;; XDG cleanup must strip the injected integration dir without
           ;; leaking fish's internal `/fish'-suffixed form.
           (should (string-match "^xdg=\\(.*\\)$" output))
@@ -303,6 +305,8 @@ skips it), and `--execute' enters an interactive shell."
                        "print (\"cmd=\" + (if $c > 0 { \"yes\" } else { \"no\" }))\n"
                        "let s = (scope commands | where name == \"ssh\" | length)\n"
                        "print (\"sshw=\" + (if $s > 0 { \"yes\" } else { \"no\" }))\n"
+                       "let h = (scope commands | where name in [\"ghostel\" \"ghostel ssh\" \"ghostel ssh-install\" \"ghostel_ssh_install\"] | length)\n"
+                       "print (\"helpers=\" + (if $h == 4 { \"yes\" } else { \"no\" }))\n"
                        "print (\"xdg=\" + ($env.XDG_DATA_DIRS? | default \"NONE\"))\n"
                        "exit\n"))
                (process-environment
@@ -325,6 +329,7 @@ skips it), and `--execute' enters an interactive shell."
           (should (string-match-p "^cmd=yes$" output))
           ;; ghostel.nu also defines the outbound `ssh' wrapper.
           (should (string-match-p "^sshw=yes$" output))
+          (should (string-match-p "^helpers=yes$" output))
           ;; XDG cleanup must strip the injected bootstrap dir so
           ;; subprocesses don't re-autoload the shim.
           (should (string-match "^xdg=\\(.*\\)$" output))
@@ -2348,6 +2353,58 @@ prompt line (no `ghostel-prompt' property exists after point)."
                (concat (car (split-string (system-name) "\\.")) ".example.com")))
   (should-not (ghostel--local-host-p "remote-server.example.com")))
 
+(ert-deftest ghostel-test-remote-install-script ()
+  "`etc/shell/remote-install.sh' hooks the login shell once and installs terminfo."
+  (let* ((root (ghostel--resource-root))
+         (home (make-temp-file "ghostel-test-remote-install-" t))
+         (dir (expand-file-name ".local/share/ghostel" home))
+         (script (expand-file-name "shell/remote-install.sh" dir)))
+    (unwind-protect
+        (cl-flet ((run (shell)
+                    (let ((process-environment
+                           (append (list (format "HOME=%s" home)
+                                         (format "SHELL=%s" shell)
+                                         "XDG_CONFIG_HOME" "XDG_DATA_HOME")
+                                   process-environment))
+                          (default-directory home))
+                      (with-temp-buffer
+                        (list (call-process "sh" nil t nil script)
+                              (buffer-string)))))
+                  (file-text (name)
+                    (with-temp-buffer
+                      (insert-file-contents (expand-file-name name home))
+                      (buffer-string))))
+          (make-directory dir t)
+          (copy-directory (expand-file-name "etc/shell" root)
+                          (expand-file-name "shell" dir))
+          (copy-directory (expand-file-name "etc/terminfo" root)
+                          (expand-file-name "terminfo" dir))
+          ;; bash: marked block appended once, even when run twice.
+          (should (zerop (car (run "/bin/bash"))))
+          (should (zerop (car (run "/bin/bash"))))
+          (let ((rc (file-text ".bashrc")))
+            (should (= 2 (length (split-string rc "# >>> ghostel >>>"))))
+            (should (string-match-p
+                     "source ~/.local/share/ghostel/shell/ghostel.bash" rc)))
+          (should (file-exists-p (expand-file-name ".terminfo/x/xterm-ghostty" home)))
+          (should (file-exists-p (expand-file-name ".terminfo/78/xterm-ghostty" home)))
+          ;; fish and nushell use drop-in files instead of an rc edit.
+          (should (zerop (car (run "/usr/bin/fish"))))
+          (should (string-match-p "shell/ghostel.fish"
+                                  (file-text ".config/fish/conf.d/ghostel.fish")))
+          ;; The nushell drop-in path is platform-specific (asked from
+          ;; `nu' when installed), so take it from the script's report.
+          (let ((res (run "/usr/bin/nu")))
+            (should (zerop (car res)))
+            (should (string-match "^ghostel: wrote \\(.*/vendor/autoload/ghostel.nu\\)$"
+                                  (cadr res)))
+            (should (string-match-p "shell/ghostel.nu"
+                                    (file-text (match-string 1 (cadr res))))))
+          ;; Unsupported login shell: files stay installed, non-zero exit.
+          (let ((res (run "/bin/tcsh")))
+            (should (= 1 (car res)))
+            (should (string-match-p "unsupported login shell" (cadr res)))))
+      (delete-directory home t))))
 
 (provide 'ghostel-shell-test)
 ;;; ghostel-shell-test.el ends here
