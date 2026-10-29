@@ -73,7 +73,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Run pure-Zig unit tests
         shell: bash
@@ -228,7 +228,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode 26.3 for Zig 0.16.0
+      - name: Select Xcode 26.3 for Zig 0.17.0
         if: runner.os == 'macOS'
         run: |
           sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
@@ -238,8 +238,8 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
-          cache-key: ${{ matrix.platform }}-zig-0.16.0
+          version: 0.17.0
+          cache-key: ${{ matrix.platform }}-zig-0.17.0
 
       - name: Download ConPTY runtime
         if: runner.os == 'Windows'

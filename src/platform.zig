@@ -20,7 +20,7 @@ const windows = if (builtin.os.tag == .windows) struct {
     ) callconv(.winapi) c_int;
 
     fn ansiToUtf8AllocZ(allocator: Allocator, bytes: []const u8) ![:0]u8 {
-        if (bytes.len == 0) return allocator.dupeZ(u8, "");
+        if (bytes.len == 0) return allocator.dupeSentinel(u8, "", 0);
         if (bytes.len > std.math.maxInt(c_int)) return error.StringTooLong;
 
         const wide_len = MultiByteToWideChar(

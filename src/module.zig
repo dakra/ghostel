@@ -41,7 +41,7 @@ export fn emacs_module_init(runtime: *c.struct_emacs_runtime) callconv(.c) c_int
         return 1; // ABI mismatch
     }
 
-    if (builtin.mode == .Debug) {
+    if (builtin.mode == .debug) {
         alloc = debug_alloc.allocator();
         _ = atexit(&debugAtExit);
     }
@@ -131,7 +131,7 @@ const emacs_functions = [_]emacs.FunctionEntry{
 
 pub const std_options: std.Options = .{
     .logFn = logFn,
-    .log_level = if (builtin.mode == .Debug) .debug else .warn,
+    .log_level = if (builtin.mode == .debug) .debug else .warn,
 };
 
 /// Whether VT logging is active.
@@ -146,7 +146,7 @@ fn logFn(
     args: anytype,
 ) void {
     // Debug only: in `emacs -nw' the module's stderr is the user's tty.
-    if (builtin.mode == .Debug) {
+    if (builtin.mode == .debug) {
         std.log.defaultLog(message_level, scope, format, args);
     }
 

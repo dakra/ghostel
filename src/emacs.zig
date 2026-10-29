@@ -57,13 +57,13 @@ pub const Env = struct {
     }
 
     pub fn f(self: Env, comptime func: []const u8, args: anytype) Value {
-        if (comptime builtin.mode == .Debug) {
+        if (comptime builtin.mode == .debug) {
             if (self.nonLocalExitCheck() != .normal) {
                 return self.nil();
             }
         }
         defer {
-            if (comptime builtin.mode == .Debug) {
+            if (comptime builtin.mode == .debug) {
                 if (self.nonLocalExitCheck() != .normal) {
                     std.log.err("Call to {s} failed", .{func});
                 }
@@ -106,7 +106,7 @@ pub const Env = struct {
     }
 
     pub fn makeUserPtr(self: Env, finalizer: Finalizer, ptr: UserPtr) Value {
-        if (builtin.mode == .Debug) {
+        if (builtin.mode == .debug) {
             if (debug_userptrs.append(module_alloc, .{ .ptr = ptr, .finalizer = &finalizer })) |_| {
                 const debugFinalizer = struct {
                     fn debugFinalize(p: ?*anyopaque) callconv(.c) void {
@@ -128,11 +128,11 @@ pub const Env = struct {
         return self.raw.make_user_ptr.?(self.raw, &finalizer, ptr);
     }
 
-    pub fn makeValues(self: Env, args: anytype) [std.meta.fields(@TypeOf(args)).len]Value {
-        const fields = std.meta.fields(@TypeOf(args));
-        var converted_args: [fields.len]Value = undefined;
-        inline for (fields, 0..) |field, i| {
-            converted_args[i] = self.makeValue(@field(args, field.name));
+    pub fn makeValues(self: Env, args: anytype) [@typeInfo(@TypeOf(args)).@"struct".field_names.len]Value {
+        const info = @typeInfo(@TypeOf(args)).@"struct";
+        var converted_args: [info.field_names.len]Value = undefined;
+        inline for (info.field_names, 0..) |field_name, i| {
+            converted_args[i] = self.makeValue(@field(args, field_name));
         }
         return converted_args;
     }
@@ -263,7 +263,7 @@ pub const Env = struct {
     }
 
     pub fn nonLocalExitCheck(self: Env) FuncallExit {
-        return @enumFromInt(self.raw.non_local_exit_check.?(self.raw));
+        return @fromBackingInt(@intCast(self.raw.non_local_exit_check.?(self.raw)));
     }
 
     pub fn nonLocalExitClear(self: Env) void {
@@ -277,9 +277,9 @@ pub const Env = struct {
     } {
         var symbol: Value = undefined;
         var data: Value = undefined;
-        const status: FuncallExit = @enumFromInt(
+        const status: FuncallExit = @fromBackingInt(@intCast(
             self.raw.non_local_exit_get.?(self.raw, &symbol, &data),
-        );
+        ));
         return .{ .status = status, .symbol = symbol, .data = data };
     }
 
@@ -394,7 +394,7 @@ pub const Env = struct {
 
     /// Writes stack trace as Emacs messages if in debug mode
     pub fn logStackTrace(self: Env, stack_trace: ?*std.builtin.StackTrace) void {
-        if (comptime builtin.mode == .Debug) {
+        if (comptime builtin.mode == .debug) {
             if (stack_trace) |trace| {
                 var buffer: [4096]u8 = undefined;
                 var writer = std.Io.Writer.fixed(&buffer);
@@ -411,7 +411,7 @@ pub const Env = struct {
         }
     }
 
-    fn isStringLike(comptime ty: std.builtin.Type.Pointer) bool {
+    fn isStringLike(comptime ty: std.lang.Type.Pointer) bool {
         const child_info = @typeInfo(ty.child);
         const ret = switch (ty.size) {
             .slice => ty.child == u8,
@@ -571,7 +571,7 @@ const interned_symbols = [_][:0]const u8{
 fn SymbolCache(comptime symbols: []const [:0]const u8) type {
     var names: [symbols.len][]const u8 = undefined;
     var types: [symbols.len]type = undefined;
-    var attrs: [symbols.len]std.builtin.Type.StructField.Attributes = undefined;
+    var attrs: [symbols.len]std.lang.Type.Struct.FieldAttributes = undefined;
 
     for (symbols, 0..) |symbol, i| {
         names[i] = symbol;
@@ -593,11 +593,11 @@ pub fn initModule(alloc: Allocator, raw: *c.emacs_env) void {
     module_alloc = alloc;
 
     const env = Env.init(raw);
-    inline for (std.meta.fields(@TypeOf(sym))) |field| {
-        @field(sym, field.name) = env.makeGlobalRef(env.intern(field.name));
+    inline for (@typeInfo(@TypeOf(sym)).@"struct".field_names) |field_name| {
+        @field(sym, field_name) = env.makeGlobalRef(env.intern(field_name));
     }
 
-    if (builtin.mode == .Debug) {
+    if (builtin.mode == .debug) {
         const cleanup_fn = env.makeFunction(
             0,
             0,

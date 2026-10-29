@@ -53,7 +53,7 @@ pub fn FixedArrayList(comptime T: type, comptime buffer_capacity: usize) type {
 
         /// Returns the last item. If empty, undefined behavior.
         pub fn lastPtr(self: *Self) *T {
-            if (comptime builtin.mode == .Debug) std.debug.assert(self.len > 0);
+            if (comptime builtin.mode == .debug) std.debug.assert(self.len > 0);
             return &self.buffer[self.len - 1];
         }
 
@@ -71,7 +71,7 @@ pub fn FixedArrayList(comptime T: type, comptime buffer_capacity: usize) type {
         /// current length, the new items remain uninitialized. If the size is
         /// larger than capacity, undefined behavior.
         pub fn resize(self: *Self, len: usize) void {
-            if (comptime builtin.mode == .Debug) std.debug.assert(len <= capacity);
+            if (comptime builtin.mode == .debug) std.debug.assert(len <= capacity);
             self.len = len;
         }
     };

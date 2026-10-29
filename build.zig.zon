@@ -1,13 +1,13 @@
 .{
     .name = .ghostel,
     .version = "0.59.0",
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .paths = .{""},
     .fingerprint = 0x5a44bdd1198a0f4b,
     .dependencies = .{
         .ghostty = .{
-            .url = "https://github.com/ghostty-org/ghostty/archive/a2e440396403385680008e456a741a7776091412.tar.gz",
-            .hash = "ghostty-1.3.2-dev-5UdBC_qIewUDn1YOAhdr9LRbORjQ_zcsVMd8EygTzjWq",
+            .url = "https://github.com/ghostty-org/ghostty/archive/b2c78c9bd9bc88a16d9c3769b0fb17ddde1b78b1.tar.gz",
+            .hash = "ghostty-1.4.1-dev-5UdBC2n3hwUv6wB8nxuvpl9M8uussV2WYbTbpRe2gIbC",
         },
     },
 }

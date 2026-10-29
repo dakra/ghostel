@@ -45,6 +45,8 @@ All notable changes to this project will be documented in this file.
 - The TRAMP preamble and the manual remote setup look for the terminfo
   under `~/.local/share/ghostel/etc/terminfo/` and the scripts under
   `~/.local/share/ghostel/etc/shell/`, mirroring the repository layout.
+- libghostty bumped to ghostty b2c78c9 (2026-10-29).
+- Building the native module now requires exactly Zig 0.17.0.
 - The terminal mode line shows every status record, one label per
   distinct label most urgent first with a count, instead of only the
   `blocked` and `error` records or the root.  The spinner runs only

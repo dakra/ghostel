@@ -468,10 +468,11 @@ fn loadSideBySideConpty() ?c.HMODULE {
     var module_dir_buf: [32768]u8 = undefined;
     const module_dir = currentModuleDir(&module_dir_buf) orelse return null;
     var conpty_path_buf: [32768]u8 = undefined;
-    const conpty_path = std.fmt.bufPrintZ(
+    const conpty_path = std.mem.printSentinel(
         &conpty_path_buf,
         "{s}\\conpty.dll",
         .{module_dir},
+        0,
     ) catch return null;
 
     var conpty_path_w_buf: [32768]u16 = undefined;
@@ -600,10 +601,11 @@ fn createOverlappedPipe(
 ) !void {
     var pipe_path_buf: [160]u8 = undefined;
     var pipe_path_buf_w: [160]u16 = undefined;
-    const pipe_path = std.fmt.bufPrintZ(
+    const pipe_path = std.mem.printSentinel(
         &pipe_path_buf,
         "\\\\.\\pipe\\ghostel-conpty-{d}-{x}",
         .{ c.GetCurrentProcessId(), random.int(u64) },
+        0,
     ) catch unreachable;
 
     const pipe_path_w_len = std.unicode.utf8ToUtf16Le(

@@ -28,6 +28,74 @@ pub fn emitPlacements(env: emacs.Env, term: *GhostelTerm) !void {
     emitVirtualRuns(env, term, storage);
 }
 
+const PlacementIterator = struct {
+    row_it: gt.PageList.RowIterator,
+    row: ?gt.Pin,
+
+    const Run = struct {
+        placement: gt.kitty.graphics.unicode.IncompletePlacement,
+        pin: gt.Pin,
+
+        fn complete(self: Run) gt.kitty.graphics.unicode.Placement {
+            return .{
+                .pin = self.pin,
+                .image_id = self.placement.imageId(),
+                .placement_id = self.placement.placement_id orelse 0,
+                .col = self.placement.col orelse 0,
+                .row = self.placement.row orelse 0,
+                .width = self.placement.width,
+                .height = 1,
+            };
+        }
+    };
+
+    fn init(pin: gt.Pin, limit: ?gt.Pin) PlacementIterator {
+        var row_it = pin.rowIterator(.right_down, limit);
+        const row = row_it.next();
+        return .{ .row_it = row_it, .row = row };
+    }
+
+    fn next(self: *PlacementIterator) ?gt.kitty.graphics.unicode.Placement {
+        while (self.row) |*row| {
+            if (!row.rowAndCell().row.kitty_virtual_placeholder) {
+                self.row = self.row_it.next();
+                continue;
+            }
+
+            var run: ?Run = null;
+            const cells = row.cells(.right);
+            for (cells, row.x..) |*cell, x| {
+                row.x = @intCast(x);
+
+                if (cell.codepoint() != gt.kitty.graphics.unicode.placeholder) {
+                    if (run) |prev| return prev.complete();
+                    continue;
+                }
+
+                const style = row.style(cell);
+                const placement = gt.kitty.graphics.unicode.IncompletePlacement.init(
+                    &style,
+                    row.grapheme(cell) orelse &.{},
+                );
+                if (run) |*prev| {
+                    if (!prev.placement.append(&placement)) return prev.complete();
+                } else {
+                    run = .{ .placement = placement.start(), .pin = row.* };
+                }
+            }
+
+            self.row = self.row_it.next();
+            if (run) |prev| return prev.complete();
+        }
+
+        return null;
+    }
+};
+
+fn placementIterator(pin: gt.Pin, limit: ?gt.Pin) PlacementIterator {
+    return .init(pin, limit);
+}
+
 /// Emit one Elisp call per unicode placeholder run from the row this
 /// redraw's render started at down to the last active row, covering rows
 /// that left the active area since the previous redraw.
@@ -37,7 +105,7 @@ fn emitVirtualRuns(env: emacs.Env, term: *GhostelTerm, storage: *const gt.kitty.
     const top = term.renderer.rendered_from orelse return;
     const bottom = pages.getBottomRight(.active) orelse return;
     const bottom_y = (pages.pointFromPin(.screen, bottom) orelse return).screen.y;
-    var it = gt.kitty.graphics.unicode.placementIterator(top, bottom);
+    var it = placementIterator(top, bottom);
     // Image data handed to Emacs, per image id, for this redraw only.
     var images: std.AutoHashMapUnmanaged(u32, emacs.Value) = .empty;
     defer images.deinit(term.alloc);

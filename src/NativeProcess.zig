@@ -73,7 +73,7 @@ pub fn init(
     var stream: @TypeOf(self.stream) = .init(.{ .allocator = alloc, .handler = .init(alloc, owner, self) });
     errdefer stream.deinit();
 
-    const replica_name = try alloc.dupeZ(u8, backend.replicaName());
+    const replica_name = try alloc.dupeSentinel(u8, backend.replicaName(), 0);
     errdefer alloc.free(replica_name);
 
     self.* = .{
@@ -88,8 +88,8 @@ pub fn init(
     };
     owner.retain();
     errdefer owner.release();
-    if (builtin.mode == .Debug) _ = active_readers.fetchAdd(1, .monotonic);
-    errdefer if (builtin.mode == .Debug) {
+    if (builtin.mode == .debug) _ = active_readers.fetchAdd(1, .monotonic);
+    errdefer if (builtin.mode == .debug) {
         _ = active_readers.fetchSub(1, .release);
     };
     const thread = try std.Thread.spawn(.{}, Self.run, .{self});
@@ -210,9 +210,9 @@ pub fn pidValue(self: *Self) i64 {
 fn effectFallible(self: *Self, comptime func: []const u8, args: anytype) !void {
     try self.writeEvent("(");
     try self.writeEvent(func);
-    inline for (std.meta.fields(@TypeOf(args))) |field| {
+    inline for (@typeInfo(@TypeOf(args)).@"struct".field_names) |field_name| {
         try self.writeEvent(" ");
-        try self.writeEventLispValue(@field(args, field.name));
+        try self.writeEventLispValue(@field(args, field_name));
     }
     try self.writeEvent(")");
 }
@@ -230,7 +230,7 @@ fn writeEventLispValue(self: *Self, val: anytype) !void {
 
 fn writeEventLispNumber(self: *Self, val: anytype) !void {
     var buf: [1024]u8 = undefined;
-    const str = try std.fmt.bufPrintZ(&buf, "{}", .{val});
+    const str = try std.mem.printSentinel(&buf, "{}", .{val}, 0);
     try self.writeEvent(str);
 }
 
@@ -274,7 +274,7 @@ fn run(self: *Self) void {
     self.owner.release();
     const event_writer = self.event_writer;
     self.release();
-    if (builtin.mode == .Debug) _ = active_readers.fetchSub(1, .release);
+    if (builtin.mode == .debug) _ = active_readers.fetchSub(1, .release);
 
     // This detached thread now reaps the child itself. Keep the channel open
     // until actual child exit, and send the status after all terminal events.
