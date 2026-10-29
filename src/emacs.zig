@@ -614,5 +614,8 @@ fn debugKillEmacsHook(_: ?*c.emacs_env, _: isize, _: [*c]c.emacs_value, _: ?*any
         user_ptr.finalizer(user_ptr.ptr);
     }
     debug_userptrs.deinit(module_alloc);
+    // If an undrained pipe stalls Debug shutdown, comment out this wait;
+    // the leak checker will then report reader-owned allocations.
+    @import("NativeProcess.zig").waitForReaders();
     return sym.nil;
 }

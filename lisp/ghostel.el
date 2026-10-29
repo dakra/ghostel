@@ -3812,7 +3812,7 @@ OUTPUT is a byte string containing one or more Lisp forms.
 Forms are evaluated in the ghostel buffer;
 incomplete trailing input is kept on PIPE until more data arrives.
 
-A bare numeric event is the native reaper's exit status; it is stored on
+A bare numeric event is the native child's exit status; it is stored on
 PIPE, which is then closed so its sentinel runs the normal exit cleanup.
 Any event batch invalidates the buffer for redraw while the buffer is
 still live."
@@ -3830,7 +3830,7 @@ still live."
             (process-put pipe 'ghostel--event-buf (substring str offset))
           (process-put pipe 'ghostel--event-buf nil)
           (cond
-           ;; The reaper thread writes the child exit status as a bare number.
+           ;; The native thread writes the child exit status as a bare number.
            ((numberp event)
             (process-put pipe 'ghostel--exit-status event)
             (delete-process pipe))
@@ -4156,7 +4156,7 @@ returned process owns the PTY and receives `ghostel--filter' and
   "Spawn COMMAND through the native PTY implementation.
 COMMAND is a list of argv strings.  Returns the event pipe process used
 as the Emacs-side handle for the native child process.  The native
-reader writes terminal events to the pipe, and its detached reaper
+reader writes terminal events to the pipe, then waits for the child and
 writes a final exit status before closing it."
   (let* ((pipe (make-pipe-process
                 :name "ghostel-native-process"
@@ -4172,11 +4172,11 @@ writes a final exit status before closing it."
                             ;; The pipe stands in for the native child process.
                             ;; If Emacs deletes it before normal exit, make sure
                             ;; the child is not left running.  After normal exit
-                            ;; the reaper has already waited, so this is a no-op.
+                            ;; the native thread has waited, so this is a no-op.
                             (signal-process
                              (process-get process 'ghostel--native-pid) 9)
                             ;; The pipe closes normally whatever the child returned;
-                            ;; the reaper reports a signal as 128+N.
+                            ;; the native thread reports a signal as 128+N.
                             (ghostel--sentinel
                              process
                              (pcase (process-get process 'ghostel--exit-status)
@@ -4198,7 +4198,7 @@ writes a final exit status before closing it."
   "Detach the native event pipe and request child termination.
 Run from `kill-buffer-hook' in native PTY buffers."
   ;; Do not let `kill-buffer' delete the pipe early.  Keep the
-  ;; pipe alive until the native reaper reports that the child
+  ;; pipe alive until the native thread reports that the child
   ;; exited, matching Emacs process lifetime semantics.
   (when ghostel--process
     (set-process-buffer ghostel--process nil))

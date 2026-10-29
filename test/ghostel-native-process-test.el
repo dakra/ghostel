@@ -53,7 +53,7 @@ newline once the marker is on screen."
            (pipe (make-pipe-process
                   :name "ghostel-native-command-test"
                   :buffer (current-buffer)
-                  ;; The reaper's bare exit status ends the event stream.
+                  ;; The reader's bare exit status ends the event stream.
                   :filter (lambda (pipe output)
                             (when (string-match "\\([0-9]+\\)\n\\'" output)
                               (setq exit-status (match-string 1 output)))
@@ -375,58 +375,62 @@ must not leave a poisoned tail on the pipe."
                        (reverse titles)))))))
 
 (defun ghostel-test-native-process--event-backpressure ()
-  "Fill the event pipe, then take the terminal lock without draining it.
-The reader must release the terminal lock while its event write blocks,
-otherwise Emacs waits for the lock and can never resume draining the pipe."
+  "Check terminal access and buffer teardown without draining a full event pipe."
   (ghostel-test--with-terminal-buffer (buf term 24 80 1000)
     (let* ((directory (make-temp-file "ghostel-native-events-" t))
            (ready (expand-file-name "ready" directory))
            (script (string-join
                     '("import pathlib, sys"
                       "sys.path.insert(0, sys.argv[1])"
-                      "from pty_setup import read_for, set_raw_stdio, start_reader, write_all"
+                      "from pty_setup import set_raw_stdio, write_all"
                       "set_raw_stdio()"
-                      "pathlib.Path(sys.argv[2]).touch()"
                       "write_all(b'\\x1b]52;c;' + b'm' * (512 * 1024) + b'\\x1b\\\\')"
-                      "# Keep the PTY open until Emacs has checked the event."
-                      "read_for(start_reader(), 30, 1)")
+                      "pathlib.Path(sys.argv[2]).touch()")
                     "\n"))
+           chunks
            (pipe (make-pipe-process
-                  :name "ghostel-native-events" :buffer buf
-                  :filter #'ghostel--events-filter :noquery t))
-           pid received)
+                  :name "ghostel-native-events" :buffer buf :noquery t
+                  :filter (lambda (process output)
+                            (push output chunks)
+                            (ghostel--events-filter process output))))
+           pid)
       (unwind-protect
-          (cl-letf (((symbol-function 'ghostel--osc52-handle)
-                     (lambda (_selection data) (setq received data))))
+          (progn
             (setq pid (ghostel--spawn-native-process
                        term (list (ghostel-test--python) "-u" "-c" script
                                   (ghostel-test--fixture-directory) ready)
                        pipe))
-            ;; Wait out of band: accepting process output here would drain
-            ;; the very pipe we need to fill.
-            (let ((deadline (+ (float-time)
-                               (* 5 ghostel-test--timeout-scale))))
-              (while (and (not (file-exists-p ready))
-                          (< (float-time) deadline))))
+            ;; Busy-wait: sleeping or accepting output would drain the pipe.
+            (let ((deadline (+ (float-time) (* 5 ghostel-test--timeout-scale))))
+              (while (and (not (file-exists-p ready)) (< (float-time) deadline))))
             (should (file-exists-p ready))
-            ;; Give the reader time to overflow its 16 KiB event buffer and
-            ;; block on the undrained pipe; sleeping would service that pipe.
             (let ((deadline (+ (float-time) 0.5)))
               (while (< (float-time) deadline)))
-            ;; This triggers the deadlock if the reader still holds the
-            ;; terminal lock: Emacs waits for that lock while the reader
-            ;; waits for Emacs to drain the event pipe.
+
+            ;; Both operations must return before Emacs reads any events.
             (ghostel--focus-event term t)
-            (ghostel-test--wait-until (lambda () received) pipe 5)
-            (should (equal received (make-string (* 512 1024) ?m))))
+            (setq-local ghostel--process pipe ghostel-query-before-killing nil)
+            (add-hook 'kill-buffer-hook #'ghostel--kill-native-process-hook nil t)
+            (kill-buffer buf)
+            (should-not (buffer-live-p buf))
+            (should-not (process-buffer pipe))
+            (should (process-live-p pipe))
+
+            ;; Resume draining: the complete OSC event must precede the status.
+            (ghostel-test--wait-until
+             (lambda () (not (process-live-p pipe))) pipe 5)
+            (should (integerp (process-get pipe 'ghostel--exit-status)))
+            (should (string-search
+                     (concat "(ghostel--osc52-handle \"c\" \""
+                             (make-string (* 512 1024) ?m) "\")")
+                     (apply #'concat (nreverse chunks)))))
         (when pid (ignore-errors (signal-process pid 9)))
-        ;; Close the pipe before joining the reader, including on failure.
         (when (process-live-p pipe) (delete-process pipe))
         (ghostel--kill-native-process term)
         (delete-directory directory t)))))
 
 (ert-deftest ghostel-test-native-process-event-pipe-backpressure ()
-  "A full event pipe does not deadlock terminal access or lose OSC 52 data."
+  "A full pipe cannot deadlock terminal access or buffer kill, or lose events."
   :tags '(native)
   ;; An Emacs timer cannot interrupt a native mutex wait. Keep the timeout
   ;; in a separate Emacs so a regression fails instead of hanging the suite.

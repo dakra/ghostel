@@ -20,12 +20,15 @@ const Self = @This();
 
 const log = std.log.scoped(.NativeProcessHandler);
 const cancellation_poll_interval: std.Io.Duration = .fromMilliseconds(20);
+var active_readers: std.atomic.Value(usize) = .init(0);
 
 pub const ChannelFd = EventWriter.Fd;
 pub const ProcessParams = backend_types.ProcessParams;
 
 alloc: Allocator,
 io: std.Io,
+// The terminal's process handle and the detached reader each own a reference.
+refcount: std.atomic.Value(usize) = .init(2),
 
 backend_handoff_mutex: std.Io.Mutex = .init,
 write_mutex: std.Io.Mutex = .init,
@@ -41,7 +44,6 @@ owner: *GhostelTerm,
 stream: gt.Stream(GhostelHandler(*Self)),
 
 quit: bool = false,
-thread: std.Thread,
 
 const LockedStream = struct {
     process: *Self,
@@ -83,9 +85,15 @@ pub fn init(
         .replica_name = replica_name,
         .owner = owner,
         .stream = stream,
-        .thread = undefined,
     };
-    self.thread = try std.Thread.spawn(.{}, Self.run, .{self});
+    owner.retain();
+    errdefer owner.release();
+    if (builtin.mode == .Debug) _ = active_readers.fetchAdd(1, .monotonic);
+    errdefer if (builtin.mode == .Debug) {
+        _ = active_readers.fetchSub(1, .release);
+    };
+    const thread = try std.Thread.spawn(.{}, Self.run, .{self});
+    thread.detach();
 }
 
 pub fn ptyWrite(self: *Self, env: emacs.Env, data: []const u8) !void {
@@ -247,7 +255,7 @@ fn run(self: *Self) void {
         log.warn("ghostel: error in read loop: {any}", .{err});
     };
 
-    var backend = self.retireBackend() orelse return;
+    var backend = self.retireBackend() orelse unreachable;
 
     var final_stream = LockedStream{ .process = self };
     backend.finishDrain(&final_stream) catch |err| {
@@ -257,24 +265,20 @@ fn run(self: *Self) void {
         log.warn("ghostel: error notifying final terminal update: {any}", .{err});
     };
 
-    // The reader thread must not waitpid here: it may be joined from Emacs
-    // during buffer teardown, and blocking that path would freeze Emacs.  Hand
-    // the child and event writer to a detached reaper instead. The channel stays
-    // open until the reaper observes child exit, mirroring Emacs process
-    // lifetime semantics for the Lisp-side pipe process.
-    const reaper_thread = std.Thread.spawn(
-        .{ .stack_size = 1024 * 1024 },
-        reapChild,
-        .{ backend, self.event_writer },
-    ) catch |err| {
-        log.err(
-            "ghostel: Failed to spawn reaper thread; leaking native backend: {any}",
-            .{err},
-        );
-        finishEventChannel(self.event_writer, 255);
-        return;
-    };
-    reaper_thread.detach();
+    // No parser callback can use the terminal after stream destruction. Drop
+    // its reader reference before waiting for a potentially SIGHUP-ignoring
+    // child, so only the backend and event channel need to outlive the buffer.
+    self.owner.mutex.lockUncancelable(self.io);
+    self.stream.deinit();
+    self.owner.unlock();
+    self.owner.release();
+    const event_writer = self.event_writer;
+    self.release();
+    if (builtin.mode == .Debug) _ = active_readers.fetchSub(1, .release);
+
+    // This detached thread now reaps the child itself. Keep the channel open
+    // until actual child exit, and send the status after all terminal events.
+    finishEventChannel(event_writer, backend.deinitAndWait());
 }
 
 fn loop(self: *Self) !void {
@@ -336,11 +340,6 @@ fn flushEvents(self: *Self) !void {
     self.event_buf.resize(0);
 }
 
-fn reapChild(backend: Backend, event_writer: EventWriter) void {
-    var be = backend;
-    finishEventChannel(event_writer, be.deinitAndWait());
-}
-
 fn finishEventChannel(event_writer: EventWriter, exit_code: u32) void {
     var writer = event_writer;
 
@@ -355,17 +354,22 @@ fn finishEventChannel(event_writer: EventWriter, exit_code: u32) void {
     writer.close();
 }
 
-pub fn deinit(self: *Self) void {
+pub fn requestStop(self: *Self) void {
     @atomicStore(bool, &self.quit, true, .monotonic);
 
-    {
-        self.backend_handoff_mutex.lockUncancelable(self.io);
-        defer self.backend_handoff_mutex.unlock(self.io);
-        if (self.backend) |*backend| backend.requestStop(self.thread);
-    }
+    self.backend_handoff_mutex.lockUncancelable(self.io);
+    defer self.backend_handoff_mutex.unlock(self.io);
+    if (self.backend) |*backend| backend.requestStop();
+}
 
-    self.thread.join();
+/// Debug shutdown only: release Emacs references before waiting for reader
+/// allocations to be freed. This does not wait for child exit.
+pub fn waitForReaders() void {
+    while (active_readers.load(.acquire) != 0) std.Thread.yield() catch {};
+}
 
-    self.stream.deinit();
+pub fn release(self: *Self) void {
+    if (self.refcount.fetchSub(1, .acq_rel) != 1) return;
     self.alloc.free(self.replica_name);
+    self.alloc.destroy(self);
 }
