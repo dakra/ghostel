@@ -366,7 +366,7 @@ pub fn drain(self: *Self, stream: anytype) !bool {
 
 pub fn finishDrain(_: *Self, _: anytype) !void {}
 
-pub fn requestStop(self: *Self, _: std.Thread) void {
+pub fn requestStop(self: *Self) void {
     if (self.wake_pipe[1] != -1) {
         _ = writeWithRetry(self.wake_pipe[1], "X");
     }
