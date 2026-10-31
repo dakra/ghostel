@@ -46,8 +46,8 @@ toolchain is required for the common case.  Open a terminal with =M-x ghostel=.
          :map ghostel-semi-char-mode-map
          ("C-s"  . consult-line)
          ("C-k"  . my/ghostel-send-C-k-and-kill)
-         ;; ;; I'm used to go up/down the shell history with M-n/p from eshell
-         ;; ;; Simulate this behavior in ghostel by sending C-p and C-n
+         ;; I'm used to go up/down the shell history with M-n/p from eshell
+         ;; Simulate this behavior in ghostel by sending C-p and C-n
          ("M-p" . (lambda () (interactive) (ghostel-send-key "p" "ctrl")))
          ("M-n" . (lambda () (interactive) (ghostel-send-key "n" "ctrl"))))
   :config
@@ -727,84 +727,6 @@ Remote TRAMP buffers still use Emacs process machinery so TRAMP can spawn the
 shell on the remote host and apply its file handlers.  The rendering and input
 APIs are shared by both paths.
 
-** Bookmarks
-:properties:
-:custom_id: bookmarks
-:end:
-
-Ghostel buffers work with Emacs's built-in bookmarks.  =bookmark-set= (=C-x r
-m=) records the terminal's working directory and buffer name; =bookmark-jump=
-(=C-x r b=) reopens it - reusing a live ghostel buffer of that name, or starting
-a fresh shell in the bookmarked directory when none exists.  Bookmarks capture
-the directory and name only (not scrollback or session contents), matching
-vterm.
-
-=ghostel-bookmark-check-dir= (default =t=) controls directory restoration: a
-fresh buffer starts its shell in the bookmarked directory, and a reused buffer
-that has since moved elsewhere gets a =cd= typed into its shell.  The =cd= is
-only typed into an idle shell: not while a command runs (detected through
-shell integration) or a full-screen program is open, and not when there is
-already input on the prompt line.  Set it to =nil= to leave the directory
-alone.
-
-** Desktop
-:properties:
-:custom_id: desktop
-:end:
-
-Ghostel integrates with desktop.el to restore terminal buffers on restart.  As
-with bookmarks, only the directory and identity are saved and restored, not
-scrollback or session contents.
-
-Some saved terminals are skipped at restore time (reported in =*Messages*=).
-Terminals that were running a program (=ghostel-exec=, =ghostel-compile=,
-eshell visual commands) are not respawned to avoid re-running a saved command
-(e.g. a build).  Remote (TRAMP) terminals are skipped for the same reason:
-spawning their shells would open connections, possibly prompting for
-credentials.  Terminals whose saved directory no longer exists fail to load,
-with an error in =*Messages*=.  Terminals whose shell already exited are not
-saved in the first place.
-
-Restored terminals spawn real shells, which can be a lot when restarting.
-The =desktop-restore-eager= option limits how many buffers are restored
-during =desktop-read= itself, deferring the rest to idle time.
-
-** Org links
-:properties:
-:custom_id: org-links
-:end:
-#+cindex: org
-
-=ghostel-org= adds a =ghostel:= Org link type that names a directory and,
-optionally, a buffer:
-
-#+begin_example
-[[ghostel:~/src/project][project shell]]
-[[ghostel:~/src/project::*ghostel*][my shell, in project]]
-#+end_example
-
-Following the first form pops to a live ghostel terminal whose working
-directory is that directory, or starts a fresh shell there when none exists.
-The second form behaves like a [[#bookmarks][bookmark]]: it switches to the
-named buffer, typing a =cd= when it sits elsewhere, and otherwise starts that
-buffer in the directory.  =org-store-link= in a ghostel buffer stores the second
-form, and =org-insert-link= completes =ghostel:= with a directory prompt.
-
-Add
-
-#+begin_src emacs-lisp
-(with-eval-after-load 'org (require 'ghostel-org))
-#+end_src
-
-or
-
-#+begin_src emacs-lisp
-(use-package ghostel-org
-  :after org)
-#+end_src
-
-to your config.
-
 ** Links and file detection
 :properties:
 :custom_id: links-and-file-detection
@@ -1309,6 +1231,9 @@ need this: =ghostel ssh REMOTE= injects it per session without touching any rc
 file.
 
 *** Option 3: Manual setup
+:properties:
+:custom_id: remote-manual-setup
+:end:
 
 Copy the integration scripts from ghostel's =etc/shell/= directory to each remote
 host (e.g. =~/.local/share/ghostel/etc/shell/=, the layout =ghostel ssh= uses) and
@@ -1671,7 +1596,7 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 * Extensions
 :properties:
 :custom_id: extensions
-:description: Evil, compile, eshell, comint, consult, and input methods
+:description: Evil, shell commands, compile, eshell, comint, consult, input methods, bookmarks, desktop, and Org links
 :end:
 
 These features live in separate files (or, for evil and consult, separate
@@ -1749,6 +1674,11 @@ When =evil-ghostel-mode= is active:
 
 The initial state is configurable via =evil-ghostel-initial-state= (default
 =insert=).
+
+The editing operators drive the shell's line editor over the PTY and wait for
+its echo before moving on, so point and the terminal cursor agree.  The wait
+is capped by =evil-ghostel-sync-render-max-iterations= (default 10, 50 ms
+each); raise it for a slow remote shell whose echo arrives late.
 
 *** ESC routing
 :properties:
@@ -2184,6 +2114,86 @@ over:
   :hook (ghostel-mode . ghostel-ime-mode))
 #+end_src
 
+** Bookmarks
+:properties:
+:custom_id: bookmarks
+:end:
+
+Ghostel buffers work with Emacs's built-in bookmarks.  =bookmark-set= (=C-x r
+m=) records the terminal's working directory and buffer name; =bookmark-jump=
+(=C-x r b=) reopens it - reusing a live ghostel buffer of that name, or starting
+a fresh shell in the bookmarked directory when none exists.  Bookmarks capture
+the directory and name only (not scrollback or session contents), matching
+vterm.  Nothing to enable: =ghostel-bookmark= loads when a bookmark is set or
+jumped to.
+
+=ghostel-bookmark-check-dir= (default =t=) controls directory restoration: a
+fresh buffer starts its shell in the bookmarked directory, and a reused buffer
+that has since moved elsewhere gets a =cd= typed into its shell.  The =cd= is
+only typed into an idle shell: not while a command runs (detected through
+shell integration) or a full-screen program is open, and not when there is
+already input on the prompt line.  Set it to =nil= to leave the directory
+alone.
+
+** Desktop
+:properties:
+:custom_id: desktop
+:end:
+
+Ghostel integrates with desktop.el to restore terminal buffers on restart.  As
+with bookmarks, only the directory and identity are saved and restored, not
+scrollback or session contents.  Nothing to enable: =ghostel-desktop= loads
+when =desktop-read= restores a terminal.
+
+Some saved terminals are skipped at restore time (reported in =*Messages*=).
+Terminals that were running a program (=ghostel-exec=, =ghostel-compile=,
+eshell visual commands) are not respawned to avoid re-running a saved command
+(e.g. a build).  Remote (TRAMP) terminals are skipped for the same reason:
+spawning their shells would open connections, possibly prompting for
+credentials.  Terminals whose saved directory no longer exists fail to load,
+with an error in =*Messages*=.  Terminals whose shell already exited are not
+saved in the first place.
+
+Restored terminals spawn real shells, which can be a lot when restarting.
+The =desktop-restore-eager= option limits how many buffers are restored
+during =desktop-read= itself, deferring the rest to idle time.
+
+** Org links
+:properties:
+:custom_id: org-links
+:end:
+#+cindex: org
+
+=ghostel-org= adds a =ghostel:= Org link type that names a directory and,
+optionally, a buffer:
+
+#+begin_example
+[[ghostel:~/src/project][project shell]]
+[[ghostel:~/src/project::*ghostel*][my shell, in project]]
+#+end_example
+
+Following the first form pops to a live ghostel terminal whose working
+directory is that directory, or starts a fresh shell there when none exists.
+The second form behaves like a [[#bookmarks][bookmark]]: it switches to the
+named buffer, typing a =cd= when it sits elsewhere, and otherwise starts that
+buffer in the directory.  =org-store-link= in a ghostel buffer stores the second
+form, and =org-insert-link= completes =ghostel:= with a directory prompt.
+
+Add
+
+#+begin_src emacs-lisp
+(with-eval-after-load 'org (require 'ghostel-org))
+#+end_src
+
+or
+
+#+begin_src emacs-lisp
+(use-package ghostel-org
+  :after org)
+#+end_src
+
+to your config.
+
 * Commands
 :properties:
 :custom_id: commands
@@ -2206,6 +2216,8 @@ over:
 | =M-x ghostel-project-next=             | Cycle to the next ghostel buffer in the current project.                  |
 | =M-x ghostel-project-previous=         | Cycle to the previous ghostel buffer in the current project.              |
 | =M-x ghostel-project-list-buffers=     | Pick a project-scoped ghostel buffer.                                     |
+| =M-x ghostel-compile=                  | Run a compile command in a ghostel terminal (see [[#compilation-mode][Compilation mode]]).   |
+| =M-x ghostel-shell-command=            | =async-shell-command= in a ghostel terminal (see [[#shell-commands][Shell commands]]).     |
 | =M-x ghostel-status-next=              | Switch to the next terminal needing attention, most urgent first.         |
 | =M-x ghostel-status-indicator-mode=    | Count terminals by program status in every mode line.                     |
 | =M-x ghostel-status-acknowledge=       | Drop the done and error records of the current terminal.                  |
@@ -2226,6 +2238,8 @@ over:
 | =M-x ghostel-previous-hyperlink=       | Jump to the previous hyperlink.                                           |
 | =M-x ghostel-force-redraw=             | Force a full terminal redraw.                                             |
 | =M-x ghostel-debug-typing-latency=     | Measure per-keystroke typing latency.                                     |
+| =M-x ghostel-debug-info=               | Collect a diagnostic report to attach to bug reports.                     |
+| =M-x ghostel-debug-start=              | Log terminal events to =*ghostel-debug*= (=ghostel-debug-stop= ends it).    |
 | =M-x ghostel-sync-theme=               | Re-sync the color palette after a theme change.                           |
 | =M-x ghostel-ssh-clear-terminfo-cache= | Clear the outbound-ssh terminfo install cache (force re-probe).           |
 | =M-x ghostel-download-module=          | Download the pre-built native module.                                     |
@@ -2496,6 +2510,7 @@ while ghostel and vterm trade a compile step for a C/Zig engine.
 |-------------------------------+---------+----------+----------|
 | True color (24-bit)           | ✅      | ✅       | ✅       |
 | OSC 4/10/11 color queries     | ✅      | ❌       | partial  |
+| Color-scheme DSR (mode 2031)  | ✅      | ❌       | ❌       |
 | Bold / italic                 | ✅      | ✅       | ✅       |
 | Faint / dim                   | ✅      | ❌       | ✅       |
 | Underline styles              | 5 types | ❌       | curly    |
@@ -2522,8 +2537,13 @@ while ghostel and vterm trade a compile step for a C/Zig engine.
 | Shell integration auto-inject | ✅      | manual   | manual   |
 | Prompt navigation             | ✅      | ✅       | ✅       |
 | Elisp eval from shell         | ✅      | ✅       | ❌       |
-| TRAMP remote terminals        | POSIX   | ✅       | ✅       |
+| TRAMP remote terminals        | ✅POSIX | ✅       | ✅       |
 | Eshell integration            | ✅      | ❌       | ✅       |
+| Compile in a terminal         | ✅      | ❌       | ❌       |
+| Shell command in a terminal   | ✅      | ❌       | ❌       |
+| Comint via the VT parser      | ✅      | ❌       | ❌       |
+| Project-scoped terminals      | ✅      | ❌       | ✅       |
+| Consult picker                | ✅      | ❌       | ❌       |
 | Bookmark support              | ✅      | ✅       | ❌       |
 | Desktop (session) restore     | ✅      | ❌       | ❌       |
 | Org links                     | ✅      | ❌       | ❌       |

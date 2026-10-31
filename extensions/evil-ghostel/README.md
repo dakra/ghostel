@@ -18,6 +18,11 @@ terminal, and the editing operators (`d`, `c`, `x`, `r`, `p`, `u`, …) drive
 the shell's line editor over the PTY. See the
 [manual](https://dakra.github.io/ghostel/#evil-mode) for the full list.
 
+The editing operators wait for the shell's echo before moving on, so point
+and the terminal cursor agree. The wait is capped by
+`evil-ghostel-sync-render-max-iterations` (default 10, 50 ms each); raise it
+for a slow remote shell whose echo arrives late.
+
 ## Word boundaries
 
 Word motions use Vim-style word boundaries: `w`, `b`, `e`, `ciw` stop at

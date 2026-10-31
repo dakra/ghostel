@@ -89,6 +89,10 @@ buffer in this project.
 In a project you can press `C-x p M` to get a list of Ghostel buffers running in
 the current project that you can switch to.
 
+`ghostel-status-indicator-mode` shows in the mode line how many terminals have a
+program that is blocked, done or failed (reported via
+[OSC 7501](https://dakra.github.io/ghostel/#notifications-and-progress).
+
 ## Extensions
 
 These ship with the Ghostel package, no separate install necessary.
@@ -160,8 +164,9 @@ shell's entry in `ghostel-shell-history-commands` at it, e.g. for
 ```
 
 `consult-ghostel-mode` adds a `Ghostel` group to `consult-bookmark` (narrow
-with `g`), hidden ghostel sources to `consult-buffer`, and makes `consult-line`
-match across soft line wraps in ghostel buffers.
+with `g`), hidden ghostel sources to `consult-buffer` (narrow with `g`, or `a`
+for terminals needing attention, also available as `consult-ghostel-status`),
+and makes `consult-line` match across soft line wraps in ghostel buffers.
 
 ## Evil
 If you're an evil user you can install the [evil-ghostel](https://melpa.org/#/evil-ghostel) extension:
@@ -185,6 +190,13 @@ in the manual.
 
 Directory tracking and prompt navigation are on by default for local bash, zsh, fish or nushell sessions.
 See [shell integration](https://dakra.github.io/ghostel/#shell-integration) for tramp support and more.
+
+In a ghostel shell, `ghostel ssh HOST` pushes the shell integration and terminfo
+to `~/.local/share/ghostel/` on the remote and starts the login shell with them,
+without editing any rc file there.
+`ghostel ssh-install HOST` does the
+[manual remote setup](https://dakra.github.io/ghostel/#remote-manual-setup)
+for you, so a plain `ssh HOST` loads them too.
 
 To call Emacs functions from your shell you have to add them to the
 `ghostel-eval-cmds` whitelist and then add something like this to your bashrc:
@@ -250,10 +262,15 @@ Emacs selection even if the terminal app enabled mouse tracking.
 - [Configuration](https://dakra.github.io/ghostel/#configuration)
 - [Extensions](https://dakra.github.io/ghostel/#extensions)
   - [Evil](https://dakra.github.io/ghostel/#evil-mode)
+  - [Shell commands](https://dakra.github.io/ghostel/#shell-commands)
   - [Compilation mode](https://dakra.github.io/ghostel/#compilation-mode)
   - [Eshell integration](https://dakra.github.io/ghostel/#eshell-integration)
   - [Comint integration](https://dakra.github.io/ghostel/#comint-integration)
+  - [Consult integration](https://dakra.github.io/ghostel/#consult-integration)
   - [Emacs Lisp input methods](https://dakra.github.io/ghostel/#emacs-lisp-input-methods)
+  - [Bookmarks](https://dakra.github.io/ghostel/#bookmarks)
+  - [Desktop](https://dakra.github.io/ghostel/#desktop)
+  - [Org links](https://dakra.github.io/ghostel/#org-links)
 - [Commands](https://dakra.github.io/ghostel/#commands)
 - [Running Tests](https://dakra.github.io/ghostel/#running-tests)
 - [Performance](https://dakra.github.io/ghostel/#performance)
