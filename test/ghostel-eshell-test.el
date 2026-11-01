@@ -13,6 +13,7 @@
 (require 'ghostel-test-helpers)
 (require 'ghostel-embedded)
 (require 'ghostel-eshell)
+(require 'eshell)
 
 (defconst ghostel-test--eshell-plain-script
   (string-join
@@ -395,6 +396,122 @@ CLICK-1 and CLICK-3 are the commands a left and right click should run."
               (let ((ghostel-eshell-lighter-prefix "X"))
                 (should (equal (eval prefix-form t) " X")))))
         (setq ghostel-eshell-mode original)))))
+
+;;; Native PTY backend
+
+(defconst ghostel-test--eshell-native-script
+  (string-join
+   '("import sys"
+     "sys.stdout.write('native\\r\\n')"
+     "sys.stdout.flush()"
+     "raise SystemExit(7)")
+   "\n")
+  "Python program printing a line and exiting with status 7.")
+
+(defun ghostel-test--eshell-native-run (buffer command args)
+  "Run COMMAND with ARGS in BUFFER through the native PTY advice.
+Forces the native path and provides the interactive Eshell handles the
+real command evaluator would bind.  Returns the event pipe process."
+  (with-current-buffer buffer
+    (let ((ghostel-eshell-use-native-pty t)
+          (ghostel-use-native-pty t)
+          (eshell-current-handles (eshell-create-handles t 'insert)))
+      (ghostel--eshell-gather-process-output
+       #'eshell-gather-process-output command args))))
+
+(ert-deftest ghostel-test-eshell-native-p-gating ()
+  "The native PTY is chosen by setting, platform and availability."
+  (let ((ghostel-eshell-use-native-pty t)
+        (ghostel-use-native-pty t))
+    (should (ghostel--eshell-native-p)))
+  (let ((ghostel-eshell-use-native-pty nil)
+        (ghostel-use-native-pty t))
+    (should-not (ghostel--eshell-native-p)))
+  (let ((ghostel-eshell-use-native-pty 'auto)
+        (ghostel-use-native-pty t))
+    (let ((system-type 'windows-nt))
+      (should (ghostel--eshell-native-p)))
+    (let ((system-type 'gnu/linux))
+      (should-not (ghostel--eshell-native-p))))
+  (let ((ghostel-eshell-use-native-pty t)
+        (ghostel-use-native-pty nil))
+    (should-not (ghostel--eshell-native-p))))
+
+(ert-deftest ghostel-test-eshell-native-run ()
+  "A native-PTY command renders, reports its status and freezes."
+  :tags '(native)
+  (let* ((buffer (ghostel-test--eshell-buffer))
+         process session)
+    (unwind-protect
+        (progn
+          (setq process
+                (ghostel-test--eshell-native-run
+                 buffer (ghostel-test--python)
+                 (list "-c" ghostel-test--eshell-native-script)))
+          (should (process-get process 'ghostel--eshell-native))
+          (should (process-get process 'ghostel--native-pid))
+          ;; The event stream must stay Lisp-readable: a `binary' pipe
+          ;; would corrupt the UTF-8 event text.
+          (should-not (eq (car (process-coding-system process)) 'binary))
+          (setq session (process-get process 'ghostel--eshell-session))
+          (should session)
+          (should (ghostel-embedded-native-p session))
+          (ghostel-test--eshell-wait-exit process)
+          (with-current-buffer buffer
+            (should-not ghostel--embedded-session)
+            (should (equal (string-trim-right
+                            (ghostel-test--eshell-region-text session))
+                           "native"))
+            (should-not (get-text-property
+                         (ghostel-embedded-start session) 'read-only)))
+          (with-current-buffer buffer
+            ;; The pipe reports 0; the sentinel restores the native code
+            ;; in the buffer-local Eshell reads for `$?'.
+            (should (= eshell-last-command-status 7))))
+      (ghostel-test--eshell-teardown buffer process))))
+
+(ert-deftest ghostel-test-eshell-native-input ()
+  "Input reaches a native child through the module's PTY writer."
+  :tags '(native)
+  (let ((cat (executable-find "cat")))
+    (skip-unless cat)
+    (let* ((buffer (ghostel-test--eshell-buffer))
+           process session)
+      (unwind-protect
+          (progn
+            (setq process
+                  (ghostel-test--eshell-native-run buffer cat nil))
+            (setq session (process-get process 'ghostel--eshell-session))
+            (should session)
+            (ghostel--embedded-send-string session "hello\n")
+            (ghostel-test--wait-for
+             process
+             (lambda ()
+               (with-current-buffer buffer
+                 (string-match-p
+                  "hello"
+                  (ghostel-test--eshell-region-text session))))
+             10))
+        (ghostel-test--eshell-teardown buffer process)))))
+
+(ert-deftest ghostel-test-eshell-native-cleanup-kills-child ()
+  "Cleaning up a running native session stops the child."
+  :tags '(native)
+  (let* ((buffer (ghostel-test--eshell-buffer))
+         process)
+    (unwind-protect
+        (progn
+          (setq process
+                (ghostel-test--eshell-native-run
+                 buffer (ghostel-test--python)
+                 (list "-c" ghostel-test--eshell-sleep-script)))
+          (should (process-live-p process))
+          (with-current-buffer buffer
+            (ghostel--eshell-cleanup)
+            (should-not ghostel--embedded-session))
+          (ghostel-test--wait-for
+           process (lambda () (not (process-live-p process))) 10))
+      (ghostel-test--eshell-teardown buffer process))))
 
 (provide 'ghostel-eshell-test)
 ;;; ghostel-eshell-test.el ends here
