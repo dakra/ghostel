@@ -3984,7 +3984,9 @@ incomplete trailing input is kept on PIPE until more data arrives.
 A bare numeric event is the native child's exit status; it is stored on
 PIPE, which is then closed so its sentinel runs the normal exit cleanup.
 Any event batch invalidates the buffer for redraw while the buffer is
-still live."
+still live.  The pipe's `ghostel--invalidate-function' property, when
+present, replaces the whole-buffer redraw; embedded terminals use it to
+invalidate only their region."
   (let* ((buffer (process-buffer pipe))
          (str (concat (process-get pipe 'ghostel--event-buf) output))
          (len (length str))
@@ -4014,7 +4016,8 @@ still live."
         (setq offset next)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        (ghostel--invalidate)))))
+        (funcall (or (process-get pipe 'ghostel--invalidate-function)
+                     #'ghostel--invalidate))))))
 
 (defun ghostel--sentinel (process event)
   "Clean up after the terminal process or event pipe changes state.
