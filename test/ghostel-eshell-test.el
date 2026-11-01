@@ -388,12 +388,12 @@ CLICK-1 and CLICK-3 are the commands a left and right click should run."
               ;; The prefix is formatted when the mode line renders, so a
               ;; customized value takes effect without reloading the mode.
               (should (equal (eval prefix-form t)
-                             (format " %s-eshell"
+                             (format " %s"
                                      ghostel-eshell-lighter-prefix)))
               ;; A distinct value proves the prefix is read at render time
               ;; (the default in batch Emacs is already "G").
               (let ((ghostel-eshell-lighter-prefix "X"))
-                (should (equal (eval prefix-form t) " X-eshell")))))
+                (should (equal (eval prefix-form t) " X")))))
         (setq ghostel-eshell-mode original)))))
 
 (provide 'ghostel-eshell-test)
