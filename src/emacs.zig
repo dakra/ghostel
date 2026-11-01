@@ -101,7 +101,15 @@ pub const Env = struct {
         return self.raw.make_float.?(self.raw, n);
     }
 
+    /// Invalid UTF-8 keeps its bad bytes as raw-byte chars instead of signalling.
     pub fn makeString(self: Env, str: []const u8) Value {
+        if (!std.unicode.utf8ValidateSlice(str)) if (self.makeUnibyteString(str)) |unibyte|
+            return self.f("decode-coding-string", .{ unibyte, sym.@"utf-8-unix" });
+        return self.makeUtf8String(str);
+    }
+
+    /// STR must be valid UTF-8, e.g. text encoded from decoded codepoints.
+    pub fn makeUtf8String(self: Env, str: []const u8) Value {
         return self.raw.make_string.?(self.raw, str.ptr, @intCast(str.len));
     }
 
@@ -190,16 +198,28 @@ pub const Env = struct {
         return self.extractFloat(self.f("float", .{val}));
     }
 
+    /// After a failed `copy_string_contents`: VAL with its raw-byte chars
+    /// encoded back to bytes, or null when the failure was not about them.
+    /// The caught signal is debuggable, so `debug-on-error` still shows it.
+    fn rawByteFallback(self: Env, val: Value) ?Value {
+        const exit = self.nonLocalExitGet();
+        self.nonLocalExitClear();
+        if (!self.eq(exit.symbol, sym.@"wrong-type-argument")) return null;
+        return self.f("encode-coding-string", .{ val, sym.@"utf-8-unix" });
+    }
+
     pub fn extractString(self: Env, val: Value, buf: []u8) ![:0]const u8 {
         var len: isize = @intCast(buf.len);
-        if (self.raw.copy_string_contents.?(self.raw, val, buf.ptr, &len)) {
-            // len includes the null terminator
-            return @ptrCast(buf[0..(@as(usize, @intCast(len)) - 1)]);
+        if (!self.raw.copy_string_contents.?(self.raw, val, buf.ptr, &len)) {
+            const encoded = self.rawByteFallback(val) orelse return error.ExtractStringFailed;
+            len = @intCast(buf.len);
+            if (!self.raw.copy_string_contents.?(self.raw, encoded, buf.ptr, &len)) {
+                self.nonLocalExitClear();
+                return error.ExtractStringFailed;
+            }
         }
-        // Clear the non-local exit so callers (e.g. extractStringAlloc
-        // fallback) can make further API calls.
-        self.nonLocalExitClear();
-        return error.ExtractStringFailed;
+        // len includes the null terminator
+        return @ptrCast(buf[0..(@as(usize, @intCast(len)) - 1)]);
     }
 
     pub fn extractStringAlloc(self: Env, alloc: Allocator, val: Value, buf: *?[]u8) ![:0]u8 {
@@ -209,10 +229,14 @@ pub const Env = struct {
         // the module API catches that signal internally, the catcher's type
         // is `CATCHER_ALL_DEBUGGABLE' - so the user's debugger pops up when
         // `debug-on-error' is set, even though we'd recover and retry.
+        var str = val;
         var len: isize = 0;
-        if (!self.raw.copy_string_contents.?(self.raw, val, null, &len)) {
-            self.nonLocalExitClear();
-            return error.ExtractStringFailed;
+        if (!self.raw.copy_string_contents.?(self.raw, str, null, &len)) {
+            str = self.rawByteFallback(val) orelse return error.ExtractStringFailed;
+            if (!self.raw.copy_string_contents.?(self.raw, str, null, &len)) {
+                self.nonLocalExitClear();
+                return error.ExtractStringFailed;
+            }
         }
         const required: usize = @intCast(len);
 
@@ -221,7 +245,7 @@ pub const Env = struct {
             buf.* = try alloc.alloc(u8, required);
         }
 
-        if (!self.raw.copy_string_contents.?(self.raw, val, buf.*.?.ptr, &len)) {
+        if (!self.raw.copy_string_contents.?(self.raw, str, buf.*.?.ptr, &len)) {
             self.nonLocalExitClear();
             return error.ExtractStringFailed;
         }
@@ -451,6 +475,7 @@ const interned_symbols = [_][:0]const u8{
     "cons",
     "current-buffer",
     "dash",
+    "decode-coding-string",
     "default",
     "default-directory",
     "delete-region",
@@ -459,6 +484,7 @@ const interned_symbols = [_][:0]const u8{
     "display-warning",
     "dot",
     "double-line",
+    "encode-coding-string",
     "eobp",
     "eq",
     "erase-buffer",
@@ -562,10 +588,12 @@ const interned_symbols = [_][:0]const u8{
     "symbol-value",
     "t",
     "temporary-file-directory",
+    "utf-8-unix",
     "wave",
     "window-buffer",
     "window-point",
     "window-start",
+    "wrong-type-argument",
 };
 
 fn SymbolCache(comptime symbols: []const [:0]const u8) type {

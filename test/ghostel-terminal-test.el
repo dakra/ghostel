@@ -640,5 +640,16 @@ state from the wrong buffer after feeding output to the native module."
       ;; `ghostel--cursor-blink-start' installs, cancelling any timer.
       (kill-buffer buf))))
 
+
+(ert-deftest ghostel-test-write-vt-accepts-raw-byte-chars ()
+  "A string holding raw-byte chars reaches the terminal as those bytes."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (_buf term 5 80 1000)
+    (let ((inhibit-read-only t))
+      (ghostel--write-vt term (concat "a" (string #x3fffe6) "b\r\n"))
+      (ghostel--redraw term t)
+      (should (string-match-p "\\`a.b$" (buffer-substring-no-properties
+                                        (point-min) (line-end-position)))))))
+
 (provide 'ghostel-terminal-test)
 ;;; ghostel-terminal-test.el ends here
