@@ -4345,23 +4345,39 @@ returned process owns the PTY and receives `ghostel--filter' and
      (0 "finished\n")
      (code (format "exited abnormally with code %d\n" code)))))
 
+(defun ghostel--spawn-native-pipe (term command filter sentinel &optional name)
+  "Create the event pipe for TERM running COMMAND.
+FILTER receives the native reader's Lisp event stream and SENTINEL is
+called when the pipe closes.  NAME names the pipe process for
+`list-processes' and diagnostics, and defaults to
+\"ghostel-native-process\".  Spawns the child, records its handle and
+pid on the pipe, and returns the pipe.  The caller owns teardown and
+buffer-local bookkeeping."
+  (let* ((pipe (make-pipe-process
+                :name (or name "ghostel-native-process")
+                :buffer (current-buffer)
+                :coding 'utf-8-unix
+                :filter filter
+                :sentinel sentinel
+                :noquery t))
+         child)
+    (unwind-protect
+        (setq child (ghostel--spawn-native-process term command pipe))
+      (unless child (delete-process pipe)))
+    (when child
+      (process-put pipe 'ghostel--native-child child)
+      (process-put pipe 'ghostel--native-pid
+                   (ghostel--native-child-pid child)))
+    pipe))
+
 (defun ghostel--spawn-via-native (command)
   "Spawn COMMAND through the native PTY implementation.
 COMMAND is an argv list.  Return the event pipe process, which retains
 the child handle even after the terminal buffer is killed."
-  (let ((pipe (make-pipe-process
-               :name "ghostel-native-process"
-               :buffer (current-buffer)
-               :coding 'utf-8-unix
-               :filter #'ghostel--events-filter
-               :noquery t))
-        child)
-    (unwind-protect
-        (setq child (ghostel--spawn-native-process ghostel--term command pipe))
-      (unless child (delete-process pipe)))
-    (process-put pipe 'ghostel--native-child child)
-    (setq ghostel--pid (ghostel--native-child-pid child))
-    (set-process-sentinel pipe #'ghostel--native-process-sentinel)
+  (let ((pipe (ghostel--spawn-native-pipe
+               ghostel--term command #'ghostel--events-filter
+               #'ghostel--native-process-sentinel)))
+    (setq ghostel--pid (process-get pipe 'ghostel--native-pid))
     (add-hook 'kill-buffer-hook #'ghostel--kill-native-process-hook nil t)
     pipe))
 
