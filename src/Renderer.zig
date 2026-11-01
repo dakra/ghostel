@@ -68,9 +68,25 @@ repainted: ?BufferRegion = null,
 /// Pin the last render started from; every row from here down was walked.
 rendered_from: ?gt.Pin = null,
 
+/// Host-buffer region this terminal renders into, or null when it owns the
+/// whole buffer.  Elisp installs the markers with `ghostel--set-region' and
+/// they are re-read on every redraw, so text inserted above the region shifts
+/// it naturally.  Only one live terminal may own a given host buffer.
+render_region: ?RegionPos = null,
+
+/// Mapping from screen rows to host-buffer lines for the redraw in progress.
+/// The whole-buffer defaults are row 0 / position 1.
+row_map: utils.RowMap = .{},
+
 const BufferRegion = struct {
     min: usize,
     max: usize,
+};
+
+/// Positional snapshot of `render_region` taken at the start of a redraw.
+const RegionPos = struct {
+    start: usize,
+    end: usize,
 };
 
 const ScreenId = struct {
@@ -99,6 +115,9 @@ pub fn init(alloc: Allocator, env: emacs.Env, term: *gt.Terminal) !Self {
         s.eq,
     }));
     env.defvarLocal("ghostel--rendered-font", env.nil());
+    // Nil keeps the classic whole-buffer target.  `ghostel--set-region'
+    // installs the markers for an embedded terminal.
+    env.defvarLocal("ghostel--render-region", env.nil());
 
     var renderer = Self{
         .alloc = alloc,
@@ -111,7 +130,11 @@ pub fn init(alloc: Allocator, env: emacs.Env, term: *gt.Terminal) !Self {
         .pending_resize = .{ .cols = term.cols, .rows = term.rows, .cell_w = 1, .cell_h = 1 },
         .span = .{ .alloc = alloc },
     };
-    try renderer.commitResize(env);
+    // Only apply the size here: `commitResize` may erase the render target,
+    // and an embedded terminal's host buffer gets its region installed by
+    // Elisp after this returns.  Erasing now would destroy host content the
+    // terminal is only supposed to add a region to.
+    try renderer.applyPendingResize(env);
     return renderer;
 }
 
@@ -127,6 +150,47 @@ fn currentScreenId(term: *gt.Terminal) ScreenId {
         .key = term.screens.active_key,
         .generation = term.screens.generation(term.screens.active_key),
     };
+}
+
+/// Return the host-buffer region this terminal renders into.
+///
+/// The region is a buffer-local cons of two markers installed by
+/// `ghostel--set-region', so edits above or below it move the region with
+/// the surrounding text.  Nil means the terminal owns the whole buffer.
+///
+/// A non-nil value always carries two *attached* markers in the same host
+/// buffer: `ghostel--set-region' only stores a complete pair, `finish'
+/// clears the variable before the buffer (and therefore the markers) can
+/// go away, and a dead buffer cannot redraw.  A nil marker position is
+/// therefore treated as "no region"; the debug assertion catches a future
+/// caller that breaks that invariant.
+fn regionPos(env: emacs.Env) ?RegionPos {
+    const val = env.symbolValue("ghostel--render-region");
+    if (env.isNil(val)) return null;
+
+    const start_val = env.f("marker-position", .{env.f("car", .{val})});
+    const end_val = env.f("marker-position", .{env.f("cdr", .{val})});
+    if (env.isNil(start_val) or env.isNil(end_val)) {
+        // Unreachable for the lifecycle described above.  Trip in Debug
+        // builds if that changes, but keep release behaviour as "no region".
+        if (comptime builtin.mode == .debug) std.debug.assert(false);
+        return null;
+    }
+
+    const start = env.cast(usize, start_val);
+    const end = env.cast(usize, end_val);
+    if (end < start) return null;
+    return .{ .start = start, .end = end };
+}
+
+/// Build the row-to-line mapping for REGION, whose start must be a line start.
+fn rowMapFor(env: emacs.Env, region: RegionPos) utils.RowMap {
+    const saved = env.f("point", .{});
+    defer _ = env.f("goto-char", .{saved});
+
+    _ = env.f("goto-char", .{region.start});
+    const line = env.cast(usize, env.f("line-number-at-pos", .{}));
+    return .{ .row_base = line - 1, .base_pos = region.start };
 }
 
 fn untrackActivePinIfLive(self: *Self) void {
@@ -165,9 +229,18 @@ pub fn redraw(self: *Self, env: emacs.Env, force_full: bool, force_sync: bool) !
 
     self.repainted = null;
 
+    // Resolve the host-buffer target once per redraw.  The markers keep the
+    // region in place while the host buffer is edited above it.
+    self.render_region = regionPos(env);
+    self.row_map = if (self.render_region) |region| rowMapFor(env, region) else .{};
+    defer {
+        self.render_region = null;
+        self.row_map = .{};
+    }
+
     const screen = self.term.screens.active;
     try self.saved_markers.save(self.alloc, env);
-    defer self.saved_markers.restoreAndClear(screen, env);
+    defer self.saved_markers.restoreAndClear(screen, env, self.row_map);
 
     if (force_full) try self.clear(env);
     try self.updateFontInfo(env);
@@ -954,6 +1027,16 @@ fn isRowDirty(self: *Self, pin: gt.Pin) bool {
     return false;
 }
 
+/// Whether point has reached the end of the embedded render region.
+///
+/// The end marker is re-read instead of cached: rendering rewrites rows
+/// in place, and the marker is the only position that stays correct while
+/// text before it grows or shrinks.
+fn atRenderEnd(env: emacs.Env) bool {
+    const region = regionPos(env) orelse return true;
+    return env.cast(usize, env.f("point", .{})) >= region.end;
+}
+
 /// Renders rows from `start_pin` to end into the buffer at current point.
 /// Consumes row dirty flags but not page dirty flags. The latter is the
 /// responsibility of the caller.
@@ -972,7 +1055,13 @@ fn render(
     var it = start_pin.rowIterator(.right_down, null);
     while (it.next()) |row_pin| {
         const row = row_pin.rowAndCell().row;
-        eob = eob or env.isNotNil(env.f("eobp", .{}));
+        if (self.render_region != null) {
+            // An embedded terminal stops at the region end, never at the
+            // host buffer's end.
+            eob = eob or atRenderEnd(env);
+        } else {
+            eob = eob or env.isNotNil(env.f("eobp", .{}));
+        }
 
         const clean = !eob and !self.isRowDirty(row_pin);
         if (current_span) |*span| {
@@ -1046,24 +1135,11 @@ fn commitResize(self: *Self, env: emacs.Env) !void {
         const cols_changed = rz.cols != self.term.cols;
         // `bufferPosToPin` reads row numbers from the buffer;
         // an erased one (`rows_in_buffer` 0) maps every position to row 0.
-        if (self.rows_in_buffer > 0) self.saved_markers.pin(self.term.screens.active, env);
+        if (self.rows_in_buffer > 0) {
+            self.saved_markers.pin(self.term.screens.active, env, self.row_map);
+        }
 
-        // `Terminal.resize` also clears synchronized output; keep the frame
-        // held until the program closes the mode itself.
-        const synchronized = self.term.modes.get(.synchronized_output);
-        try self.term.resize(self.alloc, .{
-            .cols = rz.cols,
-            .rows = rz.rows,
-            .cell_size_px = .{
-                .width = rz.cell_w,
-                .height = rz.cell_h,
-            },
-        });
-        self.term.modes.set(.synchronized_output, synchronized);
-        self.pending_resize = null;
-
-        env.set("ghostel--term-rows", self.term.rows);
-        env.set("ghostel--term-cols", self.term.cols);
+        try self.applyPendingResize(env);
 
         const total_rows_changed = self.rows_in_buffer != self.term.screens.active.pages.total_rows;
         if (cols_changed or
@@ -1075,15 +1151,61 @@ fn commitResize(self: *Self, env: emacs.Env) !void {
     }
 }
 
+/// Commit `pending_resize` to the terminal and publish the new grid size.
+/// Never touches the buffer; callers that need a full repaint call `clear`.
+fn applyPendingResize(self: *Self, env: emacs.Env) !void {
+    const rz = self.pending_resize orelse return;
+
+    // `Terminal.resize` also clears synchronized output; keep the frame
+    // held until the program closes the mode itself.
+    const synchronized = self.term.modes.get(.synchronized_output);
+    try self.term.resize(self.alloc, .{
+        .cols = rz.cols,
+        .rows = rz.rows,
+        .cell_size_px = .{
+            .width = rz.cell_w,
+            .height = rz.cell_h,
+        },
+    });
+    self.term.modes.set(.synchronized_output, synchronized);
+    self.pending_resize = null;
+
+    env.set("ghostel--term-rows", self.term.rows);
+    env.set("ghostel--term-cols", self.term.cols);
+}
+
 /// Position the Emacs point at the start of the active area: `self.term.rows`
-/// lines back from `point-max`.
+/// lines back from the end of the render target (the region end for an
+/// embedded terminal, `point-max` otherwise).
 fn gotoActiveStart(self: *Self, env: emacs.Env) void {
+    if (regionPos(env)) |region| {
+        _ = env.f("goto-char", .{region.end});
+        _ = env.f("forward-line", .{-@as(i64, @intCast(self.term.rows))});
+        if (env.cast(usize, env.f("point", .{})) < region.start) {
+            _ = env.f("goto-char", .{region.start});
+        }
+        return;
+    }
+
     _ = env.f("goto-char", .{env.f("point-max", .{})});
     _ = env.f("forward-line", .{-@as(i64, @intCast(self.term.rows))});
 }
 
 fn clear(self: *Self, env: emacs.Env) !void {
-    _ = env.f("erase-buffer", .{});
+    // An embedded terminal only owns its region; everything around it
+    // belongs to the host buffer.  `render_region` was resolved at the start
+    // of this redraw, so the inner lookup is only a defensive re-check: if
+    // the markers vanished since then, skip the delete rather than fall
+    // through to `erase-buffer`.
+    if (self.render_region != null) {
+        if (regionPos(env)) |region| {
+            if (region.end > region.start) {
+                _ = env.f("delete-region", .{ region.start, region.end });
+            }
+        }
+    } else {
+        _ = env.f("erase-buffer", .{});
+    }
     self.rows_in_buffer = 0;
 
     const screen = self.term.screens.active;
@@ -1106,12 +1228,17 @@ fn evictScrollback(self: *Self, env: emacs.Env) void {
     if (self.rows_in_buffer <= keep) return;
     const evicted = self.rows_in_buffer - keep;
 
-    _ = env.f("goto-char", .{1});
+    const base: usize = if (self.render_region != null)
+        (regionPos(env) orelse return).start
+    else
+        1;
+
+    _ = env.f("goto-char", .{base});
     _ = env.f("forward-line", .{evicted});
     const end = env.cast(usize, env.f("point", .{}));
-    if (end > 1) {
-        _ = env.f("delete-region", .{ 1, end });
-        self.saved_markers.adjustRegion(1, end - 1, 0);
+    if (end > base) {
+        _ = env.f("delete-region", .{ base, end });
+        self.saved_markers.adjustRegion(base, end - base, 0);
     }
     self.rows_in_buffer -= evicted;
 }
