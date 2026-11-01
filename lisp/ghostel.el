@@ -4175,37 +4175,47 @@ returned process owns the PTY and receives `ghostel--filter' and
     (process-put proc 'adjust-window-size-function #'ignore)
     proc))
 
+(defun ghostel--spawn-native-pipe (term command filter sentinel &optional name)
+  "Create the event pipe for TERM running COMMAND.
+FILTER receives the native reader's Lisp event stream and SENTINEL is
+called when the pipe closes.  NAME names the pipe process for
+`list-processes' and diagnostics, and defaults to
+\"ghostel-native-process\".  Spawns the child and records its pid on the
+pipe.  The caller owns teardown and buffer-local bookkeeping."
+  (let* ((pipe (make-pipe-process
+                :name (or name "ghostel-native-process")
+                :buffer (current-buffer)
+                :filter filter
+                :sentinel sentinel
+                :noquery t))
+         (pid (ghostel--spawn-native-process term command pipe)))
+    (process-put pipe 'ghostel--native-pid pid)
+    pipe))
+
 (defun ghostel--spawn-via-native (command)
   "Spawn COMMAND through the native PTY implementation.
 COMMAND is a list of argv strings.  Returns the event pipe process used
 as the Emacs-side handle for the native child process.  The native
 reader writes terminal events to the pipe, then waits for the child and
 writes a final exit status before closing it."
-  (let* ((pipe (make-pipe-process
-                :name "ghostel-native-process"
-                :buffer (current-buffer)
-                :filter #'ghostel--events-filter
-                :noquery t))
-         (pid (ghostel--spawn-native-process ghostel--term command pipe)))
-    (setq ghostel--pid pid)
-    (process-put pipe 'ghostel--native-pid pid)
-
-    (set-process-sentinel pipe
-                          (lambda (process event)
-                            ;; The pipe stands in for the native child process.
-                            ;; If Emacs deletes it before normal exit, make sure
-                            ;; the child is not left running.  After normal exit
-                            ;; the native thread has waited, so this is a no-op.
-                            (signal-process
-                             (process-get process 'ghostel--native-pid) 9)
-                            ;; The pipe closes normally whatever the child returned;
-                            ;; the native thread reports a signal as 128+N.
-                            (ghostel--sentinel
-                             process
-                             (pcase (process-get process 'ghostel--exit-status)
-                               ('nil event)
-                               (0 "finished\n")
-                               (code (format "exited abnormally with code %d\n" code))))))
+  (let ((pipe (ghostel--spawn-native-pipe
+               ghostel--term command #'ghostel--events-filter
+               (lambda (process event)
+                 ;; The pipe stands in for the native child process.
+                 ;; If Emacs deletes it before normal exit, make sure
+                 ;; the child is not left running.  After normal exit
+                 ;; the native thread has waited, so this is a no-op.
+                 (signal-process
+                  (process-get process 'ghostel--native-pid) 9)
+                 ;; The pipe closes normally whatever the child returned;
+                 ;; the native thread reports a signal as 128+N.
+                 (ghostel--sentinel
+                  process
+                  (pcase (process-get process 'ghostel--exit-status)
+                    ('nil event)
+                    (0 "finished\n")
+                    (code (format "exited abnormally with code %d\n" code))))))))
+    (setq ghostel--pid (process-get pipe 'ghostel--native-pid))
     (add-hook 'kill-buffer-hook #'ghostel--kill-native-process-hook nil t)
     pipe))
 
