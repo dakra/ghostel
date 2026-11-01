@@ -100,7 +100,15 @@ program that is blocked, done or failed (reported via
 These ship with the Ghostel package, no separate install necessary.
 Just enable what you want:
 
-Make `eshell-visual-commands` run in a Ghostel buffer.
+Run interactive external Eshell commands in a terminal region *inside* the
+Eshell buffer, with the final screen frozen into normal buffer text.  This
+supersedes `ghostel-eshell-visual-command-mode` while enabled.
+```emacs-lisp
+(use-package ghostel-eshell
+  :hook (eshell-load . ghostel-eshell-mode))
+```
+
+Make `eshell-visual-commands` run in a separate Ghostel buffer.
 ```emacs-lisp
 (use-package ghostel-eshell
   :hook (eshell-load . ghostel-eshell-visual-command-mode))
@@ -267,6 +275,7 @@ Emacs selection even if the terminal app enabled mouse tracking.
   - [Shell commands](https://dakra.github.io/ghostel/#shell-commands)
   - [Compilation mode](https://dakra.github.io/ghostel/#compilation-mode)
   - [Eshell integration](https://dakra.github.io/ghostel/#eshell-integration)
+  - [In-buffer Eshell terminals](https://dakra.github.io/ghostel/#eshell-in-buffer)
   - [Comint integration](https://dakra.github.io/ghostel/#comint-integration)
   - [Consult integration](https://dakra.github.io/ghostel/#consult-integration)
   - [Emacs Lisp input methods](https://dakra.github.io/ghostel/#emacs-lisp-input-methods)
