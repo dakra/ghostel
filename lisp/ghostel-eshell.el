@@ -213,14 +213,14 @@ gets a hint, since Eshell's visual handling discards the piped input."
              ;; render it.
              (fboundp 'internal-char-font)
              (internal-char-font nil char))
-        (string char)
-      "G"))
+        (concat "(" (string char) " tty)")
+      "G-eshell"))
   "Prefix for the `ghostel-eshell-mode' mode-line lighter.
-The default is chosen once, when ghostel-eshell loads, from the frame
-selected at that time; customize it to force a glyph."
-  :type '(choice (const :tag "Letter G" "G")
-                 (const :tag "GHOST" "")
-                 (const :tag "CJK Radical Ghost" "⻤")
+The default is chosen once, when ghostel-eshell loads, in the frame
+selected at that time; customize it to force a selection."
+  :type '(choice (const :tag "(<Ghost> tty)" "( tty)")
+                 (const :tag "Letter G" "G-eshell")
+                 (const :tag "xiǎo yōu líng (little ghost)" "小幽灵")
                  (string :tag "Or enter a custom string"))
   :group 'ghostel)
 
@@ -242,7 +242,7 @@ Add it to `eshell-load-hook'."
   :global t
   :group 'ghostel
   :lighter (ghostel--eshell-local-mode
-            ((:eval (format " %s-eshell" ghostel-eshell-lighter-prefix))
+            ((:eval (format " %s" ghostel-eshell-lighter-prefix))
              (:eval (ghostel--eshell-lighter))))
   (cond
    (ghostel-eshell-mode
