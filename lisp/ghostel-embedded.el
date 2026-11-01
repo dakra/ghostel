@@ -1,6 +1,6 @@
 ;;; ghostel-embedded.el --- Run a terminal inside a region of a host buffer -*- lexical-binding: t; -*-
 
-;; Author: Daniel Kraus <daniel@kraus.my>
+;; Author: Agnes Li <agnes.li@mf.me>
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
