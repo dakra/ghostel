@@ -1626,7 +1626,10 @@ Returns the sequence string, or nil for unknown keys."
   (when (and ghostel--readonly-fast-exit
              (memq ghostel--input-mode '(copy emacs)))
     (ghostel-readonly-exit))
-  (when (and ghostel-scroll-on-input ghostel--term)
+  (when (and ghostel-scroll-on-input ghostel--term
+             ;; Embedded terminals do not anchor ghostel-style windows:
+             ;; the host buffer owns the display around the region.
+             (not (bound-and-true-p ghostel--embedded-session)))
     (ghostel--anchor-window nil t)))
 
 (defun ghostel--self-insert ()
