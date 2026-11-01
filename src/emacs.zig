@@ -103,8 +103,10 @@ pub const Env = struct {
 
     /// Invalid UTF-8 keeps its bad bytes as raw-byte chars instead of signalling.
     pub fn makeString(self: Env, str: []const u8) Value {
-        if (!std.unicode.utf8ValidateSlice(str)) if (self.makeUnibyteString(str)) |unibyte|
-            return self.f("decode-coding-string", .{ unibyte, sym.@"utf-8-unix" });
+        if (!std.unicode.utf8ValidateSlice(str)) {
+            if (self.makeUnibyteString(str)) |unibyte|
+                return self.f("decode-coding-string", .{ unibyte, sym.@"utf-8-unix" });
+        }
         return self.makeUtf8String(str);
     }
 
@@ -199,19 +201,19 @@ pub const Env = struct {
     }
 
     /// After a failed `copy_string_contents`: VAL with its raw-byte chars
-    /// encoded back to bytes, or null when the failure was not about them.
+    /// encoded back to bytes, or ExtractStringFailed when the failure was not about them.
     /// The caught signal is debuggable, so `debug-on-error` still shows it.
-    fn rawByteFallback(self: Env, val: Value) ?Value {
+    fn rawByteFallback(self: Env, val: Value) !Value {
         const exit = self.nonLocalExitGet();
         self.nonLocalExitClear();
-        if (!self.eq(exit.symbol, sym.@"wrong-type-argument")) return null;
+        if (!self.eq(exit.symbol, sym.@"wrong-type-argument")) return error.ExtractStringFailed;
         return self.f("encode-coding-string", .{ val, sym.@"utf-8-unix" });
     }
 
     pub fn extractString(self: Env, val: Value, buf: []u8) ![:0]const u8 {
         var len: isize = @intCast(buf.len);
         if (!self.raw.copy_string_contents.?(self.raw, val, buf.ptr, &len)) {
-            const encoded = self.rawByteFallback(val) orelse return error.ExtractStringFailed;
+            const encoded = try self.rawByteFallback(val);
             len = @intCast(buf.len);
             if (!self.raw.copy_string_contents.?(self.raw, encoded, buf.ptr, &len)) {
                 self.nonLocalExitClear();
@@ -232,7 +234,7 @@ pub const Env = struct {
         var str = val;
         var len: isize = 0;
         if (!self.raw.copy_string_contents.?(self.raw, str, null, &len)) {
-            str = self.rawByteFallback(val) orelse return error.ExtractStringFailed;
+            str = try self.rawByteFallback(val);
             if (!self.raw.copy_string_contents.?(self.raw, str, null, &len)) {
                 self.nonLocalExitClear();
                 return error.ExtractStringFailed;
