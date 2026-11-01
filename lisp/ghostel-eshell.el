@@ -324,6 +324,18 @@ which can leave the program with a wrong window size."
                  (const :tag "Use the terminal anyway" nil))
   :group 'ghostel)
 
+(defcustom ghostel-eshell-use-native-pty 'auto
+  "Whether in-buffer Eshell terminals use ghostel's native PTY.
+`auto' uses the native PTY where Emacs cannot give an external process
+a real terminal (MS-Windows), and Emacs's own PTY elsewhere.  A value of
+t always uses the native PTY in local buffers; nil always uses Emacs's
+PTY.  The native path needs Emacs 29 or later.  Remote buffers always
+use Emacs so TRAMP can run the command."
+  :type '(choice (const :tag "Auto" auto)
+                 (const :tag "Always native" t)
+                 (const :tag "Always Emacs PTY" nil))
+  :group 'ghostel)
+
 (defvar ghostel--eshell-stty-available :unknown
   "Cached result of looking `stty' up in the variable `exec-path'.")
 
@@ -333,6 +345,19 @@ which can leave the program with a wrong window size."
     (setq ghostel--eshell-stty-available
           (and (executable-find "stty") t)))
   ghostel--eshell-stty-available)
+
+(defun ghostel--eshell-native-p ()
+  "Return non-nil when this command should use the native PTY.
+Requires Emacs 29's `make-process' plumbing, a local directory, and
+`ghostel-use-native-pty'; `ghostel-eshell-use-native-pty' chooses between
+the native and Emacs PTY paths."
+  (and (>= emacs-major-version 29)
+       ghostel-use-native-pty
+       (not (file-remote-p default-directory))
+       (pcase ghostel-eshell-use-native-pty
+         ('auto (eq system-type 'windows-nt))
+         ('t t)
+         (_ nil))))
 
 (defun ghostel--eshell-stty-ok-p ()
   "Return non-nil when the `stty' requirement for a terminal is met.
@@ -348,9 +373,11 @@ missing."
 (defun ghostel--eshell-use-terminal-p ()
   "Return non-nil when the current Eshell command should run in a terminal.
 Skips subjobs, pipeline elements, commands whose output is not
-interactive output, remote buffers and the missing-`stty' fallback."
+interactive output and remote buffers, plus the missing-`stty' fallback
+on the Emacs-PTY path (the native PTY is sized in C)."
   (and (ghostel--eshell-embed-p)
-       (ghostel--eshell-stty-ok-p)))
+       (or (ghostel--eshell-native-p)
+           (ghostel--eshell-stty-ok-p))))
 
 (defun ghostel--eshell-terminal-size (&optional window position full)
   "Return (ROWS . COLS) for an in-buffer terminal in the current buffer.
@@ -410,38 +437,49 @@ the space below the prompt, restoring the previous layout."
         (let ((size (ghostel--eshell-terminal-size nil nil alt)))
           (ghostel--embedded-resize session (car size) (cdr size) t))))))
 
+(defun ghostel--eshell-start-session (&optional size)
+  "Start an embedded terminal session for the current Eshell command.
+SIZE is (ROWS . COLS) and defaults to the space below the prompt.  A
+leftover session would still own the renderer's buffer-local state, so
+it is frozen first.  The region starts at the end of the buffer, on a
+fresh line."
+  (when (ghostel--embedded-live-p ghostel--embedded-session)
+    (ghostel--embedded-finish ghostel--embedded-session))
+  (goto-char (point-max))
+  (unless (bolp) (insert "\n"))
+  (let* ((size (or size (ghostel--eshell-terminal-size nil (point))))
+         (session (ghostel--embedded-start (current-buffer)
+                                           (point)
+                                           (car size) (cdr size))))
+    session))
+
 (defun ghostel--eshell-attach-process (process &optional size)
   "Attach an embedded terminal to PROCESS in its Eshell buffer.
 SIZE is the terminal's (ROWS . COLS) and defaults to the current window
-size.  The region starts at the end of the buffer, on a fresh line.
-Returns the new session."
+size.  For a native-PTY process the session already exists and only the
+process bookkeeping is completed.  Returns the session."
   (with-current-buffer (process-buffer process)
-    ;; A leftover session would still own the renderer's buffer-local
-    ;; state; freeze it before starting the next command.
-    (when (ghostel--embedded-live-p ghostel--embedded-session)
-      (ghostel--embedded-finish ghostel--embedded-session))
-    (goto-char (point-max))
-    (unless (bolp) (insert "\n"))
-    (let* ((size (or size (ghostel--eshell-terminal-size nil (point))))
-           (session (ghostel--embedded-start (current-buffer)
-                                             (point)
-                                             (car size) (cdr size))))
-      (ghostel--embedded-attach-process session process)
+    (let* ((native (and (process-get process 'ghostel--eshell-native) t))
+           (session (or (and (ghostel--embedded-live-p ghostel--embedded-session)
+                             ghostel--embedded-session)
+                        (ghostel--eshell-start-session size))))
+      (ghostel--embedded-attach-process session process native)
       (ghostel--embedded-activate-input session)
       (process-put process 'ghostel--eshell-session session)
       (process-put process 'ghostel--eshell-invocation-directory
                    default-directory)
-      (process-put process 'ghostel--eshell-original-filter
-                   (process-filter process))
-      (process-put process 'ghostel--eshell-original-sentinel
-                   (process-sentinel process))
-      ;; Raw binary I/O, matching `ghostel' proper: the filter must see
-      ;; undecoded bytes.  With Eshell's decoding, a truncated multibyte
-      ;; sequence (e.g. a box-drawing glyph cut off by C-c C-c) arrives as a
-      ;; multibyte string holding a raw byte, which the module's string
-      ;; extraction rejects with `ExtractStringFailed'.
-      (set-process-coding-system process 'binary 'binary)
-      (set-process-filter process #'ghostel--eshell-filter)
+      (unless native
+        (process-put process 'ghostel--eshell-original-filter
+                     (process-filter process))
+        (process-put process 'ghostel--eshell-original-sentinel
+                     (process-sentinel process))
+        ;; Raw binary I/O, matching `ghostel' proper: the filter must see
+        ;; undecoded bytes.  With Eshell's decoding, a truncated multibyte
+        ;; sequence (e.g. a box-drawing glyph cut off by C-c C-c) arrives as a
+        ;; multibyte string holding a raw byte, which the module's string
+        ;; extraction rejects with `ExtractStringFailed'.
+        (set-process-coding-system process 'binary 'binary)
+        (set-process-filter process #'ghostel--eshell-filter))
       (set-process-sentinel process #'ghostel--eshell-sentinel)
       session)))
 
@@ -458,12 +496,16 @@ region and materializes them as text itself."
 EVENT is the process state-change description passed to sentinels.
 The frozen region becomes ordinary buffer text, Eshell's output markers
 move past it, the original filter/sentinel are restored and chained, and
-`default-directory' returns to the command's invocation directory."
-  (let ((session (process-get process 'ghostel--eshell-session))
-        (original (process-get process 'ghostel--eshell-original-sentinel))
-        (original-filter (process-get process 'ghostel--eshell-original-filter))
-        (directory (process-get process 'ghostel--eshell-invocation-directory))
-        pos)
+`default-directory' returns to the command's invocation directory.
+For a native PTY the child's exit status replaces the pipe's own."
+  (let* ((session (process-get process 'ghostel--eshell-session))
+         (native (and session (ghostel-embedded-native-p session)))
+         (status (and native (process-get process 'ghostel--exit-status)))
+         (original (process-get process 'ghostel--eshell-original-sentinel))
+         (original-filter (process-get process 'ghostel--eshell-original-filter))
+         (stderr (and native (process-get process 'ghostel--eshell-stderr)))
+         (directory (process-get process 'ghostel--eshell-invocation-directory))
+         pos)
     (when (buffer-live-p (process-buffer process))
       (with-current-buffer (process-buffer process)
         (when session
@@ -477,9 +519,26 @@ move past it, the original filter/sentinel are restored and chained, and
           (setq default-directory directory))
         (when original-filter
           (set-process-filter process original-filter))))
+    ;; A native child's stderr is part of the terminal stream.  When
+    ;; stderr was redirected Eshell still holds a pipe for it; close that
+    ;; before the original sentinel, or its `finish-io' waits forever.
+    (when (and stderr (process-live-p stderr))
+      (delete-process stderr))
     (when original
       (set-process-sentinel process original)
-      (funcall original process event))
+      (funcall original process
+               (if native
+                   (pcase status
+                     ('nil event)
+                     (0 "finished\n")
+                     (code (format "exited abnormally with code %d\n" code)))
+                 event)))
+    ;; The pipe reports status 0; restore the native child's exit code for
+    ;; `$?' after Eshell has finished its own bookkeeping.
+    (when (and native status (buffer-live-p (process-buffer process)))
+      (with-current-buffer (process-buffer process)
+        (when (fboundp 'eshell-set-exit-info)
+          (eshell-set-exit-info status (= status 0)))))
     ;; After a signal (e.g. "interrupt") Eshell inserts a message and can
     ;; move its markers such that `eshell-delete-output' would try to
     ;; delete the read-only prompt.  Re-point `eshell-last-input-end' at
@@ -515,9 +574,15 @@ output, so it must stay where Eshell put it at input time."
 
 (defun ghostel--eshell-cleanup ()
   "Freeze any embedded terminal in the current buffer.
-Used by `kill-buffer-hook'; `ghostel--embedded-finish' is idempotent."
+Used by `kill-buffer-hook'; `ghostel--embedded-finish' is idempotent.
+A native event pipe is detached from the dying buffer so its reader's
+final events cannot touch it."
   (when (ghostel--embedded-live-p ghostel--embedded-session)
-    (ghostel--embedded-finish ghostel--embedded-session)))
+    (let ((process (ghostel-embedded-process ghostel--embedded-session))
+          (native (ghostel-embedded-native-p ghostel--embedded-session)))
+      (ghostel--embedded-finish ghostel--embedded-session)
+      (when (and native (processp process))
+        (set-process-buffer process nil)))))
 
 (defun ghostel--eshell-process-environment ()
   "Return `process-environment' with the ghostel terminal variables set.
@@ -539,18 +604,54 @@ sees a correctly sized terminal in its very first query."
                 rows cols)
         ".."))
 
+(defun ghostel--eshell-spawn-native (plist)
+  "Spawn the command in PLIST through the native PTY and return its pipe.
+PLIST is the argument list `make-process' received.  The embedded session
+is created first, so the reader's events always have a terminal to
+render into.  The requested filter and sentinel are stashed for
+`ghostel--eshell-attach-process' to restore on exit."
+  (let* ((argv (plist-get plist :command))
+         (buffer (or (plist-get plist :buffer) (current-buffer)))
+         (filter (plist-get plist :filter))
+         (sentinel (plist-get plist :sentinel))
+         (stderr (plist-get plist :stderr)))
+    (with-current-buffer buffer
+      (let* ((session (if (ghostel--embedded-live-p ghostel--embedded-session)
+                          ghostel--embedded-session
+                        (ghostel--eshell-start-session)))
+             (term (ghostel-embedded-term session))
+             ;; `ghostel--eshell-attach-process' replaces this placeholder
+             ;; sentinel with `ghostel--eshell-sentinel' in the exec hook.
+             (pipe (ghostel--spawn-native-pipe
+                    term argv #'ghostel--events-filter #'ignore
+                    (concat "ghostel-eshell-native-process: "
+                            (file-name-nondirectory (car argv))))))
+        (process-put pipe 'ghostel--eshell-native t)
+        (process-put pipe 'ghostel--eshell-session session)
+        (process-put pipe 'ghostel--eshell-stderr stderr)
+        (process-put pipe 'ghostel--eshell-original-filter filter)
+        (process-put pipe 'ghostel--eshell-original-sentinel sentinel)
+        ;; Reader update events redraw this region, not a whole-buffer
+        ;; terminal (the host buffer has no `ghostel--term').
+        (process-put pipe 'ghostel--invalidate-function
+                     (lambda () (ghostel--embedded-invalidate session)))
+        pipe))))
+
 (defun ghostel--eshell-gather-process-output (orig command args)
   "Run COMMAND with ARGS in an embedded terminal when appropriate.
 ORIG is `eshell-gather-process-output'.  Only interactive external
 commands in local Eshell buffers get a terminal; everything else keeps
-Eshell's normal output path.  The spawned command is wrapped so `stty'
-gives the PTY the region's size before it starts, TERM and TERMINFO are
+Eshell's normal output path.  On the Emacs-PTY path the spawned command
+is wrapped so `stty' gives the PTY the region's size before it starts;
+on the native path the PTY is sized in C.  TERM and TERMINFO are
 exported for that one process, and a one-shot `eshell-exec-hook' entry
 attaches the terminal once Eshell has created the process."
   (if (not (ghostel--eshell-use-terminal-p))
       (funcall orig command args)
-    (let* ((size (ghostel--eshell-terminal-size))
-           (prefix (ghostel--eshell-stty-prefix (car size) (cdr size)))
+    (let* ((native (ghostel--eshell-native-p))
+           (size (unless native (ghostel--eshell-terminal-size)))
+           (prefix (unless native
+                     (ghostel--eshell-stty-prefix (car size) (cdr size))))
            (process-environment (ghostel--eshell-process-environment))
            (hook (lambda (process)
                    (ghostel--eshell-attach-process process size))))
@@ -563,12 +664,19 @@ attaches the terminal once Eshell has created the process."
                                     args)))
                 (cl-letf (((symbol-function #'make-process)
                            (lambda (&rest plist)
-                             (when (equal (plist-get plist :command) expected)
+                             (cond
+                              ((not (equal (plist-get plist :command) expected))
+                               (apply original plist))
+                              (native
+                               (ghostel--eshell-spawn-native plist))
+                              (t
                                (setf (plist-get plist :command)
-                                     (append prefix (plist-get plist :command))))
-                             (apply original plist))))
+                                     (append prefix
+                                             (plist-get plist :command)))
+                               (apply original plist))))))
                   (funcall orig command args)))
-            ;; Emacs 28 spawns through `start-file-process'.
+            ;; Emacs 28 spawns through `start-file-process'; native PTY
+            ;; support needs `make-process', so this keeps the Emacs path.
             (let ((original (symbol-function #'start-file-process)))
               (cl-letf (((symbol-function #'start-file-process)
                          (lambda (name buffer &rest argv)
