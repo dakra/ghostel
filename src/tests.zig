@@ -11,5 +11,6 @@ test {
         _ = @import("ConPtyProcess.zig");
     } else {
         _ = @import("PosixPtyProcess.zig");
+        _ = @import("pty_utils.zig");
     }
 }

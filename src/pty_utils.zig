@@ -8,6 +8,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const sys = std.posix.system;
+const c = @import("posix_c");
 
 /// Returns true if the tty at PATH is in canonical mode with echo
 /// disabled — the heuristic libghostty uses to decide that the
@@ -34,8 +35,41 @@ pub fn isPasswordMode(path: [*:0]const u8) bool {
     if (sys.errno(fd) != .SUCCESS) return false;
     defer _ = sys.close(fd);
 
-    var tio: sys.termios = undefined;
-    const result = sys.tcgetattr(fd, &tio);
-    if (sys.errno(result) != .SUCCESS) return false;
-    return tio.lflag.ICANON and !tio.lflag.ECHO;
+    var tio: c.termios = undefined;
+    if (c.tcgetattr(fd, &tio) != 0) return false;
+    return (tio.c_lflag & c.ICANON) != 0 and (tio.c_lflag & c.ECHO) == 0;
+}
+
+test "isPasswordMode: missing paths and non-ttys return false" {
+    try std.testing.expect(!isPasswordMode("/dev/null/ghostel-missing-tty"));
+    try std.testing.expect(!isPasswordMode("/dev/null"));
+}
+
+test "isPasswordMode: only canonical mode with echo disabled is a password mode" {
+    const primary_fd = c.posix_openpt(c.O_RDWR | c.O_NOCTTY | c.O_CLOEXEC);
+    try std.testing.expect(primary_fd >= 0);
+    defer _ = sys.close(primary_fd);
+    try std.testing.expectEqual(0, c.grantpt(primary_fd));
+    try std.testing.expectEqual(0, c.unlockpt(primary_fd));
+
+    var replica_name: [1024:0]u8 = undefined;
+    try std.testing.expectEqual(0, c.ptsname_r(primary_fd, &replica_name, replica_name.len));
+    const replica_fd = sys.open(&replica_name, .{ .ACCMODE = .RDWR, .NOCTTY = true });
+    try std.testing.expect(sys.errno(replica_fd) == .SUCCESS);
+    defer _ = sys.close(replica_fd);
+
+    var attrs: c.termios = undefined;
+    try std.testing.expectEqual(0, c.tcgetattr(replica_fd, &attrs));
+    const cases = .{
+        .{ c.ICANON | c.ECHO, false },
+        .{ c.ICANON, true },
+        .{ 0, false },
+        .{ c.ECHO, false },
+    };
+    inline for (cases) |case| {
+        attrs.c_lflag &= ~@as(@TypeOf(attrs.c_lflag), c.ICANON | c.ECHO);
+        attrs.c_lflag |= case[0];
+        try std.testing.expectEqual(0, c.tcsetattr(replica_fd, c.TCSANOW, &attrs));
+        try std.testing.expectEqual(case[1], isPasswordMode(&replica_name));
+    }
 }
