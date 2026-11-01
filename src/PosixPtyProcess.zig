@@ -127,9 +127,59 @@ const Pty = struct {
     }
 };
 
+alloc: Allocator,
 pty: Pty,
 pid: sys.pid_t = -1,
 wake_pipe: [2]sys.fd_t = .{ -1, -1 },
+waiter: *Waiter,
+
+// The backend moves during initialization and retirement. Keep the waiter's
+// shared state at a stable address until deinitAndWait joins its thread.
+const Waiter = struct {
+    thread: std.Thread = undefined,
+    exited: std.atomic.Value(bool) = .init(false),
+    exit_code: u32 = undefined,
+
+    fn start(self: *Waiter, pid: sys.pid_t, wake_fd: sys.fd_t) !void {
+        self.thread = std.Thread.spawn(.{ .stack_size = 128 * 1024 }, run, .{ self, pid, wake_fd }) catch |err| {
+            // No waiter owns the child yet. Do not leak it if thread creation
+            // fails, including children that ignore terminal hangup.
+            _ = sys.kill(pid, .KILL);
+            _ = waitForExit(pid);
+            return err;
+        };
+    }
+
+    fn hasExited(self: *const Waiter) bool {
+        return self.exited.load(.acquire);
+    }
+
+    fn wait(self: *Waiter) u32 {
+        self.thread.join();
+        return self.exit_code;
+    }
+
+    fn run(self: *Waiter, pid: sys.pid_t, wake_fd: sys.fd_t) void {
+        self.exit_code = waitForExit(pid);
+        self.exited.store(true, .release);
+        _ = writeWithRetry(wake_fd, "X");
+    }
+
+    fn waitForExit(pid: sys.pid_t) u32 {
+        while (true) {
+            var status: c_int = undefined;
+            switch (sys.errno(sys.waitpid(pid, &status, 0))) {
+                .SUCCESS => {
+                    if (c.WIFEXITED(status)) return @intCast(c.WEXITSTATUS(status));
+                    if (c.WIFSIGNALED(status)) return @intCast(128 + c.WTERMSIG(status));
+                },
+
+                .INTR => continue,
+                else => return 255,
+            }
+        }
+    }
+};
 
 pub const EventWriter = struct {
     pub const Fd = sys.fd_t;
@@ -208,7 +258,11 @@ fn failChild(msg: []const u8, err: []const u8) noreturn {
 }
 
 pub fn init(alloc: Allocator, _: std.Io, size: backend_types.WinSize, params: backend_types.ProcessParams) !Self {
-    var self = Self{ .pty = try .init() };
+    const waiter = try alloc.create(Waiter);
+    errdefer alloc.destroy(waiter);
+    waiter.* = .{};
+
+    var self = Self{ .alloc = alloc, .pty = try .init(), .waiter = waiter };
     errdefer self.pty.deinit();
     try self.pty.resize(size);
 
@@ -246,6 +300,7 @@ pub fn init(alloc: Allocator, _: std.Io, size: backend_types.WinSize, params: ba
         // This is the parent, child started successfully.
         self.pty.closeReplica();
         self.pid = pid;
+        try waiter.start(pid, self.wake_pipe[1]);
         return self;
     }
 
@@ -348,9 +403,15 @@ pub fn drain(self: *Self, stream: anytype) !bool {
     if (sys.errno(pollWithRetry(&pollfds, -1)) != .SUCCESS) {
         return error.PollFailed;
     }
-    if (pollfds[1].revents != 0) return false;
+    const exited = self.waiter.hasExited();
+    const wake_requested = pollfds[1].revents != 0;
+    const pty_hung_up = pollfds[0].revents & sys.POLL.HUP != 0;
+    if (wake_requested and !exited) return false;
 
-    const eof = pollfds[0].revents & sys.POLL.HUP != 0;
+    // Child exit is independent of PTY hangup: background jobs can keep the
+    // replica open. Keep reading until EAGAIN, EOF, or an error before stopping
+    // on child exit; the buffer size only limits each individual read.
+    const eof = exited or pty_hung_up;
     while (true) {
         const len = sys.read(self.pty.primary_fd, &buf, buf.len);
         if (len == 0) return !eof;
@@ -379,18 +440,52 @@ pub fn replicaName(self: *Self) []const u8 {
 pub fn deinitAndWait(self: *Self) u32 {
     std.debug.assert(self.pid > 0);
     self.pty.deinit();
+    // PTY closure can precede child exit. Keep the state and wake pipe alive
+    // until the waiter has published the status and finished its wakeup write.
+    const exit_code = self.waiter.wait();
+    self.alloc.destroy(self.waiter);
     _ = sys.close(self.wake_pipe[0]);
     _ = sys.close(self.wake_pipe[1]);
-    while (true) {
-        var status: c_int = undefined;
-        switch (sys.errno(sys.waitpid(self.pid, &status, 0))) {
-            .SUCCESS => {
-                if (c.WIFEXITED(status)) return @intCast(c.WEXITSTATUS(status));
-                if (c.WIFSIGNALED(status)) return @intCast(128 + c.WTERMSIG(status));
-            },
+    return exit_code;
+}
 
-            .INTR => continue,
-            else => return 255,
+test "child exit wakeup drains queued output without waiting for hangup" {
+    const testing = std.testing;
+    var output_pipe: [2]sys.fd_t = undefined;
+    try testing.expectEqual(sys.E.SUCCESS, sys.errno(sys.pipe(&output_pipe)));
+    defer for (output_pipe) |fd| {
+        _ = sys.close(fd);
+    };
+    _ = try fcntl(output_pipe[0], sys.F.SETFL, @as(u32, @bitCast(sys.O{ .NONBLOCK = true })));
+
+    var wake_pipe: [2]sys.fd_t = undefined;
+    try testing.expectEqual(sys.E.SUCCESS, sys.errno(sys.pipe(&wake_pipe)));
+    defer for (wake_pipe) |fd| {
+        _ = sys.close(fd);
+    };
+
+    var waiter: Waiter = .{};
+    var backend: Self = .{
+        .alloc = testing.allocator,
+        .pty = .{ .primary_fd = output_pipe[0] },
+        .wake_pipe = wake_pipe,
+        .waiter = &waiter,
+    };
+    var stream: struct {
+        data: std.ArrayList(u8) = .empty,
+
+        pub fn nextSlice(self: *@This(), bytes: []const u8) !void {
+            try self.data.appendSlice(testing.allocator, bytes);
         }
-    }
+    } = .{};
+    defer stream.data.deinit(testing.allocator);
+
+    const output = "final stdout and stderr";
+    try testing.expectEqual(@as(isize, output.len), writeWithRetry(output_pipe[1], output));
+    waiter.exited.store(true, .release);
+    backend.requestStop();
+
+    // Keep the output writer open: only the exit wakeup can terminate drain.
+    try testing.expect(!try backend.drain(&stream));
+    try testing.expectEqualStrings(output, stream.data.items);
 }

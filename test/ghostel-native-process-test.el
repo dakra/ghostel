@@ -90,6 +90,98 @@ newline once the marker is on screen."
         (when (process-live-p pipe)
           (delete-process pipe))))))
 
+(ert-deftest ghostel-test-native-process-exits-with-background-job ()
+  "Shell exit runs the sentinel without waiting for a background job's PTY."
+  :tags '(native posix)
+  (skip-unless (ghostel-test--posix-p))
+  (skip-unless (executable-find "bash"))
+  (let* ((bash (executable-find "bash"))
+         (ghostel-use-native-pty t)
+         (ghostel-kill-buffer-on-exit nil)
+         (directory (make-temp-file "ghostel-native-job-" t))
+         (pid-file (expand-file-name "pid" directory))
+         (buffer (generate-new-buffer " *ghostel-native-job*"))
+         process background-pid exit-event final-output)
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq process
+                (ghostel-exec
+                 buffer bash
+                 (list "--noprofile" "--norc" "-c"
+                       (concat "set -m; sleep 300 & "
+                               "printf '%s\\n' \"$!\" > \"$1\"; "
+                               "printf 'GHOSTEL_READY\\n'; read x; "
+                               "printf 'GHOSTEL_FINAL_OUT\\n'; "
+                               "printf 'GHOSTEL_FINAL_ERR\\n' >&2; exit 23")
+                       "ghostel-test" pid-file)))
+          (add-hook 'ghostel-exit-functions
+                    (lambda (_buffer event)
+                      (setq exit-event event
+                            final-output (buffer-string)))
+                    nil t)
+          (ghostel-test--wait-for-text "GHOSTEL_READY" process 5)
+          (setq background-pid
+                (with-temp-buffer
+                  (insert-file-contents pid-file)
+                  (string-to-number (buffer-string))))
+          (should (> background-pid 0))
+          (ghostel--write-pty ghostel--term "\n")
+          (ghostel-test--wait-until (lambda () exit-event) process 5)
+          (should (equal exit-event "exited abnormally with code 23\n"))
+          (should (= (process-get process 'ghostel--exit-status) 23))
+          (should (zerop (signal-process background-pid 0)))
+          (should (string-match-p "GHOSTEL_FINAL_OUT" final-output))
+          (should (string-match-p "GHOSTEL_FINAL_ERR" final-output)))
+      (when (file-exists-p pid-file)
+        (unless background-pid
+          (setq background-pid
+                (with-temp-buffer
+                  (insert-file-contents pid-file)
+                  (string-to-number (buffer-string)))))
+        (when (> background-pid 0)
+          (ignore-errors (signal-process background-pid 'KILL))))
+      (ghostel-test--cleanup-exec-buffer buffer)
+      (delete-directory directory t))))
+
+(ert-deftest ghostel-test-native-process-waits-for-exit-after-pty-closes ()
+  "PTY closure does not report an exit status before the child actually exits."
+  :tags '(native posix)
+  (skip-unless (ghostel-test--posix-p))
+  (let* ((ghostel-use-native-pty t)
+         (ghostel-kill-buffer-on-exit nil)
+         (directory (make-temp-file "ghostel-native-closed-" t))
+         (closed (expand-file-name "closed" directory))
+         (release (expand-file-name "release" directory))
+         (script
+          (string-join
+           '("import os, pathlib, resource, signal, sys, time"
+             "closed, release = map(pathlib.Path, sys.argv[1:])"
+             "signal.signal(signal.SIGHUP, signal.SIG_IGN)"
+             "print('GHOSTEL_READY', flush=True)"
+             "sys.stdin.readline()"
+             ;; Close inherited PTY descriptors too, not just stdin/out/err.
+             "os.closerange(0, resource.getrlimit(resource.RLIMIT_NOFILE)[0])"
+             "closed.touch()"
+             "while not release.exists():"
+             "    time.sleep(0.01)"
+             "os._exit(37)")
+           "\n")))
+    (unwind-protect
+        (ghostel-test--with-exec-buffer
+         (buffer process (ghostel-test--python)
+                 (list "-u" "-c" script closed release))
+         (ghostel-test--wait-for-text "GHOSTEL_READY" process 5)
+         (ghostel--write-pty ghostel--term "\n")
+         (ghostel-test--wait-until (lambda () (file-exists-p closed)) process 5)
+         (accept-process-output process 0.2)
+         (should (process-live-p process))
+         (should-not (process-get process 'ghostel--exit-status))
+         (write-region "" nil release nil 'silent)
+         (ghostel-test--wait-until
+          (lambda () (not (process-live-p process))) process 5)
+         (should (= (process-get process 'ghostel--exit-status) 37)))
+      (delete-directory directory t))))
+
 (ert-deftest ghostel-test-native-process-exit-hook-kills-children ()
   "Emacs exit attempts to kill every recorded native child."
   (let (signals)
