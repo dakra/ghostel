@@ -900,7 +900,7 @@ fn flushSpan(self: *Self, env: emacs.Env) !void {
     if (self.span.text.items.len == 0) return;
 
     const span_start = env.cast(usize, env.f("point", .{}));
-    _ = env.f("insert", .{self.span.text.items});
+    _ = env.f("insert", .{env.makeUtf8String(self.span.text.items)});
 
     const span_end = span_start + self.span.char_len;
     self.repainted = if (self.repainted) |r| .{

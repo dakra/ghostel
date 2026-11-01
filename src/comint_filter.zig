@@ -297,7 +297,7 @@ pub fn feed(self: *Self, env: emacs.Env, data: []const u8) !emacs.Value {
     self.stream.nextSlice(data);
     try h.closePending();
 
-    const text_val = env.makeString(h.text.items);
+    const text_val = env.makeUtf8String(h.text.items);
     const s = &emacs.sym;
 
     for (h.runs.items) |*run| {

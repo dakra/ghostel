@@ -272,5 +272,13 @@ notes."
                       :foreground)
                      "#00cd00")))))
 
+
+(ert-deftest ghostel-comint-test-raw-byte-chars-pass-through ()
+  "Raw-byte chars in the input decode like any other bytes instead of erroring."
+  :tags '(native)
+  (ghostel-comint-test--with-state state
+    (should (equal (concat "a" (string #xfffd) "b")
+                   (ghostel--comint-filter state (concat "a" (string #x3fffe6) "b"))))))
+
 (provide 'ghostel-comint-test)
 ;;; ghostel-comint-test.el ends here

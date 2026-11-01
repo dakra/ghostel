@@ -26,6 +26,20 @@
                                                          (get-text-property link-pos 'help-echo)))
                                           (should (keymapp (get-text-property link-pos 'keymap)))))))
 
+(ert-deftest ghostel-test-osc8-invalid-utf8-uri-renders ()
+  "A URI cut mid-character still renders; the bad byte becomes a raw-byte char."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (_buf term 5 80 1000)
+    (let ((inhibit-read-only t))
+      (ghostel--write-vt term (concat "\e]8;;file:///tmp/"
+                                      (encode-coding-string "中文" 'utf-8)
+                                      "\346\e\\link\e]8;;\e\\"))
+      (ghostel--redraw term t)
+      (goto-char (point-min))
+      (should (search-forward "link" nil t))
+      (should (equal (concat "file:///tmp/中文" (string #x3fffe6))
+                     (get-text-property (1- (point)) 'help-echo))))))
+
 (ert-deftest ghostel-test-osc8-no-help-echo-outside-link ()
   "Non-link cells do not carry an OSC8 `help-echo' URI."
   :tags '(native)
