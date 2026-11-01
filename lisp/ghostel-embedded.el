@@ -33,7 +33,9 @@
 (declare-function ghostel--new "ghostel-module")
 (declare-function ghostel--redraw "ghostel-module"
                   (term &optional full force-sync))
+(declare-function ghostel--kill-native-process "ghostel-module" (term))
 (declare-function ghostel--set-region "ghostel-module" (term start end))
+(declare-function ghostel--write-pty "ghostel-module")
 (declare-function ghostel--write-vt "ghostel-module")
 
 (defvar-local ghostel--embedded-session nil
@@ -42,7 +44,9 @@
 (cl-defstruct (ghostel-embedded (:constructor ghostel-embedded--make))
   "State for one terminal embedded in a host buffer.
 BUFFER is the host buffer, TERM the native terminal handle, and PROCESS
-the Emacs PTY process whose output the terminal renders.  START and END
+the Emacs-side handle for the child: the Emacs PTY process, or the event
+pipe when NATIVE-P is non-nil and a native PTY reader drives the child.
+START and END
 are the region's markers; START does not move when text is inserted at
 it, END follows text appended to the terminal.  ROWS and COLS are the
 terminal grid size.  REDRAW-TIMER and PENDING-REDRAW coalesce output
@@ -68,7 +72,8 @@ alternate screen."
   saved-point
   input-active
   (input-mode 'semi-char)
-  (alt-screen-p nil))
+  (alt-screen-p nil)
+  (native-p nil))
 
 (defun ghostel--embedded-live-p (session)
   "Return non-nil when SESSION still has a terminal to render."
@@ -399,8 +404,11 @@ even when it did not change."
                 (ghostel-embedded-cols session) cols)
           (ghostel--set-size-with-cell-dims (ghostel-embedded-term session)
                                             rows cols)
+          ;; A native PTY is resized by the renderer on the next redraw;
+          ;; only an Emacs-owned PTY needs `set-process-window-size'.
           (when-let* ((process (ghostel-embedded-process session)))
-            (when (process-live-p process)
+            (when (and (not (ghostel-embedded-native-p session))
+                       (process-live-p process))
               (set-process-window-size process rows cols)))
           ;; A resize only takes effect on the next redraw and may
           ;; invalidate every row, so render it synchronously.
@@ -418,10 +426,13 @@ The native key encoder writes through the buffer-local `ghostel--process'."
 (defun ghostel--embedded-send-string (session string)
   "Send STRING to SESSION's PTY unchanged.
 Callers are responsible for UTF-8 encoding and control characters; this
-bypasses the terminal key encoder."
-  (ghostel--embedded-with-process session
-    (when (process-live-p ghostel--process)
-      (process-send-string ghostel--process string))))
+bypasses the terminal key encoder.  A native PTY is written by the
+module; an Emacs-owned PTY through `process-send-string'."
+  (if (ghostel-embedded-native-p session)
+      (ghostel--write-pty (ghostel-embedded-term session) string)
+    (ghostel--embedded-with-process session
+      (when (process-live-p ghostel--process)
+        (process-send-string ghostel--process string)))))
 
 (defun ghostel--embedded-send-key (session key-name &optional mods utf8)
   "Send KEY-NAME with MODS through SESSION's terminal key encoder.
@@ -445,10 +456,13 @@ ACTION, BUTTON, ROW, COL and MODS are passed to the native mouse encoder."
     (ghostel--mouse-event (ghostel-embedded-term session)
                           action button row col mods)))
 
-(defun ghostel--embedded-attach-process (session process)
-  "Attach PROCESS, an Emacs PTY process, to SESSION.
-When input is already active, also point the encoder at PROCESS."
-  (setf (ghostel-embedded-process session) process)
+(defun ghostel--embedded-attach-process (session process &optional native)
+  "Attach PROCESS to SESSION.
+PROCESS is an Emacs PTY process, or the event pipe for a native child
+when NATIVE is non-nil.  When input is already active, also point the
+encoder at PROCESS."
+  (setf (ghostel-embedded-process session) process
+        (ghostel-embedded-native-p session) (and native t))
   (when (ghostel-embedded-input-active session)
     (with-current-buffer (ghostel-embedded-buffer session)
       (setq ghostel--process process)))
@@ -766,6 +780,13 @@ Returns SESSION."
               (when end (goto-char end))))
           (when (markerp saved) (set-marker saved nil))
           (setf (ghostel-embedded-saved-point session) nil))
+        ;; A native child outlives the Emacs process abstraction: request
+        ;; its reader to stop.  The host detaches the event pipe when the
+        ;; buffer goes away, so the original sentinel still sees a live
+        ;; process buffer and can finish Eshell's bookkeeping.
+        (when (ghostel-embedded-native-p session)
+          (when-let* ((term (ghostel-embedded-term session)))
+            (ignore-errors (ghostel--kill-native-process term))))
         (ghostel--set-region (ghostel-embedded-term session) nil nil)
         (setf (ghostel-embedded-term session) nil)
         (when (eq ghostel--embedded-session session)
