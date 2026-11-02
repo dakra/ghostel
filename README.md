@@ -102,7 +102,9 @@ Just enable what you want:
 
 Run interactive external Eshell commands in a terminal region *inside* the
 Eshell buffer, with the final screen frozen into normal buffer text.  This
-supersedes `ghostel-eshell-visual-command-mode` while enabled.
+supersedes `ghostel-eshell-visual-command-mode` while enabled.  On
+MS-Windows (and with `ghostel-eshell-use-native-pty` set to `t`) the terminal
+uses ghostel's native ConPTY/PTY instead of Emacs's, so no `stty` is needed.
 ```emacs-lisp
 (use-package ghostel-eshell
   :hook (eshell-load . ghostel-eshell-mode))
