@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- In-buffer Eshell terminals (`ghostel-eshell-mode`) can run on ghostel's
+  native PTY, which makes them work on MS-Windows (ConPTY) where Emacs has
+  no real terminal for an external process.  `ghostel-eshell-use-native-pty`
+  chooses `auto` (native on MS-Windows), `t` (always native in local
+  buffers) or `nil` (always Emacs's PTY); remote buffers stay on Emacs's
+  PTY so TRAMP can run the command.
+
 ## [0.60.0] — 2026-10-29
 
 ### Added
