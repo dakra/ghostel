@@ -4798,6 +4798,13 @@ dimensions from the current buffer, so call it with TERM's buffer current."
                      (ghostel--reported-cell-width)
                      (ghostel--reported-cell-height)))
 
+(defun ghostel--desired-size ()
+  "Return (COLS . ROWS) fitting the windows showing this buffer, nil if none."
+  (when-let* ((windows (ghostel--windows (current-buffer) t)))
+    (funcall (or (default-value 'window-adjust-process-window-size-function)
+                 #'window-adjust-process-window-size-smallest)
+             ghostel--process windows)))
+
 (defun ghostel--adjust-size (window &optional force)
   "Resize the terminal to match WINDOW's buffer dimensions.
 If WINDOW was anchored to the live viewport before the size change,
@@ -4812,10 +4819,7 @@ path even when the row/column count is unchanged."
       (when (ghostel--window-anchored-p
              window (window-old-body-pixel-height window))
         (ghostel--anchor-window window))
-      (when-let* ((adjust-fn (or (default-value 'window-adjust-process-window-size-function)
-                                 #'window-adjust-process-window-size-smallest))
-                  (windows (ghostel--windows (current-buffer) t))
-                  (size (funcall adjust-fn ghostel--process windows))
+      (when-let* ((size (ghostel--desired-size))
                   (width (car size))
                   (height (cdr size)))
         (let* ((same-size-p (and (eql height ghostel--term-rows)
@@ -4834,6 +4838,15 @@ path even when the row/column count is unchanged."
             ;; Redraw synchronously so the buffer is updated before
             ;; Emacs displays the stale content at the new window size.
             (ghostel--redraw-now (current-buffer))))))))
+
+(defun ghostel--adjust-displayed-sizes (_frame)
+  "Refit every displayed terminal whose windows no longer match its grid."
+  (dolist (buffer (ghostel-buffer-list))
+    (with-current-buffer buffer
+      (when-let* ((size (and ghostel--process (ghostel--desired-size))))
+        (unless (and (eql (cdr size) ghostel--term-rows)
+                     (eql (car size) ghostel--term-cols))
+          (ghostel--adjust-size (car (ghostel--windows buffer t))))))))
 
 (defun ghostel--around-font-scale (fn args &optional buffer)
   "Resize and re-anchor Ghostel windows around font scaling by FN with ARGS.
@@ -5115,6 +5128,7 @@ may change freely (`ghostel-compile' finalize relies on this)."
   (add-function :after after-focus-change-function #'ghostel--focus-change)
   (add-hook 'window-selection-change-functions #'ghostel--focus-change)
   (add-hook 'window-buffer-change-functions #'ghostel--focus-change)
+  (add-hook 'window-buffer-change-functions #'ghostel--adjust-displayed-sizes)
   (add-hook 'window-buffer-change-functions #'ghostel--window-buffer-change nil t)
   (add-hook 'window-buffer-change-functions #'ghostel--sync-tty-composition nil t)
   (add-hook 'window-buffer-change-functions #'ghostel--tty-esc-window-change nil t)
