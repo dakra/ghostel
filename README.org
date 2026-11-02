@@ -1973,6 +1973,11 @@ command path in these buffers, so =ghostel-eshell-mode= supersedes
 is piped or redirected, subjobs, and commands in remote (TRAMP) buffers keep
 Eshell's normal output path.
 
+On MS-Windows, where Emacs cannot give an external process a real terminal,
+commands run in ghostel's native PTY (ConPTY) and need no =stty=.  Set
+=ghostel-eshell-use-native-pty= to =t= to use the native PTY in local buffers on
+any platform, or =nil= to always use Emacs's own PTY.
+
 The terminal is sized to the window below the prompt and follows window size
 changes.  While a command runs the terminal's rows are read-only and receive
 keyboard, mouse and paste input; =C-c C-c= interrupts, =C-c C-d= sends EOF,
@@ -1981,6 +1986,7 @@ keyboard, mouse and paste input; =C-c C-c= interrupts, =C-c C-d= sends EOF,
 | Option                                        | Effect                                                                                                                                     |
 |-----------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------|
 | =ghostel-eshell-fallback-if-stty-unavailable= | What to do when =stty= is missing: =ask= (default, prompt), =t= (use Eshell's normal output), =nil= (use the terminal anyway with a possibly unsized PTY). |
+| =ghostel-eshell-use-native-pty= | Which PTY backs in-buffer terminals: =auto= (default, native on MS-Windows and Emacs's PTY elsewhere), =t= (always native), =nil= (always Emacs's PTY). |
 
 Known limitations: only one terminal runs in an Eshell buffer at a time, kitty
 graphics are disabled in in-buffer terminals, and the alternate screen is
