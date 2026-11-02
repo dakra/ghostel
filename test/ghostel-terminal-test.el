@@ -678,6 +678,25 @@ state from the wrong buffer after feeding output to the native module."
   (let ((term (ghostel--new 25 80 1000)))
     (should-error (ghostel--restore-snapshot term "not a snapshot"))))
 
+(ert-deftest ghostel-test-snapshot-restore-keeps-own-scrollback-limit ()
+  "A restored terminal keeps the scrollback limit it was created with."
+  :tags '(native)
+  (cl-flet ((feed (term)
+              (dotimes (i 3000) (ghostel--write-vt term (format "line %d\r\n" i))))
+            (lines (term)
+              (length (split-string (ghostel--copy-all-text term) "\n"))))
+    (let ((source (ghostel--new 25 80 (* 10 1024 1024)))
+          (target (ghostel--new 25 80 1000))
+          (control (ghostel--new 25 80 1000)))
+      (feed source)
+      (feed control)
+      (should (= 3000 (lines source)))
+      (ghostel--restore-snapshot target (ghostel--encode-snapshot source))
+      ;; The lower limit prunes on restore and bounds later output.
+      (should (<= (lines target) (lines control)))
+      (feed target)
+      (should (<= (lines target) (lines control))))))
+
 (ert-deftest ghostel-test-pty-out-function-receives-output ()
   "Outbound bytes reach `ghostel-pty-out-function' when there is no process."
   :tags '(native)

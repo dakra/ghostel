@@ -32,6 +32,8 @@ io: std.Io,
 refcount: std.atomic.Value(usize) = .init(1),
 mutex: RecursiveMutex = .{},
 terminal: gt.Terminal,
+/// Creation options; their limits also govern restored snapshots.
+options: gt.Terminal.Options,
 stream: gt.Stream(GhostelHandler(*Self)),
 string_buffer: ?[]u8 = null,
 renderer: Renderer,
@@ -60,6 +62,7 @@ pub fn init(
         .alloc = alloc,
         .io = io,
         .terminal = try .init(io, alloc, opts),
+        .options = opts,
         .renderer = undefined,
         .stream = undefined,
     };
@@ -180,15 +183,36 @@ pub fn restoreSnapshot(self: *Self, env: emacs.Env, data: []const u8) !usize {
     var reader: std.Io.Reader = .fixed(data);
     var decoded = try gt.snapshot.decode(self.alloc, self.io, &reader, .{
         .max_continuation_bytes = max_continuation_bytes,
+        .kitty_image_storage_limit = self.options.kitty_image_storage_limit,
     });
     defer decoded.deinit(self.alloc);
 
-    // From here on a failure leaves the terminal unusable, which the
-    // caller sees as an error on this call and on every later one.
-    self.renderer.deinit();
-    self.terminal.deinit(self.alloc);
+    // The old terminal and renderer stay intact until the new renderer
+    // exists, so a failure leaves the terminal as it was.
+    var old_terminal = self.terminal;
     self.terminal = decoded.toOwned();
-    self.renderer = try .init(self.alloc, env, &self.terminal);
+
+    // Limits and reset defaults are host policy, not snapshot state.
+    const primary = self.terminal.screens.get(.primary).?;
+    primary.pages.setMaxBytes(self.options.max_scrollback_bytes);
+    primary.pages.setMaxLines(self.options.max_scrollback_lines);
+    primary.no_scrollback = self.options.max_scrollback_bytes == 0;
+    var screens = self.terminal.screens.all.iterator();
+    while (screens.next()) |entry| {
+        entry.value.*.kitty_images.image_limits = self.options.kitty_image_loading_limits;
+    }
+    self.terminal.modes.default = self.options.default_modes;
+
+    const renderer = Renderer.init(self.alloc, env, &self.terminal) catch |err| {
+        self.terminal.deinit(self.alloc);
+        self.terminal = old_terminal;
+        return err;
+    };
+    // The old renderer's pin lives in the old terminal's page list.
+    self.renderer.term = &old_terminal;
+    self.renderer.deinit();
+    self.renderer = renderer;
+    old_terminal.deinit(self.alloc);
 
     switch (decoded.continuation) {
         .ground => {},
