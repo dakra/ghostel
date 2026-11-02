@@ -1525,6 +1525,11 @@ keyboard protocol receives the protocol-correct sequence."
 Called with one unibyte string.  Set in terminals without a process
 whose I/O is bridged elsewhere, such as a multiplexer client.")
 
+(defvar-local ghostel-resize-function nil
+  "Function called with ROWS and COLS instead of resizing the terminal.
+Set in terminals without a process whose size is owned elsewhere.
+Wins over the process, and may be called repeatedly with the same size.")
+
 (defun ghostel--pty-out (data)
   "Deliver outbound DATA bytes from the native module.
 Native PTY sessions never reach this; they write in Zig."
@@ -4828,7 +4833,8 @@ path even when the row/column count is unchanged."
   ;; with an arbitrary buffer current, so the terminal state must be
   ;; resolved from WINDOW's buffer.
   (with-current-buffer (window-buffer window)
-    (when (and ghostel--term ghostel--process (ghostel--terminal-live-p))
+    (when (and ghostel--term (or ghostel--process ghostel-resize-function)
+               (ghostel--terminal-live-p))
       (when (ghostel--window-anchored-p
              window (window-old-body-pixel-height window))
         (ghostel--anchor-window window))
@@ -4846,17 +4852,20 @@ path even when the row/column count is unchanged."
                                            (eql width ghostel--term-cols)
                                            (not (ghostel--alt-screen-p ghostel--term)))))
           (when (or force (and (not same-size-p) (not minibuffer-excepted-p)))
-            (ghostel--set-size-with-cell-dims ghostel--term (max 1 height) (max 1 width))
-            (setq ghostel--force-next-redraw t)
-            ;; Redraw synchronously so the buffer is updated before
-            ;; Emacs displays the stale content at the new window size.
-            (ghostel--redraw-now (current-buffer))))))))
+            (if ghostel-resize-function
+                (funcall ghostel-resize-function (max 1 height) (max 1 width))
+              (ghostel--set-size-with-cell-dims ghostel--term (max 1 height) (max 1 width))
+              (setq ghostel--force-next-redraw t)
+              ;; Redraw synchronously so the buffer is updated before
+              ;; Emacs displays the stale content at the new window size.
+              (ghostel--redraw-now (current-buffer)))))))))
 
 (defun ghostel--adjust-displayed-sizes (_frame)
   "Refit every displayed terminal whose windows no longer match its grid."
   (dolist (buffer (ghostel-buffer-list))
     (with-current-buffer buffer
-      (when-let* ((size (and ghostel--process (ghostel--desired-size))))
+      (when-let* ((size (and (or ghostel--process ghostel-resize-function)
+                             (ghostel--desired-size))))
         (unless (and (eql (cdr size) ghostel--term-rows)
                      (eql (car size) ghostel--term-cols))
           (ghostel--adjust-size (car (ghostel--windows buffer t))))))))
@@ -5300,6 +5309,7 @@ spawn after initialization."
           ghostel--term-cols nil
           ghostel--process nil
           ghostel-pty-out-function nil
+          ghostel-resize-function nil
           ghostel--pid nil
           ghostel--last-directory nil
           ghostel-title nil

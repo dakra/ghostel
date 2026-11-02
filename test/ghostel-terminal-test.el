@@ -284,6 +284,27 @@ has been rendered."
 		  (ghostel--adjust-size 'fake-window))
         (should-not set-size-called)))))
 
+(ert-deftest ghostel-test-resize-function-replaces-set-size ()
+  "Without a process, `ghostel-resize-function' receives the fitted size."
+  (with-temp-buffer
+    (let ((ghostel--term 'fake)
+          (ghostel--term-rows 24)
+          (ghostel--term-cols 80)
+          (set-size-called nil)
+          (redraw-called nil)
+          (received nil))
+      (setq-local ghostel-resize-function
+                  (lambda (rows cols) (setq received (list rows cols))))
+      (cl-letf (((symbol-function 'ghostel--set-size-with-cell-dims)
+                 (lambda (&rest _) (setq set-size-called t)))
+                ((symbol-function 'ghostel--redraw-now)
+                 (lambda (_buffer) (setq redraw-called t))))
+        (ghostel-test--with-resize-stubs '(120 . 40)
+          (ghostel--adjust-size 'fake-window)))
+      (should (equal '(40 120) received))
+      (should-not set-size-called)
+      (should-not redraw-called))))
+
 (ert-deftest ghostel-test-resize-force-same-dims-still-runs ()
   "Forced resize runs even when rows and cols are unchanged."
   (with-temp-buffer
