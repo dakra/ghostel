@@ -653,3 +653,42 @@ state from the wrong buffer after feeding output to the native module."
 
 (provide 'ghostel-terminal-test)
 ;;; ghostel-terminal-test.el ends here
+
+(ert-deftest ghostel-test-snapshot-round-trip ()
+  "A snapshot restores screen text and cursor and leaves trailing bytes alone."
+  :tags '(native)
+  (let ((source (ghostel--new 25 80 1000))
+        (target (ghostel--new 25 80 1000)))
+    (ghostel--write-vt source "hello\r\nworld")
+    (let ((snapshot (ghostel--encode-snapshot source)))
+      (should (string-prefix-p "GHOSTSNP" snapshot))
+      (should (= (length snapshot)
+                 (ghostel--restore-snapshot target (concat snapshot "tail"))))
+      (should (equal "hello" (ghostel-test--row0 target)))
+      (should (string-match-p "world" (ghostel--copy-all-text target)))
+      (should (equal (ghostel-test--cursor source)
+                     (ghostel-test--cursor target)))
+      ;; The restored terminal keeps accepting output.
+      (ghostel--write-vt target "!")
+      (should (string-match-p "world!" (ghostel--copy-all-text target))))))
+
+(ert-deftest ghostel-test-snapshot-rejects-garbage ()
+  "Bytes without the snapshot magic signal an error."
+  :tags '(native)
+  (let ((term (ghostel--new 25 80 1000)))
+    (should-error (ghostel--restore-snapshot term "not a snapshot"))))
+
+(ert-deftest ghostel-test-pty-out-function-receives-output ()
+  "Outbound bytes reach `ghostel-pty-out-function' when there is no process."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
+    (let (sent)
+      (setq ghostel-pty-out-function (lambda (data) (push data sent)))
+      (ghostel--write-pty term "typed")
+      ;; A DA1 query is answered through the same hook.
+      (ghostel--write-vt term "\e[c")
+      (should (equal "typed" (car (last sent))))
+      (should (string-prefix-p "\e[?" (car sent)))
+      ;; The hook also counts as a live terminal for insert forwarding.
+      (ghostel--sync-read-only)
+      (should-not buffer-read-only))))

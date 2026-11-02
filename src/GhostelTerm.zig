@@ -143,15 +143,16 @@ pub fn vtWrite(self: *Self, data: []const u8) !void {
     self.stream.nextSlice(data);
 }
 
+/// Write outbound bytes to the PTY.  Without a native process they go
+/// through `ghostel--pty-out', which routes to the Emacs process or to a
+/// processless terminal's own transport.
 pub fn ptyWrite(self: *Self, data: []const u8) !void {
     const env = emacs.current_env orelse return error.MissingEmacsEnv;
     if (self.process) |proc| {
         try proc.ptyWrite(env, data);
     } else {
-        _ = env.funcall(
-            @field(emacs.sym, "process-send-string"),
-            &env.makeValues(.{ env.symbolValue("ghostel--process"), data }),
-        );
+        const bytes = env.makeUnibyteString(data) orelse return error.UnibyteStringUnavailable;
+        _ = env.funcall(@field(emacs.sym, "ghostel--pty-out"), &[_]emacs.Value{bytes});
         const exit = env.nonLocalExitGet();
         if (exit.status == .signal) {
             env.nonLocalExitClear();
@@ -162,6 +163,51 @@ pub fn ptyWrite(self: *Self, data: []const u8) !void {
 
 pub fn ptyWriteFromTerminal(self: *Self, data: []const u8) void {
     self.ptyWrite(data) catch {};
+}
+
+/// Largest VT-stream continuation a snapshot may carry.
+const max_continuation_bytes = 1024 * 1024;
+
+/// Replace the terminal with one restored from the snapshot at the start
+/// of DATA and return the number of bytes it occupied.  The renderer is
+/// rebuilt on the restored terminal and the snapshot's continuation bytes
+/// are replayed so the VT parser matches.  The VT parser must be in the
+/// ground state, which a terminal that has seen no output satisfies.
+pub fn restoreSnapshot(self: *Self, env: emacs.Env, data: []const u8) !usize {
+    try self.lock();
+    defer self.unlock();
+
+    var reader: std.Io.Reader = .fixed(data);
+    var decoded = try gt.snapshot.decode(self.alloc, self.io, &reader, .{
+        .max_continuation_bytes = max_continuation_bytes,
+    });
+    defer decoded.deinit(self.alloc);
+
+    // From here on a failure leaves the terminal unusable, which the
+    // caller sees as an error on this call and on every later one.
+    self.renderer.deinit();
+    self.terminal.deinit(self.alloc);
+    self.terminal = decoded.toOwned();
+    self.renderer = try .init(self.alloc, env, &self.terminal);
+
+    switch (decoded.continuation) {
+        .ground => {},
+        .bytes => |bytes| self.stream.nextSlice(bytes),
+    }
+    return reader.seek;
+}
+
+/// Encode the terminal as a snapshot.  The caller owns the result.
+pub fn encodeSnapshot(self: *Self) ![]u8 {
+    try self.lock();
+    defer self.unlock();
+
+    var out: std.Io.Writer.Allocating = .init(self.alloc);
+    defer out.deinit();
+    try gt.snapshot.encode(self.alloc, &out.writer, &self.terminal, .{
+        .continuation = .ground,
+    });
+    return out.toOwnedSlice();
 }
 
 pub fn effect(_: *Self, comptime func: []const u8, args: anytype) void {
@@ -497,6 +543,44 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 const raw = try env.extractStringAlloc(module_alloc, args[1], &term.string_buffer);
                 try term.vtWrite(raw);
                 return env.nil();
+            }
+        },
+    },
+    .{
+        .name = "ghostel--restore-snapshot",
+        .arity = .{ 2, 2 },
+        .doc =
+        \\Replace TERM's state with the libghostty snapshot at the start of DATA.
+        \\
+        \\DATA is a unibyte string holding one complete snapshot, possibly
+        \\followed by further bytes.  Returns the number of bytes the
+        \\snapshot occupied.  Call it before TERM has seen any output.
+        \\
+        \\(ghostel--restore-snapshot TERM DATA)
+        ,
+        .impl = struct {
+            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
+                const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
+                const raw = try env.extractStringAlloc(module_alloc, args[1], &term.string_buffer);
+                const consumed = try term.restoreSnapshot(env, raw);
+                return env.makeInteger(@intCast(consumed));
+            }
+        },
+    },
+    .{
+        .name = "ghostel--encode-snapshot",
+        .arity = .{ 1, 1 },
+        .doc =
+        \\Return TERM's state as a libghostty snapshot, a unibyte string.
+        \\
+        \\(ghostel--encode-snapshot TERM)
+        ,
+        .impl = struct {
+            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
+                const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
+                const bytes = try term.encodeSnapshot();
+                defer term.alloc.free(bytes);
+                return env.makeUnibyteString(bytes) orelse error.UnibyteStringUnavailable;
             }
         },
     },

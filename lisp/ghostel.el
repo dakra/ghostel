@@ -1520,6 +1520,18 @@ keyboard protocol receives the protocol-correct sequence."
       (ghostel--send-string (encode-coding-string (string event) 'utf-8)))
      (t (message "ghostel: unrecognized key %S" event)))))
 
+(defvar-local ghostel-pty-out-function nil
+  "Function receiving outbound terminal bytes instead of `ghostel--process'.
+Called with one unibyte string.  Set in terminals without a process
+whose I/O is bridged elsewhere, such as a multiplexer client.")
+
+(defun ghostel--pty-out (data)
+  "Deliver outbound DATA bytes from the native module.
+Native PTY sessions never reach this; they write in Zig."
+  (if ghostel-pty-out-function
+      (funcall ghostel-pty-out-function data)
+    (process-send-string ghostel--process data)))
+
 (defun ghostel--send-string (string)
   "Send STRING as raw bytes to the terminal's PTY.
 Records the send time for immediate-redraw detection."
@@ -1726,7 +1738,8 @@ Also suppresses automatic input-mode switching (point-leave, mark-activation).")
   (and (not ghostel--inhibit-insert-forwarding)
        (ghostel--terminal-input-mode-p)
        ghostel--term
-       (process-live-p ghostel--process)))
+       (or ghostel-pty-out-function
+           (process-live-p ghostel--process))))
 
 (defun ghostel--forward-inserts-p ()
   "Non-nil when foreign buffer edits should be intercepted."
@@ -5286,6 +5299,7 @@ spawn after initialization."
           ghostel--term-rows nil
           ghostel--term-cols nil
           ghostel--process nil
+          ghostel-pty-out-function nil
           ghostel--pid nil
           ghostel--last-directory nil
           ghostel-title nil
