@@ -503,6 +503,7 @@ const interned_symbols = [_][:0]const u8{
     "ghostel--render-region",
     "ghostel--rendered-font",
     "ghostel--repainted-region",
+    "ghostel--resize-request",
     "ghostel--set-title",
     "ghostel--term-cols",
     "ghostel--term-rows",
