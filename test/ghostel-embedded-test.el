@@ -69,6 +69,30 @@ Returns (BUFFER SESSION)."
                      (+ (marker-position (ghostel-embedded-start session)) 3))))
       (kill-buffer buffer))))
 
+(ert-deftest ghostel-test-embedded-follow-keeps-visible-prompt-still ()
+  "Short output does not scroll a window that already shows the prompt."
+  :tags '(native)
+  (let ((orig (window-buffer (selected-window))))
+    (pcase-let ((`(,buffer ,session)
+                 (ghostel-test--embedded-setup
+                  3 20
+                  (concat (mapconcat #'identity (make-list 20 "x") "\n")
+                          "\n"))))
+      (unwind-protect
+          (with-current-buffer buffer
+            (set-window-buffer (selected-window) buffer)
+            (goto-char (ghostel-embedded-start session))
+            (forward-line -2)
+            (set-window-start (selected-window) (point))
+            (ghostel--embedded-feed session "abc")
+            (let ((before (window-start)))
+              (ghostel--embedded-redraw-now session)
+              ;; The prompt sits near the top with room below it; the
+              ;; window must not scroll to pin the cursor to the bottom.
+              (should (= (window-start) before))))
+        (set-window-buffer (selected-window) orig)
+        (kill-buffer buffer)))))
+
 (ert-deftest ghostel-test-embedded-emacs-mode-cursor-overlay ()
   "Emacs mode draws a cursor overlay where the terminal cursor is."
   :tags '(native)
