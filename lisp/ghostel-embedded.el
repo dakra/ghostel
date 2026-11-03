@@ -55,7 +55,8 @@ SAVED-POINT hold the host buffer state from before input activation, so
 finishing can restore it.  INPUT-ACTIVE is non-nil while that state has
 been saved.  INPUT-MODE is the current input mode (`semi-char', `char'
 or `emacs').  ALT-SCREEN-P is non-nil while the terminal is on its
-alternate screen."
+alternate screen.  HOST-SETTINGS holds the host buffer's row and scroll
+settings from before the session, so finishing can restore them."
   buffer
   term
   process
@@ -73,7 +74,8 @@ alternate screen."
   input-active
   (input-mode 'semi-char)
   (alt-screen-p nil)
-  (native-p nil))
+  (native-p nil)
+  host-settings)
 
 (defun ghostel--embedded-live-p (session)
   "Return non-nil when SESSION still has a terminal to render."
@@ -248,6 +250,47 @@ Falls back to Emacs scrolling when the terminal does not track the mouse."
                                       (ghostel--mouse-mods event))
       (ignore-errors (mwheel-scroll event)))))
 
+(defconst ghostel--embedded-host-settings
+  '(truncate-lines line-spacing default-text-properties nobreak-char-display
+    auto-hscroll-mode hscroll-margin scroll-margin scroll-conservatively)
+  "Host-buffer settings aligned with `ghostel-mode' while a terminal is live.
+A terminal row is one fixed-width screen line.  If the host buffer wraps
+rows, adds line spacing, or hscrolls, the region's ROWS stop matching
+the window's screen lines and a full-window program's view drifts.")
+
+(defun ghostel--embedded-save-host-settings (session)
+  "Save the host buffer's row and scroll settings on SESSION."
+  (with-current-buffer (ghostel-embedded-buffer session)
+    (setf (ghostel-embedded-host-settings session)
+          (mapcar (lambda (variable)
+                    (cons variable
+                          (cons (local-variable-p variable)
+                                (symbol-value variable))))
+                  ghostel--embedded-host-settings))))
+
+(defun ghostel--embedded-apply-host-settings (session)
+  "Give SESSION's host buffer a ghostel terminal's row and scroll settings."
+  (with-current-buffer (ghostel-embedded-buffer session)
+    (setq-local truncate-lines t
+                line-spacing ghostel-line-spacing
+                default-text-properties nil
+                nobreak-char-display nil
+                auto-hscroll-mode nil
+                hscroll-margin 0
+                scroll-margin 0
+                scroll-conservatively 101)))
+
+(defun ghostel--embedded-restore-host-settings (session)
+  "Restore the host buffer settings saved on SESSION."
+  (with-current-buffer (ghostel-embedded-buffer session)
+    (dolist (entry (ghostel-embedded-host-settings session))
+      (let ((variable (car entry))
+            (state (cdr entry)))
+        (if (car state)
+            (set (make-local-variable variable) (cdr state))
+          (kill-local-variable variable))))
+    (setf (ghostel-embedded-host-settings session) nil)))
+
 (defun ghostel--embedded-start (buffer &optional position rows cols)
   "Start an embedded terminal in BUFFER.
 POSITION is where the region starts; it defaults to `point-max' and must
@@ -281,6 +324,12 @@ already has a live embedded session or is dead."
                       :rows rows
                       :cols cols)))
         (setq ghostel--embedded-session session)
+        ;; Terminal rows need the same row geometry and scroll settings
+        ;; as a whole-buffer terminal; the host (an Eshell buffer) may
+        ;; wrap rows, add line spacing, or hscroll, which makes a
+        ;; full-window program's view drift.  Restored at finish.
+        (ghostel--embedded-save-host-settings session)
+        (ghostel--embedded-apply-host-settings session)
         (setq-local ghostel--resize-request-function
                     'ghostel--embedded-resize-request)
         session))))
@@ -818,6 +867,7 @@ Returns SESSION."
         (ghostel--embedded-clear-cursor)
         (ghostel--embedded-remove-region-props session)
         (setq-local ghostel--resize-request-function nil)
+        (ghostel--embedded-restore-host-settings session)
         (ghostel--embedded-trim-trailing-blank-lines session)
         (ghostel--embedded-ensure-trailing-newline session)
         (ghostel--embedded-deactivate-input session)
