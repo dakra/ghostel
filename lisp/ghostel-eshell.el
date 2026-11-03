@@ -379,6 +379,18 @@ on the Emacs-PTY path (the native PTY is sized in C)."
        (or (ghostel--eshell-native-p)
            (ghostel--eshell-stty-ok-p))))
 
+(defvar-local ghostel--eshell-full-window nil
+  "Non-nil while the current command's terminal fills the window.
+Set from `eshell-visual-commands' when the command starts.")
+
+(defun ghostel--eshell-visual-program-p (command)
+  "Return non-nil when COMMAND's program is an Eshell visual command.
+Uses `eshell-visual-commands', so users can add programs there."
+  (and (stringp command)
+       (boundp 'eshell-visual-commands)
+       (member (file-name-nondirectory command)
+               (symbol-value 'eshell-visual-commands))))
+
 (defun ghostel--eshell-terminal-size (&optional window position full)
   "Return (ROWS . COLS) for an in-buffer terminal in the current buffer.
 ROWS fills the part of WINDOW below POSITION, the region start, so a
@@ -422,7 +434,8 @@ buffer it belongs to."
     (with-current-buffer (window-buffer window)
       (when (ghostel--embedded-live-p ghostel--embedded-session)
         (let* ((session ghostel--embedded-session)
-               (full (ghostel-embedded-alt-screen-p session))
+               (full (or (ghostel-embedded-alt-screen-p session)
+                         ghostel--eshell-full-window))
                (size (ghostel--eshell-terminal-size window nil full)))
           (ghostel--embedded-resize session (car size) (cdr size)))))))
 
@@ -434,7 +447,8 @@ the space below the prompt, restoring the previous layout."
     (let ((alt (ghostel--alt-screen-p (ghostel-embedded-term session))))
       (unless (eq alt (ghostel-embedded-alt-screen-p session))
         (setf (ghostel-embedded-alt-screen-p session) alt)
-        (let ((size (ghostel--eshell-terminal-size nil nil alt)))
+        (let ((size (ghostel--eshell-terminal-size
+                     nil nil (or alt ghostel--eshell-full-window))))
           (ghostel--embedded-resize session (car size) (cdr size) t))))))
 
 (defun ghostel--eshell-start-session (&optional size)
@@ -447,7 +461,8 @@ fresh line."
     (ghostel--embedded-finish ghostel--embedded-session))
   (goto-char (point-max))
   (unless (bolp) (insert "\n"))
-  (let* ((size (or size (ghostel--eshell-terminal-size nil (point))))
+  (let* ((size (or size (ghostel--eshell-terminal-size
+                         nil (point) ghostel--eshell-full-window)))
          (session (ghostel--embedded-start (current-buffer)
                                            (point)
                                            (car size) (cdr size))))
@@ -510,6 +525,7 @@ For a native PTY the child's exit status replaces the pipe's own."
       (with-current-buffer (process-buffer process)
         (when session
           (ghostel--embedded-finish session)
+          (setq-local ghostel--eshell-full-window nil)
           (setq pos (ghostel--eshell-region-end session))
           (when pos
             (ghostel--eshell-resync-output pos)
@@ -648,8 +664,12 @@ exported for that one process, and a one-shot `eshell-exec-hook' entry
 attaches the terminal once Eshell has created the process."
   (if (not (ghostel--eshell-use-terminal-p))
       (funcall orig command args)
+    (setq-local ghostel--eshell-full-window
+                (ghostel--eshell-visual-program-p command))
     (let* ((native (ghostel--eshell-native-p))
-           (size (unless native (ghostel--eshell-terminal-size)))
+           (size (unless native
+                   (ghostel--eshell-terminal-size
+                    nil nil ghostel--eshell-full-window)))
            (prefix (unless native
                      (ghostel--eshell-stty-prefix (car size) (cdr size))))
            (process-environment (ghostel--eshell-process-environment))
