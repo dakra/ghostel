@@ -221,5 +221,24 @@ Returns (BUFFER SESSION)."
     (ghostel--resize-request 10 40)
     (should-not ghostel--resize-request-function)))
 
+(ert-deftest ghostel-test-embedded-viewport-start ()
+  "The viewport top is the last ROWS lines of the region."
+  :tags '(native)
+  (with-temp-buffer
+    (let ((session (ghostel--embedded-start (current-buffer) 1 3 20)))
+      (unwind-protect
+          (progn
+            (ghostel--embedded-feed session "1\r\n2\r\n3\r\n4\r\n5")
+            (ghostel--embedded-redraw-now session t)
+            (let ((start (ghostel--embedded-viewport-start session)))
+              (should start)
+              (save-excursion
+                (goto-char start)
+                (should (equal (buffer-substring-no-properties
+                                (line-beginning-position)
+                                (line-end-position))
+                               "3")))))
+        (ghostel--embedded-finish session)))))
+
 (provide 'ghostel-embedded-test)
 ;;; ghostel-embedded-test.el ends here
