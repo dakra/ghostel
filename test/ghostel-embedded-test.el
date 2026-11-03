@@ -198,5 +198,28 @@ Returns (BUFFER SESSION)."
             (ghostel--embedded-finish session)))
       (kill-buffer buffer))))
 
+(ert-deftest ghostel-test-embedded-resize-request ()
+  "A text-area resize request resizes an embedded terminal."
+  :tags '(native)
+  (with-temp-buffer
+    (let ((session (ghostel--embedded-start (current-buffer) 1 24 80)))
+      (unwind-protect
+          (progn
+            (ghostel--resize-request 10 40)
+            (should (= (ghostel-embedded-rows session) 10))
+            (should (= (ghostel-embedded-cols session) 40))
+            ;; A zero dimension keeps the current value.
+            (ghostel--resize-request 0 60)
+            (should (= (ghostel-embedded-rows session) 10))
+            (should (= (ghostel-embedded-cols session) 60)))
+        (ghostel--embedded-finish session)))))
+
+(ert-deftest ghostel-test-resize-request-without-embedded ()
+  "A text-area request outside an embedded session is ignored."
+  (with-temp-buffer
+    (should-not ghostel--resize-request-function)
+    (ghostel--resize-request 10 40)
+    (should-not ghostel--resize-request-function)))
+
 (provide 'ghostel-embedded-test)
 ;;; ghostel-embedded-test.el ends here
