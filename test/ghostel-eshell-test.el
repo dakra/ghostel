@@ -518,6 +518,7 @@ real command evaluator would bind.  Returns the event pipe process."
   (dlet ((eshell-visual-commands '("vim" "less")))
     (should (ghostel--eshell-visual-program-p "vim"))
     (should (ghostel--eshell-visual-program-p "/usr/bin/vim"))
+    (should (ghostel--eshell-visual-program-p "C:/msys64/ucrt64/bin/vim.exe"))
     (should-not (ghostel--eshell-visual-program-p "ls"))
     (should-not (ghostel--eshell-visual-program-p nil))))
 
