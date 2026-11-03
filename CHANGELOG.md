@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- In-buffer Eshell terminals (`ghostel-eshell-mode`) can run on ghostel's
+  native PTY, which makes them work on MS-Windows (ConPTY) where Emacs has
+  no real terminal for an external process.  `ghostel-eshell-use-native-pty`
+  chooses `auto` (native on MS-Windows), `t` (always native in local
+  buffers) or `nil` (always Emacs's PTY); remote buffers stay on Emacs's
+  PTY so TRAMP can run the command.
+
 ## [0.60.0] — 2026-10-29
 
 ### Added
@@ -42,6 +50,19 @@ All notable changes to this project will be documented in this file.
   take a prefix argument: entering with one turns
   `ghostel-readonly-fast-exit` off for that visit, a prefix inside the
   mode toggles it instead of exiting.
+- `ghostel-eshell-mode` runs interactive external commands in a terminal
+  region inside the Eshell buffer.  Output interleaves with the ordinary
+  Eshell prompts, the terminal fills the window below the prompt and
+  follows window resizes, and the final frame is frozen into normal
+  buffer text (with trailing blank rows trimmed) when the program exits.
+  Visual commands take the normal external-command path in these buffers,
+  so the mode supersedes `ghostel-eshell-visual-command-mode` while it is
+  enabled; piped, redirected, subjob and remote commands keep Eshell's
+  output path.  Closes [#426](https://github.com/dakra/ghostel/issues/426).
+- `ghostel-embedded`: a region-relative terminal session layer used by the
+  in-buffer Eshell integration.  It renders into a marker-delimited region
+  of a host buffer, keeps host text outside the region editable, and
+  freezes the terminal's rows into ordinary text at the end of a session.
 
 ### Changed
 - `ghostel_ssh` (and the `ssh` shadow `ghostel-ssh-install-terminfo`

@@ -578,6 +578,37 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         },
     },
     .{
+        .name = "ghostel--set-region",
+        .arity = .{ 2, 3 },
+        .doc =
+        \\Set the host-buffer region this terminal renders into.
+        \\
+        \\(ghostel--set-region TERM START-MARKER END-MARKER)
+        \\
+        \\START-MARKER and END-MARKER are Emacs markers in the current
+        \\buffer.  The terminal renders its rows between them instead of
+        \\owning the whole buffer, which is what in-buffer Eshell terminals
+        \\use.  Both markers should be insertion-positioned the way the
+        \\caller needs; the renderer only reads their positions.  With nil
+        \\markers the terminal reverts to the whole-buffer target.
+        ,
+        .impl = struct {
+            pub fn call(env: emacs.Env, nargs: isize, args: [*c]emacs.Value) !emacs.Value {
+                const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
+                // The region lives in buffer-local Elisp state so the
+                // markers are traced by Emacs' GC instead of held as raw
+                // module values across calls.
+                _ = term;
+                if (nargs < 3 or env.isNil(args[1]) or env.isNil(args[2])) {
+                    env.set("ghostel--render-region", env.nil());
+                } else {
+                    env.set("ghostel--render-region", env.cons(args[1], args[2]));
+                }
+                return env.nil();
+            }
+        },
+    },
+    .{
         .name = "ghostel--encode-key",
         .arity = .{ 3, 4 },
         .doc =

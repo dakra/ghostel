@@ -42,6 +42,7 @@ pub fn GhostelHandler(Effects: type) type {
             self.inner.effects.title_changed = &titleChangedCallback;
             self.inner.effects.size = &sizeCallback;
             self.inner.effects.render_hold = &renderHoldCallback;
+            self.inner.effects.resize_window = &resizeWindowCallback;
             self.inner.effects.semantic_prompt = &semanticPromptCallback;
             // Registering this makes libghostty answer the OSC 7501 support query.
             self.inner.effects.program_status = &programStatusCallback;
@@ -99,6 +100,22 @@ pub fn GhostelHandler(Effects: type) type {
         fn renderHoldCallback(handler: *gt.TerminalStream.Handler, held: bool) void {
             const self: *Self = @fieldParentPtr("inner", handler);
             if (!held) self.term.renderer.frame_completed = true;
+        }
+
+        /// CSI 8 t: the program asked to resize the text area.  Ghostel
+        /// owns the terminal's size (the window or an embedded region),
+        /// so hand the request to Elisp instead of ignoring it.
+        fn resizeWindowCallback(
+            handler: *gt.TerminalStream.Handler,
+            value: gt.TerminalStream.Handler.ResizeWindow,
+        ) void {
+            const self: *Self = @fieldParentPtr("inner", handler);
+            switch (value) {
+                .grid => |grid| self.effects.effect(
+                    "ghostel--resize-request",
+                    .{ grid.rows, grid.columns },
+                ),
+            }
         }
 
         /// Called when the terminal receives BEL.
