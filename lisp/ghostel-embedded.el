@@ -334,8 +334,9 @@ roams freely while the terminal keeps running."
   "Scroll windows showing SESSION's buffer to the terminal cursor.
 Moves point and each window's point to the terminal cursor.  On the
 alternate screen the window starts at the region's first row, so a
-full-window TUI fills the window; otherwise the cursor is recentered to
-the window bottom so output stays in view as it streams."
+full-window TUI fills the window.  Otherwise the window scrolls only
+when the cursor leaves the view: a prompt with room below it stays where
+it is, as in a plain Eshell buffer."
   (when (ghostel--embedded-live-p session)
     (with-current-buffer (ghostel-embedded-buffer session)
       (let ((cursor ghostel--cursor-char-pos)
@@ -349,11 +350,16 @@ the window bottom so output stays in view as it streams."
               (if alt
                   ;; A full-window TUI: show its first row at the top.
                   (set-window-start window start)
-                ;; Keep the cursor row at the bottom.  Do not count the
-                ;; terminal's still-blank rows below it, or short output
-                ;; would jump to the top of the window when a progress
-                ;; bar finishes.
-                (recenter -1)))))))))
+                ;; Scroll only when the cursor is outside the window.
+                ;; Unconditional recentering pulled the region's first
+                ;; row to the window bottom, so pressing RET moved the
+                ;; prompt down even when there was space below it.
+                (let ((win-start (window-start window))
+                      (win-end (window-end window t)))
+                  (unless (and win-end
+                               (<= win-start cursor)
+                               (<= cursor win-end))
+                    (recenter -1)))))))))))
 
 (defun ghostel--embedded-redraw-now (session &optional force)
   "Render SESSION's terminal into its region now.
