@@ -1984,6 +1984,9 @@ vim, less, htop and friends fill it from the start; a program that enters the
 alternate screen or asks the terminal to resize its text area (=CSI 8 t=) also
 gets the whole window.  The terminal follows window size changes, and a
 full-window terminal keeps its view fixed while its cursor moves inside it.
+When the buffer is shown in several windows or frames, the terminal sizes to
+the selected window (or a window on a visible frame); differently sized views
+share one grid.
 
 While a command runs the terminal's rows are read-only and receive keyboard,
 mouse and paste input; =C-c C-c= interrupts, =C-c C-d= sends EOF, =C-c C-\\=
