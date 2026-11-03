@@ -513,5 +513,13 @@ real command evaluator would bind.  Returns the event pipe process."
            process (lambda () (not (process-live-p process))) 10))
       (ghostel-test--eshell-teardown buffer process))))
 
+(ert-deftest ghostel-test-eshell-visual-program-p ()
+  "Visual commands are recognized from `eshell-visual-commands'."
+  (dlet ((eshell-visual-commands '("vim" "less")))
+    (should (ghostel--eshell-visual-program-p "vim"))
+    (should (ghostel--eshell-visual-program-p "/usr/bin/vim"))
+    (should-not (ghostel--eshell-visual-program-p "ls"))
+    (should-not (ghostel--eshell-visual-program-p nil))))
+
 (provide 'ghostel-eshell-test)
 ;;; ghostel-eshell-test.el ends here
