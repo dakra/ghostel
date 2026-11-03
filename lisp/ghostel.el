@@ -3669,6 +3669,22 @@ For a name function that reads more than the title and the directory."
     (ghostel--rename-managed
      (funcall ghostel-buffer-name-function ghostel-title))))
 
+(defvar-local ghostel--resize-request-function nil
+  "Function handling a program's text-area resize request in this buffer.
+It is called with (ROWS COLS); ROWS or COLS zero keeps the current
+value for that dimension.  An embedded terminal installs one in its
+host buffer; a whole-buffer terminal leaves it nil because its size
+follows the Emacs window.")
+
+(defun ghostel--resize-request (rows cols)
+  "Handle a program's request to resize the terminal text area.
+ROWS or COLS zero keeps the current value for that dimension.  The
+request is delegated to `ghostel--resize-request-function'; an embedded
+terminal honours it within its host window, while a whole-buffer
+terminal has no handler because its size follows the Emacs window."
+  (when ghostel--resize-request-function
+    (funcall ghostel--resize-request-function rows cols)))
+
 (defun ghostel--set-title (title)
   "Record TITLE from OSC 0/2 and update the buffer title.
 A nil or empty TITLE clears it."
