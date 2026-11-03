@@ -332,26 +332,43 @@ True in semi-char and char modes; false in Emacs mode where the user
 roams freely while the terminal keeps running."
   (memq (ghostel-embedded-input-mode session) '(semi-char char)))
 
+(defun ghostel--embedded-viewport-start (session)
+  "Return the buffer position of SESSION's viewport top.
+The viewport is the last ROWS lines of the region; earlier lines are
+scrollback."
+  (let ((end (marker-position (ghostel-embedded-end session))))
+    (when end
+      (save-excursion
+        (goto-char end)
+        (forward-line (- (max 1 (ghostel-embedded-rows session))))
+        (point)))))
+
 (defun ghostel--embedded-follow (session)
-  "Scroll windows showing SESSION's buffer to the terminal cursor.
-Moves point and each window's point to the terminal cursor.  On the
-alternate screen the window starts at the region's first row, so a
-full-window TUI fills the window.  Otherwise the window scrolls only
-when the cursor leaves the view: a prompt with room below it stays where
-it is, as in a plain Eshell buffer."
+  "Scroll windows showing SESSION's buffer to the terminal.
+Moves point and each window's point to the terminal cursor.  A terminal
+that fills its window (the alternate screen, a full-window program, or
+any grid at least as tall as the window) keeps its viewport top at the
+window top, so its cursor can move without scrolling the view.  A
+smaller terminal scrolls only when the cursor leaves the window: a
+prompt with room below it stays where it is, as in a plain Eshell
+buffer."
   (when (ghostel--embedded-live-p session)
     (with-current-buffer (ghostel-embedded-buffer session)
       (let ((cursor ghostel--cursor-char-pos)
-            (start (marker-position (ghostel-embedded-start session)))
-            (alt (ghostel-embedded-alt-screen-p session)))
-        (when (and cursor start)
+            (alt (ghostel-embedded-alt-screen-p session))
+            (rows (ghostel-embedded-rows session)))
+        (when cursor
           (goto-char cursor)
           (dolist (window (get-buffer-window-list (current-buffer) nil t))
             (with-selected-window window
               (set-window-point window cursor)
-              (if alt
-                  ;; A full-window TUI: show its first row at the top.
-                  (set-window-start window start)
+              (if (or alt
+                      (>= rows (floor (window-screen-lines))))
+                  ;; A full-window terminal owns the viewport: keep it
+                  ;; anchored instead of recentering on the cursor, so
+                  ;; menu and selection moves do not scroll the window.
+                  (when-let* ((start (ghostel--embedded-viewport-start session)))
+                    (set-window-start window start))
                 ;; Scroll only when the cursor is outside the window.
                 ;; Unconditional recentering pulled the region's first
                 ;; row to the window bottom, so pressing RET moved the
