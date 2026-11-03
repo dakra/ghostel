@@ -522,5 +522,34 @@ real command evaluator would bind.  Returns the event pipe process."
     (should-not (ghostel--eshell-visual-program-p "ls"))
     (should-not (ghostel--eshell-visual-program-p nil))))
 
+(ert-deftest ghostel-test-eshell-sizing-window ()
+  "Sizing prefers the selected window, then a visible frame."
+  (with-temp-buffer
+    ;; The selected window shows the buffer.
+    (cl-letf (((symbol-function 'get-buffer-window-list)
+               (lambda (&rest _) '(offscreen visible)))
+              ((symbol-function 'selected-window) (lambda () 'selected))
+              ((symbol-function 'window-buffer)
+               (lambda (window) (if (eq window 'selected)
+                                    (current-buffer)
+                                  'other))))
+      (should (eq (ghostel--eshell-sizing-window) 'selected)))
+    ;; The selected window shows another buffer: prefer a visible frame.
+    (cl-letf (((symbol-function 'get-buffer-window-list)
+               (lambda (&rest _) '(offscreen visible)))
+              ((symbol-function 'selected-window) (lambda () 'selected))
+              ((symbol-function 'window-buffer)
+               (lambda (window) (if (eq window 'selected)
+                                    'other
+                                  (current-buffer))))
+              ((symbol-function 'window-frame)
+               (lambda (window) (if (eq window 'visible)
+                                    'frame-visible
+                                  'frame-offscreen)))
+              ((symbol-function 'selected-frame) (lambda () 'frame-selected))
+              ((symbol-function 'frame-visible-p)
+               (lambda (frame) (eq frame 'frame-visible))))
+      (should (eq (ghostel--eshell-sizing-window) 'visible)))))
+
 (provide 'ghostel-eshell-test)
 ;;; ghostel-eshell-test.el ends here
