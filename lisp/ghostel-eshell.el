@@ -159,11 +159,15 @@ mode instead."
       (progn
         (add-hook 'window-size-change-functions
                   #'ghostel--eshell-window-size-change nil t)
+        (add-hook 'window-selection-change-functions
+                  #'ghostel--eshell-selection-change nil t)
         (add-hook 'ghostel-embedded-redraw-hook
                   #'ghostel--eshell-adjust-screen nil t)
         (add-hook 'kill-buffer-hook #'ghostel--eshell-cleanup nil t))
     (remove-hook 'window-size-change-functions
                  #'ghostel--eshell-window-size-change t)
+    (remove-hook 'window-selection-change-functions
+                 #'ghostel--eshell-selection-change t)
     (remove-hook 'ghostel-embedded-redraw-hook
                  #'ghostel--eshell-adjust-screen t)
     (remove-hook 'kill-buffer-hook #'ghostel--eshell-cleanup t)))
@@ -398,16 +402,36 @@ bare names, so compare with and without that suffix."
          (or (member name commands)
              (member base commands)))))
 
+(defun ghostel--eshell-sizing-window ()
+  "Return the window an in-buffer terminal should take its size from.
+Prefer the selected window if it shows the current buffer, then a
+window on the selected frame, then a window on any visible frame, and
+finally any window showing the buffer.  An offscreen frame only wins
+when nothing else displays the buffer."
+  (let ((windows (get-buffer-window-list (current-buffer) nil t)))
+    (or (and (eq (window-buffer (selected-window)) (current-buffer))
+             (selected-window))
+        (cl-find-if (lambda (window)
+                      (and (eq (window-frame window) (selected-frame))
+                           (frame-visible-p (window-frame window))))
+                    windows)
+        (cl-find-if (lambda (window)
+                      (frame-visible-p (window-frame window)))
+                    windows)
+        (car windows)
+        (selected-window))))
+
 (defun ghostel--eshell-terminal-size (&optional window position full)
   "Return (ROWS . COLS) for an in-buffer terminal in the current buffer.
 ROWS fills the part of WINDOW below POSITION, the region start, so a
 program can use all remaining space while the prompt stays visible.
 When FULL is non-nil, ROWS fills the whole window, which full-screen TUI
-programs expect.  POSITION defaults to the live session's region start.
-COLS is the window's line width."
-  (let* ((window (or window
-                     (get-buffer-window (current-buffer) t)
-                     (selected-window)))
+programs expect.  WINDOW defaults to the selected window showing the
+buffer, then a window on a visible frame; a window on an offscreen frame
+only wins when nothing else displays the buffer.  POSITION defaults to
+the live session's region start.  COLS is the window's line width."
+  (let* ((window (or (and (window-live-p window) window)
+                     (ghostel--eshell-sizing-window)))
          (position (or position
                        (and (ghostel--embedded-live-p
                              ghostel--embedded-session)
@@ -432,10 +456,8 @@ COLS is the window's line width."
                  24)))
     (cons rows cols)))
 
-(defun ghostel--eshell-window-size-change (window)
-  "Resize the in-buffer terminal when WINDOW changes size.
-WINDOW is the argument `window-size-change-functions' passes for the
-buffer it belongs to."
+(defun ghostel--eshell-resize-to-window (window)
+  "Resize the current buffer's embedded terminal to WINDOW's size."
   (when (and (window-live-p window)
              (buffer-live-p (window-buffer window)))
     (with-current-buffer (window-buffer window)
@@ -445,6 +467,24 @@ buffer it belongs to."
                          ghostel--eshell-full-window))
                (size (ghostel--eshell-terminal-size window nil full)))
           (ghostel--embedded-resize session (car size) (cdr size)))))))
+
+(defun ghostel--eshell-window-size-change (window)
+  "Resize the in-buffer terminal when its sizing window changes size.
+WINDOW is the argument `window-size-change-functions' passes.  Only the
+window the terminal takes its size from may resize it, so a change in a
+window on an offscreen frame cannot override the visible one."
+  (when (and (window-live-p window)
+             (buffer-live-p (window-buffer window)))
+    (with-current-buffer (window-buffer window)
+      (when (and (ghostel--embedded-live-p ghostel--embedded-session)
+                 (eq window (ghostel--eshell-sizing-window)))
+        (ghostel--eshell-resize-to-window window)))))
+
+(defun ghostel--eshell-selection-change ()
+  "Resize the in-buffer terminal to the newly selected window.
+Runs from `window-selection-change-functions' in the Eshell buffer; a
+selection of another buffer's window does nothing."
+  (ghostel--eshell-resize-to-window (selected-window)))
 
 (defun ghostel--eshell-adjust-screen (session)
   "Resize SESSION when it enters or leaves the alternate screen.
