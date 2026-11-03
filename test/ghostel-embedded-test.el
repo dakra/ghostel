@@ -240,5 +240,22 @@ Returns (BUFFER SESSION)."
                                "3")))))
         (ghostel--embedded-finish session)))))
 
+(ert-deftest ghostel-test-embedded-host-settings ()
+  "The host buffer gets a terminal's row and scroll settings while live."
+  (with-temp-buffer
+    (should-not truncate-lines)
+    (should auto-hscroll-mode)
+    (let ((session (ghostel--embedded-start (current-buffer) 1 3 20)))
+      (should truncate-lines)
+      (should-not auto-hscroll-mode)
+      (should-not default-text-properties)
+      (should (= scroll-conservatively 101))
+      (should (equal line-spacing ghostel-line-spacing))
+      (ghostel--embedded-finish session)
+      (should-not truncate-lines)
+      (should auto-hscroll-mode)
+      (should (= scroll-conservatively 0))
+      (should-not (local-variable-p 'truncate-lines)))))
+
 (provide 'ghostel-embedded-test)
 ;;; ghostel-embedded-test.el ends here
