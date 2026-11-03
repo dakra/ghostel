@@ -385,11 +385,18 @@ Set from `eshell-visual-commands' when the command starts.")
 
 (defun ghostel--eshell-visual-program-p (command)
   "Return non-nil when COMMAND's program is an Eshell visual command.
-Uses `eshell-visual-commands', so users can add programs there."
+Uses `eshell-visual-commands', so users can add programs there.  A
+resolved Windows command ends in `.exe' while the list normally holds
+bare names, so compare with and without that suffix."
   (and (stringp command)
        (boundp 'eshell-visual-commands)
-       (member (file-name-nondirectory command)
-               (symbol-value 'eshell-visual-commands))))
+       (let* ((name (file-name-nondirectory command))
+              (base (if (string-match-p "\\.exe\\'" name)
+                        (substring name 0 -4)
+                      name))
+              (commands (symbol-value 'eshell-visual-commands)))
+         (or (member name commands)
+             (member base commands)))))
 
 (defun ghostel--eshell-terminal-size (&optional window position full)
   "Return (ROWS . COLS) for an in-buffer terminal in the current buffer.
