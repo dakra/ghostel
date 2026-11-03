@@ -1956,7 +1956,7 @@ integration applied.  Useful for building your own integrations.
 buffer instead of a separate ghostel buffer.  Each command gets a terminal
 region between two markers: output appears where the command was entered,
 interleaved with the ordinary Eshell prompts, and full-screen programs get the
-height remaining below the prompt.  When the program exits its final frame is
+whole window.  When the program exits its final frame is
 frozen into normal buffer text (trailing blank rows are trimmed), so you can
 search, copy and edit it with Eshell's usual commands.
 
@@ -1976,10 +1976,15 @@ commands run in ghostel's native PTY (ConPTY) and need no =stty=.  Set
 =ghostel-eshell-use-native-pty= to =t= to use the native PTY in local buffers on
 any platform, or =nil= to always use Emacs's own PTY.
 
-The terminal is sized to the window below the prompt and follows window size
-changes.  While a command runs the terminal's rows are read-only and receive
-keyboard, mouse and paste input; =C-c C-c= interrupts, =C-c C-d= sends EOF,
-=C-c C-\\= quits and =C-c C-k= kills the process.
+Ordinary commands get the space below the prompt and keep the prompt in place.
+Programs listed in =eshell-visual-commands= get the whole window instead, so
+vim, less, htop and friends fill it from the start; a program that enters the
+alternate screen or asks the terminal to resize its text area (=CSI 8 t=) also
+gets the whole window.  The terminal follows window size changes.
+
+While a command runs the terminal's rows are read-only and receive keyboard,
+mouse and paste input; =C-c C-c= interrupts, =C-c C-d= sends EOF, =C-c C-\\=
+quits and =C-c C-k= kills the process.
 
 One Eshell setting affects the prompt's position: Emacs's
 =eshell-scroll-show-maximum-output= (default =t=) recenters the last line to the
