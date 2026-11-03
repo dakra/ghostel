@@ -1983,6 +1983,12 @@ changes.  While a command runs the terminal's rows are read-only and receive
 keyboard, mouse and paste input; =C-c C-c= interrupts, =C-c C-d= sends EOF,
 =C-c C-\\= quits and =C-c C-k= kills the process.
 
+One Eshell setting affects the prompt's position: Emacs's
+=eshell-scroll-show-maximum-output= (default =t=) recenters the last line to the
+bottom of the window after every command, so once the buffer has filled to the
+bottom the prompt jumps to the bottom row on each RET.  Set it to =nil=
+(buffer-locally with =setq-local=, or globally) for a stable prompt.
+
 | Option                                        | Effect                                                                                                                                     |
 |-----------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------|
 | =ghostel-eshell-fallback-if-stty-unavailable= | What to do when =stty= is missing: =ask= (default, prompt), =t= (use Eshell's normal output), =nil= (use the terminal anyway with a possibly unsized PTY). |
