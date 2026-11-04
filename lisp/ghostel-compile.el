@@ -564,7 +564,7 @@ same as in any compilation buffer."
                          exit (process-status process)))
               ;; A short-lived command finishes before the redraw timer
               ;; fires, and `--teardown-terminal' destroys the renderer.
-              (ghostel--commit-final-frame buffer)
+              (ghostel--commit-frame buffer)
               (ghostel-compile--finalize buffer exit (current-time)))))
       (setq compilation-in-progress
             (delq process compilation-in-progress))

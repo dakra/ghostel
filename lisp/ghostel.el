@@ -3896,7 +3896,7 @@ EVENT is the state-change description passed by Emacs."
         (remove-hook 'pre-redisplay-functions #'ghostel--fake-cursor-update t)
         (ghostel--fake-cursor-clear)
         (when (and ghostel-exit-functions (not (ghostel--terminal-frozen-p)))
-          (ghostel--commit-final-frame buf))
+          (ghostel--commit-frame buf))
         (ghostel--run-hook-safely 'ghostel-exit-functions buf event))
       (when (buffer-live-p buf)
         (with-current-buffer buf
@@ -4646,8 +4646,8 @@ line mode keeps the user's point."
                                        orig
                                      (or cursor target))))))))
 
-(defun ghostel--commit-final-frame (buffer)
-  "Render BUFFER's terminal grid now that its process has exited.
+(defun ghostel--commit-frame (buffer)
+  "Render BUFFER's terminal grid now, committing any pending resize.
 `ghostel--redraw-now' declines without a render window, in copy mode,
 and when a redraw-inhibit hook asks; the grid is then rendered directly."
   (ghostel--redraw-now buffer t)
