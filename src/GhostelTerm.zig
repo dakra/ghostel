@@ -17,6 +17,7 @@ const utils = @import("utils.zig");
 const parseHexColor = utils.parseHexColor;
 const platform = @import("platform.zig");
 const NativeProcess = @import("NativeProcess.zig");
+const RefCount = @import("RefCount.zig").RefCount;
 const WinSize = @import("backend_types.zig").WinSize;
 const ChannelFd = NativeProcess.ChannelFd;
 const ProcessParams = NativeProcess.ProcessParams;
@@ -29,7 +30,7 @@ alloc: Allocator,
 io: std.Io,
 // Emacs owns one reference; each native reader retains one until its last
 // terminal access, including callbacks that temporarily unlock for pipe I/O.
-refcount: std.atomic.Value(usize) = .init(1),
+refcount: RefCount(Self) = .init(1),
 mutex: RecursiveMutex = .{},
 terminal: gt.Terminal,
 stream: gt.Stream(GhostelHandler(*Self)),
@@ -76,15 +77,10 @@ pub fn init(
 /// Release Emacs ownership without waiting for native event delivery.
 pub fn deinit(self: *Self) void {
     self.killNativeProcess();
-    self.release();
+    self.refcount.release();
 }
 
-pub fn retain(self: *Self) void {
-    _ = self.refcount.fetchAdd(1, .monotonic);
-}
-
-pub fn release(self: *Self) void {
-    if (self.refcount.fetchSub(1, .acq_rel) != 1) return;
+pub fn destroy(self: *Self) void {
     std.debug.assert(self.process == null);
 
     self.renderer.deinit();
@@ -326,7 +322,7 @@ pub fn killNativeProcess(self: *Self) void {
     if (self.process) |process| {
         self.process = null;
         process.requestStop();
-        process.release();
+        process.refcount.release();
     }
 }
 
