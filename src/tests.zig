@@ -5,6 +5,7 @@ test {
     _ = @import("png.zig");
     _ = @import("GlyphMetricsCache.zig");
     _ = @import("fixed_array_list.zig");
+    _ = @import("RefCount.zig");
     _ = @import("input.zig");
     _ = @import("handler.zig");
     if (builtin.os.tag == .windows) {

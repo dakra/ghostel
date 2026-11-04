@@ -5,6 +5,7 @@ const Allocator = std.mem.Allocator;
 const gt = @import("ghostty-vt");
 
 const backend_types = @import("backend_types.zig");
+const RefCount = @import("RefCount.zig").RefCount;
 const emacs = @import("emacs.zig");
 const GhostelHandler = @import("handler.zig").GhostelHandler;
 const GhostelTerm = @import("GhostelTerm.zig");
@@ -27,8 +28,8 @@ pub const ProcessParams = backend_types.ProcessParams;
 
 alloc: Allocator,
 io: std.Io,
-// The terminal's process handle and the detached reader each own a reference.
-refcount: std.atomic.Value(usize) = .init(2),
+// The terminal owns the initial reference; the reader retains its own at spawn.
+refcount: RefCount(Self) = .init(1),
 
 backend_handoff_mutex: std.Io.Mutex = .init,
 write_mutex: std.Io.Mutex = .init,
@@ -86,12 +87,14 @@ pub fn init(
         .owner = owner,
         .stream = stream,
     };
-    owner.retain();
-    errdefer owner.release();
+    owner.refcount.retain();
+    errdefer owner.refcount.release();
     if (builtin.mode == .debug) _ = active_readers.fetchAdd(1, .monotonic);
     errdefer if (builtin.mode == .debug) {
         _ = active_readers.fetchSub(1, .release);
     };
+    self.refcount.retain();
+    errdefer self.refcount.release();
     const thread = try std.Thread.spawn(.{}, Self.run, .{self});
     thread.detach();
 }
@@ -271,9 +274,9 @@ fn run(self: *Self) void {
     self.owner.mutex.lockUncancelable(self.io);
     self.stream.deinit();
     self.owner.unlock();
-    self.owner.release();
+    self.owner.refcount.release();
     const event_writer = self.event_writer;
-    self.release();
+    self.refcount.release();
     if (builtin.mode == .debug) _ = active_readers.fetchSub(1, .release);
 
     // This detached thread now reaps the child itself. Keep the channel open
@@ -368,8 +371,7 @@ pub fn waitForReaders() void {
     while (active_readers.load(.acquire) != 0) std.Thread.yield() catch {};
 }
 
-pub fn release(self: *Self) void {
-    if (self.refcount.fetchSub(1, .acq_rel) != 1) return;
+pub fn destroy(self: *Self) void {
     self.alloc.free(self.replica_name);
     self.alloc.destroy(self);
 }
