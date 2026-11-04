@@ -288,22 +288,18 @@ has been rendered."
   "Without a process, `ghostel-resize-function' receives the fitted size."
   (with-temp-buffer
     (let ((ghostel--term 'fake)
-          (ghostel--term-rows 24)
-          (ghostel--term-cols 80)
-          (set-size-called nil)
-          (redraw-called nil)
+          (resized nil)
           (received nil))
       (setq-local ghostel-resize-function
                   (lambda (rows cols) (setq received (list rows cols))))
       (cl-letf (((symbol-function 'ghostel--set-size-with-cell-dims)
-                 (lambda (&rest _) (setq set-size-called t)))
+                 (lambda (&rest _) (setq resized t)))
                 ((symbol-function 'ghostel--redraw-now)
-                 (lambda (_buffer) (setq redraw-called t))))
+                 (lambda (_buffer) (setq resized t))))
         (ghostel-test--with-resize-stubs '(120 . 40)
           (ghostel--adjust-size 'fake-window)))
       (should (equal '(40 120) received))
-      (should-not set-size-called)
-      (should-not redraw-called))))
+      (should-not resized))))
 
 (ert-deftest ghostel-test-resize-force-same-dims-still-runs ()
   "Forced resize runs even when rows and cols are unchanged."
@@ -672,51 +668,97 @@ state from the wrong buffer after feeding output to the native module."
       (should (string-match-p "\\`a.b$" (buffer-substring-no-properties
                                         (point-min) (line-end-position)))))))
 
-(provide 'ghostel-terminal-test)
-;;; ghostel-terminal-test.el ends here
+(defun ghostel-test--snapshot-fixture ()
+  "Return the snapshot bytes of ghostty's testdata at the pinned commit."
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "fixtures/snapshot-unknown-records-v1.hex"
+                       (file-name-directory
+                        (locate-library "ghostel-terminal-test"))))
+    (apply #'unibyte-string
+           (mapcar (lambda (byte) (string-to-number byte 16))
+                   (split-string
+                    (replace-regexp-in-string "#.*" "" (buffer-string)))))))
 
-(ert-deftest ghostel-test-snapshot-round-trip ()
-  "A snapshot restores screen text and cursor and leaves trailing bytes alone."
-  :tags '(native)
-  (let ((source (ghostel--new 25 80 1000))
-        (target (ghostel--new 25 80 1000)))
-    (ghostel--write-vt source "hello\r\nworld")
-    (let ((snapshot (ghostel--encode-snapshot source)))
-      (should (string-prefix-p "GHOSTSNP" snapshot))
-      (should (= (length snapshot)
-                 (ghostel--restore-snapshot target (concat snapshot "tail"))))
-      (should (equal "hello" (ghostel-test--row0 target)))
-      (should (string-match-p "world" (ghostel--copy-all-text target)))
-      (should (equal (ghostel-test--cursor source)
-                     (ghostel-test--cursor target)))
-      ;; The restored terminal keeps accepting output.
-      (ghostel--write-vt target "!")
-      (should (string-match-p "world!" (ghostel--copy-all-text target))))))
-
-(ert-deftest ghostel-test-snapshot-rejects-garbage ()
-  "Bytes without the snapshot magic signal an error."
+(ert-deftest ghostel-test-snapshot-restore ()
+  "A snapshot restores the screen and the terminal keeps accepting output."
   :tags '(native)
   (let ((term (ghostel--new 25 80 1000)))
-    (should-error (ghostel--restore-snapshot term "not a snapshot"))))
+    (ghostel--restore-snapshot term (ghostel-test--snapshot-fixture))
+    (should (equal "B\n\nC" (ghostel--copy-all-text term)))
+    (ghostel--write-vt term "!")
+    (should (string-match-p "!" (ghostel--copy-all-text term)))))
+
+(ert-deftest ghostel-test-snapshot-restore-applies-buffer-settings ()
+  "`ghostel-snapshot-restore' reapplies colors and schedules a full redraw."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
+    (let (applied)
+      (cl-letf (((symbol-function 'ghostel--apply-palette)
+                 (lambda (arg) (push arg applied)))
+                ((symbol-function 'ghostel--invalidate) #'ignore))
+        (ghostel-snapshot-restore (ghostel-test--snapshot-fixture)))
+      (should (equal (list term) applied))
+      (should ghostel--force-next-redraw))))
+
+(ert-deftest ghostel-test-snapshot-restore-read-only-buffer ()
+  "`ghostel-snapshot-restore' replaces a read-only buffer's text."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
+    (let ((inhibit-read-only t))
+      (insert "old"))
+    (setq buffer-read-only t)
+    (ghostel-snapshot-restore (ghostel-test--snapshot-fixture))
+    (should-not (string-match-p "old" (buffer-string)))
+    (should-not ghostel--repair-pending)))
+
+(ert-deftest ghostel-test-snapshot-restore-keeps-cell-size ()
+  "`ghostel-snapshot-restore' keeps the terminal's cell size in pixels."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
+    (let (sent)
+      (setq ghostel-pty-out-function (lambda (data) (push data sent)))
+      (cl-letf (((symbol-function 'ghostel--reported-cell-width) (lambda () 9))
+                ((symbol-function 'ghostel--reported-cell-height) (lambda () 18)))
+        (ghostel-snapshot-restore (ghostel-test--snapshot-fixture)))
+      (ghostel--write-vt term "\e[16t")
+      (should (equal "\e[6;18;9t" (car sent))))))
+
+(ert-deftest ghostel-test-snapshot-rejects-bad-data ()
+  "Anything but exactly one snapshot signals an error."
+  :tags '(native)
+  (let ((snapshot (ghostel-test--snapshot-fixture))
+        (term (ghostel--new 25 80 1000)))
+    (should-error (ghostel--restore-snapshot term "not a snapshot"))
+    (should-error (ghostel--restore-snapshot term (substring snapshot 0 100)))
+    (should-error (ghostel--restore-snapshot term (concat snapshot "tail")))))
+
+(ert-deftest ghostel-test-snapshot-restore-without-scrollback ()
+  "A terminal without scrollback drops the snapshot's history."
+  :tags '(native)
+  (let ((term (ghostel--new 25 80 0)))
+    (ghostel--restore-snapshot term (ghostel-test--snapshot-fixture))
+    (should (equal "C" (ghostel--copy-all-text term)))))
 
 (ert-deftest ghostel-test-snapshot-restore-keeps-own-scrollback-limit ()
   "A restored terminal keeps the scrollback limit it was created with."
   :tags '(native)
-  (cl-flet ((feed (term)
-              (dotimes (i 3000) (ghostel--write-vt term (format "line %d\r\n" i))))
-            (lines (term)
-              (length (split-string (ghostel--copy-all-text term) "\n"))))
-    (let ((source (ghostel--new 25 80 (* 10 1024 1024)))
-          (target (ghostel--new 25 80 1000))
-          (control (ghostel--new 25 80 1000)))
-      (feed source)
-      (feed control)
-      (should (= 3000 (lines source)))
-      (ghostel--restore-snapshot target (ghostel--encode-snapshot source))
-      ;; The lower limit prunes on restore and bounds later output.
-      (should (<= (lines target) (lines control)))
-      (feed target)
-      (should (<= (lines target) (lines control))))))
+  (let ((term (ghostel--new 25 80 1000)))
+    (ghostel--restore-snapshot term (ghostel-test--snapshot-fixture))
+    ;; The fixture's 2x2 terminal holds thousands of rows per page.
+    (dotimes (i 30000) (ghostel--write-vt term (format "line %d\r\n" i)))
+    (should (< (length (split-string (ghostel--copy-all-text term) "\n"))
+               10000))))
+
+(ert-deftest ghostel-test-init-buffer-clears-bridge-functions ()
+  "Reinitializing a buffer drops the functions of its previous bridge."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
+    (setq ghostel-pty-out-function #'ignore
+          ghostel-resize-function #'ignore)
+    (ghostel--init-buffer buffer 25 80)
+    (should-not ghostel-pty-out-function)
+    (should-not ghostel-resize-function)))
 
 (ert-deftest ghostel-test-pty-out-function-receives-output ()
   "Outbound bytes reach `ghostel-pty-out-function' when there is no process."
@@ -732,3 +774,6 @@ state from the wrong buffer after feeding output to the native module."
       ;; The hook also counts as a live terminal for insert forwarding.
       (ghostel--sync-read-only)
       (should-not buffer-read-only))))
+
+(provide 'ghostel-terminal-test)
+;;; ghostel-terminal-test.el ends here

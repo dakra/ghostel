@@ -808,6 +808,7 @@ to nil to disable the regex fallback entirely (OSC 133 only)."
 (declare-function ghostel--new "ghostel-module")
 (declare-function ghostel--redraw "ghostel-module"
                   (term &optional full force-sync))
+(declare-function ghostel--restore-snapshot "ghostel-module" (term data))
 (declare-function ghostel--set-bold-config "ghostel-module")
 (declare-function ghostel--set-default-colors "ghostel-module")
 (declare-function ghostel--set-palette "ghostel-module")
@@ -1521,18 +1522,16 @@ keyboard protocol receives the protocol-correct sequence."
      (t (message "ghostel: unrecognized key %S" event)))))
 
 (defvar-local ghostel-pty-out-function nil
-  "Function receiving outbound terminal bytes instead of `ghostel--process'.
-Called with one unibyte string.  Set in terminals without a process
-whose I/O is bridged elsewhere, such as a multiplexer client.")
+  "Function called with outbound bytes as one unibyte string.
+These are typed input and the terminal's own replies; errors are ignored.
+Replaces `ghostel--process' in terminals whose I/O is bridged elsewhere.")
 
 (defvar-local ghostel-resize-function nil
   "Function called with ROWS and COLS instead of resizing the terminal.
-Set in terminals without a process whose size is owned elsewhere.
-Wins over the process, and may be called repeatedly with the same size.")
+It may be called repeatedly with the same size.")
 
 (defun ghostel--pty-out (data)
-  "Deliver outbound DATA bytes from the native module.
-Native PTY sessions never reach this; they write in Zig."
+  "Send outbound DATA bytes from a terminal without a native PTY."
   (if ghostel-pty-out-function
       (funcall ghostel-pty-out-function data)
     (process-send-string ghostel--process data)))
@@ -4357,6 +4356,21 @@ timer.  Hidden output remains pending until the buffer is displayed."
       (cancel-timer ghostel--redraw-timer)
       (setq ghostel--redraw-timer nil))
     (setq ghostel--pending-redraw t)))
+
+(defun ghostel-snapshot-restore (data)
+  "Replace this terminal's state with the libghostty snapshot DATA.
+DATA is a unibyte string in the format of ghostel's libghostty version.
+Call this before the terminal has seen any output."
+  (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t))
+    (ghostel--restore-snapshot ghostel--term data))
+  ;; The snapshot's size stays; this reapplies the cell size in pixels.
+  (ghostel--set-size-with-cell-dims ghostel--term
+                                    ghostel--term-rows ghostel--term-cols)
+  (ghostel--apply-palette ghostel--term)
+  (ghostel--apply-bold-config ghostel--term)
+  (setq ghostel--force-next-redraw t)
+  (ghostel--invalidate))
 
 (defun ghostel--viewport-start ()
   "Position of the first line of the terminal viewport, or nil if rows<=0."

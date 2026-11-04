@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Terminals can run without a process, for clients that bridge a remote
+  terminal such as a multiplexer.  `ghostel-pty-out-function` receives
+  the outbound bytes, `ghostel-resize-function` receives size requests,
+  and `ghostel-snapshot-restore` loads a libghostty snapshot.
+
 ## [0.60.0] — 2026-10-29
 
 ### Added
