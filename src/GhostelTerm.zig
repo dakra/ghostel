@@ -17,11 +17,11 @@ const utils = @import("utils.zig");
 const parseHexColor = utils.parseHexColor;
 const platform = @import("platform.zig");
 const NativeProcess = @import("NativeProcess.zig");
+const ChildProcess = NativeProcess.ChildProcess;
 const RefCount = @import("RefCount.zig").RefCount;
 const WinSize = @import("backend_types.zig").WinSize;
 const ChannelFd = NativeProcess.ChannelFd;
 const ProcessParams = NativeProcess.ProcessParams;
-const ProcessPid = i64;
 const pty_utils = @import("pty_utils.zig");
 
 const Self = @This();
@@ -291,7 +291,7 @@ pub fn spawnNativeProcess(
     env: *const std.process.Environ.Map,
     cwd: [:0]const u8,
     event_fd: ChannelFd,
-) !ProcessPid {
+) !*ChildProcess {
     if (command.len == 0) return error.InvalidCommand;
 
     const initial_size = blk: {
@@ -315,7 +315,7 @@ pub fn spawnNativeProcess(
     );
     self.process = process;
     self.pty_size = initial_size;
-    return process.pidValue();
+    return process.child;
 }
 
 pub fn killNativeProcess(self: *Self) void {
@@ -366,6 +366,13 @@ fn terminalFinalize(ptr: ?*anyopaque) callconv(.c) void {
     if (ptr) |p| {
         const term: *Self = @ptrCast(@alignCast(p));
         term.deinit();
+    }
+}
+
+fn childFinalize(ptr: ?*anyopaque) callconv(.c) void {
+    if (ptr) |p| {
+        const child: *ChildProcess = @ptrCast(@alignCast(p));
+        child.refcount.release();
     }
 }
 
@@ -475,7 +482,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 term.terminal.colors.foreground.default = .{ .r = 204, .g = 204, .b = 204 };
                 term.terminal.colors.background.default = .{ .r = 0, .g = 0, .b = 0 };
 
-                return env.makeUserPtr(terminalFinalize, term);
+                return try env.makeUserPtr(terminalFinalize, term);
             }
         },
     },
@@ -857,12 +864,11 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .name = "ghostel--spawn-native-process",
         .arity = .{ 3, 3 },
         .doc =
-        \\Spawn COMMAND for TERM using the native PTY reader.
+        \\Spawn COMMAND on a PTY for TERM and return a retained child handle.
         \\
-        \\COMMAND is a list of argv strings.  PIPE is an Emacs pipe process
-        \\that acts as the Emacs-side process handle.  The native reader writes
-        \\Lisp event forms to it, then the reader writes a final numeric
-        \\exit status before closing it.
+        \\COMMAND is a list of argv strings.  PIPE receives Lisp event forms
+        \\followed by a numeric exit status, then closes.
+        \\Use `ghostel--native-child-pid' to retrieve its PID.
         \\
         \\(ghostel--spawn-native-process TERM COMMAND PIPE)
         ,
@@ -894,13 +900,55 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                     env.f("expand-file-name", .{env.symbolValue("default-directory")}),
                 );
                 defer module_alloc.free(cwd);
-                const pid = try term.spawnNativeProcess(
+                const child = try term.spawnNativeProcess(
                     cmd.items,
                     &process_env,
                     cwd,
                     env.openChannel(pipe_val),
                 );
-                return env.makeInteger(pid);
+                errdefer {
+                    child.terminate() catch |err| {
+                        std.log.err("Failed to terminate unreturned native child: {any}", .{err});
+                    };
+                    term.killNativeProcess();
+                }
+                child.refcount.retain();
+                errdefer child.refcount.release();
+                return try env.makeUserPtr(childFinalize, child);
+            }
+        },
+    },
+    .{
+        .name = "ghostel--native-child-pid",
+        .arity = .{ 1, 1 },
+        .doc =
+        \\Return the original PID of CHILD, including after it has exited.
+        \\
+        \\(ghostel--native-child-pid CHILD)
+        ,
+        .impl = struct {
+            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
+                const child = env.getUserPtr(ChildProcess, args[0]) orelse return error.InvalidChildHandle;
+                return env.makeInteger(child.pidValue());
+            }
+        },
+    },
+    .{
+        .name = "ghostel--terminate-native-child",
+        .arity = .{ 1, 1 },
+        .doc =
+        \\Force termination of CHILD without waiting for exit.
+        \\
+        \\CHILD is a handle returned by `ghostel--spawn-native-process'.
+        \\Safe after child exit; never signals a reused PID.
+        \\
+        \\(ghostel--terminate-native-child CHILD)
+        ,
+        .impl = struct {
+            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
+                const child = env.getUserPtr(ChildProcess, args[0]) orelse return error.InvalidChildHandle;
+                try child.terminate();
+                return env.nil();
             }
         },
     },

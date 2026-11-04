@@ -378,7 +378,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .impl = struct {
             pub fn call(env: emacs.Env, _: isize, _: [*c]emacs.Value) !emacs.Value {
                 const filter = try Self.create(module_alloc);
-                return env.makeUserPtr(comintFinalize, filter);
+                errdefer filter.deinit();
+                return try env.makeUserPtr(comintFinalize, filter);
             }
         },
     },
