@@ -58,13 +58,13 @@ newline once the marker is on screen."
                             (when (string-match "\\([0-9]+\\)\n\\'" output)
                               (setq exit-status (match-string 1 output)))
                             (ghostel--events-filter pipe output))
-                  :noquery t))
-           pid)
+                  :noquery t)))
       (unwind-protect
           (progn
             (let ((spawn (lambda ()
-                           (setq pid (ghostel--spawn-native-process
-                                      ghostel--term command pipe)))))
+                           (process-put pipe 'ghostel--native-child
+                                        (ghostel--spawn-native-process
+                                         ghostel--term command pipe)))))
               (if spawn-wrapper
                   (funcall spawn-wrapper spawn)
                 (funcall spawn)))
@@ -84,8 +84,8 @@ newline once the marker is on screen."
                 (ert-fail (format "%s produced no output (exit status %s)"
                                   command exit-status)))
               text))
-        (when pid
-          (ignore-errors (signal-process pid 9)))
+        (when-let* ((child (process-get pipe 'ghostel--native-child)))
+          (ghostel--terminate-native-child child))
         (ignore-errors (ghostel--kill-native-process ghostel--term))
         (when (process-live-p pipe)
           (delete-process pipe))))))
@@ -183,22 +183,101 @@ newline once the marker is on screen."
       (delete-directory directory t))))
 
 (ert-deftest ghostel-test-native-process-exit-hook-kills-children ()
-  "Emacs exit attempts to kill every recorded native child."
-  (let (signals)
+  "Emacs exit terminates native children through their handles."
+  (let (terminated)
     (cl-letf (((symbol-function 'process-list)
-               (lambda () '(pipe-a unrelated pipe-b dead-pipe)))
+               (lambda () '(pipe-a unrelated pipe-b)))
               ((symbol-function 'process-get)
                (lambda (process property)
-                 (and (eq property 'ghostel--native-pid)
-                      (pcase process
-                        ('pipe-a 101)
-                        ('pipe-b 202)
-                        ('dead-pipe 303)))))
-              ((symbol-function 'signal-process)
-               (lambda (pid signal)
-                 (push (list pid signal) signals))))
+                 (should (eq property 'ghostel--native-child))
+                 (pcase process
+                   ('pipe-a 'child-a)
+                   ('pipe-b 'child-b))))
+              ((symbol-function 'ghostel--terminate-native-child)
+               (lambda (child) (push child terminated))))
       (ghostel--kill-native-processes-on-exit)
-      (should (equal (nreverse signals) '((101 9) (202 9) (303 9)))))))
+      (should (equal (nreverse terminated) '(child-a child-b))))))
+
+(ert-deftest ghostel-test-native-process-sentinel ()
+  "Report exit status and release the child even if termination fails."
+  (pcase-dolist (`(,status ,expected)
+                 '((nil "closed\n")
+                   (0 "finished\n")
+                   (23 "exited abnormally with code 23\n")))
+    (dolist (fail '(nil t))
+      (let ((pipe (make-pipe-process :name "ghostel-sentinel" :noquery t))
+            terminated exit-event)
+        (unwind-protect
+            (cl-letf (((symbol-function 'ghostel--terminate-native-child)
+                       (lambda (child)
+                         (push child terminated)
+                         (when fail (error "Termination denied"))))
+                      ((symbol-function 'ghostel--sentinel)
+                       (lambda (_process event) (setq exit-event event))))
+              (process-put pipe 'ghostel--native-child 'child)
+              (process-put pipe 'ghostel--exit-status status)
+              (ghostel--native-process-sentinel pipe "closed\n")
+              (should (equal terminated '(child)))
+              (should-not (process-get pipe 'ghostel--native-child))
+              (should (equal exit-event expected)))
+          (delete-process pipe))))))
+
+(ert-deftest ghostel-test-native-process-spawn-failure-closes-pipe ()
+  "A native spawn error propagates after closing the event pipe."
+  (with-temp-buffer
+    (let (pipe)
+      (unwind-protect
+          (cl-letf (((symbol-function 'ghostel--spawn-native-process)
+                     (lambda (_term _command process)
+                       (setq pipe process)
+                       (error "Native spawn failed"))))
+            (should-error (ghostel--spawn-via-native '("test")))
+            (should (processp pipe))
+            (should-not (process-live-p pipe)))
+        (when (and pipe (process-live-p pipe)) (delete-process pipe))))))
+
+(ert-deftest ghostel-test-native-process-child-handle-survives-buffer-kill ()
+  "A retained handle can terminate an HUP-ignoring child after buffer cleanup."
+  :tags '(native posix)
+  (skip-unless (ghostel-test--posix-p))
+  (let ((ghostel-use-native-pty t))
+    (ghostel-test--with-exec-buffer
+        (buffer process "/bin/sh"
+                '("-c" "trap '' HUP; printf GHOSTEL_READY; while :; do sleep 1; done"))
+      (ghostel-test--wait-for-text "GHOSTEL_READY" process 5)
+      (let ((child (process-get process 'ghostel--native-child)))
+        (should child)
+        (unwind-protect
+            (progn
+              (kill-buffer buffer)
+              (garbage-collect)
+              (should (process-live-p process))
+              (should (eq child (process-get process 'ghostel--native-child)))
+              (ghostel--terminate-native-child child)
+              (ghostel-test--wait-until
+               (lambda () (not (process-live-p process))) process 5)
+              (should (= (process-get process 'ghostel--exit-status) 137))
+              ;; Retaining the handle longer than the backend is also safe.
+              (ghostel--terminate-native-child child))
+          (ghostel--terminate-native-child child))))))
+
+(ert-deftest ghostel-test-native-process-terminate-through-child-handle ()
+  "A retained child handle terminates a live process and tolerates later calls."
+  :tags '(native)
+  (let ((ghostel-use-native-pty t))
+    (ghostel-test--with-raw-echo-buffer (buffer process)
+      (let* ((child (process-get process 'ghostel--native-child))
+	     (pid (ghostel--native-child-pid child)))
+	(should (> pid 0))
+	(ghostel--terminate-native-child child)
+	(ghostel-test--wait-until
+	 (lambda () (not (process-live-p process))) process 5)
+	(should (= (process-get process 'ghostel--exit-status)
+		   (if (ghostel-test--windows-p) 9 137)))
+	(should-not (process-get process 'ghostel--native-child))
+	(garbage-collect)
+        (should (= pid (ghostel--native-child-pid child)))
+	(ghostel--terminate-native-child child)))))
 
 (ert-deftest ghostel-test-native-kill-buffer-hook-cleans-up-dead-process ()
   "Native `kill-buffer' cleanup runs after the event process exits."
@@ -484,14 +563,14 @@ must not leave a poisoned tail on the pipe."
                   :name "ghostel-native-events" :buffer buf :noquery t
                   :filter (lambda (process output)
                             (push output chunks)
-                            (ghostel--events-filter process output))))
-           pid)
+                            (ghostel--events-filter process output)))))
       (unwind-protect
           (progn
-            (setq pid (ghostel--spawn-native-process
-                       term (list (ghostel-test--python) "-u" "-c" script
-                                  (ghostel-test--fixture-directory) ready)
-                       pipe))
+            (process-put pipe 'ghostel--native-child
+                         (ghostel--spawn-native-process
+                          term (list (ghostel-test--python) "-u" "-c" script
+                                     (ghostel-test--fixture-directory) ready)
+                          pipe))
             ;; Busy-wait: sleeping or accepting output would drain the pipe.
             (let ((deadline (+ (float-time) (* 5 ghostel-test--timeout-scale))))
               (while (and (not (file-exists-p ready)) (< (float-time) deadline))))
@@ -516,7 +595,8 @@ must not leave a poisoned tail on the pipe."
                      (concat "(ghostel--osc52-handle \"c\" \""
                              (make-string (* 512 1024) ?m) "\")")
                      (apply #'concat (nreverse chunks)))))
-        (when pid (ignore-errors (signal-process pid 9)))
+        (when-let* ((child (process-get pipe 'ghostel--native-child)))
+          (ghostel--terminate-native-child child))
         (when (process-live-p pipe) (delete-process pipe))
         (ghostel--kill-native-process term)
         (delete-directory directory t)))))

@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const sys = std.posix.system;
 
 const backend_types = @import("backend_types.zig");
+const RefCount = @import("RefCount.zig").RefCount;
 const c = @import("posix_c");
 
 const Self = @This();
@@ -129,23 +130,28 @@ const Pty = struct {
 
 alloc: Allocator,
 pty: Pty,
-pid: sys.pid_t = -1,
 wake_pipe: [2]sys.fd_t = .{ -1, -1 },
 waiter: *Waiter,
 
 // The backend moves during initialization and retirement. Keep the waiter's
 // shared state at a stable address until deinitAndWait joins its thread.
 const Waiter = struct {
+    child: *ChildProcess,
     thread: std.Thread = undefined,
     exited: std.atomic.Value(bool) = .init(false),
     exit_code: u32 = undefined,
 
-    fn start(self: *Waiter, pid: sys.pid_t, wake_fd: sys.fd_t) !void {
-        self.thread = std.Thread.spawn(.{ .stack_size = 128 * 1024 }, run, .{ self, pid, wake_fd }) catch |err| {
+    fn start(self: *Waiter, wake_fd: sys.fd_t) !void {
+        self.thread = std.Thread.spawn(.{}, run, .{ self, wake_fd }) catch |err| {
             // No waiter owns the child yet. Do not leak it if thread creation
             // fails, including children that ignore terminal hangup.
-            _ = sys.kill(pid, .KILL);
-            _ = waitForExit(pid);
+            self.child.terminate() catch |kill_err| {
+                log.err("Failed to terminate child after thread creation failed: {any}", .{kill_err});
+            };
+            _ = self.child.wait() catch |wait_err| blk: {
+                log.err("Failed to wait for child after thread creation failed: {any}", .{wait_err});
+                break :blk 255;
+            };
             return err;
         };
     }
@@ -159,23 +165,105 @@ const Waiter = struct {
         return self.exit_code;
     }
 
-    fn run(self: *Waiter, pid: sys.pid_t, wake_fd: sys.fd_t) void {
-        self.exit_code = waitForExit(pid);
+    fn run(self: *Waiter, wake_fd: sys.fd_t) void {
+        self.exit_code = self.child.wait() catch |err| blk: {
+            log.err("Failed to wait for native child: {any}", .{err});
+            break :blk 255;
+        };
         self.exited.store(true, .release);
         _ = writeWithRetry(wake_fd, "X");
     }
+};
 
-    fn waitForExit(pid: sys.pid_t) u32 {
+/// Reference-counted child identity with serialized termination and reaping.
+/// The child must not be reaped outside this control.
+pub const ChildProcess = struct {
+    const Child = @This();
+    pub const Handle = sys.pid_t;
+
+    alloc: Allocator,
+    io: std.Io,
+    refcount: RefCount(Child) = .init(1),
+    handle: Handle,
+    mutex: std.Io.Mutex = .init,
+    exited: bool = false,
+
+    /// Take ownership of the child, terminating and reaping it on allocation failure.
+    pub fn create(alloc: Allocator, io: std.Io, handle: Handle) !*Child {
+        var child: Child = .{ .alloc = alloc, .io = io, .handle = handle };
+        errdefer {
+            child.terminate() catch |err| log.err("Failed to terminate child: {any}", .{err});
+            _ = child.wait() catch |err| blk: {
+                log.err("Failed to reap child: {any}", .{err});
+                break :blk 255;
+            };
+        }
+        const self = try alloc.create(Child);
+        self.* = child;
+        return self;
+    }
+
+    pub fn destroy(self: *Child) void {
+        self.alloc.destroy(self);
+    }
+
+    pub fn pidValue(self: *const Child) i64 {
+        return @intCast(self.handle);
+    }
+
+    /// Send SIGKILL without waiting. No-op after reaping.
+    pub fn terminate(self: *Child) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.exited) return;
+
+        std.debug.assert(self.handle > 0);
+        if (sys.errno(sys.kill(self.handle, .KILL)) != .SUCCESS) {
+            return error.ChildTerminationFailed;
+        }
+    }
+
+    /// Wait for exit, reap the child, and return its status (128+N for signal N).
+    /// Must be called exactly once. May run concurrently with terminate.
+    pub fn wait(self: *Child) !u32 {
+        // WNOWAIT prevents reaping, not blocking: observeExit waits for exit
+        // without holding the mutex needed to terminate a live child. Keep its
+        // error pending until termination is disabled under that mutex too.
+        const observed = self.observeExit();
+
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        // No subsequent terminate call may use the PID, even if another reaper
+        // unexpectedly consumed the child and waitid reported ECHILD.
+        self.exited = true;
+        try observed;
+
+        // The exited, unreaped child reserves its PID until this consuming wait.
+        // Both the state transition and reaping are serialized with terminate.
         while (true) {
             var status: c_int = undefined;
-            switch (sys.errno(sys.waitpid(pid, &status, 0))) {
+            switch (sys.errno(sys.waitpid(self.handle, &status, 0))) {
                 .SUCCESS => {
                     if (c.WIFEXITED(status)) return @intCast(c.WEXITSTATUS(status));
                     if (c.WIFSIGNALED(status)) return @intCast(128 + c.WTERMSIG(status));
                 },
-
                 .INTR => continue,
-                else => return 255,
+                else => return error.ChildWaitFailed,
+            }
+        }
+    }
+
+    fn observeExit(self: *Child) !void {
+        std.debug.assert(self.handle > 0);
+        var info: c.siginfo_t = undefined;
+        while (true) {
+            switch (sys.errno(c.waitid(c.P_PID, @intCast(self.handle), &info, c.WEXITED | c.WNOWAIT))) {
+                .SUCCESS => return,
+                .INTR => continue,
+                else => |err| {
+                    std.log.err("waitid for child {} failed: {any}", .{ self.handle, err });
+                    return error.ChildWaitFailed;
+                },
             }
         }
     }
@@ -257,10 +345,9 @@ fn failChild(msg: []const u8, err: []const u8) noreturn {
     std.c._exit(1);
 }
 
-pub fn init(alloc: Allocator, _: std.Io, size: backend_types.WinSize, params: backend_types.ProcessParams) !Self {
+pub fn init(alloc: Allocator, io: std.Io, size: backend_types.WinSize, params: backend_types.ProcessParams) !Self {
     const waiter = try alloc.create(Waiter);
     errdefer alloc.destroy(waiter);
-    waiter.* = .{};
 
     var self = Self{ .alloc = alloc, .pty = try .init(), .waiter = waiter };
     errdefer self.pty.deinit();
@@ -299,8 +386,10 @@ pub fn init(alloc: Allocator, _: std.Io, size: backend_types.WinSize, params: ba
     if (pid != 0) {
         // This is the parent, child started successfully.
         self.pty.closeReplica();
-        self.pid = pid;
-        try waiter.start(pid, self.wake_pipe[1]);
+        const child = try ChildProcess.create(alloc, io, pid);
+        errdefer child.refcount.release();
+        waiter.* = .{ .child = child };
+        try waiter.start(self.wake_pipe[1]);
         return self;
     }
 
@@ -322,8 +411,8 @@ pub fn init(alloc: Allocator, _: std.Io, size: backend_types.WinSize, params: ba
     failChild("Failed to start subprocess", @tagName(sys.errno(err)));
 }
 
-pub fn pidValue(self: *const Self) i64 {
-    return @intCast(self.pid);
+pub fn childHandle(self: *const Self) *ChildProcess {
+    return self.waiter.child;
 }
 
 pub fn resize(self: *Self, size: backend_types.WinSize) !void {
@@ -438,11 +527,11 @@ pub fn replicaName(self: *Self) []const u8 {
 }
 
 pub fn deinitAndWait(self: *Self) u32 {
-    std.debug.assert(self.pid > 0);
     self.pty.deinit();
     // PTY closure can precede child exit. Keep the state and wake pipe alive
     // until the waiter has published the status and finished its wakeup write.
     const exit_code = self.waiter.wait();
+    self.waiter.child.refcount.release();
     self.alloc.destroy(self.waiter);
     _ = sys.close(self.wake_pipe[0]);
     _ = sys.close(self.wake_pipe[1]);
@@ -464,7 +553,7 @@ test "child exit wakeup drains queued output without waiting for hangup" {
         _ = sys.close(fd);
     };
 
-    var waiter: Waiter = .{};
+    var waiter: Waiter = .{ .child = undefined };
     var backend: Self = .{
         .alloc = testing.allocator,
         .pty = .{ .primary_fd = output_pipe[0] },
@@ -488,4 +577,111 @@ test "child exit wakeup drains queued output without waiting for hangup" {
     // Keep the output writer open: only the exit wakeup can terminate drain.
     try testing.expect(!try backend.drain(&stream));
     try testing.expectEqualStrings(output, stream.data.items);
+}
+
+const TestChild = struct {
+    child: *ChildProcess,
+    release_fd: sys.fd_t,
+    waited: bool = false,
+
+    fn init(exit_code: u8) !@This() {
+        var pipe: [2]sys.fd_t = undefined;
+        if (sys.errno(sys.pipe(&pipe)) != .SUCCESS) return error.PipeCreationFailed;
+        errdefer for (pipe) |fd| {
+            _ = sys.close(fd);
+        };
+
+        const pid = sys.fork();
+        if (sys.errno(pid) != .SUCCESS) return error.ForkFailed;
+        if (pid == 0) {
+            _ = sys.close(pipe[1]);
+            var byte: [1]u8 = undefined;
+            while (sys.errno(sys.read(pipe[0], &byte, 1)) == .INTR) {}
+            std.c._exit(exit_code);
+        }
+        const child = try ChildProcess.create(std.testing.allocator, std.testing.io, pid);
+        _ = sys.close(pipe[0]);
+        return .{ .child = child, .release_fd = pipe[1] };
+    }
+
+    fn allowExit(self: *@This()) void {
+        _ = sys.close(self.release_fd);
+        self.release_fd = -1;
+    }
+
+    fn wait(self: *@This()) !u32 {
+        const status = try self.child.wait();
+        self.waited = true;
+        return status;
+    }
+
+    fn deinit(self: *@This()) void {
+        if (!self.waited) {
+            self.child.terminate() catch |err| std.log.err("test child termination failed: {any}", .{err});
+            _ = self.wait() catch |err| blk: {
+                std.log.err("test child wait failed: {any}", .{err});
+                break :blk 255;
+            };
+        }
+        if (self.release_fd != -1) _ = sys.close(self.release_fd);
+        self.child.refcount.release();
+    }
+};
+
+test "observing exit leaves the child waitable until serialized reaping" {
+    var child = try TestChild.init(23);
+    defer child.deinit();
+    child.allowExit();
+    try child.child.observeExit();
+
+    // A consuming wait in observeExit would make this fail with ECHILD.
+    var info: c.siginfo_t = undefined;
+    try std.testing.expectEqual(sys.E.SUCCESS, sys.errno(c.waitid(
+        c.P_PID,
+        @intCast(child.child.handle),
+        &info,
+        c.WEXITED | c.WNOWAIT,
+    )));
+    try child.child.terminate();
+    try std.testing.expectEqual(@as(u32, 23), try child.wait());
+}
+
+test "termination after reaping cannot target a replacement PID" {
+    var original = try TestChild.init(23);
+    defer original.deinit();
+    original.allowExit();
+    try std.testing.expectEqual(@as(u32, 23), try original.wait());
+
+    var replacement = try TestChild.init(77);
+    defer replacement.deinit();
+    // Model PID reuse deterministically with a second child, not kernel PID
+    // churn. Any kill through the old control must leave this child alone.
+    original.child.handle = replacement.child.handle;
+    try original.child.terminate();
+    replacement.allowExit();
+    try std.testing.expectEqual(@as(u32, 77), try replacement.wait());
+}
+
+test "termination before reaping reports the child's signal status" {
+    var child = try TestChild.init(23);
+    defer child.deinit();
+    try child.child.terminate();
+    try std.testing.expectEqual(@as(u32, 137), try child.wait());
+}
+
+test "native spawn releases allocations on allocation failure" {
+    const Exercise = struct {
+        fn spawn(alloc: Allocator) !void {
+            var env: std.process.Environ.Map = .init(alloc);
+            defer env.deinit();
+            var args = [_][:0]const u8{ "/bin/sh", "-c", "exit 0" };
+            var backend = try Self.init(alloc, std.testing.io, .{ .rows = 24, .cols = 80 }, .{
+                .file = args[0],
+                .args = &args,
+                .env = &env,
+            });
+            _ = backend.deinitAndWait();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Exercise.spawn, .{});
 }

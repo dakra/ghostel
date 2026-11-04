@@ -115,7 +115,10 @@ pub const Env = struct {
         return self.raw.make_string.?(self.raw, str.ptr, @intCast(str.len));
     }
 
-    pub fn makeUserPtr(self: Env, finalizer: Finalizer, ptr: UserPtr) Value {
+    /// Transfers ownership to Emacs on success; the caller retains it on error.
+    pub fn makeUserPtr(self: Env, finalizer: Finalizer, ptr: UserPtr) error{EmacsNonLocalExit}!Value {
+        var finalize: *const Finalizer = &finalizer;
+        var tracked = false;
         if (builtin.mode == .debug) {
             if (debug_userptrs.append(module_alloc, .{ .ptr = ptr, .finalizer = &finalizer })) |_| {
                 const debugFinalizer = struct {
@@ -129,13 +132,19 @@ pub const Env = struct {
                         }
                     }
                 }.debugFinalize;
-                return self.raw.make_user_ptr.?(self.raw, &debugFinalizer, ptr);
+                finalize = &debugFinalizer;
+                tracked = true;
             } else |_| {
                 std.log.err("Failed to allocate for debug userptr storage", .{});
             }
         }
 
-        return self.raw.make_user_ptr.?(self.raw, &finalizer, ptr);
+        const value = self.raw.make_user_ptr.?(self.raw, finalize, ptr);
+        if (self.nonLocalExitCheck() != .normal) {
+            if (tracked) _ = debug_userptrs.pop();
+            return error.EmacsNonLocalExit;
+        }
+        return value;
     }
 
     pub fn makeValues(self: Env, args: anytype) [@typeInfo(@TypeOf(args)).@"struct".field_names.len]Value {
@@ -363,6 +372,8 @@ pub const Env = struct {
                     const err: anyerror = e;
                     switch (err) {
                         error.EmacsQuit => env.nonLocalExitSignal(sym.quit, env.nil()),
+                        // Preserve the pending Emacs non-local exit.
+                        error.EmacsNonLocalExit => {},
                         else => {
                             env.logStackTrace(@errorReturnTrace());
                             env.signalError("error in %s: %s", .{ entry.name, @errorName(err) });
@@ -635,7 +646,13 @@ pub fn initModule(alloc: Allocator, raw: *c.emacs_env) void {
             "Explicitly destroy all ghostel terminals for leak detection.",
             null,
         );
-        _ = env.funcall(env.intern("add-hook"), &[_]Value{ env.intern("kill-emacs-hook"), cleanup_fn });
+        // Run after child termination hooks even when the module is loaded
+        // late: process properties still refer to these userptrs until then.
+        _ = env.funcall(env.intern("add-hook"), &[_]Value{
+            env.intern("kill-emacs-hook"),
+            cleanup_fn,
+            env.makeInteger(90),
+        });
     }
 }
 
@@ -644,8 +661,6 @@ fn debugKillEmacsHook(_: ?*c.emacs_env, _: isize, _: [*c]c.emacs_value, _: ?*any
         user_ptr.finalizer(user_ptr.ptr);
     }
     debug_userptrs.deinit(module_alloc);
-    // If an undrained pipe stalls Debug shutdown, comment out this wait;
-    // the leak checker will then report reader-owned allocations.
     @import("NativeProcess.zig").waitForReaders();
     return sym.nil;
 }

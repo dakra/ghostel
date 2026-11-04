@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const backend_types = @import("backend_types.zig");
+const RefCount = @import("RefCount.zig").RefCount;
 
 const c = @import("windows_c");
 
@@ -28,12 +29,67 @@ pty_output: c.HANDLE = c.INVALID_HANDLE_VALUE,
 interrupt_event: c.HANDLE = c.INVALID_HANDLE_VALUE,
 output_read_event: c.HANDLE = c.INVALID_HANDLE_VALUE,
 input_write_event: c.HANDLE = c.INVALID_HANDLE_VALUE,
-shell_process: c.HANDLE = c.INVALID_HANDLE_VALUE,
-pid: i64 = -1,
+child: *ChildProcess,
 
 var create_pseudo_console: ?CreatePseudoConsoleFn = null;
 var resize_pseudo_console: ?ResizePseudoConsoleFn = null;
 var close_pseudo_console: ?ClosePseudoConsoleFn = null;
+
+/// Reference-counted process HANDLE for identity-safe waiting and termination.
+pub const ChildProcess = struct {
+    const Child = @This();
+    pub const Handle = c.HANDLE;
+
+    alloc: Allocator,
+    refcount: RefCount(Child) = .init(1),
+    handle: Handle,
+
+    /// Take ownership of the HANDLE, terminating the child on allocation failure.
+    pub fn create(alloc: Allocator, handle: Handle) !*Child {
+        var child: Child = .{ .alloc = alloc, .handle = handle };
+        errdefer {
+            child.terminate() catch |err| std.log.err("Failed to terminate child: {any}", .{err});
+            _ = child.wait() catch |err| blk: {
+                std.log.err("Failed to wait for child: {any}", .{err});
+                break :blk 255;
+            };
+            _ = c.CloseHandle(handle);
+        }
+        const self = try alloc.create(Child);
+        self.* = child;
+        return self;
+    }
+
+    pub fn destroy(self: *Child) void {
+        _ = c.CloseHandle(self.handle);
+        self.alloc.destroy(self);
+    }
+
+    pub fn pidValue(self: *const Child) i64 {
+        return @intCast(c.GetProcessId(self.handle));
+    }
+
+    /// Force termination without waiting. An already-exited child needs no action.
+    pub fn terminate(self: *const Child) !void {
+        if (c.TerminateProcess(self.handle, 9) == 0 and
+            c.WaitForSingleObject(self.handle, 0) != c.WAIT_OBJECT_0)
+        {
+            return error.ChildTerminationFailed;
+        }
+    }
+
+    /// Wait for exit and return the process exit code.
+    pub fn wait(self: *const Child) !u32 {
+        if (c.WaitForSingleObject(self.handle, c.INFINITE) != c.WAIT_OBJECT_0) {
+            return error.ChildWaitFailed;
+        }
+        var exit_code: c.DWORD = undefined;
+        if (c.GetExitCodeProcess(self.handle, &exit_code) == 0) {
+            return error.ChildWaitFailed;
+        }
+        return exit_code;
+    }
+};
 
 pub const EventWriter = struct {
     pub const Fd = c_int;
@@ -181,7 +237,7 @@ pub const EventWriter = struct {
 pub fn init(alloc: Allocator, io: std.Io, size: backend_types.WinSize, params: backend_types.ProcessParams) !Self {
     try initApi();
 
-    var self: Self = .{ .alloc = alloc };
+    var self: Self = .{ .alloc = alloc, .child = undefined };
 
     self.interrupt_event = c.CreateEventW(null, c.TRUE, c.FALSE, null);
     if (self.interrupt_event == null) return error.CreateEventFailed;
@@ -199,13 +255,13 @@ pub fn init(alloc: Allocator, io: std.Io, size: backend_types.WinSize, params: b
     return self;
 }
 
-pub fn pidValue(self: *const Self) i64 {
-    return self.pid;
+pub fn childHandle(self: *const Self) *ChildProcess {
+    return self.child;
 }
 
 pub fn drain(self: *Self, stream: anytype) !bool {
     const interrupt_handles = [_]c.HANDLE{
-        self.shell_process,
+        self.child.handle,
         self.interrupt_event,
     };
 
@@ -419,14 +475,11 @@ pub fn replicaName(_: *Self) []const u8 {
 pub fn deinitAndWait(self: *Self) u32 {
     self.closeConPtyHandles();
 
-    var exit_code: c.DWORD = 0;
-    if (self.shell_process != c.INVALID_HANDLE_VALUE) {
-        _ = c.WaitForSingleObject(self.shell_process, c.INFINITE);
-        _ = c.GetExitCodeProcess(self.shell_process, &exit_code);
-        _ = c.CloseHandle(self.shell_process);
-        self.shell_process = c.INVALID_HANDLE_VALUE;
-    }
-
+    const exit_code = self.child.wait() catch |err| blk: {
+        std.log.scoped(.ConPtyProcess).err("Failed to wait for native child: {any}", .{err});
+        break :blk 255;
+    };
+    self.child.refcount.release();
     return exit_code;
 }
 
@@ -711,9 +764,8 @@ fn spawnChild(self: *Self, params: backend_types.ProcessParams) !void {
         return error.CreateProcessFailed;
     }
 
-    self.shell_process = pi.hProcess;
-    self.pid = @intCast(pi.dwProcessId);
-    _ = c.CloseHandle(pi.hThread);
+    defer _ = c.CloseHandle(pi.hThread);
+    self.child = try ChildProcess.create(self.alloc, pi.hProcess);
 }
 
 fn argvToCommandLineWindows(

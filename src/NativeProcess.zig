@@ -16,6 +16,7 @@ const Backend = switch (builtin.os.tag) {
     else => @import("PosixPtyProcess.zig"),
 };
 const EventWriter = Backend.EventWriter;
+pub const ChildProcess = Backend.ChildProcess;
 
 const Self = @This();
 
@@ -35,7 +36,7 @@ backend_handoff_mutex: std.Io.Mutex = .init,
 write_mutex: std.Io.Mutex = .init,
 backend: ?Backend,
 event_writer: EventWriter,
-pid: i64,
+child: *ChildProcess,
 replica_name: [:0]u8,
 // Buffer event notifications so large terminal updates can be reported with
 // few writes to Emacs.
@@ -65,11 +66,19 @@ pub fn init(
     owner: *GhostelTerm,
     event_fd: ChannelFd,
 ) !void {
-    var backend = try Backend.init(alloc, io, size, params);
-    errdefer _ = backend.deinitAndWait();
-
+    // Register channel cleanup first so backend initialization cannot leak the fd.
     var event_writer = try EventWriter.init(event_fd);
     errdefer event_writer.close();
+
+    var backend = try Backend.init(alloc, io, size, params);
+    const child = backend.childHandle();
+    errdefer {
+        // Failed setup must not leave an unreachable child running.
+        child.terminate() catch |err| log.err("Failed to terminate uninitialized native child: {any}", .{err});
+        _ = backend.deinitAndWait();
+    }
+    child.refcount.retain();
+    errdefer child.refcount.release();
 
     var stream: @TypeOf(self.stream) = .init(.{ .allocator = alloc, .handler = .init(alloc, owner, self) });
     errdefer stream.deinit();
@@ -82,7 +91,7 @@ pub fn init(
         .io = io,
         .backend = backend,
         .event_writer = event_writer,
-        .pid = backend.pidValue(),
+        .child = child,
         .replica_name = replica_name,
         .owner = owner,
         .stream = stream,
@@ -206,10 +215,6 @@ pub fn replicaName(self: *Self) [*:0]const u8 {
     return self.replica_name.ptr;
 }
 
-pub fn pidValue(self: *Self) i64 {
-    return self.pid;
-}
-
 fn effectFallible(self: *Self, comptime func: []const u8, args: anytype) !void {
     try self.writeEvent("(");
     try self.writeEvent(func);
@@ -279,8 +284,6 @@ fn run(self: *Self) void {
     self.refcount.release();
     if (builtin.mode == .debug) _ = active_readers.fetchSub(1, .release);
 
-    // This detached thread now reaps the child itself. Keep the channel open
-    // until actual child exit, and send the status after all terminal events.
     finishEventChannel(event_writer, backend.deinitAndWait());
 }
 
@@ -365,13 +368,13 @@ pub fn requestStop(self: *Self) void {
     if (self.backend) |*backend| backend.requestStop();
 }
 
-/// Debug shutdown only: release Emacs references before waiting for reader
-/// allocations to be freed. This does not wait for child exit.
+/// For debug builds: Waits until all readers have been shut down.
 pub fn waitForReaders() void {
     while (active_readers.load(.acquire) != 0) std.Thread.yield() catch {};
 }
 
 pub fn destroy(self: *Self) void {
+    self.child.refcount.release();
     self.alloc.free(self.replica_name);
     self.alloc.destroy(self);
 }
