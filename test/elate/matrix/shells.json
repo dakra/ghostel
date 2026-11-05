@@ -44,6 +44,22 @@
     {"keys": "RET"},
     {"wait": "text", "pattern": "^m03ok$", "timeout": 8.0},
 
+    {"group": "0 i", "comment": "0 puts point inside the prompt; i starts at the input start"},
+    {"type": "m16ok"},
+    {"keys": "<escape> 0 i"},
+    {"eval": "(unless (= (point) (ghostel-input-start-point)) (error \"POINT %d input-start %d\" (point) (ghostel-input-start-point)))"},
+    {"type": "{{echo}} "},
+    {"keys": "RET"},
+    {"wait": "text", "pattern": "^m16ok$", "timeout": 8.0},
+
+    {"group": "0 a", "comment": "0 puts point inside the prompt; a starts at the input start"},
+    {"type": "m17ok"},
+    {"keys": "<escape> 0 a"},
+    {"eval": "(unless (= (point) (ghostel-input-start-point)) (error \"POINT %d input-start %d\" (point) (ghostel-input-start-point)))"},
+    {"type": "{{echo}} "},
+    {"keys": "RET"},
+    {"wait": "text", "pattern": "^m17ok$", "timeout": 8.0},
+
     {"group": "x", "comment": "$ then x -- delete last char"},
     {"type": "{{echo}} m04okZ"},
     {"keys": "<escape> $ x"},

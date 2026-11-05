@@ -434,8 +434,9 @@ Loops `accept-process-output' (capped by
   "Drive the terminal cursor and Emacs point to buffer position POS.
 On the cursor row a rightward target is clamped to `evil-ghostel--input-end',
 so the move never right-arrows across a trailing autosuggestion, which the
-shell would accept (zsh-autosuggestions / fish).  Only meaningful in
-semi-char mode.  Returns non-nil when it ran.
+shell would accept (zsh-autosuggestions / fish).  A leftward one is clamped
+to the input start after a detected prompt.  Only meaningful in semi-char
+mode.  Returns non-nil when it ran.
 Both ends of the horizontal move are measured in buffer columns, so a
 cell the renderer hides under an oversized glyph counts the same for
 the cursor and the target."
@@ -447,13 +448,14 @@ the cursor and the target."
            (start-row-vp (cdr ghostel--cursor-pos))
            (target-row-vp (or (ghostel--viewport-row-at pos) start-row-vp))
            (dy (- target-row-vp start-row-vp)))
-      ;; Clamp only a rightward, same-row target: at end-of-input a right
-      ;; arrow accepts the greyed suggestion.
-      ;; `input-end' excludes it, so stopping there means we never accept.
-      (when (and (zerop dy)
-                 ghostel--cursor-char-pos
-                 (> pos ghostel--cursor-char-pos))
-        (setq pos (min pos (or (evil-ghostel--input-end) pos))))
+      ;; The shell cannot move left into the prompt; the regexp fallback
+      ;; can match past the cursor on a prompt-less row.
+      (when (and (zerop dy) ghostel--cursor-char-pos)
+        (if (> pos ghostel--cursor-char-pos)
+            (setq pos (min pos (or (evil-ghostel--input-end) pos)))
+          (when-let* ((start (ghostel--cursor-row-input-start))
+                      ((<= start ghostel--cursor-char-pos)))
+            (setq pos (max pos start)))))
       (let ((dx (- (save-excursion (goto-char pos) (current-column)) start-col)))
         (cond ((> dy 0) (dotimes (_ dy) (ghostel--send-encoded "down" "")))
               ((< dy 0) (dotimes (_ (abs dy)) (ghostel--send-encoded "up" ""))))

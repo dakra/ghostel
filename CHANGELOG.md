@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- evil-ghostel: `i` or `a` with point inside the prompt on the cursor's
+  row left the caret in the prompt until the next keystroke, and made
+  bash ring the bell.  Insert now starts at the input start.
+  Closes [#788](https://github.com/dakra/ghostel/issues/788).
+
 ## [0.61.0] — 2026-11-05
 
 ### Added

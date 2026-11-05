@@ -860,6 +860,41 @@ terminal cursor to point's buffer position."
          (evil-ghostel-append))
        (should sync-called)))))
 
+(ert-deftest evil-ghostel-test-insert-in-prompt-lands-at-input-start ()
+  "`i' / `a' with point inside the prompt land at the input start."
+  (dolist (cmd '(evil-ghostel-insert evil-ghostel-append))
+    (evil-ghostel-test--with-evil-buffer
+     (setq-local ghostel--term t)
+     (insert "old output\n> ")
+     (let (sent)
+       (cl-letf (((symbol-function 'ghostel--alt-screen-p) (lambda (&rest _) nil))
+                 ((symbol-function 'ghostel--send-encoded)
+                  (lambda (key &rest _) (push key sent)))
+                 ((symbol-function 'evil-ghostel--sync-render) #'ignore)
+                 (ghostel--cursor-pos '(2 . 1))
+                 (ghostel--cursor-char-pos 14))
+         (evil-normal-state)
+         (goto-char 12)
+         (funcall cmd)
+         (should (eq evil-state 'insert))
+         (should (= (point) 14))
+         (should-not sent))))))
+
+(ert-deftest evil-ghostel-test-goto-input-position-stops-at-input-start ()
+  "A leftward target inside the prompt stops at the input start."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   (insert "> abc")
+   (let (sent)
+     (cl-letf (((symbol-function 'ghostel--send-encoded)
+                (lambda (key &rest _) (push key sent)))
+               ((symbol-function 'evil-ghostel--sync-render) #'ignore)
+               (ghostel--cursor-pos '(5 . 0))
+               (ghostel--cursor-char-pos 6))
+       (evil-ghostel-goto-input-position 1)
+       (should (= (point) 3))
+       (should (equal sent '("left" "left" "left")))))))
+
 (ert-deftest evil-ghostel-test-dead-process-falls-back-to-plain-evil ()
   "After the child exits, evil-ghostel stops driving the terminal (issue #555).
 `evil-ghostel--terminal-live-p' and `evil-ghostel--prompt-active-p' turn off once

@@ -33,6 +33,14 @@
     {"keys": "RET"},
     {"wait": "text", "pattern": "^1009$", "buffer": "*ghostel*", "timeout": 8.0},
 
+    {"group": "0 i", "comment": "0 puts point inside the prompt; i starts at the input start"},
+    {"type": "30"},
+    {"keys": "<escape> 0 i"},
+    {"eval": "(unless (= (point) (ghostel-input-start-point)) (error \"POINT %d input-start %d\" (point) (ghostel-input-start-point)))"},
+    {"type": "1000+"},
+    {"keys": "RET"},
+    {"wait": "text", "pattern": "^1030$", "buffer": "*ghostel*", "timeout": 8.0},
+
     {"group": "x", "comment": "$ then x -- delete last char"},
     {"type": "10100"},
     {"keys": "<escape> $ x"},

@@ -15,14 +15,15 @@ the parallel bash/zsh/fish/python3 sessions from the evil-ghostel rewrite
   on the load-path (self-locating), enables the modes, disables
   `ghostel-macos-login-shell`. `evil` resolves from `../evil` or `$ELATE_EVIL_DIR`.
 - `matrix/shells.json` — **one templated scenario driven once per shell** (`bash, zsh,
-  fish, nu`; they share the `echo`-style editing flow). 26 ops: motions/edits `i a A I x
-  X dw 2dw cw c dd cc D C s S r 3r u . ~`, visual `v e d`, paste `p P`, and insert-mode
+  fish, nu`; they share the `echo`-style editing flow). 28 ops: motions/edits `i a A I x
+  X dw 2dw cw c dd cc D C s S r 3r u . ~`, insert entry from inside the prompt `0 i`
+  `0 a` (point must land on the input start), visual `v e d`, paste `p P`, and insert-mode
   Ctrl passthrough `C-w C-u C-a/C-e`. `{{shell}}`/`{{echo}}`/`{{setup}}` fill the shell
   specifics; `{{u_expect}}` flips the nu-only known failure to `xfail`.
   Plus 4 word-boundary ops (`ciw-path b-dw-path ciW-path opt-out`); see the
   word-boundary section below.
 - `matrix/python3.json` — the REPL, kept separate because it has no `echo` and its
-  operator tokens don't word-split cleanly (word-heavy/passthrough ops omitted). 12 ops.
+  operator tokens don't word-split cleanly (word-heavy/passthrough ops omitted). 13 ops.
 - `matrix/boundary-<shell>-ghostel.json` — the input-region boundary suite (autosuggestion,
   right prompt, syntax-highlight tail, multi-line) on bash/zsh/fish/nu; see the boundary-suite
   section below.
@@ -63,7 +64,7 @@ detection) and nu needs an `e` echo-helper (nu's `echo` doesn't join its args).
 
 ## Input-region boundary suite (autosuggestion / right-prompt / syntax-tail)
 
-The 26-op `shells.json` matrix runs on bash, which has no autosuggestion, right prompt, or
+The 28-op `shells.json` matrix runs on bash, which has no autosuggestion, right prompt, or
 syntax highlighting, so it never exercises `evil-ghostel--input-end` -- the color-based
 detection that stops Evil rightward motions/operators at the *typed* input end instead of
 walking into shell-rendered ghost text. `matrix/boundary-<shell>-ghostel.json` targets
@@ -256,7 +257,7 @@ elate run --keep-going --format json test/elate/matrix/shell-integration-ghostel
 Each is marked `expect: "fail"` so a regression elsewhere still shows red and a future
 fix shows **XPASS**. Everything else passed on bash/zsh/fish/nu (incl. `a X s S p P`,
 dot-repeat, and the `C-w`/`C-u`/`C-a`/`C-e` insert passthrough); python3 covers the
-subset that maps cleanly to REPL expressions (`i a A I x 2dw dd cc r a X s` + `u` xfail).
+subset that maps cleanly to REPL expressions (`i a A I 0i x 2dw dd cc r a X s` + `u` xfail).
 
 ## Overrides
 
