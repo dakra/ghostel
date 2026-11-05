@@ -18,17 +18,41 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
+    outputs:
+      explainer: ${{ steps.explainer.outputs.ready }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
+      # The presenter plugin, at the commit of the action that publishes in
+      # the next job. Outside the checkout, so Claude cannot edit the one
+      # script it is allowed to run.
+      - name: Check out the presenter plugin
+        run: |
+          git init -q "$RUNNER_TEMP/presenter"
+          git -C "$RUNNER_TEMP/presenter" fetch -q --depth 1 https://github.com/bisque-cloud/presenter.git 1bcc1ea0f91811ae0a54d9ef70d6d493ad9132a0 # v1.10.0
+          git -C "$RUNNER_TEMP/presenter" checkout -q FETCH_HEAD
+
+      # Installed here because Claude's shell can only run that script, so it
+      # cannot download the speech engine `narrate` needs.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Install the speech engine
+        run: |
+          node "$RUNNER_TEMP/presenter/action/src/install-bisque-voice.ts"
+          ~/.bisque/bin/bisque-voice install kokoro
+
       - name: Run Claude Code Review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           track_progress: true
+          plugin_marketplaces: ${{ runner.temp }}/presenter
+          plugins: presenter@bisque-cloud
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.issue.number }}
@@ -86,6 +110,51 @@ jobs:
             Provide inline comments on specific lines. Use top-level
             comments for general observations.
 
+            ## After the review
+
+            Before you post the review, decide whether it is worth a short video for someone who did not write it: yes for a design decision, a new command or option, a migration, or a change where the reasoning matters more than the diff; no for a dependency bump, formatting, a typo or a small fix. End the review with one line, Video: yes or Video: no, and the reason. If it is, use the present skill from the presenter plugin to make a presentation of the pull request from what you have already read: what it changes, why, and what a reviewer should look at. Run the skill's script as node ${{ runner.temp }}/presenter/skills/present/scripts/present.mjs. Write index.html, context.md, assets/ and title.txt (one line, the title) to .explainer/ in the working directory. Run the skill's plan, pronunciation-report and narrate with --voice kokoro:af_heart and fix what they report. Do not run login or publish: the publish job publishes the folder and comments the link. If it is not worth a video, write nothing there.
+
           claude_args: |
             --model claude-opus-4-7
-            --allowedTools "Read,Grep,Glob,WebFetch,mcp__github_inline_comment__create_inline_comment,Bash(gh pr:*),Bash(gh api:*),Bash(gh release:*)"
+            --allowedTools "Read,Grep,Glob,WebFetch,mcp__github_inline_comment__create_inline_comment,Bash(gh pr:*),Bash(gh api:*),Bash(gh release:*),Skill,Bash(node ${{ runner.temp }}/presenter/skills/present/scripts/present.mjs spec:*),Bash(node ${{ runner.temp }}/presenter/skills/present/scripts/present.mjs plan:*),Bash(node ${{ runner.temp }}/presenter/skills/present/scripts/present.mjs pronunciation-report:*),Bash(node ${{ runner.temp }}/presenter/skills/present/scripts/present.mjs narrate:*)"
+
+      # Only what Claude wrote: a pull request that commits its own
+      # .explainer/ is not published.
+      - name: Check for a presentation
+        id: explainer
+        run: |
+          if [ -f .explainer/index.html ] && [ -z "$(git ls-files .explainer)" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.explainer.outputs.ready == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: explainer
+          path: .explainer
+          include-hidden-files: true
+
+  # Publishes the presentation the review wrote, as this repository, to its
+  # bisque.today channel, and comments the link on the pull request. On its
+  # own runner, because claude-code-action keeps the token that publishes
+  # away from Claude's session; it runs no model.
+  publish:
+    needs: claude-review
+    if: needs.claude-review.outputs.explainer == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # comment the watch link
+      id-token: write # publish as this repository, no Bisque account
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: explainer
+          path: explainer
+
+      - name: Publish the presentation
+        continue-on-error: true
+        uses: bisque-cloud/presenter@1bcc1ea0f91811ae0a54d9ef70d6d493ad9132a0 # v1.10.0
+        with:
+          source: pull-request
+          presentation: explainer
