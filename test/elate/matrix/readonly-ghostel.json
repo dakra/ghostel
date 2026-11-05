@@ -251,6 +251,45 @@
       "wait": "text",
       "pattern": "^late7$",
       "timeout": 8.0
+    },
+    {
+      "group": "wrap-C-a",
+      "comment": "C-a in copy mode on a soft-wrapped input row holding a prompt-like % goes to column 0 of that row"
+    },
+    {
+      "eval": "(when (memq ghostel--input-mode '(copy emacs)) (ghostel-readonly-exit))"
+    },
+    {
+      "type": "echo                                                                                                  n08  %  ok"
+    },
+    {
+      "keys": "C-c C-t"
+    },
+    {
+      "eval": "(unless (eq ghostel--input-mode 'copy) (error \"MODE %s\" ghostel--input-mode))"
+    },
+    {
+      "eval": "(unless (get-text-property (1- (line-beginning-position)) 'ghostel-wrap) (error \"NOT WRAPPED\"))"
+    },
+    {
+      "keys": "C-a"
+    },
+    {
+      "eval": "(unless (= 0 (current-column)) (error \"COLUMN %d\" (current-column)))"
+    },
+    {
+      "keys": "q"
+    },
+    {
+      "eval": "(unless (eq ghostel--input-mode 'semi-char) (error \"MODE %s\" ghostel--input-mode))"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "text",
+      "pattern": "^n08 % ok$",
+      "timeout": 8.0
     }
   ]
 }

@@ -60,6 +60,16 @@
     {"keys": "RET"},
     {"wait": "text", "pattern": "^m17ok$", "timeout": 8.0},
 
+    {"group": "0 i wrap", "comment": "soft-wrapped input row holding a prompt-like %: 0 i starts at column 0 of that row, not after the %"},
+    {"type": "{{echo}}                                                                                                                      m18  %  ok"},
+    {"wait": "idle", "min_idle": 0.3, "timeout": 5.0},
+    {"eval": "(unless (get-text-property (1- (save-excursion (goto-char ghostel--cursor-char-pos) (line-beginning-position))) 'ghostel-wrap) (error \"NOT WRAPPED\"))"},
+    {"keys": "<escape> 0 i"},
+    {"eval": "(unless (= 0 (current-column)) (error \"COLUMN %d\" (current-column)))"},
+    {"type": "X"},
+    {"keys": "RET"},
+    {"wait": "text", "pattern": "^X m18 % ok$", "timeout": 8.0},
+
     {"group": "x", "comment": "$ then x -- delete last char"},
     {"type": "{{echo}} m04okZ"},
     {"keys": "<escape> $ x"},

@@ -15,9 +15,10 @@ the parallel bash/zsh/fish/python3 sessions from the evil-ghostel rewrite
   on the load-path (self-locating), enables the modes, disables
   `ghostel-macos-login-shell`. `evil` resolves from `../evil` or `$ELATE_EVIL_DIR`.
 - `matrix/shells.json` — **one templated scenario driven once per shell** (`bash, zsh,
-  fish, nu`; they share the `echo`-style editing flow). 28 ops: motions/edits `i a A I x
+  fish, nu`; they share the `echo`-style editing flow). 29 ops: motions/edits `i a A I x
   X dw 2dw cw c dd cc D C s S r 3r u . ~`, insert entry from inside the prompt `0 i`
-  `0 a` (point must land on the input start), visual `v e d`, paste `p P`, and insert-mode
+  `0 a` (point must land on the input start), `0 i wrap` on a soft-wrapped input row
+  holding a prompt-like `%` (insert at column 0 of that row), visual `v e d`, paste `p P`, and insert-mode
   Ctrl passthrough `C-w C-u C-a/C-e`. `{{shell}}`/`{{echo}}`/`{{setup}}` fill the shell
   specifics; `{{u_expect}}` flips the nu-only known failure to `xfail`.
   Plus 4 word-boundary ops (`ciw-path b-dw-path ciW-path opt-out`); see the
@@ -64,7 +65,7 @@ detection) and nu needs an `e` echo-helper (nu's `echo` doesn't join its args).
 
 ## Input-region boundary suite (autosuggestion / right-prompt / syntax-tail)
 
-The 28-op `shells.json` matrix runs on bash, which has no autosuggestion, right prompt, or
+The 29-op `shells.json` matrix runs on bash, which has no autosuggestion, right prompt, or
 syntax highlighting, so it never exercises `evil-ghostel--input-end` -- the color-based
 detection that stops Evil rightward motions/operators at the *typed* input end instead of
 walking into shell-rendered ghost text. `matrix/boundary-<shell>-ghostel.json` targets
@@ -113,6 +114,8 @@ Soft-wrapped *single*-line input (one logical line wider than the window) is sti
 automated: narrow-width output wraps too, so the shell-as-oracle assertion can't anchor
 across the soft-wrap newline; that stays covered by ERT
 (`...end-of-line-excludes-autosuggestion`, `...replace-count-excludes-soft-wraps`).
+The `0 i wrap` and `wrap-C-a` groups wrap on a run of spaces instead, which `echo`
+collapses, so their output fits one row.
 
 ## Point-tracking suite (normal state vs streamed output)
 
@@ -181,7 +184,8 @@ semi-char (and insert state under evil), so one failure does not cascade.
 - **plain** -- `fast-exit`, `nested-fast-exit` (a key typed in copy mode entered from
   Emacs mode is sent), `nested-q` (`q` leaves read-only mode entirely), `prompt-nav`
   (`C-c M-p`), `isearch`, `RET` (off a link: exit and run), `freeze` (held output
-  renders on exit).
+  renders on exit), `wrap-C-a` (`C-a` on a soft-wrapped input row holding a prompt-like
+  `%` goes to column 0).
 
 ```sh
 elate run --keep-going --format json test/elate/matrix/readonly-evil-ghostel.json

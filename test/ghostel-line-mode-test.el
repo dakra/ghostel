@@ -1041,6 +1041,13 @@ on every empty prompt the user pressed `RET' to.)"
     ;; `$ ' is 2 chars, `ls' starts at position 3.
     (should (= 3 (ghostel--regex-prompt-end 1)))))
 
+(ert-deftest ghostel-test-regex-prompt-end-skips-soft-wrapped-row ()
+  "A row continuing a soft-wrapped line never starts with a prompt."
+  (with-temp-buffer
+    (insert "$ echo aaaa" (propertize "\n" 'ghostel-wrap t) "foo $HOME")
+    (should (= 3 (ghostel--regex-prompt-end 1)))
+    (should (null (ghostel--regex-prompt-end (point))))))
+
 (ert-deftest ghostel-test-regex-prompt-end-nil-regex-returns-nil ()
   "When `ghostel-prompt-regexp' is nil the helper returns nil."
   (with-temp-buffer

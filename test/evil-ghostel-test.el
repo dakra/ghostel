@@ -895,6 +895,40 @@ terminal cursor to point's buffer position."
        (should (= (point) 3))
        (should (equal sent '("left" "left" "left")))))))
 
+(ert-deftest evil-ghostel-test-goto-input-position-stops-at-osc133-prompt ()
+  "A leftward target stops after a prompt only `ghostel-prompt' marks."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   (insert (propertize "ab: " 'ghostel-prompt t) "xyz")
+   (let (sent)
+     (cl-letf (((symbol-function 'ghostel--send-encoded)
+                (lambda (key &rest _) (push key sent)))
+               ((symbol-function 'evil-ghostel--sync-render) #'ignore)
+               (ghostel--cursor-pos '(7 . 0))
+               (ghostel--cursor-char-pos 8))
+       (evil-ghostel-goto-input-position 1)
+       (should (= (point) 5))
+       (should (equal sent '("left" "left" "left")))))))
+
+(ert-deftest evil-ghostel-test-goto-input-position-unclamped-without-prompt ()
+  "Rows without a prompt keep leftward moves despite a prompt-like character.
+Covers a soft-wrapped row and a regexp match ending past the cursor."
+  (pcase-dolist (`(,newline ,cursor-col) `((,(propertize "\n" 'ghostel-wrap t) 13)
+                                           ("\n" 2)))
+    (evil-ghostel-test--with-evil-buffer
+     (setq-local ghostel--term t)
+     (insert "$ echo aaaa" newline "foo $HOME bar")
+     (let* ((bol (line-beginning-position))
+            sent)
+       (cl-letf (((symbol-function 'ghostel--send-encoded)
+                  (lambda (key &rest _) (push key sent)))
+                 ((symbol-function 'evil-ghostel--sync-render) #'ignore)
+                 (ghostel--cursor-pos (cons cursor-col 1))
+                 (ghostel--cursor-char-pos (+ bol cursor-col)))
+         (evil-ghostel-goto-input-position bol)
+         (should (= (point) bol))
+         (should (= (length sent) cursor-col)))))))
+
 (ert-deftest evil-ghostel-test-dead-process-falls-back-to-plain-evil ()
   "After the child exits, evil-ghostel stops driving the terminal (issue #555).
 `evil-ghostel--terminal-live-p' and `evil-ghostel--prompt-active-p' turn off once

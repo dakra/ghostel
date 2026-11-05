@@ -9,6 +9,9 @@ All notable changes to this project will be documented in this file.
   row left the caret in the prompt until the next keystroke, and made
   bash ring the bell.  Insert now starts at the input start.
   Closes [#788](https://github.com/dakra/ghostel/issues/788).
+- On a soft-wrapped row, text up to a `$`, `#`, `%` or `>` was taken for
+  a prompt: `C-a` in copy and Emacs mode and evil-ghostel's `^`, `I` and
+  operators stopped after it instead of at the row's start.
 
 ## [0.61.0] — 2026-11-05
 

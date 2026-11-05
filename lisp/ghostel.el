@@ -2903,14 +2903,17 @@ When `ghostel-readonly-fast-exit' is non-nil, also exits read-only mode."
 (defun ghostel--regex-prompt-end (pos)
   "Return position past the prompt prefix on POS's line, or nil.
 Matches `ghostel-prompt-regexp' anchored at BOL of POS's line.
-Returns nil when the regexp is nil or doesn't match."
+Returns nil when the regexp is nil or doesn't match, or when the line
+continues a soft-wrapped row."
   (when ghostel-prompt-regexp
     (save-excursion
       (goto-char pos)
       (let ((bol (line-beginning-position))
             (eol (line-end-position)))
         (goto-char bol)
-        (when (looking-at ghostel-prompt-regexp)
+        (when (and (or (bobp)
+                       (not (get-text-property (1- bol) 'ghostel-wrap)))
+                   (looking-at ghostel-prompt-regexp))
           (let ((end (match-end 0)))
             (and (<= end eol) end)))))))
 
