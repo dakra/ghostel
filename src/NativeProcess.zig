@@ -36,7 +36,6 @@ backend_handoff_mutex: std.Io.Mutex = .init,
 write_mutex: std.Io.Mutex = .init,
 backend: ?Backend,
 event_writer: EventWriter,
-child: *ChildProcess,
 replica_name: [:0]u8,
 // Buffer event notifications so large terminal updates can be reported with
 // few writes to Emacs.
@@ -57,6 +56,7 @@ const LockedStream = struct {
     }
 };
 
+/// Return the child with a reference owned by the caller.
 pub fn init(
     self: *Self,
     alloc: Allocator,
@@ -65,7 +65,7 @@ pub fn init(
     params: ProcessParams,
     owner: *GhostelTerm,
     event_fd: ChannelFd,
-) !void {
+) !*ChildProcess {
     // Register channel cleanup first so backend initialization cannot leak the fd.
     var event_writer = try EventWriter.init(event_fd);
     errdefer event_writer.close();
@@ -91,7 +91,6 @@ pub fn init(
         .io = io,
         .backend = backend,
         .event_writer = event_writer,
-        .child = child,
         .replica_name = replica_name,
         .owner = owner,
         .stream = stream,
@@ -106,6 +105,7 @@ pub fn init(
     errdefer self.refcount.release();
     const thread = try std.Thread.spawn(.{}, Self.run, .{self});
     thread.detach();
+    return child;
 }
 
 pub fn ptyWrite(self: *Self, env: emacs.Env, data: []const u8) !void {
@@ -374,7 +374,6 @@ pub fn waitForReaders() void {
 }
 
 pub fn destroy(self: *Self) void {
-    self.child.refcount.release();
     self.alloc.free(self.replica_name);
     self.alloc.destroy(self);
 }
