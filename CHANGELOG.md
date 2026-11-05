@@ -4,11 +4,33 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.61.0] — 2026-11-05
+
 ### Added
 - Terminals can run without a process, for clients that bridge a remote
   terminal such as a multiplexer.  `ghostel-pty-out-function` receives
   the outbound bytes, `ghostel-resize-function` receives size requests,
   and `ghostel-snapshot-restore` loads a libghostty snapshot.
+
+### Changed
+
+- A terminal shown in two windows kept the smaller window's size after
+  that window switched buffer or was deleted.
+
+### Fixed
+- Emacs crashed on Linux when a terminal first rendered: password-mode
+  detection overflowed the stack.
+  Closes [#780](https://github.com/dakra/ghostel/issues/780).
+- A terminal whose shell exited while a background job kept the PTY open,
+  such as `sleep 30 &` followed by `C-d`, stayed open until the job ended.
+  Closes [#776](https://github.com/dakra/ghostel/issues/776).
+- An OSC 8 hyperlink URI that is not valid UTF-8, such as a CJK path cut
+  mid-character, aborted every redraw with
+  `wrong-type-argument utf-8-string-p`.  The same applied to OSC 7
+  directories, OSC 52 payloads, notifications and comint filter links.
+  Closes [#775](https://github.com/dakra/ghostel/issues/775).
+- Terminating a native PTY child could signal an unrelated process that
+  had reused the child's PID.
 
 ## [0.60.0] — 2026-10-29
 
