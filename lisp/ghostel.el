@@ -4197,20 +4197,15 @@ the child handle even after the terminal buffer is killed."
                :buffer (current-buffer)
                :filter #'ghostel--events-filter
                :noquery t))
-        child initialized)
+        child)
     (unwind-protect
-        (progn
-          (setq child (ghostel--spawn-native-process ghostel--term command pipe))
-          (process-put pipe 'ghostel--native-child child)
-          (setq ghostel--pid (ghostel--native-child-pid child))
-          (set-process-sentinel pipe #'ghostel--native-process-sentinel)
-          (add-hook 'kill-buffer-hook #'ghostel--kill-native-process-hook nil t)
-          (setq initialized t)
-          pipe)
-      (unless initialized
-        (when child (ignore-errors (ghostel--terminate-native-child child)))
-        (when ghostel--term (ghostel--kill-native-process ghostel--term))
-        (when (process-live-p pipe) (delete-process pipe))))))
+        (setq child (ghostel--spawn-native-process ghostel--term command pipe))
+      (unless child (delete-process pipe)))
+    (process-put pipe 'ghostel--native-child child)
+    (setq ghostel--pid (ghostel--native-child-pid child))
+    (set-process-sentinel pipe #'ghostel--native-process-sentinel)
+    (add-hook 'kill-buffer-hook #'ghostel--kill-native-process-hook nil t)
+    pipe))
 
 (defun ghostel--kill-native-processes-on-exit ()
   "Force native children to exit before Emacs disables process sentinels."

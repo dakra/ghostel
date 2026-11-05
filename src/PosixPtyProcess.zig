@@ -188,21 +188,6 @@ pub const ChildProcess = struct {
     mutex: std.Io.Mutex = .init,
     exited: bool = false,
 
-    /// Take ownership of the child, terminating and reaping it on allocation failure.
-    pub fn create(alloc: Allocator, io: std.Io, handle: Handle) !*Child {
-        var child: Child = .{ .alloc = alloc, .io = io, .handle = handle };
-        errdefer {
-            child.terminate() catch |err| log.err("Failed to terminate child: {any}", .{err});
-            _ = child.wait() catch |err| blk: {
-                log.err("Failed to reap child: {any}", .{err});
-                break :blk 255;
-            };
-        }
-        const self = try alloc.create(Child);
-        self.* = child;
-        return self;
-    }
-
     pub fn destroy(self: *Child) void {
         self.alloc.destroy(self);
     }
@@ -218,8 +203,10 @@ pub const ChildProcess = struct {
         if (self.exited) return;
 
         std.debug.assert(self.handle > 0);
-        if (sys.errno(sys.kill(self.handle, .KILL)) != .SUCCESS) {
-            return error.ChildTerminationFailed;
+        switch (sys.errno(sys.kill(self.handle, .KILL))) {
+            // The unreaped child reserves its PID, so ESRCH means it is already gone.
+            .SUCCESS, .SRCH => {},
+            else => return error.ChildTerminationFailed,
         }
     }
 
@@ -348,6 +335,8 @@ fn failChild(msg: []const u8, err: []const u8) noreturn {
 pub fn init(alloc: Allocator, io: std.Io, size: backend_types.WinSize, params: backend_types.ProcessParams) !Self {
     const waiter = try alloc.create(Waiter);
     errdefer alloc.destroy(waiter);
+    const child = try alloc.create(ChildProcess);
+    errdefer alloc.destroy(child);
 
     var self = Self{ .alloc = alloc, .pty = try .init(), .waiter = waiter };
     errdefer self.pty.deinit();
@@ -386,8 +375,7 @@ pub fn init(alloc: Allocator, io: std.Io, size: backend_types.WinSize, params: b
     if (pid != 0) {
         // This is the parent, child started successfully.
         self.pty.closeReplica();
-        const child = try ChildProcess.create(alloc, io, pid);
-        errdefer child.refcount.release();
+        child.* = .{ .alloc = alloc, .io = io, .handle = pid };
         waiter.* = .{ .child = child };
         try waiter.start(self.wake_pipe[1]);
         return self;
@@ -590,6 +578,8 @@ const TestChild = struct {
         errdefer for (pipe) |fd| {
             _ = sys.close(fd);
         };
+        const child = try std.testing.allocator.create(ChildProcess);
+        errdefer std.testing.allocator.destroy(child);
 
         const pid = sys.fork();
         if (sys.errno(pid) != .SUCCESS) return error.ForkFailed;
@@ -599,7 +589,7 @@ const TestChild = struct {
             while (sys.errno(sys.read(pipe[0], &byte, 1)) == .INTR) {}
             std.c._exit(exit_code);
         }
-        const child = try ChildProcess.create(std.testing.allocator, std.testing.io, pid);
+        child.* = .{ .alloc = std.testing.allocator, .io = std.testing.io, .handle = pid };
         _ = sys.close(pipe[0]);
         return .{ .child = child, .release_fd = pipe[1] };
     }

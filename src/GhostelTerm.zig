@@ -285,6 +285,7 @@ pub fn unlock(self: *Self) void {
     self.mutex.unlock(self.io);
 }
 
+/// Return the child with a reference owned by the caller.
 pub fn spawnNativeProcess(
     self: *Self,
     command: [][:0]const u8,
@@ -305,7 +306,7 @@ pub fn spawnNativeProcess(
 
     const process = try self.alloc.create(NativeProcess);
     errdefer self.alloc.destroy(process);
-    try process.init(
+    const child = try process.init(
         self.alloc,
         self.io,
         initial_size,
@@ -315,7 +316,7 @@ pub fn spawnNativeProcess(
     );
     self.process = process;
     self.pty_size = initial_size;
-    return process.child;
+    return child;
 }
 
 pub fn killNativeProcess(self: *Self) void {
@@ -911,9 +912,8 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                         std.log.err("Failed to terminate unreturned native child: {any}", .{err});
                     };
                     term.killNativeProcess();
+                    child.refcount.release();
                 }
-                child.refcount.retain();
-                errdefer child.refcount.release();
                 return try env.makeUserPtr(childFinalize, child);
             }
         },

@@ -44,22 +44,6 @@ pub const ChildProcess = struct {
     refcount: RefCount(Child) = .init(1),
     handle: Handle,
 
-    /// Take ownership of the HANDLE, terminating the child on allocation failure.
-    pub fn create(alloc: Allocator, handle: Handle) !*Child {
-        var child: Child = .{ .alloc = alloc, .handle = handle };
-        errdefer {
-            child.terminate() catch |err| std.log.err("Failed to terminate child: {any}", .{err});
-            _ = child.wait() catch |err| blk: {
-                std.log.err("Failed to wait for child: {any}", .{err});
-                break :blk 255;
-            };
-            _ = c.CloseHandle(handle);
-        }
-        const self = try alloc.create(Child);
-        self.* = child;
-        return self;
-    }
-
     pub fn destroy(self: *Child) void {
         _ = c.CloseHandle(self.handle);
         self.alloc.destroy(self);
@@ -747,6 +731,9 @@ fn spawnChild(self: *Self, params: backend_types.ProcessParams) !void {
         return error.UpdateProcThreadAttributeFailed;
     }
 
+    const child = try self.alloc.create(ChildProcess);
+    errdefer self.alloc.destroy(child);
+
     var pi = std.mem.zeroes(c.PROCESS_INFORMATION);
     const flags = c.EXTENDED_STARTUPINFO_PRESENT | c.CREATE_UNICODE_ENVIRONMENT;
     if (c.CreateProcessW(
@@ -765,7 +752,8 @@ fn spawnChild(self: *Self, params: backend_types.ProcessParams) !void {
     }
 
     defer _ = c.CloseHandle(pi.hThread);
-    self.child = try ChildProcess.create(self.alloc, pi.hProcess);
+    child.* = .{ .alloc = self.alloc, .handle = pi.hProcess };
+    self.child = child;
 }
 
 fn argvToCommandLineWindows(
