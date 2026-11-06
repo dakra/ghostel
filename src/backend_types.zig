@@ -31,20 +31,21 @@ pub const WriteResult = union(enum) {
 
 test "CancellationToken delegates cancellation checks" {
     const Context = struct {
-        checked: bool = false,
+        checked: *bool,
 
         fn check(raw: *const anyopaque) !void {
-            const context: *@This() = @ptrCast(@alignCast(@constCast(raw)));
-            context.checked = true;
+            const context: *const @This() = @ptrCast(@alignCast(raw));
+            context.checked.* = true;
         }
     };
 
-    var context = Context{};
+    var checked = false;
+    const context = Context{ .checked = &checked };
     const token = CancellationToken{
         .context = &context,
         .check_fn = Context.check,
         .poll_interval = .fromMilliseconds(20),
     };
     try token.check();
-    try std.testing.expect(context.checked);
+    try std.testing.expect(checked);
 }
