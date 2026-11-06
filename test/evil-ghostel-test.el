@@ -910,6 +910,41 @@ terminal cursor to point's buffer position."
        (should (= (point) 5))
        (should (equal sent '("left" "left" "left")))))))
 
+(ert-deftest evil-ghostel-test-goto-input-position-stops-at-empty-osc133-prompt ()
+  "On an empty input a leftward target stays at the OSC 133 prompt's end."
+  (evil-ghostel-test--with-evil-buffer
+   (setq-local ghostel--term t)
+   (insert (propertize "$ " 'ghostel-prompt t))
+   (let (sent)
+     (cl-letf (((symbol-function 'ghostel--send-encoded)
+                (lambda (key &rest _) (push key sent)))
+               ((symbol-function 'evil-ghostel--sync-render) #'ignore)
+               (ghostel--cursor-pos '(2 . 0))
+               (ghostel--cursor-char-pos 3))
+       (evil-ghostel-goto-input-position 1)
+       (should (= (point) 3))
+       (should-not sent)))))
+
+(ert-deftest evil-ghostel-test-goto-input-position-unclamped-in-prompt-marked-input ()
+  "Typed text marked as prompt does not stop a leftward move.
+A shell that sends OSC 133 A without B marks it so; the prompt then
+ends at the cursor, at the end of the text or inside it."
+  (dolist (cursor '(13 10))
+    (evil-ghostel-test--with-evil-buffer
+     (setq-local ghostel--term t)
+     (insert (propertize "> echo hello" 'ghostel-prompt t))
+     (let (sent)
+       (cl-letf (((symbol-function 'ghostel--send-encoded)
+                  (lambda (key &rest _) (push key sent)))
+                 ((symbol-function 'evil-ghostel--sync-render) #'ignore)
+                 (ghostel--cursor-pos (cons (1- cursor) 0))
+                 (ghostel--cursor-char-pos cursor))
+         (should (= cursor (ghostel--cursor-row-input-start)))
+         (should-not (evil-ghostel--cursor-left-limit))
+         (evil-ghostel-goto-input-position 8)
+         (should (= (point) 8))
+         (should (equal sent (make-list (- cursor 8) "left"))))))))
+
 (ert-deftest evil-ghostel-test-goto-input-position-unclamped-without-prompt ()
   "Rows without a prompt keep leftward moves despite a prompt-like character.
 Covers a soft-wrapped row and a regexp match ending past the cursor."
@@ -1828,6 +1863,20 @@ The cursor is at column 2; `sent' collects the keys sent to the terminal."
     (evil-insert-state)
     (should (= (point) 3))
     (should-not sent)))
+
+(ert-deftest evil-ghostel-test-insert-entry-from-copy-mode-prompt-marked-input ()
+  "Typed text marked as prompt does not clamp the kept column."
+  (evil-ghostel-test--with-readonly-fixture
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
+      (put-text-property (point-min) (point-max) 'ghostel-prompt t))
+    (setq-local ghostel--cursor-char-pos 13)
+    (cl-letf ((ghostel--cursor-pos '(12 . 0)))
+      (ghostel-copy-mode)
+      (move-to-column 4)
+      (evil-insert-state)
+      (should (= (point) 5))
+      (should (equal sent (make-list 8 "left"))))))
 
 (ert-deftest evil-ghostel-test-insert-entry-from-copy-mode-no-prompt-keeps-column ()
   "Without a detected prompt the kept column is not clamped to the cursor."

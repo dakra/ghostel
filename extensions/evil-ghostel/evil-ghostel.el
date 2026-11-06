@@ -290,7 +290,7 @@ Insert entry first leaves copy or Emacs mode."
         (evil-ghostel--reset-cursor-point)
         (when col
           (move-to-column col)
-          (when-let* ((start (ghostel--cursor-row-input-start)))
+          (when-let* ((start (evil-ghostel--cursor-left-limit)))
             (goto-char (max (point) start))))))
     (when (evil-ghostel--prompt-active-p)
       (let ((trow (cdr ghostel--cursor-pos))
@@ -400,6 +400,16 @@ collapsing the range — vterm's behaviour for shells without prompt tracking."
   (let ((s (ghostel-input-start-point)))
     (and s ghostel--cursor-char-pos (< s ghostel--cursor-char-pos) s)))
 
+(defun evil-ghostel--cursor-left-limit ()
+  "Return the input start the terminal cursor cannot move left of, or nil.
+A prompt ending at the cursor counts only when `ghostel-prompt-regexp' ends
+there too: a shell that sends OSC 133 A without B marks typed text as prompt."
+  (when-let* ((cursor ghostel--cursor-char-pos)
+              (start (ghostel--cursor-row-input-start))
+              ((or (< start cursor)
+                   (eql cursor (ghostel--regex-prompt-end cursor)))))
+    start))
+
 (defun evil-ghostel--clamp (beg end)
   "Clamp BEG..END to the editable input region; return a (BEG . END) cons.
 BEG is raised to `evil-ghostel--input-start', END lowered to
@@ -448,13 +458,11 @@ the cursor and the target."
            (start-row-vp (cdr ghostel--cursor-pos))
            (target-row-vp (or (ghostel--viewport-row-at pos) start-row-vp))
            (dy (- target-row-vp start-row-vp)))
-      ;; The shell cannot move left into the prompt; the regexp fallback
-      ;; can match past the cursor on a prompt-less row.
+      ;; The shell cannot move left into the prompt.
       (when (and (zerop dy) ghostel--cursor-char-pos)
         (if (> pos ghostel--cursor-char-pos)
             (setq pos (min pos (or (evil-ghostel--input-end) pos)))
-          (when-let* ((start (ghostel--cursor-row-input-start))
-                      ((<= start ghostel--cursor-char-pos)))
+          (when-let* ((start (evil-ghostel--cursor-left-limit)))
             (setq pos (max pos start)))))
       (let ((dx (- (save-excursion (goto-char pos) (current-column)) start-col)))
         (cond ((> dy 0) (dotimes (_ dy) (ghostel--send-encoded "down" "")))
