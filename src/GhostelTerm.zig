@@ -140,6 +140,7 @@ pub fn vtWrite(self: *Self, data: []const u8) !void {
     try self.lock();
     defer self.unlock();
     self.stream.nextSlice(data);
+    self.stream.handler.flushControlMode();
 }
 
 pub fn ptyWrite(self: *Self, data: []const u8) !void {

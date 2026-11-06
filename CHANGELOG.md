@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `ghostel-control-mode-function` receives tmux control mode (`tmux -CC`)
+  found in a terminal's output, for packages that show tmux panes as buffers.
+
 ### Fixed
 - evil-ghostel: `i` or `a` with point inside the prompt on the cursor's
   row left the caret in the prompt until the next keystroke, and made

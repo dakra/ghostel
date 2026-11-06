@@ -520,6 +520,7 @@ const interned_symbols = [_][:0]const u8{
     "gethash",
     "ghostel",
     "ghostel--bell",
+    "ghostel--control-mode",
     "ghostel--cursor-blinking",
     "ghostel--cursor-char-pos",
     "ghostel--cursor-pos",

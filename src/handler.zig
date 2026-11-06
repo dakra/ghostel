@@ -25,6 +25,10 @@ pub fn GhostelHandler(Effects: type) type {
         // Null entries represent an unset title.
         title_stack: [title_stack_max]?[]u8,
         title_stack_len: usize,
+        /// Inside a tmux control-mode DCS (`ESC P 1000 p`).  Body bytes are
+        /// buffered for Elisp; the inner handler never sees the frame.
+        control_mode: bool,
+        control_buf: std.ArrayList(u8),
 
         pub fn init(alloc: Allocator, term: *GhostelTerm, effects: Effects) Self {
             var self = Self{
@@ -34,6 +38,8 @@ pub fn GhostelHandler(Effects: type) type {
                 .inner = .init(&term.terminal),
                 .title_stack = @splat(null),
                 .title_stack_len = 0,
+                .control_mode = false,
+                .control_buf = .empty,
             };
             self.inner.effects.write_pty = &writePtyCallback;
             self.inner.effects.bell = &bellCallback;
@@ -51,6 +57,7 @@ pub fn GhostelHandler(Effects: type) type {
         /// Called by `gt.Stream.deinit`.
         pub fn deinit(self: *Self) void {
             self.clearTitleStack();
+            self.control_buf.deinit(self.alloc);
             self.inner.deinit();
         }
 
@@ -80,12 +87,37 @@ pub fn GhostelHandler(Effects: type) type {
                     self.effects.effect("ghostel--program-status-reset", .{});
                 },
 
+                .dcs_hook => if (value.intermediates.len == 0 and value.final == 'p' and
+                    value.params.len == 1 and value.params[0] == 1000)
+                {
+                    self.control_mode = true;
+                    self.effects.effect("ghostel--control-mode", .{@as([]const u8, "enter")});
+                } else self.inner.vt(action, value),
+                .dcs_put => if (self.control_mode) {
+                    self.control_buf.append(self.alloc, value) catch |err| {
+                        log.warn("control-mode byte dropped: {}", .{err});
+                    };
+                } else self.inner.vt(action, value),
+                .dcs_unhook => if (self.control_mode) {
+                    self.flushControlMode();
+                    self.control_mode = false;
+                    self.effects.effect("ghostel--control-mode", .{@as([]const u8, "exit")});
+                } else self.inner.vt(action, value),
+
                 // The parser filters icon-title forms; indexed stacks are unsupported.
                 .title_push => if (value == 0) self.titlePush(),
                 .title_pop => if (value == 0) self.titlePop(),
 
                 else => self.inner.vt(action, value),
             }
+        }
+
+        /// Deliver buffered control-mode body bytes to Elisp.
+        /// Call once per input chunk, never per byte.
+        pub fn flushControlMode(self: *Self) void {
+            if (self.control_buf.items.len == 0) return;
+            self.effects.effect("ghostel--control-mode", .{ @as([]const u8, "data"), self.control_buf.items });
+            self.control_buf.clearRetainingCapacity();
         }
 
         /// Called when the terminal needs to write response data back to the PTY.
@@ -352,6 +384,8 @@ test "title notification survives terminal mutation during delivery" {
         .inner = .init(&terminal),
         .title_stack = @splat(null),
         .title_stack_len = 0,
+        .control_mode = false,
+        .control_buf = .empty,
     };
     defer handler.deinit();
 

@@ -3429,6 +3429,19 @@ Only acts when `ghostel-enable-osc52' is non-nil."
         (when (fboundp 'gui-set-selection)
           (gui-set-selection 'CLIPBOARD text))))))
 
+(defvar ghostel-control-mode-function nil
+  "Function handling tmux control mode (`tmux -CC') in terminal output.
+Called in the terminal's buffer with EVENT and DATA: `enter' when the
+control-mode DCS opens, `data' with the next part of its body as a unibyte
+string, `exit' when it closes.  Parts split anywhere, also
+inside a line or a character.  While nil, the body is discarded.")
+
+(defun ghostel--control-mode (event &optional data)
+  "Pass control-mode EVENT and DATA from the native module on."
+  (when ghostel-control-mode-function
+    (funcall ghostel-control-mode-function (intern event)
+             (and data (encode-coding-string data 'utf-8-unix)))))
+
 (defun ghostel--defer (function &rest args)
   "Run FUNCTION with ARGS soon, using the current buffer when it fires."
   (let ((buffer (current-buffer)))
@@ -4215,6 +4228,7 @@ the child handle even after the terminal buffer is killed."
   (let ((pipe (make-pipe-process
                :name "ghostel-native-process"
                :buffer (current-buffer)
+               :coding 'utf-8-unix
                :filter #'ghostel--events-filter
                :noquery t))
         child)
