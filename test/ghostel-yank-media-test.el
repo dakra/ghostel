@@ -143,5 +143,43 @@ shell quoting itself is covered by the dnd tests."
                   :type 'user-error)
     (should-not sent-files)))
 
+(ert-deftest ghostel-test-yank-media-pty-out-only-terminal-errors ()
+  "A processless terminal without the function refuses an image."
+  (skip-unless (fboundp 'yank-media-handler))
+  (ghostel-yank-media-test--with-mode-buffer
+    (delete-process ghostel--process)
+    (setq ghostel--process nil
+          ghostel-pty-out-function #'ignore)
+    (should-error (ghostel--yank-media-data 'image/png (unibyte-string 1 2))
+                  :type 'user-error)
+    (should-not sent-files)))
+
+(ert-deftest ghostel-test-yank-media-send-files-function-gets-local-file ()
+  "`ghostel-send-files-function' gets a local file in a remote directory.
+It runs in the terminal's own environment."
+  (skip-unless (fboundp 'yank-media-handler))
+  (with-temp-buffer
+    (ghostel-mode)
+    (let ((received nil)
+          (env nil))
+      (setq ghostel-send-files-function
+            (lambda (files)
+              (setq received files
+                    env (list default-directory coding-system-for-write)))
+            default-directory "/ssh:host:/home/user/")
+      (cl-letf (((symbol-function 'ghostel--on-user-input) #'ignore)
+                ((symbol-function 'temporary-file-directory)
+                 (lambda ()
+                   (if (file-remote-p default-directory)
+                       "/ssh:host:/remote-tmp/"
+                     temporary-file-directory)))
+                ((symbol-function 'make-temp-file)
+                 (lambda (prefix &rest _) (concat prefix "x.png"))))
+        (ghostel--yank-media-data 'image/png (unibyte-string 1 2)))
+      (should (equal received
+                     (list (expand-file-name "ghostel-clipboard-x.png"
+                                             temporary-file-directory))))
+      (should (equal env '("/ssh:host:/home/user/" nil))))))
+
 (provide 'ghostel-yank-media-test)
 ;;; ghostel-yank-media-test.el ends here

@@ -7,6 +7,9 @@ All notable changes to this project will be documented in this file.
 ### Added
 - `ghostel-control-mode-function` receives tmux control mode (`tmux -CC`)
   found in a terminal's output, for packages that show tmux panes as buffers.
+- `ghostel-send-files-function` receives the files dropped on a terminal
+  or pasted into it with `yank-media`, for clients whose terminal runs on
+  another machine.
 
 ### Fixed
 - evil-ghostel: `i` or `a` with point inside the prompt on the cursor's

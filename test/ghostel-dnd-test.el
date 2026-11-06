@@ -146,6 +146,41 @@ layer runs no default handler such as `find-file'."
             (should (equal opened (concat "file://" file))))
         (delete-file file)))))
 
+(ert-deftest ghostel-test-dnd-send-files-function-receives-files ()
+  "`ghostel-send-files-function' gets a dropped file and nothing is pasted."
+  (ghostel-dnd-test--with-mode-buffer
+    (let ((file (make-temp-name "/nonexistent-"))
+          (received nil))
+      (setq ghostel-send-files-function
+            (lambda (files) (push files received)))
+      (should (equal (ghostel-dnd-test--dispatch (list (concat "file://" file)))
+                     ""))
+      (should (equal received (list (list file)))))))
+
+(ert-deftest ghostel-test-dnd-processless-terminal-send-files-function ()
+  "`ghostel-send-files-function' gets a drop into a terminal with no process."
+  (ghostel-dnd-test--with-mode-buffer
+    (delete-process ghostel--process)
+    (setq ghostel--process nil)
+    (let ((file (make-temp-name "/nonexistent-"))
+          (received nil))
+      (setq ghostel-send-files-function (lambda (files) (setq received files)))
+      (ghostel-dnd-test--dispatch (list (concat "file://" file)))
+      (should (equal received (list file))))))
+
+(ert-deftest ghostel-test-dnd-pty-out-only-terminal-opens-file ()
+  "A processless terminal without the function opens a dropped file."
+  (ghostel-dnd-test--with-mode-buffer
+    (delete-process ghostel--process)
+    (setq ghostel--process nil
+          ghostel-pty-out-function #'ignore)
+    (let ((file (make-temp-name "/nonexistent-"))
+          (opened nil))
+      (cl-letf (((symbol-function 'dnd-open-local-file)
+                 (lambda (uri _action) (setq opened uri) 'private)))
+        (ghostel-dnd-test--dispatch (list (concat "file://" file))))
+      (should (equal opened (concat "file://" file))))))
+
 ;;; `ghostel--drop' — the NS/w32 keymap path
 
 (defun ghostel-test--drop-event (type &rest objects)
@@ -166,6 +201,25 @@ layer runs no default handler such as `find-file'."
       (should (equal pasted
                      (list (concat (shell-quote-argument "/tmp/a b.png") " "
                                    (shell-quote-argument "/tmp/c d.png") " ")))))))
+
+(ert-deftest ghostel-test-drop-file-calls-send-files-function ()
+  "A file drop hands its paths to `ghostel-send-files-function'.
+It counts as user input."
+  (let ((pasted nil)
+        (received nil)
+        (inputs 0)
+        (event (ghostel-test--drop-event 'file "/tmp/a b.png" "/tmp/c d.png")))
+    (cl-letf (((symbol-function 'ghostel--paste-text)
+               (lambda (text) (push text pasted)))
+              ((symbol-function 'ghostel--on-user-input)
+               (lambda () (setq inputs (1+ inputs)))))
+      (with-temp-buffer
+        (setq-local ghostel-send-files-function
+                    (lambda (files) (push files received)))
+        (ghostel--drop event))
+      (should (equal received '(("/tmp/a b.png" "/tmp/c d.png"))))
+      (should (= inputs 1))
+      (should-not pasted))))
 
 (ert-deftest ghostel-test-drop-text-pastes-newline-joined-strings ()
   "A text drop (TYPE not `file') pastes the strings joined with newlines."

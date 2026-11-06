@@ -755,10 +755,12 @@ state from the wrong buffer after feeding output to the native module."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
     (setq ghostel-pty-out-function #'ignore
-          ghostel-resize-function #'ignore)
+          ghostel-resize-function #'ignore
+          ghostel-send-files-function #'ignore)
     (ghostel--init-buffer buffer 25 80)
     (should-not ghostel-pty-out-function)
-    (should-not ghostel-resize-function)))
+    (should-not ghostel-resize-function)
+    (should-not ghostel-send-files-function)))
 
 (ert-deftest ghostel-test-pty-out-function-receives-output ()
   "Outbound bytes reach `ghostel-pty-out-function' when there is no process."

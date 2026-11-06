@@ -1532,6 +1532,11 @@ Replaces `ghostel--process' in terminals whose I/O is bridged elsewhere.")
   "Function called with ROWS and COLS instead of resizing the terminal.
 It may be called repeatedly with the same size.")
 
+(defvar-local ghostel-send-files-function nil
+  "Function called with the local files dropped on or pasted into the terminal.
+It is called in the terminal buffer with a list of file names, instead of
+pasting their shell-quoted names.  A drop may call it once per file.")
+
 (defun ghostel--pty-out (data)
   "Send outbound DATA bytes from a terminal without a native PTY."
   (if ghostel-pty-out-function
@@ -1967,47 +1972,55 @@ parity with `xterm-paste'."
 ;;; Drag and drop
 
 (defun ghostel--dnd-send-files (files)
-  "Paste FILES into the terminal as shell-quoted paths, followed by a space."
-  (ghostel-paste-string
-   (concat (mapconcat #'shell-quote-argument files " ") " ")))
+  "Send FILES, dropped on or pasted into the terminal, to its program.
+`ghostel-send-files-function' receives them when set.  Otherwise their
+shell-quoted names are pasted, followed by a space."
+  (if ghostel-send-files-function
+      (progn (ghostel--on-user-input)
+             (funcall ghostel-send-files-function files))
+    (ghostel-paste-string
+     (concat (mapconcat #'shell-quote-argument files " ") " "))))
 
 (defun ghostel--dnd-handle-file (uri action)
-  "Paste the local file named by URI into the terminal, shell-quoted.
+  "Send the local file named by URI with `ghostel--dnd-send-files'.
 Handles `dnd-protocol-alist' file drops on the ports that dispatch
 drops through `special-event-map' (X11, pgtk).  A non-local URI is
-ignored with a message; a drop into a dead terminal opens the file
-with ACTION instead."
+ignored with a message; a drop into a terminal with neither a live
+process nor `ghostel-send-files-function' opens the file with ACTION."
   (let* ((local (if (string-match-p "\\`file://[^/]" uri)
                     (dnd-get-local-file-uri uri)
                   uri))
          (file (and local (dnd-get-local-file-name local))))
     (cond ((null file)
            (message "ghostel: ignoring dropped %s (not a local file)" uri))
-          ((process-live-p ghostel--process)
+          ((or ghostel-send-files-function (process-live-p ghostel--process))
            (ghostel--dnd-send-files (list file)))
           (t (dnd-open-local-file local action))))
   'private)
 
 (defun ghostel--yank-media-data (mimetype data)
-  "Write clipboard DATA of MIMETYPE to a temp file and paste its path.
-The file is created in the temp directory of the host the shell runs on.
-The shell receives the shell-quoted path followed by a space."
-  (unless (process-live-p ghostel--process)
+  "Write clipboard DATA of MIMETYPE to a temp file and send it.
+`ghostel-send-files-function' gets a file on this machine.  Otherwise the
+file is created in the temp directory of the host the shell runs on, and
+the shell receives its shell-quoted path followed by a space."
+  (unless (or ghostel-send-files-function (process-live-p ghostel--process))
     (user-error "Terminal has no live process"))
   (let* ((ext (pcase (cadr (split-string (symbol-name mimetype) "/"))
                 ("svg+xml" "svg")
                 (subtype subtype)))
-         (coding-system-for-write 'binary)
-         (temp (make-temp-file
-                (expand-file-name "ghostel-clipboard-"
-                                  (temporary-file-directory))
-                nil (concat "." ext) data)))
+         (temp (let ((coding-system-for-write 'binary))
+                 (make-temp-file
+                  (expand-file-name "ghostel-clipboard-"
+                                    (if ghostel-send-files-function
+                                        temporary-file-directory
+                                      (temporary-file-directory)))
+                  nil (concat "." ext) data))))
     (ghostel--dnd-send-files
      (list (or (file-remote-p temp 'localname) temp)))))
 
 (defun ghostel--drop (event)
   "Handle a drag-and-drop EVENT into the terminal.
-File drops paste their shell-quoted paths, text drops paste as-is,
+File drops go through `ghostel--dnd-send-files', text drops paste as-is,
 into the terminal shown in the event's window."
   (interactive "e")
   ;; On macOS (NS port) the event structure is:
@@ -5154,7 +5167,7 @@ may change freely (`ghostel-compile' finalize relies on this)."
                         ("^file://"  . ghostel--dnd-handle-file)
                         ("^file:"    . ghostel--dnd-handle-file))
                       dnd-protocol-alist))
-  ;; `yank-media' pastes a clipboard image or PDF as a temp-file path.
+  ;; `yank-media' sends a clipboard image or PDF as a temp file.
   (when (fboundp 'yank-media-handler)   ; Emacs 29+
     (yank-media-handler '("image/.*" application/pdf)
                         #'ghostel--yank-media-data))
@@ -5345,6 +5358,7 @@ spawn after initialization."
           ghostel--process nil
           ghostel-pty-out-function nil
           ghostel-resize-function nil
+          ghostel-send-files-function nil
           ghostel--pid nil
           ghostel--last-directory nil
           ghostel-title nil
