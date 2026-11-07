@@ -4964,9 +4964,11 @@ On a GUI frame, leave the value alone: it is either t (mode-init default;
 composition stays on) or a string from a prior TTY display (string never
 matches a GUI's nil `tty-type', so composition still stays on for the GUI
 and the TTY display that needs it off keeps working in parallel)."
-  (when (windowp window)
-    (when-let* ((tt (tty-type (window-frame window))))
-      (unless (equal auto-composition-mode tt)
+  (when-let* (((windowp window))
+              (tt (tty-type (window-frame window))))
+    (with-current-buffer (window-buffer window)
+      (when (and (derived-mode-p 'ghostel-mode)
+                 (not (equal auto-composition-mode tt)))
         (setq-local auto-composition-mode tt)))))
 
 (defun ghostel--tty-esc (map)

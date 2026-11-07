@@ -747,5 +747,30 @@ Sets floor to 1.0 and feeds a glyph larger than the cell.  With floor
                  (should (null (overlays-in (point-min) (point-max)))))))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-sync-tty-composition-sets-window-buffer ()
+  "TTY composition is set in WINDOW's ghostel buffer, not the current one."
+  (let ((orig-config (current-window-configuration))
+        (ghostel-buf (generate-new-buffer " *ghostel-test-composition*"))
+        (other-buf (generate-new-buffer " *ghostel-test-composition-other*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'tty-type) (lambda (&optional _) "xterm")))
+          (delete-other-windows)
+          (with-current-buffer ghostel-buf (ghostel-mode))
+          (let ((win (split-window)))
+            (set-window-buffer win ghostel-buf)
+            (with-current-buffer other-buf
+              (ghostel--sync-tty-composition win))
+            (should (equal "xterm" (buffer-local-value 'auto-composition-mode
+                                                       ghostel-buf)))
+            (should-not (local-variable-p 'auto-composition-mode other-buf))
+            ;; A window now showing a non-ghostel buffer is left alone.
+            (set-window-buffer win other-buf)
+            (with-current-buffer ghostel-buf
+              (ghostel--sync-tty-composition win))
+            (should-not (local-variable-p 'auto-composition-mode other-buf))))
+      (set-window-configuration orig-config)
+      (kill-buffer ghostel-buf)
+      (kill-buffer other-buf))))
+
 (provide 'ghostel-glyph-test)
 ;;; ghostel-glyph-test.el ends here
