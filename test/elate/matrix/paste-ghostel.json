@@ -1,0 +1,778 @@
+{
+  "name": "paste-ghostel",
+  "comment": "Pastes into a live shell through every entry point: one line, several lines, a trailing newline, 11 KB, multibyte, control bytes, an embedded end bracket, a tab, CRLF, a program without bracketed paste, yank-pop, C-c C-y, xterm-paste, a text drop, a foreign insert and line mode. Each pasted line calls t, which prints its argument followed by -ok, so the shell shows what ran and when. Run one variant per shell; --set native=nil runs the Emacs PTY instead of the native one.",
+  "params": {
+    "native": "t",
+    "go": "RET",
+    "reader": "sed 's/^/got:/'",
+    "prompt": "\\\\$ ",
+    "tpre": "t \\\"",
+    "tpost": "\\\""
+  },
+  "variants": {
+    "bash": {
+      "shell": "/opt/homebrew/bin/bash",
+      "setup": "PS1='$ '; t() { printf '%s-ok\\n' \"$1\"; }"
+    },
+    "zsh": {
+      "shell": "/bin/zsh",
+      "setup": "PS1='$ '; t() { printf '%s-ok\\n' \"$1\"; }"
+    },
+    "fish": {
+      "shell": "/opt/homebrew/bin/fish",
+      "setup": "function fish_prompt; echo -n '$ '; end; function fish_right_prompt; end; function t; printf '%s-ok\\n' $argv[1]; end"
+    },
+    "nu": {
+      "shell": "/opt/homebrew/bin/nu",
+      "setup": "$env.PROMPT_COMMAND = {|| '' }; $env.PROMPT_COMMAND_RIGHT = {|| '' }; $env.PROMPT_INDICATOR = {|| '$ ' }; def t [x, ...r] { print $\"($x)-ok\" }"
+    },
+    "python3": {
+      "shell": "python3",
+      "prompt": ">>> ",
+      "go": "RET RET",
+      "setup": "def t(x): print(x + '-ok')",
+      "reader": "__import__('subprocess').run(['sed', 's/^/got:/'])",
+      "tpre": "t(\\\"",
+      "tpost": "\\\")"
+    }
+  },
+  "defaults": {
+    "timeout": 15
+  },
+  "session": {
+    "ui": "tty",
+    "size": "120x40",
+    "config": "minimal",
+    "eval": [
+      "(load \"/Users/daniel/.emacs.d/lib/ghostel/test/elate/lib/ghostel-setup.el\")",
+      "(setq ghostel-shell \"{{shell}}\" ghostel-use-native-pty {{native}})"
+    ]
+  },
+  "steps": [
+    {
+      "eval": "(ghostel)"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.5,
+      "timeout": 20
+    },
+    {
+      "group": "setup",
+      "comment": "short prompt and a function t that prints its argument followed by -ok"
+    },
+    {
+      "type": "{{setup}}"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-line \"{{prompt}}\")",
+      "timeout": 15
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5
+    },
+    {
+      "group": "single",
+      "comment": "a one-line paste waits at the prompt and runs on RET"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-c\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.7
+    },
+    {
+      "eval": "(kill-new \"{{tpre}}s1{{tpost}}\")"
+    },
+    {
+      "keys": "C-y"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"s1\")",
+      "timeout": 10
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.5
+    },
+    {
+      "assert": {
+        "eval": "(not (or (ghostel-elate--has-line \"s1-ok\")))"
+      },
+      "comment": "nothing ran before RET"
+    },
+    {
+      "keys": "{{go}}"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--in-order-p \"s1-ok\")",
+      "timeout": 10
+    },
+    {
+      "group": "multi",
+      "comment": "a three-line paste is one edit: nothing runs before RET, all lines after, in order"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-c\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.7
+    },
+    {
+      "eval": "(kill-new \"{{tpre}}m1{{tpost}}\\n{{tpre}}m2{{tpost}}\\n{{tpre}}m3{{tpost}}\")"
+    },
+    {
+      "keys": "C-y"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"m3\")",
+      "timeout": 10
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.5
+    },
+    {
+      "assert": {
+        "eval": "(not (or (ghostel-elate--has-line \"m1-ok\") (ghostel-elate--has-line \"m2-ok\") (ghostel-elate--has-line \"m3-ok\")))"
+      },
+      "comment": "nothing ran before RET"
+    },
+    {
+      "keys": "{{go}}"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--in-order-p \"m1-ok\" \"m2-ok\" \"m3-ok\")",
+      "timeout": 10
+    },
+    {
+      "group": "trailing-nl",
+      "comment": "a paste ending in a newline does not run by itself"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-c\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.7
+    },
+    {
+      "eval": "(kill-new \"{{tpre}}n1{{tpost}}\\n\")"
+    },
+    {
+      "keys": "C-y"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"n1\")",
+      "timeout": 10
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.5
+    },
+    {
+      "assert": {
+        "eval": "(not (or (ghostel-elate--has-line \"n1-ok\")))"
+      },
+      "comment": "nothing ran before RET"
+    },
+    {
+      "keys": "{{go}}"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-line \"n1-ok\")",
+      "timeout": 10
+    },
+    {
+      "group": "large",
+      "comment": "300 lines, about 11 KB, cross the 4096-byte write chunks: nothing runs before RET, every line after"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-c\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.7
+    },
+    {
+      "eval": "(kill-new (mapconcat (lambda (i) (format \"{{tpre}}L%03d%s{{tpost}}\" i (make-string 30 ?x))) (number-sequence 1 300) \"\\n\"))"
+    },
+    {
+      "keys": "C-y"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"L300x\")",
+      "timeout": 30
+    },
+    {
+      "wait": "idle",
+      "min_idle": 2
+    },
+    {
+      "assert": {
+        "eval": "(not (or (ghostel-elate--has-line \"L001x+-ok\") (ghostel-elate--has-line \"L300x+-ok\")))"
+      },
+      "comment": "nothing ran before RET"
+    },
+    {
+      "keys": "{{go}}"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--in-order-p \"L001x+-ok\" \"L300x+-ok\")",
+      "timeout": 60
+    },
+    {
+      "assert": {
+        "eval": "(= 300 (ghostel-elate--count-lines \"L[0-9]+x+-ok\"))"
+      },
+      "comment": "no line lost"
+    },
+    {
+      "group": "unicode",
+      "comment": "multibyte and wide characters arrive byte for byte"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-c\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.7
+    },
+    {
+      "eval": "(kill-new \"{{tpre}}ü1äö漢字🙂{{tpost}}\")"
+    },
+    {
+      "keys": "C-y"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"ü1äö漢字🙂\")",
+      "timeout": 10
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.5
+    },
+    {
+      "assert": {
+        "eval": "(not (or (ghostel-elate--has-line \"ü1äö漢字🙂-ok\")))"
+      },
+      "comment": "nothing ran before RET"
+    },
+    {
+      "keys": "{{go}}"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--in-order-p \"ü1äö漢字🙂-ok\")",
+      "timeout": 10
+    },
+    {
+      "group": "ctrl-bytes",
+      "comment": "C-c and ESC inside a paste arrive as spaces and interrupt nothing"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-c\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.7
+    },
+    {
+      "eval": "(kill-new \"{{tpre}}c1\\x03\\ez{{tpost}}\")"
+    },
+    {
+      "keys": "C-y"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"c1\")",
+      "timeout": 10
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.5
+    },
+    {
+      "assert": {
+        "eval": "(not (or (ghostel-elate--has-line \"c1  z-ok\")))"
+      },
+      "comment": "nothing ran before RET"
+    },
+    {
+      "keys": "{{go}}"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-line \"c1  z-ok\")",
+      "timeout": 10
+    },
+    {
+      "group": "injection",
+      "comment": "an end bracket inside the paste loses its ESC, so it cannot end the paste and run the next line"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-c\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.7
+    },
+    {
+      "eval": "(kill-new \"{{tpre}}j1\\e[201~{{tpost}}\\n{{tpre}}j2{{tpost}}\")"
+    },
+    {
+      "keys": "C-y"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"j2\")",
+      "timeout": 10
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.5
+    },
+    {
+      "assert": {
+        "eval": "(not (or (ghostel-elate--has-line \"j1.*-ok\") (ghostel-elate--has-line \"j2-ok\")))"
+      },
+      "comment": "nothing ran before RET"
+    },
+    {
+      "keys": "{{go}}"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--in-order-p \"j1 \\\\[201~-ok\" \"j2-ok\")",
+      "timeout": 10
+    },
+    {
+      "group": "tab",
+      "comment": "a tab in a paste is text, not completion"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-c\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.7
+    },
+    {
+      "eval": "(kill-new \"{{tpre}}tab1\\tx{{tpost}}\")"
+    },
+    {
+      "keys": "C-y"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"tab1\")",
+      "timeout": 10
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.5
+    },
+    {
+      "assert": {
+        "eval": "(not (or (ghostel-elate--has-line \"tab1[ \\t]+x-ok\")))"
+      },
+      "comment": "nothing ran before RET"
+    },
+    {
+      "keys": "{{go}}"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-line \"tab1[ \\t]+x-ok\")",
+      "timeout": 10,
+      "xfail": {
+        "fish": "fish's __fish_paste deletes control characters, tab included, from every paste"
+      }
+    },
+    {
+      "group": "crlf",
+      "comment": "Windows line endings: nothing runs before RET, both lines after"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-c\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.7
+    },
+    {
+      "eval": "(kill-new \"{{tpre}}r1{{tpost}}\\r\\n{{tpre}}r2{{tpost}}\")"
+    },
+    {
+      "keys": "C-y"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"r2\")",
+      "timeout": 10
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.5
+    },
+    {
+      "assert": {
+        "eval": "(not (or (ghostel-elate--has-line \"r1-ok\") (ghostel-elate--has-line \"r2-ok\")))"
+      },
+      "comment": "nothing ran before RET"
+    },
+    {
+      "keys": "{{go}}"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--in-order-p \"r1-ok\" \"r2-ok\")",
+      "timeout": 10
+    },
+    {
+      "group": "unbracketed",
+      "comment": "into a program without bracketed paste each newline becomes a CR, so each line arrives as it comes"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-c\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.7
+    },
+    {
+      "type": "{{reader}}"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1
+    },
+    {
+      "eval": "(kill-new \"u1\\nu2\")"
+    },
+    {
+      "keys": "C-y"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"got:u1\")",
+      "timeout": 10
+    },
+    {
+      "assert": {
+        "eval": "(not (ghostel-elate--has-text \"got:u2\"))"
+      },
+      "comment": "the last line waits for its newline"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"got:u2\")",
+      "timeout": 10
+    },
+    {
+      "assert": {
+        "eval": "(not (ghostel-elate--has-text \"200~\"))"
+      },
+      "comment": "no bracket reached the program"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-d\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1
+    },
+    {
+      "group": "yank-pop",
+      "comment": "M-y erases a multi-line paste and pastes the previous kill in its place"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-c\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.7
+    },
+    {
+      "eval": "(kill-new \"{{tpre}}y3{{tpost}}\")"
+    },
+    {
+      "eval": "(kill-new \"{{tpre}}y1{{tpost}}\\n{{tpre}}y2{{tpost}}\")"
+    },
+    {
+      "keys": "C-y"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"y2\")",
+      "timeout": 10
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5
+    },
+    {
+      "eval": "(let ((last-command 'ghostel-yank)) (ghostel-yank-pop))",
+      "comment": "M-y as a separate keystroke; one macro would hand the end bracket and the DELs to the program in one read"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"y3\")",
+      "timeout": 10
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.5
+    },
+    {
+      "assert": {
+        "eval": "(not (or (ghostel-elate--has-line \"y1-ok\") (ghostel-elate--has-line \"y2-ok\") (ghostel-elate--has-line \"y3-ok\")))"
+      },
+      "comment": "nothing ran before RET"
+    },
+    {
+      "keys": "{{go}}"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-line \"y3-ok\")",
+      "timeout": 10
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1
+    },
+    {
+      "assert": {
+        "eval": "(not (or (ghostel-elate--has-line \"y1-ok\") (ghostel-elate--has-line \"y2-ok\")))"
+      },
+      "comment": "the erased paste never ran"
+    },
+    {
+      "group": "ghostel-paste",
+      "comment": "C-c C-y pastes the kill as one edit"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-c\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.7
+    },
+    {
+      "eval": "(kill-new \"{{tpre}}p1{{tpost}}\\n{{tpre}}p2{{tpost}}\")"
+    },
+    {
+      "keys": "C-c C-y"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"p2\")",
+      "timeout": 10
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.5
+    },
+    {
+      "assert": {
+        "eval": "(not (or (ghostel-elate--has-line \"p1-ok\") (ghostel-elate--has-line \"p2-ok\")))"
+      },
+      "comment": "nothing ran before RET"
+    },
+    {
+      "keys": "{{go}}"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--in-order-p \"p1-ok\" \"p2-ok\")",
+      "timeout": 10
+    },
+    {
+      "group": "xterm-paste",
+      "comment": "a paste from the host terminal of a TTY Emacs is one edit"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-c\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.7
+    },
+    {
+      "eval": "(ghostel-xterm-paste (list 'xterm-paste \"{{tpre}}x1{{tpost}}\\n{{tpre}}x2{{tpost}}\"))"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"x2\")",
+      "timeout": 10
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.5
+    },
+    {
+      "assert": {
+        "eval": "(not (or (ghostel-elate--has-line \"x1-ok\") (ghostel-elate--has-line \"x2-ok\")))"
+      },
+      "comment": "nothing ran before RET"
+    },
+    {
+      "keys": "{{go}}"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--in-order-p \"x1-ok\" \"x2-ok\")",
+      "timeout": 10
+    },
+    {
+      "group": "drop-text",
+      "comment": "dropped text is one edit"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-c\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.7
+    },
+    {
+      "eval": "(ghostel--drop (list 'drag-n-drop (posn-at-point) (list 'text 'copy \"{{tpre}}d1{{tpost}}\\n{{tpre}}d2{{tpost}}\")))"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"d2\")",
+      "timeout": 10
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.5
+    },
+    {
+      "assert": {
+        "eval": "(not (or (ghostel-elate--has-line \"d1-ok\") (ghostel-elate--has-line \"d2-ok\")))"
+      },
+      "comment": "nothing ran before RET"
+    },
+    {
+      "keys": "{{go}}"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--in-order-p \"d1-ok\" \"d2-ok\")",
+      "timeout": 10
+    },
+    {
+      "group": "foreign-insert",
+      "comment": "text another command inserts into the buffer is one edit"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-c\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.7
+    },
+    {
+      "eval": "(insert \"{{tpre}}f1{{tpost}}\\n{{tpre}}f2{{tpost}}\")"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--has-text \"f2\")",
+      "timeout": 10
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1.5
+    },
+    {
+      "assert": {
+        "eval": "(not (or (ghostel-elate--has-line \"f1-ok\") (ghostel-elate--has-line \"f2-ok\")))"
+      },
+      "comment": "nothing ran before RET"
+    },
+    {
+      "keys": "{{go}}"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--in-order-p \"f1-ok\" \"f2-ok\")",
+      "timeout": 10
+    },
+    {
+      "group": "line-mode",
+      "comment": "line mode sends a yanked multi-line input raw on RET, and every line runs in order"
+    },
+    {
+      "eval": "(ghostel--send-string \"\\C-c\")"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.7
+    },
+    {
+      "eval": "(ghostel-line-mode)"
+    },
+    {
+      "wait": "until",
+      "pred": "(eq ghostel--input-mode 'line)",
+      "timeout": 10
+    },
+    {
+      "eval": "(kill-new \"{{tpre}}l1{{tpost}}\\n{{tpre}}l2{{tpost}}\")"
+    },
+    {
+      "keys": "C-y"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 1
+    },
+    {
+      "assert": {
+        "eval": "(not (or (ghostel-elate--has-line \"l1-ok\") (ghostel-elate--has-line \"l2-ok\")))"
+      },
+      "comment": "nothing ran before RET"
+    },
+    {
+      "keys": "RET"
+    },
+    {
+      "wait": "until",
+      "pred": "(ghostel-elate--in-order-p \"l1-ok\" \"l2-ok\")",
+      "timeout": 10
+    },
+    {
+      "eval": "(ghostel-semi-char-mode)"
+    },
+    {
+      "wait": "idle",
+      "min_idle": 0.5
+    }
+  ]
+}

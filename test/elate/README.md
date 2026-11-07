@@ -32,6 +32,8 @@ the parallel bash/zsh/fish/python3 sessions from the evil-ghostel rewrite
   (#228 / #454); see the point-tracking section below.
 - `matrix/word-boundaries-ghostel.json` — double-click selection under evil-ghostel's
   Vim-style syntax table, on bash; see the word-boundary section below.
+- `matrix/paste-ghostel.json` — every kind of paste into a live shell, one variant per
+  shell, on both PTY backends; see the paste section below.
 - `matrix/readonly-evil-ghostel.json` / `matrix/readonly-ghostel.json` — copy and Emacs
   mode entry and exit, with and without evil; see the read-only section below.
 
@@ -249,6 +251,36 @@ data, so later `a=p` for that id places nothing.
 elate run --keep-going --format json test/elate/matrix/sync-output-ghostel.json
 elate run --keep-going --format json test/elate/matrix/shell-integration-ghostel.json
 ```
+
+## Paste suite (plain ghostel, TTY 120x40, every shell and both PTY backends)
+
+`matrix/paste-ghostel.json` pastes text whose lines call `t`, a function the variant's setup
+defines to print its argument followed by `-ok`, so the shell shows what ran and when. A
+pasted line must not run before RET. Groups:
+
+- **kinds of text:** `single`, `multi` (three lines), `trailing-nl`, `large` (300 lines,
+  about 11 KB, across the 4096-byte write chunks, every line counted), `unicode`,
+  `ctrl-bytes` (C-c and ESC arrive as spaces), `injection` (an `ESC[201~` inside the
+  paste cannot end it early), `tab`, `crlf`.
+- **without bracketed paste:** `unbracketed` pastes into `sed`; each newline arrives as a
+  CR and no bracket reaches the program.
+- **entry points:** `C-y`, `yank-pop` (M-y erases a multi-line paste), `ghostel-paste`
+  (`C-c C-y`), `xterm-paste`, `drop-text`, `foreign-insert` (text another command inserts
+  into the buffer) and `line-mode` (a yanked multi-line input runs line by line on RET).
+
+Variants are `bash`, `zsh`, `fish`, `nu` and `python3`; `--set native=nil` runs the Emacs
+PTY instead of the native one. `{{go}}` is the key that runs a pasted edit: `RET RET` on
+python3, whose REPL waits for a blank line after a multi-statement block.
+
+```sh
+S=test/elate/matrix/paste-ghostel.json
+for v in bash zsh fish nu python3; do for n in t nil; do
+  elate run --keep-going --format json --variant $v --set native=$n "$S"; done; done
+```
+
+Result (Emacs 32): every group passes on all five shells and both backends, except
+`tab` on fish, an xfail: fish's `__fish_paste` deletes control characters, tab included,
+from every paste.
 
 ## Known xfails (flagged, not fixed — confirmed live on elate 0.11.0)
 

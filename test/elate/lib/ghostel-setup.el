@@ -98,5 +98,27 @@ slice's x-origin and width in the image divided by the cell width."
     (goto-char (point-min))
     (and (re-search-forward (concat "^" regexp "$") nil t) t)))
 
+(defun ghostel-elate--has-text (regexp)
+  "Non-nil when REGEXP matches anywhere in the buffer."
+  (save-excursion
+    (goto-char (point-min))
+    (and (re-search-forward regexp nil t) t)))
+
+(defun ghostel-elate--count-lines (regexp)
+  "Return the number of whole buffer lines matching REGEXP."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((n 0))
+      (while (re-search-forward (concat "^" regexp "$") nil t)
+        (setq n (1+ n)))
+      n)))
+
+(defun ghostel-elate--in-order-p (&rest regexps)
+  "Non-nil when whole buffer lines match REGEXPS in this order."
+  (save-excursion
+    (goto-char (point-min))
+    (cl-every (lambda (re) (re-search-forward (concat "^" re "$") nil t))
+              regexps)))
+
 (provide 'ghostel-setup)
 ;;; ghostel-setup.el ends here
