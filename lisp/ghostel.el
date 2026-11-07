@@ -5035,9 +5035,12 @@ e.g. a later \"emacsclient -t\" session."
     (ghostel--redraw-now (current-buffer))))
 
 (defun ghostel--window-buffer-change (window)
-  "Anchor WINDOW when its buffer is displayed."
+  "Anchor WINDOW when its buffer is displayed.
+Before Emacs 31 the hook runs in whatever buffer is current; from Emacs 31
+it runs in its own buffer, also for the buffer WINDOW lost."
   (when (and (window-live-p window)
-             (eq (window-buffer window) (current-buffer)))
+             (or (< emacs-major-version 31)
+                 (eq (window-buffer window) (current-buffer))))
     (ghostel--anchor-window window)))
 
 (defun ghostel--minibuffer-exit ()

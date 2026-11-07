@@ -199,6 +199,32 @@ SPEC is (BUFFER TERM ANCHORED-WINDOW HISTORY-WINDOW)."
       (funcall timer-fn)
       (should (= target (window-point))))))
 
+(ert-deftest ghostel-test-window-buffer-change-anchors-from-other-buffer ()
+  "Before Emacs 31 the hook anchors a window while another buffer is current."
+  (let ((orig-config (current-window-configuration))
+        (ghostel-buf (generate-new-buffer " *ghostel-test-wbc*"))
+        (other-buf (generate-new-buffer " *ghostel-test-wbc-other*"))
+        anchored)
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (with-current-buffer ghostel-buf (ghostel-mode))
+          (let ((win (split-window)))
+            (set-window-buffer win ghostel-buf)
+            (cl-letf (((symbol-function 'ghostel--anchor-window)
+                       (lambda (window &rest _) (push window anchored))))
+              (with-current-buffer other-buf
+                (let ((emacs-major-version 30))
+                  (ghostel--window-buffer-change win))
+                (should (equal (list win) anchored))
+                (setq anchored nil)
+                (let ((emacs-major-version 31))
+                  (ghostel--window-buffer-change win))
+                (should-not anchored)))))
+      (set-window-configuration orig-config)
+      (kill-buffer ghostel-buf)
+      (kill-buffer other-buf))))
+
 (ert-deftest ghostel-test-minibuffer-exit-skips-replaced-window-buffer ()
   "A deferred minibuffer re-anchor only applies to the captured buffer."
   (let ((orig-config (current-window-configuration))
