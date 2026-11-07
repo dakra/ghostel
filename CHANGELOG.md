@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- A paste reaches `ghostel-pty-out-function` in one call.  Its brackets
+  and text were separate calls, and over a slow link zsh ended the paste
+  early and ran the pasted lines.
+
 ## [0.62.0] — 2026-11-07
 
 ### Added

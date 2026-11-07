@@ -307,13 +307,13 @@ pub fn encodePaste(self: *Self, data: []u8) !bool {
     };
     const slices = gt.input.encodePaste(data, options);
 
-    var wrote = false;
-    for (slices) |slice| {
-        if (slice.len == 0) continue;
-        try self.ptyWrite(slice);
-        wrote = true;
-    }
-    return wrote;
+    // zsh ends a paste at any gap longer than KEYTIMEOUT, and a remote
+    // terminal adds a round trip between writes, so send a single buffer.
+    const bytes = try std.mem.concat(self.alloc, u8, &slices);
+    defer self.alloc.free(bytes);
+    if (bytes.len == 0) return false;
+    try self.ptyWrite(bytes);
+    return true;
 }
 
 /// Resize the terminal. The col/row size gets committed on next redraw in order

@@ -777,5 +777,25 @@ state from the wrong buffer after feeding output to the native module."
       (ghostel--sync-read-only)
       (should-not buffer-read-only))))
 
+(ert-deftest ghostel-test-paste-is-one-pty-write ()
+  "A paste reaches `ghostel-pty-out-function' in a single call."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
+    (let (sent)
+      (setq ghostel-pty-out-function (lambda (data) (push data sent)))
+      (ghostel--write-vt term "\e[?2004h")
+      (ghostel-paste-string "one\ntwo")
+      (should (equal '("\e[200~one\ntwo\e[201~") sent))
+      (setq sent nil)
+      (ghostel-paste-string "")
+      (should (equal '("\e[200~\e[201~") sent))
+      (setq sent nil)
+      (ghostel--write-vt term "\e[?2004l")
+      (ghostel-paste-string "one\ntwo")
+      (should (equal '("one\rtwo") sent))
+      (setq sent nil)
+      (ghostel-paste-string "")
+      (should-not sent))))
+
 (provide 'ghostel-terminal-test)
 ;;; ghostel-terminal-test.el ends here

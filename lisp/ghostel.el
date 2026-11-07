@@ -1525,6 +1525,8 @@ keyboard protocol receives the protocol-correct sequence."
 (defvar-local ghostel-pty-out-function nil
   "Function called with outbound bytes as one unibyte string.
 These are typed input and the terminal's own replies; errors are ignored.
+A paste is one call and must arrive without a pause, as zsh ends a paste
+at a gap longer than KEYTIMEOUT.
 Replaces `ghostel--process' in terminals whose I/O is bridged elsewhere.")
 
 (defvar-local ghostel-resize-function nil
