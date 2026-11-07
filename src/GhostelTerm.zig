@@ -264,8 +264,8 @@ pub fn encodeMouse(
     };
 
     const event = gt.input.MouseEncodeEvent{
-        .action = @enumFromInt(action),
-        .button = @enumFromInt(button),
+        .action = @fromBackingInt(@intCast(action)),
+        .button = @fromBackingInt(@intCast(button)),
         .mods = @bitCast(@as(i16, @truncate(mods_val))),
         .pos = .{ .x = @floatFromInt(col), .y = @floatFromInt(row) },
     };

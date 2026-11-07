@@ -571,6 +571,26 @@ now we verify only the arguments the native module hands off."
 			  (should (= (nth 6 args) 2)))))               ; pixel-h
 	  (kill-buffer buf))))
 
+(ert-deftest ghostel-test-kitty-image-at-cursor-after-shrink ()
+  "An image placed at the cursor is drawn after a shrink erased the cursor's row."
+  :tags '(native)
+  (with-temp-buffer
+    (let ((term (ghostel--new 10 40 1000))
+          (inhibit-read-only t)
+          (calls 0))
+      (ghostel--set-size term 10 40 1 1)
+      (cl-letf (((symbol-function 'ghostel--kitty-display-image)
+                 (lambda (&rest _) (cl-incf calls)))
+                ((symbol-function 'display-graphic-p) (lambda (&rest _) t)))
+        ;; The bottom-row `x' makes the shrink push rows off the top.
+        (ghostel--write-vt term "\e[?1049h\e[999;1Hx\e[Hready\r\n")
+        (ghostel--redraw term t)
+        (ghostel--set-size term 7 40 1 1)
+        (ghostel--redraw term t)
+        (ghostel--write-vt term "\e_Ga=T,f=24,s=1,v=1,c=8,r=1,q=2;/wAA\e\\")
+        (ghostel--redraw term t))
+      (should (= calls 1)))))
+
 (defconst ghostel-test--kitty-png-2x2
   (concat "\e_Ga=t,f=100,i=1,q=1;"
           "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAA"

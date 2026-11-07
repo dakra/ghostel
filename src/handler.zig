@@ -61,6 +61,12 @@ pub fn GhostelHandler(Effects: type) type {
             self.inner.deinit();
         }
 
+        /// Keeps the stream's ASCII fast path; without this decl `gt.Stream`
+        /// widens ASCII runs to `print_slice` codepoints.
+        pub fn vtPrintAscii(self: *Self, bytes: []const u8) void {
+            self.inner.vtPrintAscii(bytes);
+        }
+
         /// Dispatcher invoked by `gt.Stream` for every parser action.  Anything
         /// outside the OSC arms below is forwarded verbatim to the standard
         /// handler so terminal state stays consistent.

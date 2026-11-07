@@ -89,7 +89,7 @@ pub fn resolveForeground(
     palette: *const gt.color.Palette,
     bold_config: ?gt.Style.BoldColor,
 ) ?gt.color.RGB {
-    switch (style.fg_color) {
+    switch (style.fg_color.value()) {
         .none => {
             if (style.flags.bold) {
                 if (bold_config) |bold| switch (bold) {
@@ -102,7 +102,7 @@ pub fn resolveForeground(
         .palette => |idx| {
             if (style.flags.bold) {
                 if (bold_config) |_| {
-                    const bright_offset = @intFromEnum(gt.color.Name.bright_black);
+                    const bright_offset = @backingInt(gt.color.Name.bright_black);
                     if (idx < bright_offset) {
                         return palette[idx + bright_offset];
                     }
@@ -122,7 +122,7 @@ fn resolveColor(
     palette: *const gt.color.Palette,
     color: gt.Style.Color,
 ) ?gt.color.RGB {
-    return switch (color) {
+    return switch (color.value()) {
         .rgb => |rgb| rgb,
         .palette => |idx| palette[idx],
         .none => null,

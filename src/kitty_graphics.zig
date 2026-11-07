@@ -125,7 +125,6 @@ fn emitVirtualRun(
 ) !void {
     const image = storage.images.getPtr(run.image_id) orelse return error.ImageNotFound;
     const target = storage.placeholderTarget(run.image_id, run.placement_id) orelse return error.PlacementNotFound;
-    if (target.placement.location != .virtual) return error.PlacementNotFound;
 
     const t = &term.terminal;
     const grid_cols = if (target.placement.columns > 0) target.placement.columns else try cellsFor(image.width, t.width_px, t.cols);

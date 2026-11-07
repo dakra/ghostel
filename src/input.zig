@@ -13,9 +13,9 @@ pub fn mapKey(key_name: []const u8) gt.input.Key {
     if (key_name.len == 1) {
         const ch = key_name[0];
         return switch (ch) {
-            'a'...'z' => @enumFromInt(@intFromEnum(gt.input.Key.key_a) + (ch - 'a')),
-            'A'...'Z' => @enumFromInt(@intFromEnum(gt.input.Key.key_a) + (ch - 'A')),
-            '0'...'9' => @enumFromInt(@intFromEnum(gt.input.Key.digit_0) + (ch - '0')),
+            'a'...'z' => @fromBackingInt(@intCast(@backingInt(gt.input.Key.key_a) + (ch - 'a'))),
+            'A'...'Z' => @fromBackingInt(@intCast(@backingInt(gt.input.Key.key_a) + (ch - 'A'))),
+            '0'...'9' => @fromBackingInt(@intCast(@backingInt(gt.input.Key.digit_0) + (ch - '0'))),
             ' ' => gt.input.Key.space,
             '-' => gt.input.Key.minus,
             '=' => gt.input.Key.equal,
