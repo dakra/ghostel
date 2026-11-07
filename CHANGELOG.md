@@ -4,12 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.62.0] — 2026-11-07
+
 ### Added
 - `ghostel-control-mode-function` receives tmux control mode (`tmux -CC`)
   found in a terminal's output, for packages that show tmux panes as buffers.
 - `ghostel-send-files-function` receives the files dropped on a terminal
   or pasted into it with `yank-media`, for clients whose terminal runs on
   another machine.
+- Release binaries carry a GitHub artifact attestation.  Check a download
+  with `gh attestation verify <file> --repo dakra/ghostel`.
 
 ### Changed
 - libghostty bumped to libghostty-vt 1.0.0 (2026-11-06).  Parsing is
@@ -26,6 +30,8 @@ All notable changes to this project will be documented in this file.
 - On a soft-wrapped row, text up to a `$`, `#`, `%` or `>` was taken for
   a prompt: `C-a` in copy and Emacs mode and evil-ghostel's `^`, `I` and
   operators stopped after it instead of at the row's start.
+- evil-ghostel: with fish before 4.3, `i`, `a` and `x` left of the cursor
+  acted at the cursor, because typed text stayed marked as prompt.
 
 ## [0.61.0] — 2026-11-05
 
