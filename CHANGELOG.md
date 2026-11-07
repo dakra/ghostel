@@ -11,6 +11,13 @@ All notable changes to this project will be documented in this file.
   or pasted into it with `yank-media`, for clients whose terminal runs on
   another machine.
 
+### Changed
+- libghostty bumped to libghostty-vt 1.0.0 (2026-11-06).  Parsing is
+  faster, and `ghostel-max-scrollback` holds up to 30% more rows of styled
+  output.  Kitty images placed at the cursor after shrinking the window
+  are drawn again.
+- Building the native module now accepts any Zig 0.17.x.
+
 ### Fixed
 - evil-ghostel: `i` or `a` with point inside the prompt on the cursor's
   row left the caret in the prompt until the next keystroke, and made

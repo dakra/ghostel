@@ -273,6 +273,21 @@ notes."
                      "#00cd00")))))
 
 
+(ert-deftest ghostel-comint-test-styled-run-after-mixed-text ()
+  "A multi-attribute SGR run after ASCII and multibyte text lands on its chars."
+  :tags '(native)
+  (ghostel-comint-test--with-state state
+    (let ((out (ghostel-comint-test--feed
+                state "ab✓\e[3;32mcd\e[0m✓ef\n")))
+      (should (equal out "ab✓cd✓ef\n"))
+      (should (null (ghostel-comint-test--face-at out 2)))
+      (dolist (pos '(3 4))
+        (let ((face (ghostel-comint-test--face-at out pos)))
+          (should (equal (plist-get face :foreground) "#00cd00"))
+          (should (eq (plist-get face :inherit) 'ghostel-italic))))
+      (should (null (ghostel-comint-test--face-at out 5))))))
+
+
 (ert-deftest ghostel-comint-test-raw-byte-chars-pass-through ()
   "Raw-byte chars in the input decode like any other bytes instead of erroring."
   :tags '(native)

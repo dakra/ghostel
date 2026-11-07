@@ -7,8 +7,10 @@ var io: std.Io.Threaded = .init_single_threaded;
 // Keep in sync with build.zig.zon (minimum_zig_version) and the CI workflows.
 const required_zig = std.SemanticVersion{ .major = 0, .minor = 17, .patch = 0 };
 comptime {
-    if (builtin.zig_version.order(required_zig) != .eq)
-        @compileError("ghostel requires exactly Zig 0.17.0, found " ++ builtin.zig_version_string);
+    const found = builtin.zig_version;
+    if (found.major != required_zig.major or found.minor != required_zig.minor or
+        found.order(required_zig) == .lt)
+        @compileError("ghostel requires Zig 0.17.x, found " ++ builtin.zig_version_string);
 }
 
 const vendored_emacs_module_dir = "vendor";

@@ -75,7 +75,7 @@
 ;; Native module:
 ;;
 ;;   A pre-built binary is downloaded automatically on first use.
-;;   To build from source instead (requires exactly Zig 0.17.0), run
+;;   To build from source instead (requires Zig 0.17.x), run
 ;;   zig build --prefix . from the project root, or M-x ghostel-module-compile.
 ;;   M-x ghostel-download-module re-fetches the pre-built binary.
 ;;
@@ -238,8 +238,7 @@ README for the full design and per-call escape hatch."
 
 (defcustom ghostel-max-scrollback (* 5 1024 1024)  ; 5MB
   "Maximum scrollback size in bytes.
-5 MB holds roughly 5,000 rows on a typical 80-column terminal
-\(fewer on wider terminals — the cost scales with column count).
+5 MB holds roughly 7000 rows on a typical 80-column terminal.
 
 The full scrollback is materialized into the Emacs buffer so that
 `isearch', `consult-line', and other buffer-based commands work

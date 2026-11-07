@@ -413,7 +413,7 @@ fn getFace(
             &self.term.colors.palette.current,
             self.bold_config,
         )
-    else if (key.bg_color != .none)
+    else if (key.bg_color.tag != .none)
         try style_face.buildFacePlist(
             env,
             &gt.Style{ .bg_color = key.bg_color },
@@ -438,19 +438,19 @@ const CellPropKey = struct {
     fn create(page: *const gt.Page, cell: *const gt.page.Cell) ?CellPropKey {
         const hyperlink_id = if (cell.hyperlink) page.lookupHyperlink(cell) else null;
         const bg_color: gt.Style.Color = switch (cell.content_tag) {
-            .bg_color_palette => .{ .palette = cell.content.color_palette.data },
-            .bg_color_rgb => .{ .rgb = .{
+            .bg_color_palette => .palette(cell.content.color_palette.data),
+            .bg_color_rgb => .rgb(.{
                 .r = cell.content.color_rgb.r,
                 .g = cell.content.color_rgb.g,
                 .b = cell.content.color_rgb.b,
-            } },
+            }),
             else => .none,
         };
 
         if (cell.style_id == 0 and
             hyperlink_id == null and
             cell.semantic_content == .output and
-            bg_color == .none)
+            bg_color.tag == .none)
         {
             return null;
         }
@@ -465,11 +465,11 @@ const CellPropKey = struct {
 
     /// Whether a space with this key looks different from a plain space.
     fn spaceVisiblyStyled(self: *const CellPropKey, page: *const gt.Page) bool {
-        if (self.bg_color != .none) return true;
+        if (self.bg_color.tag != .none) return true;
         if (self.style_id == 0) return false;
         const style = page.styles.get(page.memory, self.style_id);
         const f = style.flags;
-        return style.bg_color != .none or f.inverse or f.strikethrough or
+        return style.bg_color.tag != .none or f.inverse or f.strikethrough or
             f.overline or f.underline != .none;
     }
 };
@@ -1029,7 +1029,7 @@ fn renderCursor(self: *Self, env: emacs.Env) !void {
     if (self.term.modes.get(.cursor_visible)) {
         env.set(
             "ghostel--cursor-style",
-            @intFromEnum(screen.cursor.cursor_style),
+            @backingInt(screen.cursor.cursor_style),
         );
     } else {
         env.set("ghostel--cursor-style", env.nil());
