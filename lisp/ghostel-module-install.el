@@ -530,7 +530,7 @@ triggers an interactive prompt."
   "Ensure the ghostel native module is loaded.
 When PROMPT-USER is non-nil (called from an interactive command like
 `ghostel'), missing or stale modules trigger `ghostel-module-auto-install'
-and load failures signal `user-error' so the calling flow aborts.
+and a module still not loaded signals `user-error' so the calling flow aborts.
 Otherwise (load time, including byte-compilation and Emacs 31's
 `user-lisp/' auto-compile), this function never prompts, downloads, or compiles,
 it only loads an existing module file and warns if it is stale.
@@ -607,8 +607,11 @@ entry points so tests run without the module present."
     ;; just when this call loaded the module.  Otherwise a stale .so
     ;; mapped in by an earlier load (e.g. sidecar absent at startup) is
     ;; silently kept and the user only ever sees the bare warning.
-    (when (and prompt-user (featurep 'ghostel-module))
-      (ghostel--check-module-version dir t))))
+    (when prompt-user
+      (if (featurep 'ghostel-module)
+          (ghostel--check-module-version dir t)
+        (unless (fboundp 'ghostel--new)
+          (user-error "Ghostel native module is not available; see M-x ghostel-download-module or M-x ghostel-module-compile"))))))
 
 (provide 'ghostel-module-install)
 ;;; ghostel-module-install.el ends here
