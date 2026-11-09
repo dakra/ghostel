@@ -1603,6 +1603,9 @@ DATA is a unibyte string in the format of ghostel's libghostty version.
 Call this before the terminal has seen any output."
   (let ((inhibit-read-only t)
         (inhibit-modification-hooks t))
+    ;; The renderer no longer clears a host buffer, so a restore replaces
+    ;; the standalone terminal's text itself.
+    (erase-buffer)
     (ghostel--restore-snapshot ghostel--term data))
   ;; The snapshot's size stays; this reapplies the cell size in pixels.
   (ghostel--set-size-with-cell-dims ghostel--term
@@ -1610,7 +1613,8 @@ Call this before the terminal has seen any output."
   (ghostel--apply-palette ghostel--term)
   (ghostel--apply-bold-config ghostel--term)
   (setq ghostel--force-next-redraw t)
-  (ghostel--invalidate))
+  (ghostel--invalidate)
+  (setq ghostel--repair-pending nil))
 
 
 ;;; Key sending
