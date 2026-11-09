@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `consult-ghostel-sources` and `consult-ghostel-project-sources` list the
+  sources of `consult-ghostel` and `consult-ghostel-project`, so other
+  packages can add one.
+- `ghostel-annotation-function` adds a buffer's own text to its
+  annotation in the buffer pickers.
+
 ### Fixed
 - A paste reaches `ghostel-pty-out-function` in one call.  Its brackets
   and text were separate calls, and over a slow link zsh ended the paste

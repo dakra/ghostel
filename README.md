@@ -80,7 +80,9 @@ Like normal Emacs `C-k'.  Kill to end of line and put content in kill-ring."
          ("M" . ghostel-project-list-buffers))
   :config
   (add-to-list 'project-switch-commands '(ghostel-project "Ghostel") t)
-  (add-to-list 'project-switch-commands '(ghostel-project-list-buffers "Ghostel buffers") t))
+  (add-to-list 'project-switch-commands '(ghostel-project-list-buffers "Ghostel buffers") t)
+  ;; Have `project-kill-buffers' (C-x p k) kill the project's terminals too
+  (add-to-list 'project-kill-buffer-conditions '(derived-mode . ghostel-mode)))
 ```
 
 Now you can `C-x m` to open a Ghostel buffer, or

@@ -11,6 +11,11 @@
 ;; `ghostel-project-buffer-scope'.
 ;;
 ;;   (add-to-list 'project-switch-commands '(ghostel-project "Ghostel") t)
+;;
+;; `project-kill-buffers' leaves ghostel buffers alone unless they are
+;; among its conditions:
+;;
+;;   (add-to-list 'project-kill-buffer-conditions '(derived-mode . ghostel-mode))
 
 ;;; Code:
 

@@ -69,6 +69,20 @@
 (declare-function ghostel-project "ghostel-project" (&optional arg))
 (declare-function ghostel-project-buffer-list "ghostel-project")
 
+(defcustom consult-ghostel-sources
+  '(consult-ghostel-source consult-ghostel-source-new)
+  "Sources of `consult-ghostel', as in `consult-buffer-sources'.
+A name that matches no candidate goes to the `:new' function of the
+narrowed-to source, else of the first source that is not hidden."
+  :type '(repeat symbol)
+  :group 'ghostel)
+
+(defcustom consult-ghostel-project-sources
+  '(consult-ghostel-project-source consult-ghostel-project-source-new)
+  "Sources of `consult-ghostel-project', as in `consult-ghostel-sources'."
+  :type '(repeat symbol)
+  :group 'ghostel)
+
 (defvar consult-ghostel--buffer-history nil
   "Minibuffer history for the buffer-picking `consult-ghostel' commands.")
 
@@ -203,8 +217,7 @@ one.  IDENTITY is passed through to `ghostel-create'."
 
 (defun consult-ghostel--switch (sources prompt)
   "Pick a ghostel buffer from SOURCES via `consult--multi' with PROMPT.
-Previews candidates; a non-matching name creates a new terminal via the
-first source's `:new' handler."
+Previews candidates; a non-matching name goes to a source's `:new' handler."
   (let ((consult--buffer-display #'consult-ghostel--display))
     (consult--multi sources
                     :require-match (confirm-nonexistent-file-or-buffer)
@@ -223,9 +236,7 @@ that numbered terminal)."
   (interactive "P")
   (if arg
       (ghostel arg)
-    (consult-ghostel--switch
-     '(consult-ghostel-source consult-ghostel-source-new)
-     "Ghostel buffer: ")))
+    (consult-ghostel--switch consult-ghostel-sources "Ghostel buffer: ")))
 
 ;;;###autoload
 (defun consult-ghostel-status ()
@@ -248,9 +259,8 @@ Project membership is determined by `ghostel-project-buffer-scope'."
     ;; submit, so refuse before entering the minibuffer.
     (unless (consult--project-root)
       (user-error "No current project"))
-    (consult-ghostel--switch
-     '(consult-ghostel-project-source consult-ghostel-project-source-new)
-     "Project ghostel buffer: ")))
+    (consult-ghostel--switch consult-ghostel-project-sources
+                             "Project ghostel buffer: ")))
 
 ;;; Shell command history
 

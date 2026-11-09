@@ -66,7 +66,9 @@ Like normal Emacs `C-k'.  Kill to end of line and put content in kill-ring."
          ("M" . ghostel-project-list-buffers))
   :config
   (add-to-list 'project-switch-commands '(ghostel-project "Ghostel") t)
-  (add-to-list 'project-switch-commands '(ghostel-project-list-buffers "Ghostel buffers") t))
+  (add-to-list 'project-switch-commands '(ghostel-project-list-buffers "Ghostel buffers") t)
+  ;; Have `project-kill-buffers' (C-x p k) kill the project's terminals too
+  (add-to-list 'project-kill-buffer-conditions '(derived-mode . ghostel-mode)))
 
 (use-package ghostel-eshell
   :hook (eshell-load . ghostel-eshell-visual-command-mode))
@@ -2061,6 +2063,12 @@ narrow key (or any other source property) can be changed
 with =consult-customize=, e.g.
 ~(consult-customize consult-ghostel-source-hidden :narrow ?t)~.
 
+#+vindex: consult-ghostel-sources
+#+vindex: consult-ghostel-project-sources
+=consult-ghostel= itself picks from the sources in =consult-ghostel-sources=
+and =consult-ghostel-project= from those in =consult-ghostel-project-sources=,
+lists like =consult-buffer-sources= that other packages can add a source to.
+
 The mode also makes =consult-line= match across soft line wraps in Ghostel
 buffers: rows joined by wrap newlines become one search candidate, so a path or
 command that wrapped mid-word is still found.  It also adds a /Ghostel/ group
@@ -2270,6 +2278,10 @@ status ([[#notifications-and-progress][Notifications and Progress]]) comes first
 =ghostel-annotation-title-width= caps the title at 30 columns; set it to nil
 for the full title.
 
+#+vindex: ghostel-annotation-function
+A buffer's =ghostel-annotation-function= is called in that buffer without
+arguments; the string it returns goes between the status and the title.
+
 [[https://github.com/minad/marginalia][Marginalia]] replaces annotations for the whole =buffer= category with its own,
 which hides the title.  The [[#consult-integration][consult-ghostel]] package handles this
 automatically; without it, you can prepend the title to marginalia's annotator
@@ -2354,6 +2366,13 @@ project-prefixed buffer name.  To make it available from =project-switch-project
 
 #+begin_src emacs-lisp
 (add-to-list 'project-switch-commands '(ghostel-project "Ghostel") t)
+#+end_src
+
+=project-kill-buffers= (=C-x p k=) leaves Ghostel buffers alone.  To have it
+kill a project's terminals too:
+
+#+begin_src emacs-lisp
+(add-to-list 'project-kill-buffer-conditions '(derived-mode . ghostel-mode))
 #+end_src
 
 * Running tests

@@ -5637,21 +5637,33 @@ the first or last entry depending on DIRECTION."
                   "No ghostel buffers"
                   "Only one ghostel buffer"))
 
+(defvar-local ghostel-annotation-function nil
+  "Function adding text to this buffer's completion annotation.
+It is called in the buffer without arguments and returns a string or nil,
+which `ghostel-annotate-buffer' shows before the terminal title.")
+
 (defun ghostel-annotate-buffer (name)
   "Return a completion annotation for the ghostel buffer named NAME, or nil.
-The program status as in the buffer's mode line, then the terminal
-title capped at `ghostel-annotation-title-width' columns."
+The program status as in the buffer's mode line, the text of
+`ghostel-annotation-function', then the terminal title capped at
+`ghostel-annotation-title-width' columns."
   (when-let* ((buffer (get-buffer name)))
-    (let ((status (with-current-buffer buffer (ghostel-status--text)))
-          (title (buffer-local-value 'ghostel-title buffer)))
-      (when (or status title)
-        ;; The label quotes percents for the mode line.
-        (concat (and status (string-replace "%%" "%" status))
-                (when title
-                  (concat "  " (if ghostel-annotation-title-width
-                                   (truncate-string-to-width
-                                    title ghostel-annotation-title-width nil nil t)
-                                 title))))))))
+    (with-current-buffer buffer
+      (let ((status (ghostel-status--text))
+            (extra (and ghostel-annotation-function
+                        (condition-case-unless-debug nil
+                            (funcall ghostel-annotation-function)
+                          (error nil))))
+            (title ghostel-title))
+        (when (or status extra title)
+          ;; The label quotes percents for the mode line.
+          (concat (and status (string-replace "%%" "%" status))
+                  (and extra (concat "  " extra))
+                  (when title
+                    (concat "  " (if ghostel-annotation-title-width
+                                     (truncate-string-to-width
+                                      title ghostel-annotation-title-width nil nil t)
+                                   title)))))))))
 
 (defun ghostel--read-buffer (prompt bufs)
   "Prompt with PROMPT for one of BUFS via `read-buffer'.

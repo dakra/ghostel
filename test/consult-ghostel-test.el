@@ -233,6 +233,21 @@ empty picker and crashes on submit."
         (consult-ghostel-project))
       (should (memq 'consult-ghostel-project-source-new got)))))
 
+(ert-deftest consult-ghostel-test-sources ()
+  "The pickers pick from their source lists."
+  (let ((consult-ghostel-sources '(consult-ghostel-source my-source))
+        (consult-ghostel-project-sources
+         '(consult-ghostel-project-source my-project-source))
+        got)
+    (cl-letf (((symbol-function 'consult--multi)
+               (lambda (sources &rest _) (setq got sources) nil))
+              ((symbol-function 'consult--project-root)
+               (lambda (&optional _) "/tmp/")))
+      (consult-ghostel)
+      (should (equal got '(consult-ghostel-source my-source)))
+      (consult-ghostel-project)
+      (should (equal got '(consult-ghostel-project-source my-project-source))))))
+
 (ert-deftest consult-ghostel-test-project-new-identity ()
   "Project create-on-miss allocates in `ghostel-project's slot family.
 The identity carries no `name' key, so `ghostel-project' finds and

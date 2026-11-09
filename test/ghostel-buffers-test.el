@@ -230,6 +230,21 @@ Each BINDING is (VAR NAME [DIR [IDENTITY]])."
     (should-not (ghostel-annotate-buffer (buffer-name a))))
   (should-not (ghostel-annotate-buffer "*ghostel-no-such-buffer*")))
 
+(ert-deftest ghostel-test-annotate-buffer-function ()
+  "`ghostel-annotation-function' adds its text before the title.
+It runs in the annotated buffer; nil and errors add nothing."
+  (ghostel-buffers-test--with-bufs ((a "*ghostel-a*"))
+    (with-current-buffer a
+      (setq-local ghostel-annotation-function #'buffer-name))
+    (should (equal "  *ghostel-a*" (ghostel-annotate-buffer (buffer-name a))))
+    (with-current-buffer a (setq-local ghostel-title "make test"))
+    (should (equal "  *ghostel-a*  make test"
+                   (ghostel-annotate-buffer (buffer-name a))))
+    (dolist (fn (list #'ignore (lambda () (error "Boom"))))
+      (with-current-buffer a (setq-local ghostel-annotation-function fn))
+      (let ((debug-on-error nil))
+        (should (equal "  make test" (ghostel-annotate-buffer (buffer-name a))))))))
+
 (ert-deftest ghostel-test-read-buffer-annotates ()
   "`ghostel--read-buffer' exposes `ghostel-annotate-buffer' to completion."
   (ghostel-buffers-test--with-bufs ((a "*ghostel-a*"))
