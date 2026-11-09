@@ -43,6 +43,7 @@
 (defvar eshell-interpreter-alist)
 (defvar eshell-destroy-buffer-when-process-dies)
 
+(declare-function ghostel--terminate-native-child "ghostel-module" (child))
 (declare-function eshell-find-interpreter "esh-ext"
                   (file args &optional no-examine-p))
 (declare-function eshell-stringify-list "esh-util" (args))
@@ -568,6 +569,17 @@ For a native PTY the child's exit status replaces the pipe's own."
          (stderr (and native (process-get process 'ghostel--eshell-stderr)))
          (directory (process-get process 'ghostel--eshell-invocation-directory))
          pos)
+    ;; The event pipe retains the native child handle.  If the pipe is
+    ;; deleted before the child exits, stop the child here; after a
+    ;; normal exit the child has already gone and this is a no-op.
+    (when native
+      (when-let* ((child (process-get process 'ghostel--native-child)))
+        (condition-case err
+            (ghostel--terminate-native-child child)
+          (error
+           (message "ghostel: Failed to terminate native child: %s"
+                    (error-message-string err))))
+        (process-put process 'ghostel--native-child nil)))
     (when (buffer-live-p (process-buffer process))
       (with-current-buffer (process-buffer process)
         (when session
