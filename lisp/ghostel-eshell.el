@@ -480,11 +480,11 @@ window on an offscreen frame cannot override the visible one."
                  (eq window (ghostel--eshell-sizing-window)))
         (ghostel--eshell-resize-to-window window)))))
 
-(defun ghostel--eshell-selection-change ()
-  "Resize the in-buffer terminal to the newly selected window.
-Runs from `window-selection-change-functions' in the Eshell buffer; a
-selection of another buffer's window does nothing."
-  (ghostel--eshell-resize-to-window (selected-window)))
+(defun ghostel--eshell-selection-change (&optional window)
+  "Resize the in-buffer terminal when WINDOW is selected.
+Runs from `window-selection-change-functions', which passes the newly
+selected window.  A selection of another buffer's window does nothing."
+  (ghostel--eshell-resize-to-window (or window (selected-window))))
 
 (defun ghostel--eshell-adjust-screen (session)
   "Resize SESSION when it enters or leaves the alternate screen.
