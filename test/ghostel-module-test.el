@@ -822,7 +822,11 @@ in-process so no Emacs restart is needed."
           (cl-letf (((symbol-function 'ghostel--module-directory)
                      (lambda () (file-name-as-directory tmp)))
                     ((symbol-function 'module-load)
-                     (lambda (path) (push path load-calls)))
+                     (lambda (path)
+                       (push path load-calls)
+                       (provide 'ghostel-module)))
+                    ((symbol-function 'ghostel--check-module-version)
+                     #'ignore)
                     ;; Simulate a successful install: rewrite the sidecar
                     ;; to the current minimum, leaving the .so in place.
                     ((symbol-function 'ghostel--ensure-module)
@@ -838,8 +842,54 @@ in-process so no Emacs restart is needed."
       (delete-directory tmp t)
       (when saved-new
         (fset 'ghostel--new saved-new))
+      (if had-feat
+          (cl-pushnew 'ghostel-module features)
+        (setq features (delq 'ghostel-module features))))))
+
+(defun ghostel-test--load-module-skipped-install (stale-sidecar)
+  "Run `ghostel--load-module' with PROMPT-USER and a skipped install.
+With STALE-SIDECAR the module file exists with an old sidecar,
+otherwise no module file exists.  Return the signaled error, or nil."
+  (let* ((tmp (make-temp-file "ghostel-test-skip-install" t))
+         (ghostel--minimum-module-version "0.25.0")
+         (ensure-calls nil)
+         (had-feat (featurep 'ghostel-module))
+         (saved-new (and (fboundp 'ghostel--new)
+                         (symbol-function 'ghostel--new))))
+    (unwind-protect
+        (progn
+          (setq features (delq 'ghostel-module features))
+          (when saved-new
+            (fmakunbound 'ghostel--new))
+          (when stale-sidecar
+            (with-temp-file (expand-file-name
+                             (concat "ghostel-module" module-file-suffix) tmp)
+              (insert "stub"))
+            (ghostel--write-module-sidecar-version tmp "0.20.0"))
+          (cl-letf (((symbol-function 'ghostel--module-directory)
+                     (lambda () (file-name-as-directory tmp)))
+                    ((symbol-function 'module-load)
+                     (lambda (&rest _) (error "Unexpected module-load")))
+                    ((symbol-function 'ghostel--ensure-module)
+                     (lambda (dir) (push dir ensure-calls) nil))
+                    ((symbol-function 'display-warning) #'ignore))
+            (prog1 (condition-case err
+                       (progn (ghostel--load-module t) nil)
+                     (user-error err))
+              (should (equal 1 (length ensure-calls))))))
+      (delete-directory tmp t)
+      (when saved-new
+        (fset 'ghostel--new saved-new))
       (when had-feat
         (cl-pushnew 'ghostel-module features)))))
+
+(ert-deftest ghostel-test-load-module-signals-when-missing-install-skipped ()
+  "Interactive entry signals `user-error' when a missing module stays missing."
+  (should (ghostel-test--load-module-skipped-install nil)))
+
+(ert-deftest ghostel-test-load-module-signals-when-stale-install-skipped ()
+  "Interactive entry signals `user-error' when a stale module is not replaced."
+  (should (ghostel-test--load-module-skipped-install t)))
 
 (ert-deftest ghostel-test-load-module-prompts-when-loaded-but-stale ()
   "Stale already-loaded module triggers a prompt at interactive entry.
