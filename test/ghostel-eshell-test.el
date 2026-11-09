@@ -551,5 +551,10 @@ real command evaluator would bind.  Returns the event pipe process."
                (lambda (frame) (eq frame 'frame-visible))))
       (should (eq (ghostel--eshell-sizing-window) 'visible)))))
 
+(ert-deftest ghostel-test-eshell-selection-change-accepts-window ()
+  "The selection-change hook takes the window it is called with."
+  (with-temp-buffer
+    (should-not (ghostel--eshell-selection-change (selected-window)))))
+
 (provide 'ghostel-eshell-test)
 ;;; ghostel-eshell-test.el ends here
