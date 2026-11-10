@@ -33,7 +33,7 @@ DUMMY non-nil fakes the daemon's initial frame."
       (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) graphic))
                 ((symbol-function 'ghostel--daemon-dummy-frame-p) (lambda (_) dummy))
                 ((symbol-function 'ghostel--new)
-                 (lambda (_h _w _sb storage _mediums)
+                 (lambda (_h _w _sb storage &rest _)
                    (setq limit storage) 'fake-term))
                 ((symbol-function 'ghostel--set-size-with-cell-dims) #'ignore)
                 ((symbol-function 'ghostel--apply-palette) #'ignore)

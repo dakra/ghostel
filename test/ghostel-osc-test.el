@@ -697,6 +697,18 @@ fresh."
                             (:equal (should (equal arg reply)))
                             (:match (should (string-match-p arg reply))))))))))))
 
+(ert-deftest ghostel-test-xtversion-follows-ghostel-term ()
+  "XTVERSION names Ghostty only when `ghostel-term' is \"xterm-ghostty\"."
+  :tags '(native)
+  (dolist (case `(("xterm-ghostty" . ,(concat "ghostty " ghostel--ghostty-version))
+                  ("xterm-256color" . "libghostty")))
+    (let ((ghostel-term (car case))
+          sent)
+      (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
+        (setq ghostel-pty-out-function (lambda (data) (push data sent)))
+        (ghostel--write-vt term "\e[>q")
+        (should (equal (list (format "\eP>|%s\e\\" (cdr case))) sent))))))
+
 (ert-deftest ghostel-test-csi996-reports-light-and-dark ()
   "A child's CSI ? 996 n gets 997;1 for a dark default background, 997;2 for light."
   :tags '(native)

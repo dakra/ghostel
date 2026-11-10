@@ -1455,7 +1455,7 @@ ssh wrapper is unnecessary.
 
 Set =(setq ghostel-term "xterm-256color")= to drop =TERM=xterm-ghostty= locally.
 No advertisement, no terminfo gymnastics, no synchronized output fast-path
-either.
+either.  XTVERSION queries are answered as =libghostty= instead of =ghostty=.
 
 * Configuration
 :properties:

@@ -61,13 +61,12 @@ buffer eventually shows up."
                     ((symbol-function 'ghostel--spawn-pty)
                      (lambda (&rest _) 'fake-proc)))
             (ghostel-exec buf "ls" nil)
-            ;; ghostel--new is called as
-            ;; (height width max-scrollback kitty-storage-limit kitty-mediums-bits).
             (should (equal captured
                            (list 24 80
                                  ghostel-max-scrollback
                                  ghostel-kitty-graphics-storage-limit
-                                 (ghostel--kitty-mediums-bits))))))
+                                 (ghostel--kitty-mediums-bits)
+                                 (concat "ghostty " ghostel--ghostty-version))))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-exec-sets-identity ()

@@ -11,6 +11,13 @@ All notable changes to this project will be documented in this file.
 - `ghostel-annotation-function` adds a buffer's own text to its
   annotation in the buffer pickers.
 
+### Changed
+- XTVERSION queries (`CSI > q`) are answered as `ghostty 1.4.0` when
+  `ghostel-term` is `xterm-ghostty`, and as `libghostty` otherwise.  Claude
+  Code then draws images in graphical frames without
+  `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1`.
+- `TERM_PROGRAM_VERSION` is now `1.4.0`.
+
 ### Fixed
 - A paste reaches `ghostel-pty-out-function` in one call.  Its brackets
   and text were separate calls, and over a slow link zsh ended the paste

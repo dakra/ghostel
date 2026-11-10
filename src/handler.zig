@@ -45,6 +45,7 @@ pub fn GhostelHandler(Effects: type) type {
             self.inner.effects.bell = &bellCallback;
             self.inner.effects.color_scheme = &colorSchemeCallback;
             self.inner.effects.device_attributes = &deviceAttributesCallback;
+            self.inner.effects.xtversion = &xtversionCallback;
             self.inner.effects.title_changed = &titleChangedCallback;
             self.inner.effects.size = &sizeCallback;
             self.inner.effects.render_hold = &renderHoldCallback;
@@ -178,6 +179,12 @@ pub fn GhostelHandler(Effects: type) type {
                     .unit_id = 0,
                 },
             };
+        }
+
+        /// Called for XTVERSION (CSI > q).  Empty answers libghostty's default name.
+        fn xtversionCallback(handler: *gt.TerminalStream.Handler) []const u8 {
+            const self: *Self = @fieldParentPtr("inner", handler);
+            return self.term.xtversion orelse "";
         }
 
         /// Called for XTWINOPS size queries (CSI 14/16/18 t).

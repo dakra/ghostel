@@ -43,6 +43,8 @@ process: ?*NativeProcess = null,
 pty_size: WinSize = .{ .cols = 0, .rows = 0 },
 /// Light/dark as classified by Emacs for `ghostel-default`; reported via CSI 996/997.
 color_scheme: gt.device_status.ColorScheme = .dark,
+/// Name and version answered to XTVERSION; null answers libghostty's default.
+xtversion: ?[]u8 = null,
 
 /// Create a new terminal with the given dimensions and scrollback.
 pub fn init(
@@ -90,6 +92,7 @@ pub fn destroy(self: *Self) void {
     self.stream.deinit();
     self.terminal.deinit(self.alloc);
     if (self.string_buffer) |buf| self.alloc.free(buf);
+    if (self.xtversion) |v| self.alloc.free(v);
     self.alloc.destroy(self);
 }
 
@@ -466,16 +469,18 @@ fn getProcessEnvironment(alloc: Allocator, env: emacs.Env) !std.process.Environ.
 pub const emacs_functions = [_]emacs.FunctionEntry{
     .{
         .name = "ghostel--new",
-        .arity = .{ 2, 5 },
+        .arity = .{ 2, 6 },
         .doc =
         \\Create a new ghostel terminal.
         \\
-        \\(ghostel--new ROWS COLS &optional MAX-SCROLLBACK KITTY-STORAGE-LIMIT KITTY-MEDIUMS)
+        \\(ghostel--new ROWS COLS &optional MAX-SCROLLBACK KITTY-STORAGE-LIMIT KITTY-MEDIUMS XTVERSION)
         \\
         \\KITTY-STORAGE-LIMIT is the kitty graphics image storage cap in bytes (default 320 MiB);
         \\0 disables kitty graphics entirely.
         \\KITTY-MEDIUMS is a bitfield: bit 0 = file medium, bit 1 = temp-file medium,
         \\bit 2 = shared-memory medium (default 0 = direct only).
+        \\XTVERSION is the name and version string answered to XTVERSION queries
+        \\(default "libghostty").
         \\
         \\The returned handle is buffer-affine: `ghostel--new' initializes
         \\renderer-owned buffer-local state in the current buffer, and later
@@ -530,6 +535,10 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 // buffer's `ghostel-default' remap instead.
                 term.terminal.colors.foreground.default = .{ .r = 204, .g = 204, .b = 204 };
                 term.terminal.colors.background.default = .{ .r = 0, .g = 0, .b = 0 };
+
+                if (nargs > 5 and env.isNotNil(args[5])) {
+                    term.xtversion = try module_alloc.dupe(u8, try env.extractStringAlloc(module_alloc, args[5], &term.string_buffer));
+                }
 
                 return try env.makeUserPtr(terminalFinalize, term);
             }

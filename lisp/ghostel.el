@@ -153,10 +153,10 @@ to avoid silent yank drops when the option is disabled.
 
 Set to \"xterm-256color\" to fall back to a generic terminal.  When
 `ghostel-term' is not \"xterm-ghostty\", the bundled terminfo and
-`TERM_PROGRAM=ghostty' are not advertised, so nothing claims to be
-Ghostty.  This is also the right setting if outbound `ssh' from a
-ghostel buffer trips up on remote hosts that lack the xterm-ghostty
-terminfo entry."
+`TERM_PROGRAM=ghostty' are not advertised and XTVERSION queries are
+answered as \"libghostty\", so nothing claims to be Ghostty.  This is
+also the right setting if outbound `ssh' from a ghostel buffer trips
+up on remote hosts that lack the xterm-ghostty terminfo entry."
   :type '(choice (const :tag "Ghostty (recommended)" "xterm-ghostty")
                  (const :tag "Generic xterm-256color" "xterm-256color")
                  (string :tag "Other")))
@@ -3971,6 +3971,9 @@ bash readline init order).  The explicit flags layer on top of `sane':
 - `erase ^?': set VERASE explicitly because shells like fish check
   it at startup to decide whether the DEL byte means backspace.")
 
+(defconst ghostel--ghostty-version "1.4.0"
+  "Ghostty version reported in TERM_PROGRAM_VERSION and XTVERSION replies.")
+
 (defvar ghostel--terminfo-warned nil
   "Non-nil after a warning about missing bundled terminfo has been issued.
 Suppresses repeat warnings on every spawn.")
@@ -4034,7 +4037,8 @@ wrapper that would re-claim ghostty over ssh."
                     (list "TERM=xterm-ghostty"
                           (concat "TERMINFO=" tinfo)
                           "TERM_PROGRAM=ghostty"
-                          "TERM_PROGRAM_VERSION=1.3.2"
+                          (concat "TERM_PROGRAM_VERSION="
+                                  ghostel--ghostty-version)
                           "COLORTERM=truecolor"))
                    (t
                     (unless ghostel--terminfo-warned
@@ -4093,7 +4097,8 @@ verbatim.  `COLORTERM=truecolor' is exported unconditionally."
      "TERM=xterm-256color; "
      "if infocmp xterm-ghostty >/dev/null 2>&1; then "
      "TERM=xterm-ghostty; "
-     "TERM_PROGRAM=ghostty; TERM_PROGRAM_VERSION=1.3.2; "
+     "TERM_PROGRAM=ghostty; TERM_PROGRAM_VERSION="
+     ghostel--ghostty-version "; "
      "export TERM_PROGRAM TERM_PROGRAM_VERSION; "
      "fi; "
      "COLORTERM=truecolor; export TERM COLORTERM; "))
@@ -5405,7 +5410,9 @@ spawn after initialization."
                                   (ghostel--daemon-dummy-frame-p (window-frame w)))
                               ghostel-kitty-graphics-storage-limit
                             0)
-                          (ghostel--kitty-mediums-bits)))
+                          (ghostel--kitty-mediums-bits)
+                          (and (equal ghostel-term "xterm-ghostty")
+                               (concat "ghostty " ghostel--ghostty-version))))
       ;; Seed libghostty's cell dimensions before the process starts —
       ;; otherwise kitty graphics placements arriving in the very first
       ;; output (e.g. timg's transmit-and-place) compute grid_rows=0
