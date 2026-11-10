@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.63.0] — 2026-11-10
+
 ### Added
 - `consult-ghostel-sources` and `consult-ghostel-project-sources` list the
   sources of `consult-ghostel` and `consult-ghostel-project`, so other
@@ -22,6 +24,15 @@ All notable changes to this project will be documented in this file.
 - A paste reaches `ghostel-pty-out-function` in one call.  Its brackets
   and text were separate calls, and over a slow link zsh ended the paste
   early and ran the pasted lines.
+- Interactive commands such as `ghostel` and `ghostel-compile` signal a
+  `user-error` when the native module is missing or stale and was not
+  installed.  They carried on and failed with a void-function error after
+  creating buffers.
+- Before Emacs 31, a terminal shown in a window that is not selected, e.g.
+  with `display-buffer`, was not scrolled to its last row.
+- Before Emacs 31, showing a terminal on a TTY frame with `display-buffer`
+  turned character composition off in the calling buffer instead of the
+  terminal's.
 
 ## [0.62.0] — 2026-11-07
 
