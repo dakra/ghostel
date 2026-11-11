@@ -32,6 +32,10 @@ the parallel bash/zsh/fish/python3 sessions from the evil-ghostel rewrite
   (#228 / #454); see the point-tracking section below.
 - `lib/inline-tui.sh` — an inline (main-screen) TUI for the tracking suite: output
   grows above an input row holding the cursor, with three static rows below it.
+- `matrix/motions-evil-ghostel.json`, `matrix/yank-evil-ghostel.json`,
+  `matrix/escape-evil-ghostel.json`, `matrix/modes-evil-ghostel.json` — the rest of the
+  evil surface on zsh: motions and insert-state keys, yanking output to the prompt, ESC
+  routing, options and lifecycle; see the evil-surface section below.
 - `matrix/word-boundaries-ghostel.json` — double-click selection under evil-ghostel's
   Vim-style syntax table, on bash; see the word-boundary section below.
 - `matrix/paste-ghostel.json` — every kind of paste into a live shell, one variant per
@@ -347,6 +351,42 @@ Result (Emacs 32): every group passes on all five shells and both backends, exce
 `tab` on fish, an xfail: fish's `__fish_paste` deletes control characters, tab included,
 from every paste.
 
+## Evil-surface suites (motions, yank, ESC routing, modes; zsh, TTY)
+
+Four scenarios cover what the operator matrix leaves out.  Every group starts in insert
+state at an empty prompt and uses its own marker text.
+
+```sh
+for s in motions yank escape modes; do
+  elate run --keep-going --format json test/elate/matrix/$s-evil-ghostel.json; done
+```
+
+- `matrix/motions-evil-ghostel.json` -- motions against the terminal cursor: `j-clamp`
+  (`j` never passes the cursor's row, also with a count), `G-gg`, `scrollback-insert`
+  (`k k i` types at the prompt), `caret`, `dollar`.  Text objects and operators with the
+  shell as oracle: `ci"`, `ci'`, `di(`, `dt`, `df`, `d3w`, `cb`, `d^`, `d0`, `yiw` + `p`.
+  `redo` (`C-r` re-deletes nothing and logs "Redo not supported").  Insert-state
+  passthrough: `C-k`, `C-d`, `C-y` after `C-w`, `<delete>`, `C-t`, `C-p`, `<up>`/`<down>`,
+  `C-n`, `C-r` (incremental search), `TAB` (file-name completion).
+- `matrix/yank-evil-ghostel.json` -- text copied from output rows to the prompt: `yiw-p`,
+  `yw-p`, `P`, `p-mid`, `v-y`, `register`, `count`; linewise `yy`, `V-y`, `V-j-y` (the row
+  plus its newline lands in the input, nothing runs before RET); `visual-p`.  Safety:
+  `out-x`/`X`/`dd`/`D`/`dw`/`vd`/`r` on an output row leave the typed command and the row
+  intact, `out-cw`/`out-C` enter insert at the input start; `p-output-row`/`P-output-row`.
+- `matrix/escape-evil-ghostel.json` -- where insert-state ESC goes.  The program is the
+  oracle: a zsh function enters the alternate screen (or stays on the main screen), reads
+  one raw key and prints its byte (`GOT-TAG-27` = ESC arrived, `GOT-TAG-none` = nothing).
+  `main-auto`/`alt-auto`, `alt-to-evil`/`alt-back-auto` (`C-c C-r` inside the app),
+  `main-to-terminal`/`alt-terminal`/`main-evil`, `prefix` (1/2/3 and invalid prefixes),
+  `option` (`evil-ghostel-escape` on a new buffer), `force-normal` (`C-c <escape>`),
+  `alt-standdown`/`prompt-control` (`G` and `j` are plain evil in an alt-screen app).
+- `matrix/modes-evil-ghostel.json` -- `initial-normal`/`initial-emacs`/`initial-insert`
+  (`evil-ghostel-initial-state` on a new buffer), line mode under evil (`line-dw`, `cw`,
+  `x`, `p`, `A`, `I` edit buffer text, RET from insert state sends it; `line-exit` returns
+  to PTY-routed editing), `cursor-shape` (evil's cursor vs DECSCUSR), `mode-toggle`/
+  `mode-toggle-resume` (mode off and on in a live buffer), `dead-shell` (keys after the
+  shell exits signal nothing and write nothing), `two-buffers`.
+
 ## Known xfails (flagged, not fixed — confirmed live on elate 0.11.0)
 
 - **`u` (undo) on `nu` and `python3`** — `evil-ghostel-undo` sends `C-_` (readline/zle
@@ -354,6 +394,17 @@ from every paste.
 - **`~` (toggle-case) on all shells** — evil-ghostel doesn't remap `~`, so vanilla Evil
   edits the `*ghostel*` render buffer; the next redraw repairs it and the typed input
   is unchanged.
+- **`register`** (yank) — `"ap` pastes the latest yank: the paste commands never receive
+  the register.
+- **`p-output-row` / `P-output-row`** (yank) — with point on an output row the paste
+  first sends Up arrows, which the shell reads as history recall.
+- **`visual-p`** (yank) — `viw p` appends instead of replacing and stays in visual state.
+- **`mode-toggle`** (modes) — after the mode is turned off and on in normal state, the
+  remaps stay inactive until the next state change.
+- **`cursor-shape`** (modes) — a program's cursor style is not shown in the alternate
+  screen; evil's cursor refresh resets it.
+- **`prefix`** (escape) — prefix 0 and negative prefixes select `auto` instead of
+  signalling a `user-error`.
 
 Each is marked `expect: "fail"` so a regression elsewhere still shows red and a future
 fix shows **XPASS**. Everything else passed on bash/zsh/fish/nu (incl. `a X s S p P`,
