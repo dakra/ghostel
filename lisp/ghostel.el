@@ -4507,7 +4507,8 @@ line the graphical anchor leaves via `window-vscroll'.
 
 A cursor-clamped anchor (see `ghostel--anchor-window') can start above
 that geometric bound; WINDOW also counts as anchored while its
-`window-start' sits exactly on the live cursor's line.
+`window-start' sits exactly on the live cursor's line, or on the row
+`ghostel--minibuffer-crop-top' returns.
 WINDOW additionally follows only while `ghostel--window-follows-p'
 holds."
   (with-current-buffer (window-buffer window)
@@ -4519,6 +4520,8 @@ holds."
                     (save-excursion
                       (goto-char ghostel--cursor-char-pos)
                       (line-beginning-position))))
+          (eql (window-start window)
+               (ghostel--minibuffer-crop-top window body-pixel-height))
           (when-let* ((dlh (with-selected-window window
                              (default-line-height)))
                       (body-pixel-height (or body-pixel-height
@@ -4634,6 +4637,32 @@ nil.  Call only with the pad cleared - see `ghostel--balance-top-pad'."
              (/ leftover 2))))))
     anchor))
 
+(defun ghostel--minibuffer-crop-top (window &optional body-pixel-height)
+  "Return the grid's first row when WINDOW can start there, else nil.
+An active minibuffer defers a rows-only terminal resize, leaving the grid
+taller than WINDOW.  Non-nil while such a resize is pending and the rows
+down to the cursor and the last non-empty row fit WINDOW from that row.
+BODY-PIXEL-HEIGHT replaces WINDOW's body height in pixels.
+WINDOW's buffer must be current."
+  (when-let* (((active-minibuffer-window))
+              ((not (eq ghostel--input-mode 'line)))
+              ((not ghostel-resize-function))
+              (term-rows ghostel--term-rows)
+              (rows (floor (or body-pixel-height
+                               (window-body-height window t))
+                           (with-selected-window window
+                             (default-line-height))))
+              ((< rows term-rows))
+              (size (ghostel--desired-size))
+              ((/= (cdr size) term-rows))
+              (top (ghostel--viewport-start)))
+    (save-excursion
+      (goto-char (point-max))
+      (skip-chars-backward "\n")
+      (goto-char (max (point) (or ghostel--cursor-char-pos 0)))
+      (and (< (count-lines top (line-beginning-position)) rows)
+           top))))
+
 (defun ghostel--anchor-window (&optional window force following)
   "Scroll WINDOW so that the last row is aligned to the bottom of the window.
 In graphical frames, use Emacs's pixel layout for exact bottom alignment.
@@ -4646,6 +4675,8 @@ The live cursor is never scrolled out of view: when bottom-aligning
 window over a mostly-empty grid), the anchor starts at the cursor's line
 instead.  `ghostel--window-anchored-p' recognizes such a clamped window
 as still following the output.
+
+The anchor starts at the row `ghostel--minibuffer-crop-top' returns, if any.
 
 Copy mode is never anchored (the viewport is frozen).
 Otherwise WINDOW anchors while `ghostel--window-follows-p' holds,
@@ -4688,10 +4719,12 @@ line mode keeps the user's point."
                (start (if (and cursor-bol (< cursor-bol (car anchor)))
                           cursor-bol
                         (car anchor)))
+               (start (or (ghostel--minibuffer-crop-top window) start))
                ;; A vscroll would partially clip the cursor's row whenever
                ;; it is the top line; a clamped start sits on a line
                ;; boundary anyway.
-               (vscroll (if (and cursor-bol (= cursor-bol start))
+               (vscroll (if (or (/= start (car anchor))
+                                (and cursor-bol (= cursor-bol start)))
                             0
                           (nth 1 anchor))))
           (set-window-start window start)

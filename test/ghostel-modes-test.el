@@ -1749,6 +1749,79 @@ check keeps semi-char mode."
       (ghostel-maybe-leave-input)
       (should (eq ghostel--input-mode 'semi-char)))))
 
+(defmacro ghostel-test--with-cropped-grid (content-rows &rest body)
+  "Run BODY in the selected window showing a grid 10 rows taller than it.
+The first CONTENT-ROWS rows hold text, all of them when nil, with the
+cursor at the end of the last one; the other rows are blank.  A
+minibuffer is active and the terminal resize to the window is pending."
+  (declare (indent 1) (debug t))
+  `(ghostel-test--with-anchor-window-buffer
+     (let* ((rows (floor (window-screen-lines)))
+            (content (or ,content-rows (+ rows 10))))
+       (setq ghostel--term-rows (+ rows 10))
+       (ghostel-test--with-rendered-output
+         (erase-buffer)
+         (dotimes (i ghostel--term-rows)
+           (insert (if (< i content) (format "row-%02d" i) "") "\n")))
+       (setq ghostel--cursor-char-pos
+             (save-excursion
+               (goto-char (point-min))
+               (forward-line (1- content))
+               (line-end-position)))
+       (cl-letf (((symbol-function 'active-minibuffer-window)
+                  (lambda () (minibuffer-window)))
+                 ((symbol-function 'ghostel--desired-size)
+                  (lambda () (cons 80 rows))))
+         ,@body))))
+
+(ert-deftest ghostel-test-anchor-window-minibuffer-crop-keeps-grid-top ()
+  "A minibuffer-cropped window starts at the grid's first row while content fits."
+  (ghostel-test--with-cropped-grid 3
+    (let ((window (selected-window)))
+      (ghostel--anchor-window window)
+      (should (= (window-start window) (point-min)))
+      (should (= (window-point window) ghostel--cursor-char-pos))
+      (should (ghostel--window-anchored-p window)))))
+
+(ert-deftest ghostel-test-anchor-window-minibuffer-crop-yields-to-overflow ()
+  "Content too tall for a minibuffer-cropped window bottom-aligns as usual."
+  (ghostel-test--with-cropped-grid nil
+    (let ((window (selected-window)))
+      (should-not (ghostel--minibuffer-crop-top window))
+      (ghostel--anchor-window window)
+      (should (> (window-start window) (point-min)))
+      (should (ghostel--window-anchored-p window)))))
+
+(ert-deftest ghostel-test-anchored-p-rejects-grid-top-on-overflow ()
+  "A window scrolled to the grid's first row is not anchored when content overflows."
+  (ghostel-test--with-cropped-grid nil
+    (let ((window (selected-window)))
+      (ghostel--anchor-window window)
+      (set-window-start window (point-min))
+      (should-not (ghostel--window-anchored-p window)))))
+
+(ert-deftest ghostel-test-anchored-p-crop-uses-old-body-height ()
+  "A crop that fit the old body height is anchored once the window shrinks past it."
+  (ghostel-test--with-cropped-grid (+ rows 3)
+    (let ((window (selected-window)))
+      (set-window-start window (point-min))
+      (should-not (ghostel--window-anchored-p window))
+      (should (ghostel--window-anchored-p
+               window (* (+ rows 5) (default-line-height)))))))
+
+(ert-deftest ghostel-test-minibuffer-crop-top-needs-pending-resize ()
+  "The crop needs a pending native resize outside line mode."
+  (ghostel-test--with-cropped-grid 3
+    (let ((window (selected-window)))
+      (should (eql (ghostel--minibuffer-crop-top window) (point-min)))
+      (let ((ghostel--input-mode 'line))
+        (should-not (ghostel--minibuffer-crop-top window)))
+      (let ((ghostel-resize-function #'ignore))
+        (should-not (ghostel--minibuffer-crop-top window)))
+      (cl-letf (((symbol-function 'ghostel--desired-size)
+                 (lambda () (cons 80 ghostel--term-rows))))
+        (should-not (ghostel--minibuffer-crop-top window))))))
+
 (ert-deftest ghostel-test-repainted-region-deactivates-overlapping-mark ()
   "Output rewriting part of the region clears it with `select-active-regions' off."
   (with-temp-buffer

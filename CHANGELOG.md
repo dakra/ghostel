@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Opening a minibuffer that grows (Vertico, `fido-vertical-mode`) over a
+  mostly empty terminal no longer scrolls the output above the prompt
+  out of view.  The window keeps the grid's first row on top while the
+  content still fits.
+  Closes [#803](https://github.com/dakra/ghostel/issues/803).
+
 ## [0.63.0] — 2026-11-10
 
 ### Added
