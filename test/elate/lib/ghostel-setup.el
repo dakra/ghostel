@@ -92,6 +92,23 @@ slice's x-origin and width in the image divided by the cell width."
           (push (image-property (nth 1 spec) :data) data))))
     (delete-dups (nreverse data))))
 
+(defun ghostel-elate--line-wrap-columns ()
+  "Return the columns where line mode breaks the input, in order."
+  (sort (mapcar (lambda (ov)
+                  (save-excursion (goto-char (overlay-end ov))
+                                  (current-column)))
+                (seq-filter (lambda (ov) (overlay-get ov 'ghostel-line-wrap))
+                            (overlays-in (point-min) (point-max))))
+        #'<))
+
+(defun ghostel-elate--screen-row (pos)
+  "Return the window row POS is displayed on in a TTY frame, nil if out of view."
+  (nth 1 (pos-visible-in-window-p pos nil t)))
+
+(defun ghostel-elate--input-row ()
+  "Return the window row the line-mode input starts on."
+  (ghostel-elate--screen-row ghostel--line-input-start))
+
 (defun ghostel-elate--has-line (regexp)
   "Non-nil when a whole buffer line matches REGEXP."
   (save-excursion

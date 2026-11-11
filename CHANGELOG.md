@@ -27,6 +27,8 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - A buffer reused for a new terminal kept the prompt positions of its
   previous one.
+- Line-mode input wider than the terminal wraps onto further screen lines.
+  It ran off the window edge, out of view.
 
 ## [0.63.0] — 2026-11-10
 

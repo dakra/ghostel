@@ -36,6 +36,11 @@ the parallel bash/zsh/fish/python3 sessions from the evil-ghostel rewrite
   shell, on both PTY backends; see the paste section below.
 - `matrix/readonly-evil-ghostel.json` / `matrix/readonly-ghostel.json` — copy and Emacs
   mode entry and exit, with and without evil; see the read-only section below.
+- `matrix/line-wrap-ghostel.json` — line-mode input wider than the terminal; see the
+  line-wrap section below.
+- `lib/prompt-tui.sh` — an inline (main-screen) TUI for the line-wrap suite, shaped like an
+  agent prompt: output grows above an input row holding the cursor, with a rule and a
+  status row below it.
 
 ## Running (elate 0.11.0+)
 
@@ -250,6 +255,23 @@ data, so later `a=p` for that id places nothing.
 ```sh
 elate run --keep-going --format json test/elate/matrix/sync-output-ghostel.json
 elate run --keep-going --format json test/elate/matrix/shell-integration-ghostel.json
+```
+
+## Line-wrap suite (plain ghostel, TTY 60x16, zsh)
+
+`matrix/line-wrap-ghostel.json` drives line mode with input wider than the 59-column
+terminal. Batch ERT cannot cover it: batch Emacs ignores overlay newlines when counting
+screen lines and reports no position as visible. Groups: `wrap` (the input breaks after
+column 59 and point follows onto the next row), `right-prompt` (a zsh `RPROMPT` stays on
+the prompt row instead of wrapping below it), `send` (`RET` sends the input without the
+breaks), `follow` (output arriving under a wrapped input at the window bottom leaves the
+input in view with point at its end), `clear` (`CSI H CSI 2 J` leaves the prompt on the
+top row, also once the input wraps), `exit` (leaving line mode drops the breaks),
+`rows-below` (in `lib/prompt-tui.sh`, a wrapped input pushes the rule and status row
+down; the window keeps following and the next redraw brings them back into view).
+
+```sh
+elate run --keep-going --format json test/elate/matrix/line-wrap-ghostel.json
 ```
 
 ## Paste suite (plain ghostel, TTY 120x40, every shell and both PTY backends)

@@ -44,6 +44,7 @@
 (defvar ghostel--input-mode)
 (defvar ghostel--mode-line-tag)
 (defvar ghostel--term)
+(defvar ghostel--term-cols)
 (defvar ghostel-semi-char-mode-map)
 
 
@@ -301,6 +302,44 @@ the shell, etc.) intact."
           (inhibit-modification-hooks t))
       (delete-region start (point-max)))))
 
+(defun ghostel--line-mode-unwrap ()
+  "Remove the display-only line breaks from the input."
+  (remove-overlays (point-min) (point-max) 'ghostel-line-wrap t))
+
+(defun ghostel--line-mode-wrap (&rest _)
+  "Break input wider than the terminal into rows with display-only newlines."
+  (when (eq ghostel--input-mode 'line)
+    (save-restriction
+      (widen)
+      (ghostel--line-mode-unwrap)
+      (when-let* (((markerp ghostel--line-input-start))
+                  (start (marker-position ghostel--line-input-start))
+                  (end (marker-position ghostel--line-input-end))
+                  (cols ghostel--term-cols)
+                  ((> cols 0)))
+        (save-excursion
+          (goto-char start)
+          (forward-line 0)
+          (while (< (point) end)
+            (let ((row (point)))
+              ;; Narrowed, columns count from the start of the row.
+              (narrow-to-region row (point-max))
+              ;; A wide character straddling the edge moves to the next
+              ;; row, unless it is the only one on this row.
+              (when (and (> (move-to-column cols) cols)
+                         (> (1- (point)) row))
+                (backward-char))
+              (widen)
+              ;; Zero-width characters stay with the one they follow.
+              (while (and (not (eolp)) (zerop (char-width (char-after))))
+                (forward-char))
+              (cond ((eolp) (forward-line 1))
+                    ((<= start (point) end)
+                     (let ((ov (make-overlay (1- (point)) (point))))
+                       (overlay-put ov 'ghostel-line-wrap t)
+                       (overlay-put ov 'evaporate t)
+                       (overlay-put ov 'after-string "\n")))))))))))
+
 (defun ghostel--line-mode-snapshot ()
   "Capture in-progress input plus point/mark offsets and clear the input region.
 Returns a plist (:input STR :point-offset N-or-nil :mark-offset N-or-nil)
@@ -327,6 +366,7 @@ bar below the prompt — stays untouched."
         ;; native redraw, and the re-insert in `ghostel--line-mode-restore'
         ;; are renderer bookkeeping, not user edits.  `restore' re-arms.
         (setq buffer-undo-list t)
+        (ghostel--line-mode-unwrap)
         (let ((inhibit-read-only t))
           (delete-region start-pos end-pos))
         (list :input input
@@ -377,6 +417,7 @@ was inside the input region, and left untouched otherwise."
             ;; `ghostel-line-mode-send'.
             (when (< start-pos end-pos)
               (put-text-property start-pos end-pos 'ghostel-input t))
+            (ghostel--line-mode-wrap)
             (let ((po (plist-get snapshot :point-offset))
                   (mo (plist-get snapshot :mark-offset)))
               (when po
@@ -471,6 +512,8 @@ in line mode (the interactive entry validates these)."
       ;; Place point at end of (any adopted) input so the user
       ;; continues typing where the shell left them.
       (goto-char (marker-position ghostel--line-input-end))
+      (add-hook 'after-change-functions #'ghostel--line-mode-wrap nil t)
+      (ghostel--line-mode-wrap)
       ;; Arm undo recording now that the entry plumbing is done, so the
       ;; user's first edit is the first thing recorded.
       (setq buffer-undo-list nil)
@@ -482,7 +525,7 @@ in line mode (the interactive entry validates these)."
 The user types into an editable region between the last prompt and
 `point-max'.  Full Emacs editing (yank, `kill-word', transpose,
 etc.) works.  Pressing \\[ghostel-line-mode-send] sends the input
-to the shell in one write.
+to the shell in one write.  Input wider than the terminal wraps.
 
 Completion runs against the editable input and follows OSC 7 / TRAMP
 directory tracking.  The terminal stays live while output streams
@@ -581,6 +624,8 @@ which discards any type-ahead and runs inside `ghostel--redraw-now'."
   ;; Undo is off outside line mode; disable it before the teardown edits
   ;; below so none of them are recorded.
   (setq buffer-undo-list t)
+  (remove-hook 'after-change-functions #'ghostel--line-mode-wrap t)
+  (ghostel--line-mode-unwrap)
   (unless pause
     (let ((input (ghostel--line-mode-input-text)))
       ;; Erase the adopted prefix from the shell's readline before

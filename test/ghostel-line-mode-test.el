@@ -76,6 +76,104 @@ not clobbered."
       (should-not (text-property-any (point-min) (point-max)
                                      'read-only t)))))
 
+(defun ghostel-test--line-wrap-positions ()
+  "Return the positions line mode breaks the input at, in order."
+  (sort (mapcar #'overlay-end
+                (seq-filter (lambda (ov) (overlay-get ov 'ghostel-line-wrap))
+                            (overlays-in (point-min) (point-max))))
+        #'<))
+
+(defmacro ghostel-test--with-line-wrap (cols rendered &rest body)
+  "Run BODY in line mode on a fake terminal of COLS columns showing RENDERED."
+  (declare (indent 2))
+  `(let ((buf (generate-new-buffer " *ghostel-test-line-wrap*")))
+     (unwind-protect
+         (with-current-buffer buf
+           (ghostel-mode)
+           (ghostel-test--insert-rendered ,rendered)
+           (let ((ghostel--term 'fake)
+                 (ghostel--process 'fake-proc))
+             (setq ghostel--term-cols ,cols)
+             (cl-letf (((symbol-function 'ghostel--alt-screen-p)
+                        (lambda (&rest _) nil))
+                       ((symbol-function 'ghostel--write-pty) #'ignore)
+                       ((symbol-function 'ghostel--redraw) #'ignore)
+                       ((symbol-function 'ghostel--invalidate) #'ignore)
+                       ((symbol-function 'ghostel--anchor-window) #'ignore))
+               (ghostel-line-mode)
+               ,@body)))
+       (kill-buffer buf))))
+
+(ert-deftest ghostel-test-line-mode-wraps-input-at-terminal-width ()
+  "Input wider than the terminal breaks into rows of `ghostel--term-cols'."
+  (ghostel-test--with-line-wrap 10 (propertize "$ " 'ghostel-prompt t)
+    (insert (make-string 8 ?x))
+    (should-not (ghostel-test--line-wrap-positions))
+    (insert (make-string 12 ?x))
+    (should (equal (ghostel-test--line-wrap-positions) '(11 21)))
+    (should (equal (ghostel--line-mode-input-text) (make-string 20 ?x)))
+    (ghostel-semi-char-mode)
+    (should-not (ghostel-test--line-wrap-positions))))
+
+(ert-deftest ghostel-test-line-mode-wraps-each-input-line ()
+  "Each line of a multi-line input wraps on its own."
+  (ghostel-test--with-line-wrap 10 (propertize "$ " 'ghostel-prompt t)
+    (insert (make-string 12 ?x) "\n" (make-string 12 ?y))
+    (should (equal (ghostel-test--line-wrap-positions) '(11 26)))))
+
+(ert-deftest ghostel-test-line-mode-wrap-keeps-characters-whole ()
+  "A break never splits a wide character or a combining sequence."
+  (ghostel-test--with-line-wrap 10 (propertize "$ " 'ghostel-prompt t)
+    (insert "x" (make-string 6 ?漢))
+    (should (equal (ghostel-test--line-wrap-positions) '(7)))
+    (delete-region ghostel--line-input-start ghostel--line-input-end)
+    (insert (make-string 7 ?x) "éyy")
+    (should (equal (ghostel-test--line-wrap-positions) '(12)))))
+
+(ert-deftest ghostel-test-line-mode-wrap-character-wider-than-row ()
+  "A character wider than the terminal takes a row of its own."
+  (ghostel-test--with-line-wrap 4 (propertize "$ " 'ghostel-prompt t)
+    (insert "\tab")
+    (should (equal (ghostel-test--line-wrap-positions) '(3 4)))))
+
+(ert-deftest ghostel-test-line-mode-wrap-stops-at-input-end ()
+  "Text after the input on its row gets no break of its own."
+  (ghostel-test--with-line-wrap 10
+      (concat (propertize "$ " 'ghostel-prompt t) "     R")
+    (insert (make-string 8 ?x))
+    (should (equal (ghostel-test--line-wrap-positions) '(11)))
+    (insert (make-string 12 ?x))
+    (should (equal (ghostel-test--line-wrap-positions) '(11 21)))))
+
+(ert-deftest ghostel-test-line-mode-wrap-ignores-narrowing ()
+  "An edit made while narrowed to the input breaks at the same columns."
+  (ghostel-test--with-line-wrap 10 (propertize "$$$$ " 'ghostel-prompt t)
+    (save-restriction
+      (narrow-to-region ghostel--line-input-start ghostel--line-input-end)
+      (insert (make-string 10 ?x)))
+    (should (equal (ghostel-test--line-wrap-positions) '(11)))))
+
+(ert-deftest ghostel-test-line-mode-redraw-rewraps-input ()
+  "A redraw re-inserts the input with its row breaks."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buf term 5 20 1000)
+    (setq ghostel-detect-password-prompts nil)
+    (set-window-buffer (selected-window) buf)
+    (setq ghostel--process 'fake-proc)
+    (ghostel--write-vt term "\e]133;A\e\\$ \e]133;B\e\\")
+    (ghostel-test--redraw term t)
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+              ((symbol-function 'ghostel--write-pty) #'ignore)
+              ((symbol-function 'ghostel--invalidate) #'ignore))
+      (ghostel-line-mode)
+      (insert (make-string 30 ?x))
+      (should (= (length (ghostel-test--line-wrap-positions)) 1))
+      (ghostel--write-vt term "out\r\n\e]133;A\e\\$ \e]133;B\e\\")
+      (ghostel--redraw-now buf)
+      (should (equal (ghostel--line-mode-input-text) (make-string 30 ?x)))
+      (should (equal (ghostel-test--line-wrap-positions)
+                     (list (+ ghostel--line-input-start 18)))))))
+
 (ert-deftest ghostel-test-mouse-1-drag-no-tracking-line-mode-no-copy-mode ()
   "Drag-end in line mode does not enter copy mode.
 Line mode keeps its own buffer state and must not be flipped into

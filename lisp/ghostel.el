@@ -4766,8 +4766,12 @@ line mode keeps the user's point."
                                 (ghostel--balance-top-pad window target))
                            (save-excursion
                              (goto-char target)
-                             (forward-line
-                              (- (if (bolp) 0 1) (floor (window-screen-lines))))
+                             (let ((lines (- (if (bolp) 0 1)
+                                             (floor (window-screen-lines)))))
+                               ;; Wrapped line-mode input spans several screen lines.
+                               (if (eq ghostel--input-mode 'line)
+                                   (vertical-motion lines)
+                                 (forward-line lines)))
                              (list (point) 0))))
                (start (if (and cursor-bol (< cursor-bol (car anchor)))
                           cursor-bol
@@ -4875,6 +4879,15 @@ them during synchronized output or when BUFFER has no render window."
                       (ghostel--write-pty ghostel--term input)
                       (message
                        "ghostel: line-mode prompt lost; input forwarded raw"))))
+                ;; Restored input can extend below the window.
+                (when line-restored
+                  (dolist (win anchored)
+                    (unless (pos-visible-in-window-p
+                             (save-excursion (goto-char (point-max))
+                                             (vertical-motion 0 win)
+                                             (point))
+                             win)
+                      (ghostel--anchor-window win nil t))))
                 (when rendered (ghostel--deactivate-repainted-region))
                 (ghostel--schedule-link-detection))
               ;; Resume line mode if alt-screen just turned off, and update the

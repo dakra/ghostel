@@ -1,0 +1,221 @@
+{
+ "name": "line-wrap-ghostel",
+ "comment": "Line-mode input wider than the terminal wraps onto further screen rows. The break sits at the terminal's last column, a right prompt stays on its row, the input stays in view when output arrives under it, a cleared screen keeps the prompt on the top row, leaving line mode drops the breaks, and the rows an inline TUI draws below its prompt stay in view. Driven on zsh, TTY 60x16 (59 columns).",
+ "session": {
+  "ui": "tty",
+  "size": "60x16",
+  "config": "minimal",
+  "eval": [
+   "(load \"/Users/daniel/.emacs.d/lib/ghostel/test/elate/lib/ghostel-setup.el\")",
+   "(setq ghostel-shell \"/bin/zsh\")"
+  ]
+ },
+ "steps": [
+  {
+   "eval": "(ghostel)"
+  },
+  {
+   "wait": "idle",
+   "min_idle": 1.0,
+   "timeout": 15
+  },
+  {
+   "type": "PROMPT='> '; RPROMPT='RIGHT'"
+  },
+  {
+   "keys": "RET"
+  },
+  {
+   "wait": "until",
+   "pred": "(ghostel-elate--has-line \"> +RIGHT\")",
+   "buffer": "*ghostel*",
+   "timeout": 10
+  },
+  {
+   "keys": "C-c C-l"
+  },
+  {
+   "wait": "until",
+   "pred": "(eq ghostel--input-mode 'line)",
+   "buffer": "*ghostel*",
+   "timeout": 5
+  },
+  {
+   "group": "wrap",
+   "comment": "82 columns of prompt and input break once, after column 59; point follows onto the second row"
+  },
+  {
+   "type": ": aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeeffffffffffgggggggggg; echo wrap-sent"
+  },
+  {
+   "wait": "idle",
+   "min_idle": 0.3
+  },
+  {
+   "assert": {
+    "eval": "(and truncate-lines (equal (ghostel-elate--line-wrap-columns) '(59)) (= (ghostel-elate--screen-row (point)) (1+ (ghostel-elate--input-row))))",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
+   "group": "right-prompt",
+   "comment": "the prompt row takes two screen rows: the right prompt does not wrap onto a third"
+  },
+  {
+   "assert": {
+    "eval": "(= (ghostel-elate--screen-row (save-excursion (goto-char ghostel--line-input-end) (forward-line 1) (point))) (+ 2 (ghostel-elate--input-row)))",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
+   "group": "send",
+   "comment": "RET sends the input without the breaks"
+  },
+  {
+   "keys": "RET"
+  },
+  {
+   "wait": "text",
+   "pattern": "^wrap-sent$",
+   "buffer": "*ghostel*",
+   "timeout": 10
+  },
+  {
+   "group": "follow",
+   "comment": "output arriving under a wrapped input at the window bottom leaves the input in view and point at its end"
+  },
+  {
+   "type": "seq 1 30; (sleep 3; echo late-out) &"
+  },
+  {
+   "keys": "RET"
+  },
+  {
+   "wait": "text",
+   "pattern": "^30$",
+   "buffer": "*ghostel*",
+   "timeout": 10
+  },
+  {
+   "type": "aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeeffffffffffgggggggggghhhhhhhhhhiiiiiiiiiijjjjjjjjjjkkkkkkkkkkllllllllllmmmmmmmmmm"
+  },
+  {
+   "wait": "text",
+   "pattern": "^> late-out",
+   "buffer": "*ghostel*",
+   "timeout": 10
+  },
+  {
+   "wait": "idle",
+   "min_idle": 0.5
+  },
+  {
+   "assert": {
+    "eval": "(let ((w (get-buffer-window))) (and (= (length (ghostel--line-mode-input-text)) 130) (= (window-point w) ghostel--line-input-end) (pos-visible-in-window-p ghostel--line-input-end w) (equal (ghostel-elate--line-wrap-columns) '(59 118))))",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
+   "group": "clear",
+   "comment": "a screen clear that keeps the scrollback leaves the prompt on the top row, also with a wrapped input"
+  },
+  {
+   "eval": "(with-current-buffer \"*ghostel*\" (delete-region ghostel--line-input-start ghostel--line-input-end))"
+  },
+  {
+   "type": "RPROMPT=''; printf '\\033[H\\033[2J'"
+  },
+  {
+   "keys": "RET"
+  },
+  {
+   "wait": "until",
+   "pred": "(eql (ghostel-elate--input-row) 0)",
+   "buffer": "*ghostel*",
+   "timeout": 10
+  },
+  {
+   "wait": "idle",
+   "min_idle": 0.5
+  },
+  {
+   "assert": {
+    "eval": "(and (> (window-start (get-buffer-window)) (point-min)) (eql (ghostel-elate--input-row) 0))",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
+   "type": "aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeeffffffffffgggggggggghhhhhhhhhh"
+  },
+  {
+   "wait": "idle",
+   "min_idle": 0.3
+  },
+  {
+   "assert": {
+    "eval": "(and (eql (ghostel-elate--input-row) 0) (= (ghostel-elate--screen-row (point)) 1))",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
+   "group": "exit",
+   "comment": "leaving line mode drops the breaks and hands the input to the shell"
+  },
+  {
+   "keys": "C-c C-j"
+  },
+  {
+   "wait": "until",
+   "pred": "(ghostel-elate--has-text \"gggggggggghhhhhhhhhh\")",
+   "buffer": "*ghostel*",
+   "timeout": 10
+  },
+  {
+   "assert": {
+    "eval": "(and (eq ghostel--input-mode 'semi-char) (null (ghostel-elate--line-wrap-columns)) (not (memq 'ghostel--line-mode-wrap after-change-functions)))",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
+   "group": "rows-below",
+   "comment": "an inline TUI draws a rule and a status row below its prompt; a wrapped input pushes them down and the next redraw brings them back into view"
+  },
+  {
+   "eval": "(ghostel-send-string \"\\u0015clear; seq 1 30; sh /Users/daniel/.emacs.d/lib/ghostel/test/elate/lib/prompt-tui.sh zz 8 3 6\\n\")"
+  },
+  {
+   "wait": "text",
+   "pattern": "^status-zz$",
+   "buffer": "*ghostel*",
+   "timeout": 10
+  },
+  {
+   "keys": "C-c C-l"
+  },
+  {
+   "wait": "until",
+   "pred": "(eq ghostel--input-mode 'line)",
+   "buffer": "*ghostel*",
+   "timeout": 5
+  },
+  {
+   "type": "aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeeffffffffffgggggggggghhhhhhhhhhiiiiiiiiiijjjjjjjjjjkkkkkkkkkkllllllllllmmmmmmmmmm"
+  },
+  {
+   "wait": "text",
+   "pattern": "^zz-3$",
+   "buffer": "*ghostel*",
+   "timeout": 15
+  },
+  {
+   "wait": "idle",
+   "min_idle": 0.5
+  },
+  {
+   "assert": {
+    "eval": "(let ((w (get-buffer-window))) (and (equal (ghostel-elate--line-wrap-columns) '(59 118)) (= (window-point w) ghostel--line-input-end) (pos-visible-in-window-p (save-excursion (goto-char (point-max)) (search-backward \"status-zz\") (point)) w) (ghostel--window-anchored-p w)))",
+    "buffer": "*ghostel*"
+   }
+  }
+ ]
+}

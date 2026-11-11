@@ -614,7 +614,8 @@ Entered with =C-c C-l=.  Line mode buffers the user's input locally in Emacs -
 *no keystrokes are forwarded to the shell* while composing.  Full Emacs editing
 (=M-b=, =M-DEL=, =C-y= yank, =transpose-words=, etc.) works on the input region.
 Pressing =RET= sends the whole line to the shell in one write; bash receives it
-atomically, echoes and executes it.
+atomically, echoes and executes it.  Input wider than the terminal wraps onto
+further screen lines.
 
 The terminal stays live: output keeps streaming and the buffer keeps
 re-rendering while you compose.  A snapshot/restore step in the delayed-redraw
