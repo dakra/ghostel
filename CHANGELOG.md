@@ -32,6 +32,9 @@ All notable changes to this project will be documented in this file.
 - Without shell integration, line mode started its input at the far
   side of the padding after an empty prompt, before a right prompt or
   border, instead of at the cursor.
+- Line mode hides an autosuggestion the program drew after the cursor,
+  such as Claude Code's, while the input is non-empty.  Typing pushed it
+  to the right of the input.
 
 ## [0.63.0] — 2026-11-10
 

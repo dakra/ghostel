@@ -1,0 +1,104 @@
+{
+ "name": "line-suggestion-ghostel",
+ "comment": "Line mode hides an app-drawn autosuggestion while the input is non-empty. The row mimics Claude Code's empty prompt: a grey `❯' and no-break space, an inverse cursor on the suggestion's first character, the rest faint word by word. Driven on zsh, TTY 60x16.",
+ "session": {
+  "ui": "tty",
+  "size": "60x16",
+  "config": "minimal",
+  "eval": [
+   "(load \"/Users/daniel/.emacs.d/lib/ghostel/test/elate/lib/ghostel-setup.el\")",
+   "(setq ghostel-shell \"/bin/zsh\")"
+  ]
+ },
+ "steps": [
+  {
+   "eval": "(ghostel)"
+  },
+  {
+   "wait": "idle",
+   "min_idle": 1.0,
+   "timeout": 15
+  },
+  {
+   "type": "clear; printf '\\033[38;2;153;153;153m\\342\\235\\257\\302\\240\\033[39m\\033[7mT\\033[27m\\033[2mry\\033[22m \\033[2mit\\033[22m\\r\\033[2C'; read x; echo got-$x"
+  },
+  {
+   "keys": "RET"
+  },
+  {
+   "wait": "until",
+   "pred": "(and (ghostel-elate--has-text \"❯.Try it\") (= (car ghostel--cursor-pos) 2))",
+   "buffer": "*ghostel*",
+   "timeout": 10
+  },
+  {
+   "keys": "C-c C-l"
+  },
+  {
+   "wait": "until",
+   "pred": "(eq ghostel--input-mode 'line)",
+   "buffer": "*ghostel*",
+   "timeout": 5
+  },
+  {
+   "group": "empty",
+   "comment": "with no input the suggestion stays visible"
+  },
+  {
+   "assert": {
+    "eval": "(and (= (save-excursion (goto-char ghostel--line-input-start) (current-column)) 2) (not (invisible-p ghostel--line-input-start)))",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
+   "group": "typing",
+   "comment": "typed input hides the suggestion, also after the redraws that follow"
+  },
+  {
+   "type": "abc"
+  },
+  {
+   "wait": "idle",
+   "min_idle": 0.5
+  },
+  {
+   "assert": {
+    "eval": "(let ((end ghostel--line-input-end)) (and (equal (ghostel--line-mode-input-text) \"abc\") (invisible-p end) (invisible-p (+ end 5)) (not (invisible-p (1- end)))))",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
+   "group": "cleared",
+   "comment": "deleting the input shows the suggestion again"
+  },
+  {
+   "keys": "DEL DEL DEL"
+  },
+  {
+   "wait": "idle",
+   "min_idle": 0.5
+  },
+  {
+   "assert": {
+    "eval": "(and (equal (ghostel--line-mode-input-text) \"\") (not (invisible-p ghostel--line-input-end)))",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
+   "group": "send",
+   "comment": "RET sends only the typed input"
+  },
+  {
+   "type": "xyz"
+  },
+  {
+   "keys": "RET"
+  },
+  {
+   "wait": "text",
+   "pattern": "^got-xyz$",
+   "buffer": "*ghostel*",
+   "timeout": 10
+  }
+ ]
+}

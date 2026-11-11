@@ -43,6 +43,8 @@ the parallel bash/zsh/fish/python3 sessions from the evil-ghostel rewrite
   status row below it.
 - `matrix/input-start-ghostel.json` — where line mode starts its input without shell
   integration; see the input-start section below.
+- `matrix/line-suggestion-ghostel.json` — line mode hiding an app-drawn autosuggestion;
+  see the line-suggestion section below.
 
 ## Running (elate 0.11.0+)
 
@@ -285,6 +287,18 @@ zsh `RPROMPT`: the input starts after `% `, not before `RIGHT`), `border` (a box
 
 ```sh
 elate run --keep-going --format json test/elate/matrix/input-start-ghostel.json
+```
+
+## Line-suggestion suite (plain ghostel, TTY 60x16, zsh)
+
+`matrix/line-suggestion-ghostel.json` draws Claude Code's empty prompt with `printf` (a
+grey `❯`, an inverse cursor on the suggestion's first character, the rest faint word by
+word) and holds it with `read`. Groups: `empty` (no input: the suggestion stays visible),
+`typing` (typed input hides it across redraws), `cleared` (deleting the input shows it
+again), `send` (RET sends only the typed input).
+
+```sh
+elate run --keep-going --format json test/elate/matrix/line-suggestion-ghostel.json
 ```
 
 ## Paste suite (plain ghostel, TTY 120x40, every shell and both PTY backends)
