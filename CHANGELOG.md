@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.64.0] — 2026-11-11
+
 ### Added
 - Functions for packages that bridge a terminal running elsewhere, such
   as a multiplexer's: `ghostel-make-terminal` makes a terminal without a
