@@ -497,16 +497,27 @@ STRING through bracketed paste.  Only meaningful in `semi-char' mode."
   "Move to the last character of typed input on the cursor row.
 Like `evil-end-of-line' but stops before a trailing autosuggestion,
 right-aligned prompt, or padding (ghostel paints the whole row, so vanilla
-$ would walk into non-typed cells).  Off the cursor row, unchanged."
+$ would walk into non-typed cells).  In line mode, from inside the input,
+stops at its end.  Off the cursor row, unchanged."
   :type inclusive
-  (let ((input-end (and (evil-ghostel--prompt-active-p)
-                        (ghostel-point-on-cursor-row-p)
-                        (evil-ghostel--input-end))))
-    (evil-end-of-line count)
-    (when (and input-end (>= (point) input-end)
-               (ghostel-point-on-cursor-row-p)
-               (> input-end (line-beginning-position)))
-      (goto-char (1- input-end)))))
+  (if (and (evil-ghostel--line-mode-active-p)
+           (<= ghostel--line-input-start (point) ghostel--line-input-end))
+      (let ((start (marker-position ghostel--line-input-start))
+            (input-end (marker-position ghostel--line-input-end)))
+        (evil-end-of-line count)
+        (when (>= (point) input-end)
+          ;; At end of line `evil-end-of-line' makes the motion exclusive.
+          (goto-char (if (eq evil-this-type 'exclusive)
+                         input-end
+                       (max start (1- input-end))))))
+    (let ((input-end (and (evil-ghostel--prompt-active-p)
+                          (ghostel-point-on-cursor-row-p)
+                          (evil-ghostel--input-end))))
+      (evil-end-of-line count)
+      (when (and input-end (>= (point) input-end)
+                 (ghostel-point-on-cursor-row-p)
+                 (> input-end (line-beginning-position)))
+        (goto-char (1- input-end))))))
 
 (evil-define-motion evil-ghostel-next-line (count)
   "Move COUNT lines down, but not past the terminal cursor's row."
@@ -616,9 +627,17 @@ block deletes.  Covers d, dd, x, and X."
   (interactive "<R><x><y>")
   (cond
    ((evil-ghostel--line-mode-active-p)
-    (apply #'evil-delete
-           (append (evil-ghostel--line-mode-clamp beg end type)
-                   (list register yank-handler))))
+    (pcase-let ((`(,b ,e ,clamped-type)
+                 (evil-ghostel--line-mode-clamp beg end type)))
+      ;; Like `dd' on a buffer's last line, take the newline before it.
+      (when (and (memq type '(line screen-line))
+                 (= e ghostel--line-input-end)
+                 (> b ghostel--line-input-start)
+                 (eq (char-before b) ?\n))
+        (setq b (1- b)))
+      ;; A range the clamp emptied leaves the registers alone.
+      (unless (and (= b e) (< beg end))
+        (evil-delete b e clamped-type register yank-handler))))
    ((not (evil-ghostel--prompt-active-p))
     (evil-delete beg end type register yank-handler))
    (t
@@ -690,9 +709,15 @@ Covers c, cc, s."
   (interactive "<R><x><y>")
   (cond
    ((evil-ghostel--line-mode-active-p)
-    (apply #'evil-change
-           (append (evil-ghostel--line-mode-clamp beg end type)
-                   (list register yank-handler delete-func))))
+    (pcase-let ((`(,b ,e ,clamped-type)
+                 (evil-ghostel--line-mode-clamp beg end type)))
+      ;; In visual state `evil-insert' would jump to the selection start.
+      (when (evil-visual-state-p)
+        (evil-exit-visual-state))
+      (goto-char b)
+      (if (and (= b e) (< beg end))
+          (evil-insert-state 1)
+        (evil-change b e clamped-type register yank-handler delete-func))))
    ((not (evil-ghostel--prompt-active-p))
     (evil-change beg end type register yank-handler delete-func))
    (t

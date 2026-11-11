@@ -300,9 +300,9 @@ again), `send` (RET sends only the typed input).
 
 `matrix/line-suggestion-evil-ghostel.json` draws the same row under evil-ghostel and edits
 the input in normal state. Groups: `change-line` (`C`), `delete-word` (`dw` on the last
-word), `delete-line` (`dd` clears the input and the suggestion shows again),
-`change-whole-line` (`cc`, then sending sends only the input). Each checks that the app's
-text after the input is untouched.
+word), `end-of-line` (`$ x` deletes the last input character), `delete-line` (`dd` clears
+the input and the suggestion shows again), `change-whole-line` (`cc`, then sending sends
+only the input). Each checks that the app's text after the input is untouched.
 
 ```sh
 elate run --keep-going --format json test/elate/matrix/line-suggestion-ghostel.json

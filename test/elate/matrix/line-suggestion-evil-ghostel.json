@@ -109,6 +109,26 @@
    }
   },
   {
+   "group": "end-of-line",
+   "comment": "$ x deletes the last input character, not the hidden suggestion's"
+  },
+  {
+   "eval": "(with-current-buffer \"*ghostel*\" (goto-char ghostel--line-input-start))"
+  },
+  {
+   "keys": "$ x"
+  },
+  {
+   "wait": "idle",
+   "min_idle": 0.5
+  },
+  {
+   "assert": {
+    "eval": "(and (equal (ghostel--line-mode-input-text) \"foo\") (evil-normal-state-p) (equal (buffer-substring-no-properties ghostel--line-input-end (save-excursion (goto-char ghostel--line-input-end) (line-end-position))) \"Try it\"))",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
    "group": "delete-line",
    "comment": "dd clears the input and the suggestion shows again"
   },

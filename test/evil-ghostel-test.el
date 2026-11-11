@@ -2051,6 +2051,75 @@ C-d (`ghostel-line-mode-delete-char-or-eof')."
     (should (equal (buffer-substring-no-properties (point-min) (point-max))
                    "out\n$ foo barTry\n──"))))
 
+(ert-deftest evil-ghostel-test-line-mode-end-of-line-stops-at-input ()
+  "In line mode `$' from inside the input stops at its last character."
+  (evil-ghostel-test--with-line-mode "out\n$ foo barTry\n──" 7 14
+    (ghostel--line-mode-apply-readonly 7 14)
+    (evil-normal-state)
+    (goto-char 8)
+    (evil-ghostel-end-of-line 1)
+    (should (= (point) 13)))
+  (evil-ghostel-test--with-line-mode "out\n$ Try\n──" 7 7
+    (ghostel--line-mode-apply-readonly 7 7)
+    (evil-normal-state)
+    (goto-char 7)
+    (evil-ghostel-end-of-line 1)
+    (should (= (point) 7))))
+
+(ert-deftest evil-ghostel-test-line-mode-delete-to-eol ()
+  "`d$' in line mode deletes to the input end, whatever `evil-move-beyond-eol'."
+  (dolist (beyond '(t nil))
+    (dolist (row '("out\n$ foo bar\n──" "out\n$ foo bar   RIGHT\n──"))
+      (evil-ghostel-test--with-line-mode row 7 14
+        (ghostel--line-mode-apply-readonly 7 14)
+        (switch-to-buffer (current-buffer))
+        (let ((evil-move-beyond-eol beyond))
+          (evil-normal-state)
+          (goto-char 11)
+          (execute-kbd-macro (kbd "d $"))
+          (should (equal (list beyond row (ghostel--line-mode-input-text))
+                         (list beyond row "foo "))))))))
+
+(ert-deftest evil-ghostel-test-line-mode-visual-change-inserts-in-input ()
+  "`Vc' in line mode clears the input and inserts at its start."
+  (evil-ghostel-test--with-line-mode "out\n$ foo barTry\n──" 7 14
+    (ghostel--line-mode-apply-readonly 7 14)
+    (switch-to-buffer (current-buffer))
+    (evil-normal-state)
+    (goto-char 9)
+    (execute-kbd-macro (kbd "V c"))
+    (should (evil-insert-state-p))
+    (should (= (point) 7))
+    (should (equal (ghostel--line-mode-input-text) ""))))
+
+(ert-deftest evil-ghostel-test-line-mode-empty-clamp-keeps-registers ()
+  "An operator the clamp empties leaves the kill ring and registers alone."
+  (evil-ghostel-test--with-line-mode "out\n$ foo barTry\n──" 7 14
+    (ghostel--line-mode-apply-readonly 7 14)
+    (evil-normal-state)
+    (let ((kill-ring (list "keep")))
+      (evil-set-register ?- "keep")
+      (goto-char 14)
+      (evil-ghostel-delete 14 15 'exclusive)
+      (should (equal kill-ring '("keep")))
+      (should (equal (evil-get-register ?-) "keep"))
+      (should (equal (ghostel--line-mode-input-text) "foo bar"))
+      (evil-ghostel-change 14 15 'exclusive)
+      (should (evil-insert-state-p))
+      (should (equal kill-ring '("keep"))))))
+
+(ert-deftest evil-ghostel-test-line-mode-dd-last-input-line-takes-newline ()
+  "`dd' on the last line of a multi-line input also deletes the newline before it."
+  (evil-ghostel-test--with-line-mode "out\n$ ab\ncdTry\n──" 7 12
+    (ghostel--line-mode-apply-readonly 7 12)
+    (evil-normal-state)
+    (goto-char 10)
+    (evil-ghostel-delete 10 16 'line)
+    (should (equal (ghostel--line-mode-input-text) "ab"))
+    (should (equal (buffer-substring-no-properties ghostel--line-input-end
+                                                   (point-max))
+                   "Try\n──"))))
+
 ;; -----------------------------------------------------------------------
 ;; Test: evil-undo advice
 ;; -----------------------------------------------------------------------
