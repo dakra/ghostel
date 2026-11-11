@@ -30,6 +30,8 @@ the parallel bash/zsh/fish/python3 sessions from the evil-ghostel rewrite
   section below.
 - `matrix/tracking-ghostel.json` — normal-state point tracking across streamed output
   (#228 / #454); see the point-tracking section below.
+- `lib/inline-tui.sh` — an inline (main-screen) TUI for the tracking suite: output
+  grows above an input row holding the cursor, with three static rows below it.
 - `matrix/word-boundaries-ghostel.json` — double-click selection under evil-ghostel's
   Vim-style syntax table, on bash; see the word-boundary section below.
 - `matrix/paste-ghostel.json` — every kind of paste into a live shell, one variant per
@@ -150,6 +152,12 @@ elate run --keep-going --format json test/elate/matrix/tracking-ghostel.json
   row-wise tracking must still carry point to the new prompt.
 - **row-roam** — `0` on the prompt row, then a background burst: point rides the
   cursor's row at its own column, never snapped onto the cursor.
+- **tui-row-roam** — `lib/inline-tui.sh` streams 60 frames above an input row with
+  three static rows below the cursor: point elsewhere on the cursor's row must keep
+  riding it and the window must stay anchored (redisplay alone does not scroll while
+  point is still visible).
+- **tui-below** — the same stream with point two rows below the cursor: it keeps its
+  row offset and column.
 
 The parked groups send ESC only after a short idle inside a `sleep 2` prefix so it
 lands exactly on the cursor (the esc-clamp group covers the atomic RET+ESC timing).

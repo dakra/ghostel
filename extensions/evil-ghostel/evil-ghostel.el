@@ -184,11 +184,19 @@ No window showing the buffer counts as following."
   (let ((win (get-buffer-window (current-buffer) t)))
     (or (null win) (ghostel--window-anchored-p win))))
 
+(defun evil-ghostel--cursor-bol ()
+  "Return the start of the terminal cursor's line, or nil."
+  (when ghostel--cursor-char-pos
+    (save-excursion
+      (goto-char ghostel--cursor-char-pos)
+      (line-beginning-position))))
+
 ;; Redraw: preserve Evil point/visual semantics.  Point follows the
 ;; cursor in insert/emacs state; in normal/motion state it follows
-;; exactly while parked at the cursor, and row-wise (keeping the user's
-;; column) while elsewhere on the cursor's row.  Off that row point
-;; stays put.  Visual markers are restored around the redraw.
+;; exactly while parked at the cursor, and keeps its column and its row
+;; offset from the cursor while elsewhere on or below the cursor's row.
+;; Above that row point stays put.  Visual markers are restored around
+;; the redraw.
 
 (defun evil-ghostel--around-redraw (orig-fn term &optional full force-sync)
   "Apply Evil point/visual handling around `ghostel--redraw'.
@@ -198,19 +206,19 @@ alt-screen and when the native renderer defers synchronized output."
            (not (ghostel--alt-screen-p term)))
       (let* ((visual-p (eq evil-state 'visual))
              ;; Sampled pre-render (window check included): only then does
-             ;; point on the cursor's row mean the user has not left the
-             ;; prompt; the render advances the cursor and a burst
+             ;; point on or below the cursor's row mean the user has not
+             ;; left the prompt; the render advances the cursor and a burst
              ;; un-anchors the window.
-             (on-row (and (memq evil-state '(normal motion))
+             (cursor-bol (evil-ghostel--cursor-bol))
+             (riding (and (memq evil-state '(normal motion))
                           (eq ghostel--input-mode 'semi-char)
-                          ghostel--cursor-char-pos
-                          (= (line-beginning-position)
-                             (save-excursion
-                               (goto-char ghostel--cursor-char-pos)
-                               (line-beginning-position)))
+                          cursor-bol
+                          (>= (point) cursor-bol)
                           (evil-ghostel--following-window-p)))
-             (tracked (and on-row (= (point) ghostel--cursor-char-pos)))
-             (saved-col (and on-row (not tracked) (current-column)))
+             (tracked (and riding (= (point) ghostel--cursor-char-pos)))
+             (saved-rows (and riding (not tracked)
+                              (count-lines cursor-bol (line-beginning-position))))
+             (saved-col (and saved-rows (current-column)))
              (saved-vb (and visual-p (bound-and-true-p evil-visual-beginning)
                             (marker-position evil-visual-beginning)))
              (saved-ve (and visual-p (bound-and-true-p evil-visual-end)
@@ -222,10 +230,15 @@ alt-screen and when the native renderer defers synchronized output."
            (tracked
             (when ghostel--cursor-char-pos
               (goto-char ghostel--cursor-char-pos)))
-           ;; Roamed within the cursor's row: follow the row, keep the column.
+           ;; Roamed on or below the cursor's row: keep the row offset and
+           ;; the column.
            (saved-col
             (when ghostel--cursor-char-pos
               (goto-char ghostel--cursor-char-pos)
+              (forward-line saved-rows)
+              ;; The buffer ends in an empty line below the last row.
+              (when (and (eobp) (bolp))
+                (forward-line -1))
               (move-to-column saved-col)))
            ;; Don't drag point to the cursor while the user reads scrollback;
            ;; redisplay would yank the viewport back to the bottom each frame.
@@ -248,14 +261,16 @@ alt-screen and when the native renderer defers synchronized output."
     (funcall orig-fn term full force-sync)))
 
 (defun evil-ghostel--anchor-inhibit (_window force)
-  "Veto ghostel's redraw anchor while point roams off the live cursor.
-A `ghostel-inhibit-anchor-functions' entry: returns non-nil in a motion-capable
-evil state with point off the cursor, unless FORCE."
+  "Keep ghostel's redraw anchor off a point roaming off the live cursor.
+A `ghostel-inhibit-anchor-functions' entry for a motion-capable evil state
+with point off the cursor: returns t above the cursor's row and `keep-point'
+on or below it.  Returns nil when FORCE."
   (and (not force)
        (evil-ghostel--prompt-active-p)
        (memq evil-state '(normal visual operator motion))
        ghostel--cursor-char-pos
-       (/= (point) ghostel--cursor-char-pos)))
+       (/= (point) ghostel--cursor-char-pos)
+       (if (< (point) (evil-ghostel--cursor-bol)) t 'keep-point)))
 
 ;; Cursor style: let evil control cursor shape
 
@@ -1086,8 +1101,9 @@ Enabling installs global advice while any buffer has the mode enabled."
                   #'evil-ghostel--insert-state-entry nil t)
         ;; Let normal/visual/operator/motion-state navigation roam point off
         ;; the live cursor without the per-redraw anchor snapping it back.
+        ;; Late, so that another function's full veto wins over `keep-point'.
         (add-hook 'ghostel-inhibit-anchor-functions
-                  #'evil-ghostel--anchor-inhibit nil t)
+                  #'evil-ghostel--anchor-inhibit 90 t)
         (add-hook 'ghostel-readonly-enter-hook
                   #'evil-ghostel--readonly-enter nil t)
         (advice-add 'ghostel--redraw :around #'evil-ghostel--around-redraw)

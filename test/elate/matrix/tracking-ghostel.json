@@ -79,6 +79,31 @@
     {"wait": "idle", "min_idle": 0.8, "timeout": 10.0},
     {"eval": "(unless (= (line-beginning-position) (save-excursion (goto-char ghostel--cursor-char-pos) (line-beginning-position))) (error \"OFF-ROW point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))"},
     {"eval": "(unless (= 0 (current-column)) (error \"COLUMN %d\" (current-column)))"},
-    {"eval": "(when (= (point) ghostel--cursor-char-pos) (error \"SNAPPED to cursor %d\" (point)))"}
+    {"eval": "(when (= (point) ghostel--cursor-char-pos) (error \"SNAPPED to cursor %d\" (point)))"},
+
+    {"group": "tui-row-roam", "comment": "inline TUI with three rows below the cursor: point elsewhere on the cursor's row rides it through 60 scrolled frames"},
+    {"keys": "i"},
+    {"type": "sh /Users/daniel/.emacs.d/lib/ghostel/test/elate/lib/inline-tui.sh rr 60"},
+    {"keys": "RET"},
+    {"wait": "text", "pattern": "^> in-rr", "timeout": 5.0},
+    {"keys": "<escape>"},
+    {"eval": "(with-selected-window (get-buffer-window) (goto-char ghostel--cursor-char-pos) (move-to-column 0))"},
+    {"wait": "text", "pattern": "^rr-60$", "timeout": 20.0},
+    {"eval": "(unless (= (line-beginning-position) (save-excursion (goto-char ghostel--cursor-char-pos) (line-beginning-position))) (error \"OFF-ROW point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))"},
+    {"eval": "(unless (= 0 (current-column)) (error \"COLUMN %d\" (current-column)))"},
+    {"eval": "(unless (ghostel--window-anchored-p (get-buffer-window)) (error \"UNANCHORED start=%d\" (window-start (get-buffer-window))))"},
+    {"wait": "text", "pattern": "^rr-done$", "timeout": 10.0},
+
+    {"group": "tui-below", "comment": "point two rows below the cursor keeps its row offset and column through 60 scrolled frames"},
+    {"keys": "i"},
+    {"type": "sh /Users/daniel/.emacs.d/lib/ghostel/test/elate/lib/inline-tui.sh bb 60"},
+    {"keys": "RET"},
+    {"wait": "text", "pattern": "^> in-bb", "timeout": 5.0},
+    {"keys": "<escape>"},
+    {"eval": "(with-selected-window (get-buffer-window) (goto-char ghostel--cursor-char-pos) (forward-line 2) (move-to-column 3))"},
+    {"wait": "text", "pattern": "^bb-60$", "timeout": 20.0},
+    {"eval": "(unless (looking-at-p \"tus-2\") (error \"MOVED point=%d/l%d cursor=%d/l%d\" (point) (line-number-at-pos) ghostel--cursor-char-pos (line-number-at-pos ghostel--cursor-char-pos)))"},
+    {"eval": "(unless (= 2 (count-lines (save-excursion (goto-char ghostel--cursor-char-pos) (line-beginning-position)) (line-beginning-position))) (error \"OFFSET point=l%d cursor=l%d\" (line-number-at-pos) (line-number-at-pos ghostel--cursor-char-pos)))"},
+    {"wait": "text", "pattern": "^bb-done$", "timeout": 10.0}
   ]
 }

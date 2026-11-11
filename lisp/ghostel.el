@@ -337,8 +337,9 @@ Each function is called with (WINDOW FORCE), WINDOW's buffer current.
 A non-nil return skips anchoring WINDOW for this redraw - neither the
 viewport nor point moves - letting point roam off the live cursor while
 the buffer stays in a follow-capable input mode (e.g. evil normal-state
-motion over an animated terminal).  Honor FORCE (deliberate paste/yank
-and mode-switch anchors) by returning nil when it is set."
+motion over an animated terminal).  A return of `keep-point' anchors
+the viewport and leaves only point alone.  Honor FORCE (deliberate
+paste/yank and mode-switch anchors) by returning nil when it is set."
   :type 'hook)
 
 (defcustom ghostel-readonly-enter-hook nil
@@ -4726,7 +4727,8 @@ nil.  Call only with the pad cleared - see `ghostel--balance-top-pad'."
 In graphical frames, use Emacs's pixel layout for exact bottom alignment.
 In text frames, use line-count geometry with no vscroll.
 Do nothing unless WINDOW displays a live Ghostel terminal.
-A `ghostel-inhibit-anchor-functions' hook can veto anchoring a window.
+A `ghostel-inhibit-anchor-functions' hook can veto anchoring a window,
+or only its point snap.
 
 The live cursor is never scrolled out of view: when bottom-aligning
 `point-max' would push the cursor's line above `window-start' (a shrunken
@@ -4746,12 +4748,15 @@ line mode keeps the user's point."
                  (and (derived-mode-p 'ghostel-mode)
                       (ghostel--terminal-live-p)
                       (or force following
-                          (ghostel--window-follows-p window))
-                      ;; Per-window veto: a consumer (e.g. evil-ghostel) can
-                      ;; keep point roaming off the live cursor while the
-                      ;; buffer stays in a follow-capable input mode.
-                      (not (run-hook-with-args-until-success
-                            'ghostel-inhibit-anchor-functions window force))))))
+                          (ghostel--window-follows-p window)))))
+              ;; Per-window veto: a consumer (e.g. evil-ghostel) can
+              ;; keep point roaming off the live cursor while the
+              ;; buffer stays in a follow-capable input mode.
+              ;; Boxed in a list so that a nil result passes `when-let*'.
+              (veto (list (with-current-buffer buffer
+                            (run-hook-with-args-until-success
+                             'ghostel-inhibit-anchor-functions window force))))
+              ((memq (car veto) '(nil keep-point))))
     (with-selected-window window
       (with-current-buffer buffer
         (let* ((target (point-max))
@@ -4787,9 +4792,10 @@ line mode keeps the user's point."
                           (nth 1 anchor))))
           (set-window-start window start)
           (ghostel--set-window-vscroll window vscroll t t)
-          (set-window-point window (if (eq ghostel--input-mode 'line)
-                                       orig
-                                     (or cursor target))))))))
+          (unless (car veto)
+            (set-window-point window (if (eq ghostel--input-mode 'line)
+                                         orig
+                                       (or cursor target)))))))))
 
 (defun ghostel--commit-frame (buffer)
   "Render BUFFER's terminal grid now, committing any pending resize.

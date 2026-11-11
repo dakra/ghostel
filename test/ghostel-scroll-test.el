@@ -671,7 +671,8 @@ of the prompt row rather than at a line start."
   "`ghostel-inhibit-anchor-functions' vetoes anchoring per window.
 A non-nil-returning hook (honoring FORCE) leaves both point and the viewport
 put in semi-char mode, where the anchor would otherwise snap point to the live
-cursor and scroll to the bottom.  FORCE bypasses the veto."
+cursor and scroll to the bottom.  FORCE bypasses the veto.  A `keep-point'
+return scrolls the viewport and leaves point put."
   (let ((buf (generate-new-buffer " *ghostel-test-anchor-inhibit*"))
         (previous-buffer (window-buffer (selected-window))))
     (unwind-protect
@@ -706,7 +707,18 @@ cursor and scroll to the bottom.  FORCE bypasses the veto."
               ;; FORCE bypasses the veto: point snaps, viewport scrolls.
               (ghostel--anchor-window win t)
               (should (= (window-point win) ghostel--cursor-char-pos))
-              (should (> (window-start win) (point-min))))))
+              (should (> (window-start win) (point-min)))
+              ;; `keep-point': the viewport scrolls, point stays.
+              (let ((ghostel-inhibit-anchor-functions
+                     (list (lambda (_window _force) 'keep-point)))
+                    (bol (save-excursion (goto-char ghostel--cursor-char-pos)
+                                         (line-beginning-position))))
+                (goto-char bol)
+                (set-window-point win bol)
+                (set-window-start win (point-min) t)
+                (ghostel--anchor-window win)
+                (should (= (window-point win) bol))
+                (should (> (window-start win) (point-min)))))))
       (set-window-buffer (selected-window) previous-buffer)
       (kill-buffer buf))))
 

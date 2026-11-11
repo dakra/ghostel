@@ -507,9 +507,14 @@ insert state.  Inert (never vetoes) when not active, e.g. in alt-screen."
      (cl-letf (((symbol-function 'ghostel--alt-screen-p)
                 (lambda (&rest _) nil)))
        (let ((evil-state 'normal))
-         ;; Normal state, point off the cursor: veto, unless FORCE.
+         ;; Normal state, point above the cursor's row: veto, unless FORCE.
          (goto-char off)
-         (should (evil-ghostel--anchor-inhibit nil nil))
+         (should (eq t (evil-ghostel--anchor-inhibit nil nil)))
+         (should-not (evil-ghostel--anchor-inhibit nil t))
+         ;; Off the cursor on its row: only point is kept.
+         (goto-char ghostel--cursor-char-pos)
+         (forward-line 0)
+         (should (eq 'keep-point (evil-ghostel--anchor-inhibit nil nil)))
          (should-not (evil-ghostel--anchor-inhibit nil t))
          ;; Point back on the live cursor: no veto.
          (goto-char ghostel--cursor-char-pos)
@@ -784,6 +789,51 @@ column on the row where the cursor lands."
                                                (line-beginning-position))))
                                   (should (= 0 (current-column)))
                                   (should (/= (point) ghostel--cursor-char-pos))))
+
+(ert-deftest evil-ghostel-test-redraw-keeps-row-offset-below-cursor ()
+  "Output that grows scrollback carries a point below the cursor's row along.
+Point keeps its row offset from the cursor and its column."
+  (evil-ghostel-test--with-buffer 6 40
+      "out-a\r\n> in\r\nstatus-1\r\nstatus-2\e[2A\r\e[4C"
+    (evil-normal-state)
+    (goto-char ghostel--cursor-char-pos)
+    (forward-line 2)
+    (move-to-column 3)
+    ;; Repaint from the input row down, four more output rows first.
+    (ghostel--write-vt term (concat "\r\e[Jout-b\r\nout-c\r\nout-d\r\nout-e\r\n"
+                                    "> in\r\nstatus-1\r\nstatus-2\e[2A\r\e[4C"))
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
+      (ghostel--redraw term nil))
+    (should (> (count-lines (point-min) (point-max)) 6))
+    (should (= 2 (count-lines (evil-ghostel--cursor-bol)
+                              (line-beginning-position))))
+    (should (looking-at-p "tus-2"))))
+
+(ert-deftest evil-ghostel-test-redraw-clamps-row-offset-to-last-row ()
+  "A row offset reaching past the grid leaves point on the last row."
+  (evil-ghostel-test--with-buffer 6 40
+      "out-a\r\n> in\r\nstatus-1\r\nstatus-2\e[2A\r\e[4C"
+    (evil-normal-state)
+    (goto-char ghostel--cursor-char-pos)
+    (forward-line 2)
+    ;; The program exits and the prompt lands on the bottom row.
+    (ghostel--write-vt term "\r\e[Jx1\r\nx2\r\nx3\r\nx4\r\nx5\r\nx6\r\n$ ")
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
+      (ghostel--redraw term nil))
+    (should (= (line-beginning-position) (evil-ghostel--cursor-bol)))))
+
+(ert-deftest evil-ghostel-test-anchor-inhibit-runs-after-other-vetoes ()
+  "A full veto registered before or after the mode outranks `keep-point'."
+  (with-temp-buffer
+    (ghostel-mode)
+    (add-hook 'ghostel-inhibit-anchor-functions #'always nil t)
+    (evil-local-mode 1)
+    (evil-ghostel-mode 1)
+    (add-hook 'ghostel-inhibit-anchor-functions #'identity nil t)
+    (should (equal '(identity always evil-ghostel--anchor-inhibit)
+                   (remq t ghostel-inhibit-anchor-functions)))))
 
 (ert-deftest evil-ghostel-test-redraw-keeps-roamed-point-in-scrollback ()
   "Output that grows scrollback leaves a roamed normal-state point on its text

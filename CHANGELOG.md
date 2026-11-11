@@ -24,6 +24,10 @@ All notable changes to this project will be documented in this file.
   public; their `ghostel--` names are obsolete aliases, as is
   `ghostel--desired-size` for `ghostel-window-size`.
 
+### Changed
+- A `ghostel-inhibit-anchor-functions` function can return `keep-point`
+  to let the viewport follow the output while point stays where it is.
+
 ### Fixed
 - A buffer reused for a new terminal kept the prompt positions of its
   previous one.
@@ -41,6 +45,12 @@ All notable changes to this project will be documented in this file.
 - evil-ghostel operators in line mode edit only the input; `dd` and `cc`
   act on the input's current line, and `$` stops at the input's end.
   Operators reaching past the input deleted the app's text.
+- evil-ghostel: normal-state point below the cursor's row follows the
+  output, keeping its row offset and column, instead of drifting into
+  the scrollback.
+- evil-ghostel: normal-state point on the cursor's row no longer stops
+  following the output when the program draws two or more rows below
+  the cursor, such as a status area under its prompt.
 
 ## [0.63.0] — 2026-11-10
 
