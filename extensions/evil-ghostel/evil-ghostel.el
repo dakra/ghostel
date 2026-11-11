@@ -395,6 +395,19 @@ word) can't over-delete past the live input.  END is never below BEG."
          (e (if input-end (min end input-end) end)))
     (cons b (max b e))))
 
+(defun evil-ghostel--line-mode-clamp (beg end type)
+  "Clamp BEG..END of TYPE to the line-mode input; return (BEG END TYPE).
+A range that does not touch the input, or a block, is returned as is.
+A linewise range becomes exclusive, so `dd' and `cc' clear the input
+without reaching the read-only text around it."
+  (let ((start (marker-position ghostel--line-input-start))
+        (input-end (marker-position ghostel--line-input-end)))
+    (if (or (eq type 'block) (> beg input-end) (< end start))
+        (list beg end type)
+      (let ((b (min (max beg start) input-end)))
+        (list b (max b (min end input-end))
+              (if (memq type '(line screen-line)) 'exclusive type))))))
+
 
 ;; PTY-driven input editing.  Drive the shell's line editor (readline /
 ;; zle / prompt_toolkit) with arrow keys, backspaces, and bracketed paste
@@ -601,8 +614,14 @@ $ would walk into non-typed cells).  Off the cursor row, unchanged."
 Ranges are limited to the current input, including per-row handling for
 block deletes.  Covers d, dd, x, and X."
   (interactive "<R><x><y>")
-  (if (not (evil-ghostel--prompt-active-p))
-      (evil-delete beg end type register yank-handler)
+  (cond
+   ((evil-ghostel--line-mode-active-p)
+    (apply #'evil-delete
+           (append (evil-ghostel--line-mode-clamp beg end type)
+                   (list register yank-handler))))
+   ((not (evil-ghostel--prompt-active-p))
+    (evil-delete beg end type register yank-handler))
+   (t
     (let* ((clamped (evil-ghostel--clamp beg end))
            (beg (car clamped))
            (end (cdr clamped)))
@@ -615,7 +634,7 @@ block deletes.  Covers d, dd, x, and X."
       (cond
        ((eq type 'block)
         (evil-apply-on-block #'evil-ghostel-delete-input-region beg end nil))
-       (t (evil-ghostel-delete-input-region beg end))))))
+       (t (evil-ghostel-delete-input-region beg end)))))))
 
 (evil-define-operator evil-ghostel-delete-line
   (beg end type register yank-handler)
@@ -626,7 +645,8 @@ Covers D."
   :motion nil
   :keep-visual t
   (interactive "<R><x><y>")
-  (if (not (evil-ghostel--prompt-active-p))
+  (if (not (or (evil-ghostel--prompt-active-p)
+               (evil-ghostel--line-mode-active-p)))
       (evil-delete-line beg end type register yank-handler)
     (let* ((beg (or beg (point)))
            (end (or end beg))
@@ -668,10 +688,16 @@ PTY-routed in semi-char, else `evil-change'.  `evil-ghostel-insert'
 drives the cursor itself, so empty ranges need no extra sync.
 Covers c, cc, s."
   (interactive "<R><x><y>")
-  (if (not (evil-ghostel--prompt-active-p))
-      (evil-change beg end type register yank-handler delete-func)
+  (cond
+   ((evil-ghostel--line-mode-active-p)
+    (apply #'evil-change
+           (append (evil-ghostel--line-mode-clamp beg end type)
+                   (list register yank-handler delete-func))))
+   ((not (evil-ghostel--prompt-active-p))
+    (evil-change beg end type register yank-handler delete-func))
+   (t
     (evil-ghostel-delete beg end type register yank-handler)
-    (evil-ghostel-insert)))
+    (evil-ghostel-insert))))
 
 (evil-define-operator evil-ghostel-change-line
   (beg end type register yank-handler)
@@ -680,10 +706,14 @@ Covers c, cc, s."
 Covers C."
   :motion evil-end-of-line-or-visual-line
   (interactive "<R><x><y>")
-  (if (not (evil-ghostel--prompt-active-p))
-      (evil-change-line beg end type register yank-handler)
+  (cond
+   ((evil-ghostel--line-mode-active-p)
+    (evil-ghostel-change beg end type register yank-handler))
+   ((not (evil-ghostel--prompt-active-p))
+    (evil-change-line beg end type register yank-handler))
+   (t
     (evil-ghostel-delete-line beg end type register yank-handler)
-    (evil-ghostel-insert)))
+    (evil-ghostel-insert))))
 
 (evil-define-operator evil-ghostel-substitute (beg end type register)
   "Substitute the next character.  Covers s."

@@ -1,0 +1,170 @@
+{
+ "name": "line-suggestion-evil-ghostel",
+ "comment": "evil-ghostel operators in line mode edit only the input when an app draws a suggestion after it, the row from line-suggestion-ghostel.json. Driven on zsh, TTY 60x16.",
+ "session": {
+  "ui": "tty",
+  "size": "60x16",
+  "config": "minimal",
+  "eval": [
+   "(load \"/Users/daniel/.emacs.d/lib/ghostel/test/elate/lib/evil-ghostel-setup.el\")",
+   "(setq ghostel-shell \"/bin/zsh\")"
+  ]
+ },
+ "steps": [
+  {
+   "eval": "(ghostel)"
+  },
+  {
+   "wait": "idle",
+   "min_idle": 1.0,
+   "timeout": 15
+  },
+  {
+   "type": "clear; printf '\\033[38;2;153;153;153m\\342\\235\\257\\302\\240\\033[39m\\033[7mT\\033[27m\\033[2mry\\033[22m \\033[2mit\\033[22m\\r\\033[2C'; read x; echo got-$x"
+  },
+  {
+   "keys": "RET"
+  },
+  {
+   "wait": "until",
+   "pred": "(and (save-excursion (goto-char (point-min)) (re-search-forward \"❯.Try it\" nil t)) (= (car ghostel--cursor-pos) 2))",
+   "buffer": "*ghostel*",
+   "timeout": 10
+  },
+  {
+   "keys": "C-c C-l"
+  },
+  {
+   "wait": "until",
+   "pred": "(eq ghostel--input-mode 'line)",
+   "buffer": "*ghostel*",
+   "timeout": 5
+  },
+  {
+   "keys": "<escape>"
+  },
+  {
+   "keys": "i"
+  },
+  {
+   "type": "foo bar"
+  },
+  {
+   "keys": "<escape>"
+  },
+  {
+   "wait": "idle",
+   "min_idle": 0.5
+  },
+  {
+   "assert": {
+    "eval": "(and (equal (ghostel--line-mode-input-text) \"foo bar\") (evil-normal-state-p) (equal (buffer-substring-no-properties ghostel--line-input-end (save-excursion (goto-char ghostel--line-input-end) (line-end-position))) \"Try it\"))",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
+   "group": "change-line",
+   "comment": "C on `bar' changes to the end of the input, not into the suggestion"
+  },
+  {
+   "eval": "(with-current-buffer \"*ghostel*\" (goto-char (+ ghostel--line-input-start 4)))"
+  },
+  {
+   "keys": "C"
+  },
+  {
+   "type": "xyz"
+  },
+  {
+   "keys": "<escape>"
+  },
+  {
+   "wait": "idle",
+   "min_idle": 0.5
+  },
+  {
+   "assert": {
+    "eval": "(and (equal (ghostel--line-mode-input-text) \"foo xyz\") (evil-normal-state-p) (equal (buffer-substring-no-properties ghostel--line-input-end (save-excursion (goto-char ghostel--line-input-end) (line-end-position))) \"Try it\"))",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
+   "group": "delete-word",
+   "comment": "dw on the last word stops at the end of the input"
+  },
+  {
+   "eval": "(with-current-buffer \"*ghostel*\" (goto-char (+ ghostel--line-input-start 4)))"
+  },
+  {
+   "keys": "d w"
+  },
+  {
+   "wait": "idle",
+   "min_idle": 0.5
+  },
+  {
+   "assert": {
+    "eval": "(and (equal (ghostel--line-mode-input-text) \"foo \") (evil-normal-state-p) (equal (buffer-substring-no-properties ghostel--line-input-end (save-excursion (goto-char ghostel--line-input-end) (line-end-position))) \"Try it\"))",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
+   "group": "delete-line",
+   "comment": "dd clears the input and the suggestion shows again"
+  },
+  {
+   "keys": "d d"
+  },
+  {
+   "wait": "idle",
+   "min_idle": 0.5
+  },
+  {
+   "assert": {
+    "eval": "(and (and (equal (ghostel--line-mode-input-text) \"\") (evil-normal-state-p) (equal (buffer-substring-no-properties ghostel--line-input-end (save-excursion (goto-char ghostel--line-input-end) (line-end-position))) \"Try it\")) (not (invisible-p ghostel--line-input-end)))",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
+   "group": "change-whole-line",
+   "comment": "cc replaces the input; RET sends only the input"
+  },
+  {
+   "keys": "i"
+  },
+  {
+   "type": "abc"
+  },
+  {
+   "keys": "<escape>"
+  },
+  {
+   "keys": "c c"
+  },
+  {
+   "type": "xyz"
+  },
+  {
+   "keys": "<escape>"
+  },
+  {
+   "wait": "idle",
+   "min_idle": 0.5
+  },
+  {
+   "assert": {
+    "eval": "(and (equal (ghostel--line-mode-input-text) \"xyz\") (evil-normal-state-p) (equal (buffer-substring-no-properties ghostel--line-input-end (save-excursion (goto-char ghostel--line-input-end) (line-end-position))) \"Try it\"))",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
+   "eval": "(with-current-buffer \"*ghostel*\" (ghostel-line-mode-send))"
+  },
+  {
+   "wait": "text",
+   "pattern": "^got-xyz$",
+   "buffer": "*ghostel*",
+   "timeout": 10
+  }
+ ]
+}
