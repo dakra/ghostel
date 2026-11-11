@@ -41,6 +41,8 @@ the parallel bash/zsh/fish/python3 sessions from the evil-ghostel rewrite
 - `lib/prompt-tui.sh` — an inline (main-screen) TUI for the line-wrap suite, shaped like an
   agent prompt: output grows above an input row holding the cursor, with a rule and a
   status row below it.
+- `matrix/input-start-ghostel.json` — where line mode starts its input without shell
+  integration; see the input-start section below.
 
 ## Running (elate 0.11.0+)
 
@@ -272,6 +274,17 @@ down; the window keeps following and the next redraw brings them back into view)
 
 ```sh
 elate run --keep-going --format json test/elate/matrix/line-wrap-ghostel.json
+```
+
+## Input-start suite (plain ghostel, TTY 60x16, zsh, shell integration off)
+
+`matrix/input-start-ghostel.json` enters line mode on prompt rows that continue past the
+cursor, where only `ghostel-prompt-regexp` locates the prompt. Groups: `right-prompt` (a
+zsh `RPROMPT`: the input starts after `% `, not before `RIGHT`), `border` (a boxed row
+`| > ` + padding + `|`: the input starts at the cursor's column 4 and reaches the program).
+
+```sh
+elate run --keep-going --format json test/elate/matrix/input-start-ghostel.json
 ```
 
 ## Paste suite (plain ghostel, TTY 120x40, every shell and both PTY backends)

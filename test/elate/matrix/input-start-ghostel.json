@@ -1,0 +1,104 @@
+{
+ "name": "input-start-ghostel",
+ "comment": "Without shell integration, line mode starts its input at the cursor when the prompt row continues past it: a zsh right prompt, and a boxed inline TUI with a right border. Driven on zsh, TTY 60x16, shell integration off.",
+ "session": {
+  "ui": "tty",
+  "size": "60x16",
+  "config": "minimal",
+  "eval": [
+   "(load \"/Users/daniel/.emacs.d/lib/ghostel/test/elate/lib/ghostel-setup.el\")",
+   "(setq ghostel-shell \"/bin/zsh\" ghostel-shell-integration nil)"
+  ]
+ },
+ "steps": [
+  {
+   "eval": "(ghostel)"
+  },
+  {
+   "wait": "idle",
+   "min_idle": 1.0,
+   "timeout": 15
+  },
+  {
+   "type": "PROMPT='%% '; RPROMPT='RIGHT'"
+  },
+  {
+   "keys": "RET"
+  },
+  {
+   "wait": "until",
+   "pred": "(ghostel-elate--has-line \"% +RIGHT\")",
+   "buffer": "*ghostel*",
+   "timeout": 10
+  },
+  {
+   "group": "right-prompt",
+   "comment": "the input starts after `% ', not before RIGHT, and is sent as typed"
+  },
+  {
+   "keys": "C-c C-l"
+  },
+  {
+   "wait": "until",
+   "pred": "(eq ghostel--input-mode 'line)",
+   "buffer": "*ghostel*",
+   "timeout": 5
+  },
+  {
+   "assert": {
+    "eval": "(and (null (get-text-property (1- ghostel--cursor-char-pos) 'ghostel-prompt)) (= (save-excursion (goto-char ghostel--line-input-start) (current-column)) 2))",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
+   "type": "echo rp-sent"
+  },
+  {
+   "keys": "RET"
+  },
+  {
+   "wait": "text",
+   "pattern": "^rp-sent$",
+   "buffer": "*ghostel*",
+   "timeout": 10
+  },
+  {
+   "group": "border",
+   "comment": "a boxed input row `| > ' + padding + `|' with the cursor after `> ': the input starts at column 4 and reaches the program"
+  },
+  {
+   "type": "RPROMPT=''; printf '| > %20s|\\r\\033[4C'; read x; echo got-$x"
+  },
+  {
+   "keys": "RET"
+  },
+  {
+   "wait": "until",
+   "pred": "(and (ghostel-elate--has-line \"| > +|\") (= (car ghostel--cursor-pos) 4))",
+   "buffer": "*ghostel*",
+   "timeout": 10
+  },
+  {
+   "wait": "idle",
+   "min_idle": 0.3
+  },
+  {
+   "assert": {
+    "eval": "(= (save-excursion (goto-char ghostel--line-input-start) (current-column)) 4)",
+    "buffer": "*ghostel*"
+   }
+  },
+  {
+   "type": "boxed"
+  },
+  {
+   "keys": "RET"
+  },
+  {
+   "wait": "text",
+   "pattern": "^got-boxed$",
+   "buffer": "*ghostel*",
+   "timeout": 10
+  }
+ ]
+}

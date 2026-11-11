@@ -3035,7 +3035,9 @@ continues a soft-wrapped row."
 (defun ghostel--cursor-row-input-start ()
   "Return the input start after a detected prompt on the cursor row, or nil.
 The prompt ends at the rightmost OSC 133 `ghostel-prompt' char before the
-cursor; without one, `ghostel-prompt-regexp' is consulted."
+cursor; without one, `ghostel-prompt-regexp' is consulted.  The result
+never lies past the cursor: the regexp's trailing blanks can run over
+padding that precedes a right prompt or border."
   (when-let* ((cursor-pos ghostel--cursor-char-pos))
     (let ((row-start (save-excursion
                        (goto-char cursor-pos)
@@ -3046,7 +3048,8 @@ cursor; without one, `ghostel-prompt-regexp' is consulted."
         (setq pos (1- pos)))
       (if (> pos row-start)
           pos
-        (ghostel--regex-prompt-end cursor-pos)))))
+        (when-let* ((end (ghostel--regex-prompt-end cursor-pos)))
+          (min end cursor-pos))))))
 
 (defun ghostel-input-start-point ()
   "Return the buffer position where the current input begins.

@@ -29,6 +29,9 @@ All notable changes to this project will be documented in this file.
   previous one.
 - Line-mode input wider than the terminal wraps onto further screen lines.
   It ran off the window edge, out of view.
+- Without shell integration, line mode started its input at the far
+  side of the padding after an empty prompt, before a right prompt or
+  border, instead of at the cursor.
 
 ## [0.63.0] — 2026-11-10
 

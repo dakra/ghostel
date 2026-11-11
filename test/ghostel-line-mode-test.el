@@ -355,6 +355,27 @@ result must be 2 to prove the prop branch is consulted first."
             (should (= 10 (ghostel-input-start-point)))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-input-start-point-regex-stops-at-cursor ()
+  "The regex fallback never puts the input start past the cursor.
+On an empty prompt followed by padding and a right border, right
+prompt or hint, the regexp's trailing blanks reach the padding's end."
+  (pcase-dolist (`(,row ,cursor-col ,start-col)
+                 `((,(concat "| > " (make-string 20 ?\s) "|") 4 4)
+                   (,(concat "% " (make-string 20 ?\s) "RIGHT") 2 2)
+                   (,(concat "> " (make-string 20 ?\s) "[model]") 2 2)
+                   (,(concat "| > hello" (make-string 15 ?\s) "|") 9 4)
+                   ("> " 2 2)
+                   ("> " 2 2)))
+    (with-temp-buffer
+      (ghostel-mode)
+      (ghostel-test--insert-rendered row)
+      (setq ghostel--term 'fake)
+      (setq ghostel--term-rows 1)
+      (setq ghostel--cursor-char-pos (+ (point-min) cursor-col))
+      (setq ghostel--cursor-pos (cons cursor-col 0))
+      (should (equal (list row (- (ghostel-input-start-point) (point-min)))
+                     (list row start-col))))))
+
 (ert-deftest ghostel-test-cursor-point-tracks-cursor-char-pos ()
   "`ghostel-cursor-point' returns the cursor position, not `(point)'.
 Also verifies the documented nil-return when no cursor is available."
