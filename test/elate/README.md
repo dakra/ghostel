@@ -36,6 +36,8 @@ the parallel bash/zsh/fish/python3 sessions from the evil-ghostel rewrite
   shell, on both PTY backends; see the paste section below.
 - `matrix/readonly-evil-ghostel.json` / `matrix/readonly-ghostel.json` — copy and Emacs
   mode entry and exit, with and without evil; see the read-only section below.
+- `matrix/line-suggestion-ghostel.json` — line mode hiding an app-drawn autosuggestion;
+  see the line-suggestion section below.
 
 ## Running (elate 0.11.0+)
 
@@ -250,6 +252,19 @@ data, so later `a=p` for that id places nothing.
 ```sh
 elate run --keep-going --format json test/elate/matrix/sync-output-ghostel.json
 elate run --keep-going --format json test/elate/matrix/shell-integration-ghostel.json
+```
+
+## Line-suggestion suite (plain ghostel, TTY 60x16, zsh)
+
+`matrix/line-suggestion-ghostel.json` draws Claude Code's empty prompt with `printf` (a
+grey `❯`, an inverse cursor on the suggestion's first character, the rest faint word by
+word) and holds
+it with `read`. Groups: `empty` (no input: the suggestion stays visible), `typing` (typed
+input hides it across redraws), `cleared` (deleting the input shows it again), `send` (RET
+sends only the typed input).
+
+```sh
+elate run --keep-going --format json test/elate/matrix/line-suggestion-ghostel.json
 ```
 
 ## Paste suite (plain ghostel, TTY 120x40, every shell and both PTY backends)

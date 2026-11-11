@@ -387,6 +387,123 @@ The function sees the input text; a nil result falls through to the PTY."
             (should (equal (ghostel--line-mode-input-text) ""))))
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-suggestion-p ()
+  "`ghostel--suggestion-p' accepts one greyed-out run unlike the prompt."
+  (let ((prompt (propertize "❯ " 'face (list :foreground "#999999")))
+        (grey (list :foreground "#6b6e75")))
+    (pcase-dolist (`(,trail ,expected)
+                   `((,(propertize "Try it" 'face grey) t)
+                     ;; An app cursor drawn inverse on the first character.
+                     (,(concat (propertize "T" 'face '(:inverse-video t))
+                               (propertize "ry it" 'face grey))
+                      t)
+                     ;; Equal faces from separate cells.
+                     (,(concat (propertize "Try" 'face (copy-sequence grey))
+                               (propertize " it" 'face (copy-sequence grey)))
+                      t)
+                     ;; Words dimmed one by one leave the spaces unstyled.
+                     (,(concat (propertize "Try" 'face grey) " "
+                               (propertize "it" 'face grey))
+                      t)
+                     ;; Padding between grey text and a grey right prompt.
+                     (,(concat (propertize "Try" 'face grey) "  "
+                               (propertize "RIGHT" 'face grey))
+                      nil)
+                     ;; The prompt's own grey.
+                     (,(propertize "Try it" 'face '(:foreground "#999999")) nil)
+                     ;; A saturated syntax-highlight color.
+                     (,(propertize "Try it" 'face '(:foreground "#00aaaa")) nil)
+                     ;; A grey right prompt after uncolored padding.
+                     (,(concat "          " (propertize "RIGHT" 'face grey)) nil)
+                     ;; Two different greys.
+                     (,(concat (propertize "Try" 'face grey)
+                               (propertize " it" 'face '(:foreground "#555555")))
+                      nil)))
+      (with-temp-buffer
+        (insert prompt trail)
+        (should (equal (list trail (and (ghostel--suggestion-p 3 (point-max) 2)
+                                        t))
+                       (list trail expected)))))))
+
+(ert-deftest ghostel-test-line-mode-hides-suggestion-while-typing ()
+  "Line mode hides an app's autosuggestion while the input is non-empty."
+  (let ((buf (generate-new-buffer " *ghostel-test-line-suggestion*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (ghostel-test--insert-rendered
+           (propertize "❯ " 'face '(:foreground "#999999"))
+           (propertize "T" 'face '(:inverse-video t))
+           (propertize "ry it" 'face '(:foreground "#6b6e75"))
+           "\n")
+          (setq ghostel--term 'fake)
+          (setq ghostel--term-rows 1)
+          (setq ghostel--process 'fake-proc)
+          (cl-letf (((symbol-function 'ghostel--alt-screen-p)
+                     (lambda (&rest _) nil))
+                    (ghostel--cursor-char-pos 3)
+                    ((symbol-function 'process-live-p) (lambda (_p) t))
+                    ((symbol-function 'ghostel--write-pty) #'ignore)
+                    ((symbol-function 'ghostel--send-encoded) #'ignore)
+                    ((symbol-function 'ghostel--redraw) #'ignore)
+                    ((symbol-function 'ghostel--invalidate) #'ignore))
+            (ghostel-line-mode)
+            (should (= 3 ghostel--line-input-start))
+            (should-not (invisible-p 3))
+            (insert "x")
+            (should (equal (ghostel--line-mode-input-text) "x"))
+            (should-not (invisible-p 3))
+            (should (invisible-p 4))
+            (should (invisible-p 9))
+            (insert "y")
+            (should-not (invisible-p 4))
+            (should (invisible-p 5))
+            (delete-region 3 5)
+            (should-not (invisible-p 3))
+            (insert "z")
+            (should (invisible-p 4))
+            ;; An edit narrowed short of the input end keeps the hook.
+            (save-restriction
+              (narrow-to-region (point-min) 3)
+              (goto-char 3)
+              (insert "w"))
+            (should (memq #'ghostel--line-mode-hide-suggestion
+                          after-change-functions))
+            (should (invisible-p 5))
+            (ghostel-semi-char-mode)
+            (should-not (seq-some (lambda (ov) (overlay-get ov 'ghostel-suggestion))
+                                  (overlays-in (point-min) (point-max))))))
+      (kill-buffer buf))))
+
+(ert-deftest ghostel-test-line-mode-hides-rendered-suggestion ()
+  "A suggestion drawn faint behind an inverse cursor stays hidden across redraws."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buf term 5 80 1000)
+    (setq ghostel-detect-password-prompts nil)
+    (set-window-buffer (selected-window) buf)
+    (setq ghostel--process 'fake-proc)
+    ;; Claude Code's empty prompt: a grey `❯', its inverse cursor on the
+    ;; suggestion's first character, the rest faint word by word.
+    (ghostel--write-vt
+     term "\e[38;2;153;153;153m❯ \e[39m\e[7mT\e[27m\e[2mry\e[22m \e[2mit\e[22m\r\e[2C")
+    (ghostel-test--redraw term t)
+    (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+              ((symbol-function 'ghostel--write-pty) #'ignore)
+              ((symbol-function 'ghostel--invalidate) #'ignore))
+      (ghostel-line-mode)
+      (let ((start (marker-position ghostel--line-input-start)))
+        (should (equal (buffer-substring-no-properties start (+ start 6))
+                       "Try it"))
+        (should-not (invisible-p start))
+        (insert "hi")
+        (should (invisible-p (+ start 2)))
+        (should (invisible-p (+ start 7)))
+        (ghostel--redraw-now buf)
+        (should (equal (ghostel--line-mode-input-text) "hi"))
+        (should (invisible-p (+ start 2)))
+        (should (invisible-p (+ start 7))))
+      (ghostel-semi-char-mode))))
+
 (ert-deftest ghostel-test-copy-to-line-restarts-redraw-timer ()
   "Copy → line transition re-arms the redraw timer.
 Copy mode freezes the timer; line mode is live, so redraws must resume

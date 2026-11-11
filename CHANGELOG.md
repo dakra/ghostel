@@ -27,6 +27,9 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - A buffer reused for a new terminal kept the prompt positions of its
   previous one.
+- Line mode hides an autosuggestion the program drew after the cursor,
+  such as Claude Code's, while the input is non-empty.  Typing pushed it
+  to the right of the input.
 
 ## [0.63.0] — 2026-11-10
 

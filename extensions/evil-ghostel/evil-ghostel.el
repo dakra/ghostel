@@ -329,41 +329,13 @@ j / G / i / a act only in semi-char."
 ;; Input region: boundaries on the cursor row.  ghostel core provides the
 ;; prompt boundary (`ghostel-input-start-point'); we add the right edge.
 
-(defun evil-ghostel--fg-color (pos)
-  "Return the foreground color string of the cell at POS, or nil.
-The renderer stores each cell's color as a `face' plist `:foreground'."
-  (let ((face (get-text-property pos 'face)))
-    (cond ((and (consp face) (plist-member face :foreground))
-           (plist-get face :foreground))
-          ((facep face) (face-foreground face nil t)))))
-
-(defun evil-ghostel--greyed-out-p (color)
-  "Non-nil when COLOR (a hex string) is a dim, desaturated suggestion grey.
-Dim plus low-saturation is what separates a suggestion from a saturated
-syntax-highlight color (a cyan argument, a red invalid command)."
-  (let ((rgb (and (stringp color) (ignore-errors (color-values color)))))
-    (when rgb                              ; color-values channels are 0-65535
-      (let ((mx (apply #'max rgb))
-            (mn (apply #'min rgb)))
-        (and (< mx 49152)                  ; dim: not bright
-             (< (- mx mn) 13107))))))      ; grey: low saturation
-
 (defun evil-ghostel--suggestion-p (cursor region-end)
   "Non-nil when [CURSOR, REGION-END) looks like an autosuggestion.
-That is a single greyed-out color run to the region end, past typed input.
-Keys on `evil-ghostel--greyed-out-p', not luminance or color difference,
-which misfire under syntax highlighting (see comments below)."
+That is a single greyed-out color run to the region end, past typed input;
+see `ghostel--suggestion-p'."
   (and (evil-ghostel--input-start)            ; typed input precedes the cursor
        (< cursor region-end)                  ; a trailing run exists
-       (let ((typed (evil-ghostel--fg-color (1- cursor)))
-             (trail (evil-ghostel--fg-color cursor)))
-         (and trail
-              (not (equal trail typed))       ; trailing color differs from typed
-              (evil-ghostel--greyed-out-p trail) ; …and is a greyed-out color
-              ;; …uniform all the way to the end of the region:
-              (>= (or (next-single-property-change cursor 'face nil region-end)
-                      region-end)
-                  region-end)))))
+       (ghostel--suggestion-p cursor region-end (1- cursor))))
 
 (defun evil-ghostel--input-end ()
   "Return the position just after typed input on the cursor row, or nil.

@@ -329,6 +329,7 @@ bar below the prompt — stays untouched."
         (setq buffer-undo-list t)
         (let ((inhibit-read-only t))
           (delete-region start-pos end-pos))
+        (ghostel--line-mode-hide-suggestion)
         (list :input input
               :point-offset point-offset
               :mark-offset mark-offset)))))
@@ -377,6 +378,7 @@ was inside the input region, and left untouched otherwise."
             ;; `ghostel-line-mode-send'.
             (when (< start-pos end-pos)
               (put-text-property start-pos end-pos 'ghostel-input t))
+            (ghostel--line-mode-hide-suggestion)
             (let ((po (plist-get snapshot :point-offset))
                   (mo (plist-get snapshot :mark-offset)))
               (when po
@@ -471,6 +473,8 @@ in line mode (the interactive entry validates these)."
       ;; Place point at end of (any adopted) input so the user
       ;; continues typing where the shell left them.
       (goto-char (marker-position ghostel--line-input-end))
+      (add-hook 'after-change-functions #'ghostel--line-mode-hide-suggestion nil t)
+      (ghostel--line-mode-hide-suggestion)
       ;; Arm undo recording now that the entry plumbing is done, so the
       ;; user's first edit is the first thing recorded.
       (setq buffer-undo-list nil)
@@ -532,6 +536,83 @@ past the input region (status bar, etc.) is never read."
         (buffer-substring-no-properties start end)
       "")))
 
+(defun ghostel--fg-color (pos)
+  "Return the foreground color string of the cell at POS, or nil."
+  (let ((face (get-text-property pos 'face)))
+    (cond ((and (consp face) (plist-member face :foreground))
+           (plist-get face :foreground))
+          ((facep face) (face-foreground face nil t)))))
+
+(defun ghostel--greyed-out-p (color)
+  "Non-nil when COLOR is a dim, low-saturation grey.
+That separates an autosuggestion from a saturated syntax-highlight color.
+A `#rrggbb' COLOR is read as is; `color-values' would approximate it to
+the frame's palette on a terminal frame."
+  (when-let* ((rgb (cond ((not (stringp color)) nil)
+                         ((string-match-p "\\`#[[:xdigit:]]\\{6\\}\\'" color)
+                          (mapcar (lambda (i)
+                                    (string-to-number
+                                     (substring color i (+ i 2)) 16))
+                                  '(1 3 5)))
+                         (t (mapcar (lambda (v) (/ v 257))
+                                    (ignore-errors (color-values color)))))))
+    (let ((mx (apply #'max rgb))
+          (mn (apply #'min rgb)))
+      (and (< mx 192)                   ; dim (channels are 0-255)
+           (< (- mx mn) 51)))))         ; grey
+
+(defun ghostel--suggestion-p (beg end ref)
+  "Non-nil when [BEG, END) looks like an app-drawn autosuggestion.
+That is one greyed-out face from BEG to END whose color differs from the
+color at REF.  Single spaces between words may be unstyled, as the
+renderer drops a style a space cannot show.  A leading cell in inverse video,
+an app's own cursor drawn on the suggestion's first character, is skipped."
+  (let ((face (get-text-property beg 'face)))
+    (when (and (consp face) (plist-get face :inverse-video)
+               (< (1+ beg) end))
+      (setq beg (1+ beg))))
+  (let ((face (get-text-property beg 'face))
+        (color (ghostel--fg-color beg))
+        (pos beg))
+    (and (< beg end)
+         color
+         (not (equal color (ghostel--fg-color ref)))
+         (ghostel--greyed-out-p color)
+         (progn
+           (while (and (< pos end)
+                       (or (equal (get-text-property pos 'face) face)
+                           (and (eq (char-after pos) ?\s)
+                                (null (get-text-property pos 'face))
+                                (< (1+ pos) end)
+                                (equal (get-text-property (1+ pos) 'face)
+                                       face))))
+             (setq pos (next-single-property-change pos 'face nil end)))
+           (>= pos end)))))
+
+(defun ghostel--line-mode-hide-suggestion (&rest _)
+  "Hide an app-drawn autosuggestion after a non-empty line-mode input.
+The app never sees line-mode typing, so its suggestion is stale once the
+user types.  The suggestion is the text from the input end to the row's
+last non-blank character when `ghostel--suggestion-p' accepts it."
+  (save-restriction
+    (widen)
+    (remove-overlays (point-min) (point-max) 'ghostel-suggestion t)
+    (let ((start (and (markerp ghostel--line-input-start)
+                      (marker-position ghostel--line-input-start)))
+          (end (and (markerp ghostel--line-input-end)
+                    (marker-position ghostel--line-input-end))))
+      (when (and start end (< start end) (> start (point-min)))
+        (let ((last (save-excursion
+                      (goto-char end)
+                      (end-of-line)
+                      (skip-chars-backward " \t" end)
+                      (point))))
+          (when (ghostel--suggestion-p end last (1- start))
+            (let ((ov (make-overlay end last nil t nil)))
+              (overlay-put ov 'ghostel-suggestion t)
+              (overlay-put ov 'invisible t)
+              (overlay-put ov 'evaporate t))))))))
+
 (defun ghostel--line-mode-delete-input ()
   "Delete the current in-progress input from the buffer.
 Removes only the region between the start and end markers; content
@@ -590,6 +671,8 @@ which discards any type-ahead and runs inside `ghostel--redraw-now'."
       (when (> (length input) 0)
         (ghostel--write-pty ghostel--term input))))
   (ghostel--line-mode-delete-input)
+  (remove-hook 'after-change-functions #'ghostel--line-mode-hide-suggestion t)
+  (remove-overlays (point-min) (point-max) 'ghostel-suggestion t)
   ;; Drop the `read-only' and `rear-nonsticky' properties that
   ;; protected the scrollback region during line mode; the caller's
   ;; `ghostel--sync-read-only' restores the buffer-wide barrier.
