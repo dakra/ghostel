@@ -613,5 +613,12 @@ entry points so tests run without the module present."
         (unless (fboundp 'ghostel--new)
           (user-error "Ghostel native module is not available; see M-x ghostel-download-module or M-x ghostel-module-compile"))))))
 
+(defun ghostel-ensure-module ()
+  "Load the native module, offering to install it when missing or stale.
+For commands of packages that make terminals, as with
+`ghostel-make-terminal'.  The offer follows `ghostel-module-auto-install'.
+Signal a `user-error' when no module is loaded afterwards."
+  (ghostel--load-module t))
+
 (provide 'ghostel-module-install)
 ;;; ghostel-module-install.el ends here

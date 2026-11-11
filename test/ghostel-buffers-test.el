@@ -388,9 +388,9 @@ project's terminal because both rendered the same buffer name."
                  (project-root . ,(ghostel--normalize-root root-b))
                  (instance . 1))))
       ;; Slot reuse: each root finds exactly its own buffer.
-      (should (eq in-a (ghostel--find-buffer-by-identity
+      (should (eq in-a (ghostel-find-buffer-by-identity
                         (buffer-local-value 'ghostel-identity in-a))))
-      (should (eq in-b (ghostel--find-buffer-by-identity
+      (should (eq in-b (ghostel-find-buffer-by-identity
                         (buffer-local-value 'ghostel-identity in-b))))
       ;; Identity scope from project A sees only A's terminal.
       (cl-letf (((symbol-function 'project-current)
@@ -458,7 +458,7 @@ project's terminal because both rendered the same buffer name."
           (with-current-buffer buf
             (setq major-mode 'ghostel-mode)
             (setq-local ghostel-identity '((kind . term) (instance . 1))))
-          (should (eq (ghostel--find-buffer-by-identity
+          (should (eq (ghostel-find-buffer-by-identity
                        '((kind . term) (instance . 1)))
                       buf))
           (with-current-buffer buf (fundamental-mode))
@@ -466,13 +466,13 @@ project's terminal because both rendered the same buffer name."
           (should (equal (buffer-local-value 'ghostel-identity buf)
                          '((kind . term) (instance . 1))))
           ;; ... but the buffer no longer claims the slot.
-          (should-not (ghostel--find-buffer-by-identity
+          (should-not (ghostel-find-buffer-by-identity
                        '((kind . term) (instance . 1)))))
       (kill-buffer buf))))
 
 (ert-deftest ghostel-test-next-instance ()
-  "`ghostel--next-instance' returns 1 + the highest instance per context."
-  (should (= 1 (ghostel--next-instance '((kind . term)))))
+  "`ghostel-next-instance' returns 1 + the highest instance per context."
+  (should (= 1 (ghostel-next-instance '((kind . term)))))
   (ghostel-buffers-test--with-bufs
       ((_a "*ghostel*" nil '((kind . term) (instance . 1)))
        (_b "*ghostel*<3>" nil '((kind . term) (instance . 3)))
@@ -480,10 +480,10 @@ project's terminal because both rendered the same buffer name."
                                (project-root . "~/p/")
                                (instance . 7))))
     ;; Global slots and project slots are separate contexts.
-    (should (= 4 (ghostel--next-instance '((kind . term)))))
-    (should (= 8 (ghostel--next-instance
+    (should (= 4 (ghostel-next-instance '((kind . term)))))
+    (should (= 8 (ghostel-next-instance
                   '((kind . term) (project-root . "~/p/")))))
-    (should (= 1 (ghostel--next-instance
+    (should (= 1 (ghostel-next-instance
                   '((kind . term) (project-root . "~/q/")))))))
 
 (ert-deftest ghostel-test-project-next-without-project-errors ()
@@ -540,7 +540,7 @@ instance, so `ghostel''s slot arithmetic can find the buffer."
                            '((kind . term)
                              (name . "*ghostel-fresh*")
                              (instance . 2))))
-            (should (eq b (ghostel--find-buffer-by-identity
+            (should (eq b (ghostel-find-buffer-by-identity
                            '((kind . term)
                              (name . "*ghostel-fresh*")
                              (instance . 2))))))

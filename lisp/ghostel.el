@@ -862,6 +862,11 @@ renderer when the terminal is created or a resize is committed.")
 Updated by the native renderer when the terminal is created or a
 resize is committed.")
 
+(defvar-local ghostel--given-size nil
+  "The (COLS . ROWS) last given to the native terminal.
+`ghostel--term-rows' and `ghostel--term-cols' follow when a redraw
+commits it.")
+
 (defvar-local ghostel--repair-pending nil
   "Non-nil after a foreign edit removed rendered text.
 The next redraw is full and realigns point to the terminal cursor.")
@@ -1500,6 +1505,114 @@ A child map, so `ghostel-menu' is not also active via the local map.")
     ["Customize" (customize-group 'ghostel)]))
 
 
+;;; Bridged terminals
+
+;; A bridged terminal has no process.  A client, such as one of a terminal
+;; multiplexer, writes it the output of a terminal elsewhere and receives
+;; what is typed into it.
+
+(defvar-local ghostel-pty-out-function nil
+  "Function called with outbound bytes as one unibyte string.
+These are typed input and the terminal's own replies; errors are ignored.
+A paste is one call and must arrive without a pause, as zsh ends a paste
+at a gap longer than KEYTIMEOUT.
+Replaces `ghostel--process' in terminals whose I/O is bridged elsewhere.")
+
+(defvar-local ghostel-resize-function nil
+  "Function called with ROWS and COLS instead of resizing the terminal.
+It may be called repeatedly with the same size.")
+
+(defvar-local ghostel-send-files-function nil
+  "Function called with the local files dropped on or pasted into the terminal.
+It is called in the terminal buffer with a list of file names, instead of
+pasting their shell-quoted names.  A drop may call it once per file.")
+
+(defun ghostel-make-terminal (buffer-or-name &optional rows cols)
+  "Make a terminal without a process and return its buffer.
+BUFFER-OR-NAME is a buffer to turn into one, or the name of a new buffer,
+made unique.  A buffer is emptied, and a terminal it has is replaced.
+ROWS and COLS, given together, are the terminal's size; by default it
+fits the buffer's window, or the selected window.
+
+This resets `ghostel-pty-out-function', `ghostel-resize-function' and
+`ghostel-send-files-function' in the buffer.  Set them afterwards, and
+write the terminal's output with `ghostel-write-output'.
+
+Signal an error when the native module is not loaded.  Nothing is asked
+and nothing installed here, so a process filter can call this."
+  (unless (fboundp 'ghostel--new)
+    (error "Ghostel: the native module is not loaded"))
+  (if (bufferp buffer-or-name)
+      (ghostel--init-buffer buffer-or-name rows cols t)
+    (ghostel--create buffer-or-name nil rows cols t)))
+
+(defun ghostel-write-output (bytes &optional no-reply)
+  "Write BYTES, output of this terminal's program, to the terminal.
+BYTES is a unibyte string.  The terminal's replies to it go where typed
+input goes; with NO-REPLY non-nil they are dropped, for a client whose
+other side answers the program's queries.  The buffer shows the output
+with its next redraw."
+  (when ghostel--term
+    ;; Native callbacks dispatched while parsing (OSC 52;e for one) may
+    ;; select another buffer.
+    (save-current-buffer
+      (if no-reply
+          (let ((ghostel-pty-out-function #'ignore))
+            (ghostel--write-vt ghostel--term bytes))
+        (ghostel--write-vt ghostel--term bytes)))
+    (ghostel--invalidate)))
+
+(defun ghostel-set-size (rows cols)
+  "Give this terminal the size ROWS by COLS.
+For a bridged terminal sized elsewhere, as by a multiplexer's server;
+the size its windows ask for goes to `ghostel-resize-function'.
+
+Output written after this is read at the new size.  For that the buffer
+is redrawn now, also in copy mode.  Line mode is the exception while no
+window shows the buffer or its redraw is held back: a render then would
+lose the typed input, so the size takes effect with the next redraw and
+output until then is read at the old size."
+  (when ghostel--term
+    (let ((buffer (current-buffer))
+          (same-size (equal (cons cols rows) (ghostel-terminal-size))))
+      ;; An unchanged size still passes on the cell size in pixels.
+      (ghostel--set-size-with-cell-dims ghostel--term rows cols)
+      (cond
+       (same-size (ghostel--invalidate))
+       ((eq ghostel--input-mode 'line)
+        (ghostel--redraw-now buffer t))
+       ((ghostel--get-render-window buffer)
+        (ghostel--commit-frame buffer))
+       (t
+        (ghostel--commit-frame buffer)
+        ;; That render had no window to measure glyphs in.
+        (setq ghostel--repair-pending t
+              ghostel--pending-redraw t))))))
+
+(defun ghostel-terminal-size ()
+  "Return this terminal's size as (COLS . ROWS), or nil without a terminal.
+It is the size last given to the terminal, also while that waits for a
+redraw to take effect."
+  (or ghostel--given-size
+      (and ghostel--term-cols ghostel--term-rows
+           (cons ghostel--term-cols ghostel--term-rows))))
+
+(defun ghostel-snapshot-restore (data)
+  "Replace this terminal's state with the libghostty snapshot DATA.
+DATA is a unibyte string in the format of ghostel's libghostty version.
+Call this before the terminal has seen any output."
+  (let ((inhibit-read-only t)
+        (inhibit-modification-hooks t))
+    (ghostel--restore-snapshot ghostel--term data))
+  ;; The snapshot's size stays; this reapplies the cell size in pixels.
+  (ghostel--set-size-with-cell-dims ghostel--term
+                                    ghostel--term-rows ghostel--term-cols)
+  (ghostel--apply-palette ghostel--term)
+  (ghostel--apply-bold-config ghostel--term)
+  (setq ghostel--force-next-redraw t)
+  (ghostel--invalidate))
+
+
 ;;; Key sending
 
 (defun ghostel-send-next-key ()
@@ -1521,22 +1634,6 @@ keyboard protocol receives the protocol-correct sequence."
      ((and (integerp event) (< event #x400000))
       (ghostel--send-string (encode-coding-string (string event) 'utf-8)))
      (t (message "ghostel: unrecognized key %S" event)))))
-
-(defvar-local ghostel-pty-out-function nil
-  "Function called with outbound bytes as one unibyte string.
-These are typed input and the terminal's own replies; errors are ignored.
-A paste is one call and must arrive without a pause, as zsh ends a paste
-at a gap longer than KEYTIMEOUT.
-Replaces `ghostel--process' in terminals whose I/O is bridged elsewhere.")
-
-(defvar-local ghostel-resize-function nil
-  "Function called with ROWS and COLS instead of resizing the terminal.
-It may be called repeatedly with the same size.")
-
-(defvar-local ghostel-send-files-function nil
-  "Function called with the local files dropped on or pasted into the terminal.
-It is called in the terminal buffer with a list of file names, instead of
-pasting their shell-quoted names.  A drop may call it once per file.")
 
 (defun ghostel--pty-out (data)
   "Send outbound DATA bytes from a terminal without a native PTY."
@@ -1809,14 +1906,18 @@ dead terminals and compile-style buffers.  Runs
 
 ;;; Public input API
 
-(defun ghostel-send-string (string)
+(defun ghostel-send-string (string &optional raw)
   "Send STRING to the terminal process in the current ghostel buffer.
 Signals a `user-error' when called outside a ghostel buffer.  STRING
 is passed through unchanged, including any embedded control
-characters; callers are responsible for UTF-8 encoding if needed."
+characters; callers are responsible for UTF-8 encoding if needed.
+With RAW non-nil STRING does not count as typed: the mark, the input
+mode and the scroll position of the windows stay as they are."
   (ghostel--ensure-ghostel-buffer)
-  (ghostel--on-user-input)
-  (ghostel--send-string string))
+  (if raw
+      (ghostel--write-pty ghostel--term string)
+    (ghostel--on-user-input)
+    (ghostel--send-string string)))
 
 (defun ghostel-send-key (key-name &optional mods)
   "Send KEY-NAME with optional MODS to the terminal's key encoder.
@@ -3587,7 +3688,10 @@ HOST is ignored when `default-directory' is remote; its prefix is reused."
               (or ghostel-tramp-default-method tramp-default-method)
               host path))))
 
-(defun ghostel--local-host-p (host)
+(define-obsolete-function-alias 'ghostel--local-host-p
+  #'ghostel-local-host-p "0.64.0")
+
+(defun ghostel-local-host-p (host)
   "Return non-nil if HOST refers to the local machine.
 A trailing \".local\" (mDNS) suffix on HOST is ignored: the macOS
 kernel hostname drifts between NAME and NAME.local with network state,
@@ -3633,7 +3737,7 @@ URL does not match the local machine, construct a TRAMP path."
             ;; Only a local-host prefix disambiguates this from an RFC 3986
             ;; empty-port authority; a foreign host keeps its glued spelling.
             (if (and (string-match "\\`\\(.*\\)\\([a-z]:\\)\\'" host)
-                     (ghostel--local-host-p (match-string 1 host)))
+                     (ghostel-local-host-p (match-string 1 host)))
                 (setq raw (concat (match-string 2 host) raw)
                       filename (concat (match-string 2 host) filename)
                       host (match-string 1 host))
@@ -3646,7 +3750,7 @@ URL does not match the local machine, construct a TRAMP path."
                  (truncate-string-to-width dir 40)))
        (t (setq path dir)))
       (when filename
-        (if (ghostel--local-host-p host)
+        (if (ghostel-local-host-p host)
             ;; Emitters that don't escape `%' (nushell) send `%XX' literally.
             ;; When only the raw spelling names a directory, it is the real one.
             (setq path (if (and raw
@@ -3670,6 +3774,12 @@ URL does not match the local machine, construct a TRAMP path."
         (ghostel--rename-managed
          (funcall ghostel-buffer-name-function ghostel-title)))
       (ghostel--buffer-identification-update))))
+
+(defun ghostel-set-directory (dir)
+  "Make DIR the terminal's directory, as an OSC 7 report of its program does.
+DIR is a directory name, or a `file://' URL whose host says where it is.
+For a client that learns the directory by other means."
+  (ghostel--update-directory dir))
 
 
 ;;; Cursor style
@@ -3757,18 +3867,10 @@ Kept in Elisp so input modes and integrations can decide whether
 (defun ghostel--apply-palette (term)
   "Apply face-derived protocol defaults and palette colors to TERM."
   (when term
-    (let ((bg (ghostel--face-hex-color 'ghostel-default :background)))
-      (ghostel--set-default-colors
-       term (ghostel--face-hex-color 'ghostel-default :foreground) bg
-       (ghostel--hex-color-scheme bg)))
-    (when ghostel-color-palette
-      (let ((colors
-             (mapconcat
-              (lambda (face)
-                (ghostel--face-hex-color face :foreground))
-              ghostel-color-palette
-              "")))
-        (ghostel--set-palette term colors)))))
+    (let-alist (ghostel-theme-colors)
+      (ghostel--set-default-colors term .foreground .background .scheme)
+      (when (> (length .palette) 0)
+        (ghostel--set-palette term (mapconcat #'identity .palette ""))))))
 
 (defun ghostel--apply-bold-config (term)
   "Apply `ghostel-bold-color' to terminal handle TERM."
@@ -3818,7 +3920,10 @@ Non-nil means a focus-in event was delivered.  Only updated when
 `ghostel--focus-event' actually emits (mode 1004 enabled), so that
 enabling 1004 after a focus change still lets the next event fire.")
 
-(defun ghostel--buffer-focused-p (buf)
+(define-obsolete-function-alias 'ghostel--buffer-focused-p
+  #'ghostel-buffer-focused-p "0.64.0")
+
+(defun ghostel-buffer-focused-p (buf)
   "Return non-nil if BUF is the buffer being looked at.
 That is, BUF is shown in the selected window of a frame that has keyboard
 focus or whose focus Emacs cannot tell, as on a tty without focus reporting."
@@ -3847,7 +3952,7 @@ logical focus state transitions.  Further gates on terminal mode 1004."
     (when (buffer-live-p buf)
       (with-current-buffer buf
         (when (derived-mode-p 'ghostel-mode)
-          (let ((focused (and (ghostel--buffer-focused-p buf) t)))
+          (let ((focused (and (ghostel-buffer-focused-p buf) t)))
             (when (and (not (eq focused ghostel--focus-state))
                        (ghostel--focus-event ghostel--term focused))
               (setq ghostel--focus-state focused))
@@ -3865,13 +3970,7 @@ fed to the terminal immediately; rendering is scheduled separately by
 materialized buffer."
   (when (buffer-live-p (process-buffer process))
     (with-current-buffer (process-buffer process)
-      (when ghostel--term
-        ;; Native callbacks dispatched while parsing output (for example OSC 52;e)
-        ;; may select another buffer.  Keep the rest of the filter's buffer-local
-        ;; reads anchored to this ghostel buffer.
-        (save-current-buffer
-          (ghostel--write-vt ghostel--term output))
-                (ghostel--invalidate)))))
+      (ghostel-write-output output))))
 
 (defun ghostel--events-filter (pipe output)
   "Process native PTY events received from PIPE.
@@ -4397,21 +4496,6 @@ timer.  Hidden output remains pending until the buffer is displayed."
       (setq ghostel--redraw-timer nil))
     (setq ghostel--pending-redraw t)))
 
-(defun ghostel-snapshot-restore (data)
-  "Replace this terminal's state with the libghostty snapshot DATA.
-DATA is a unibyte string in the format of ghostel's libghostty version.
-Call this before the terminal has seen any output."
-  (let ((inhibit-read-only t)
-        (inhibit-modification-hooks t))
-    (ghostel--restore-snapshot ghostel--term data))
-  ;; The snapshot's size stays; this reapplies the cell size in pixels.
-  (ghostel--set-size-with-cell-dims ghostel--term
-                                    ghostel--term-rows ghostel--term-cols)
-  (ghostel--apply-palette ghostel--term)
-  (ghostel--apply-bold-config ghostel--term)
-  (setq ghostel--force-next-redraw t)
-  (ghostel--invalidate))
-
 (defun ghostel--viewport-start ()
   "Position of the first line of the terminal viewport, or nil if rows<=0."
   (let ((tr (or ghostel--term-rows 0)))
@@ -4868,9 +4952,13 @@ Convenience wrapper to keep the resize sites consistent.  Resolves the cell
 dimensions from the current buffer, so call it with TERM's buffer current."
   (ghostel--set-size term rows cols
                      (ghostel--reported-cell-width)
-                     (ghostel--reported-cell-height)))
+                     (ghostel--reported-cell-height))
+  (setq ghostel--given-size (cons cols rows)))
 
-(defun ghostel--desired-size ()
+(define-obsolete-function-alias 'ghostel--desired-size
+  #'ghostel-window-size "0.64.0")
+
+(defun ghostel-window-size ()
   "Return (COLS . ROWS) fitting the windows showing this buffer, nil if none."
   (when-let* ((windows (ghostel--windows (current-buffer) t)))
     (funcall (or (default-value 'window-adjust-process-window-size-function)
@@ -4892,7 +4980,7 @@ path even when the row/column count is unchanged."
       (when (ghostel--window-anchored-p
              window (window-old-body-pixel-height window))
         (ghostel--anchor-window window))
-      (when-let* ((size (ghostel--desired-size))
+      (when-let* ((size (ghostel-window-size))
                   (width (car size))
                   (height (cdr size)))
         (let* ((same-size-p (and (eql height ghostel--term-rows)
@@ -4914,12 +5002,18 @@ path even when the row/column count is unchanged."
               ;; Emacs displays the stale content at the new window size.
               (ghostel--redraw-now (current-buffer)))))))))
 
+(defun ghostel-fit-window (window)
+  "Size the terminal that WINDOW shows to the windows showing it.
+The size is applied, or passed to `ghostel-resize-function', also when
+it is the terminal's size already.  Copy mode keeps the terminal's size."
+  (ghostel--adjust-size window t))
+
 (defun ghostel--adjust-displayed-sizes (_frame)
   "Refit every displayed terminal whose windows no longer match its grid."
   (dolist (buffer (ghostel-buffer-list))
     (with-current-buffer buffer
       (when-let* ((size (and (or ghostel--process ghostel-resize-function)
-                             (ghostel--desired-size))))
+                             (ghostel-window-size))))
         (unless (and (eql (cdr size) ghostel--term-rows)
                      (eql (car size) ghostel--term-cols))
           (ghostel--adjust-size (car (ghostel--windows buffer t))))))))
@@ -5283,7 +5377,10 @@ depend on connection state and would make the key unstable."
       (file-name-as-directory root)
     (abbreviate-file-name (file-name-as-directory (expand-file-name root)))))
 
-(defun ghostel--next-instance (context)
+(define-obsolete-function-alias 'ghostel--next-instance
+  #'ghostel-next-instance "0.64.0")
+
+(defun ghostel-next-instance (context)
   "Return 1 + the highest slot instance in use for CONTEXT.
 CONTEXT is an identity alist without its `instance' pair."
   (let ((max 0))
@@ -5295,7 +5392,10 @@ CONTEXT is an identity alist without its `instance' pair."
           (setq max (max max (or (alist-get 'instance id) 0))))))
     (1+ max)))
 
-(defun ghostel--find-buffer-by-identity (identity &optional predicate)
+(define-obsolete-function-alias 'ghostel--find-buffer-by-identity
+  #'ghostel-find-buffer-by-identity "0.64.0")
+
+(defun ghostel-find-buffer-by-identity (identity &optional predicate)
   "Return the first live ghostel buffer whose identity equals IDENTITY, or nil.
 Only `ghostel-mode' buffers are considered: the permanent-local
 identity outlives a major-mode change, but the slot claim must not.
@@ -5313,7 +5413,7 @@ so several buffers sharing IDENTITY cannot shadow one the caller wants."
 
 ;;; Entry point
 
-(defun ghostel--init-buffer (buffer &optional rows cols)
+(defun ghostel--init-buffer (buffer &optional rows cols bridged)
   "Initialize BUFFER as a ghostel terminal.
 This is the invariant boundary between an Emacs buffer and its native
 terminal handle: BUFFER is made empty, renderer-coupled buffer-local
@@ -5336,7 +5436,8 @@ startup SIGWINCH that some TUI apps (Claude Code's /tui fullscreen)
 handle imperfectly (issue #192).
 
 This function does not start a process; callers decide what program to
-spawn after initialization."
+spawn after initialization.  With BRIDGED non-nil none will be, and
+`default-directory' need not exist."
   (unless (buffer-live-p buffer)
     (user-error "Cannot initialize dead buffer as ghostel terminal"))
   (unless (eq (null rows) (null cols))
@@ -5344,7 +5445,8 @@ spawn after initialization."
   (with-current-buffer buffer
     ;; A local child's chdir failure would only surface as an immediate
     ;; exit; TRAMP reports remote ones itself.
-    (unless (or (file-remote-p default-directory)
+    (unless (or bridged
+                (file-remote-p default-directory)
                 (file-directory-p default-directory))
       (user-error "Ghostel: directory %s does not exist" default-directory))
     (when (process-live-p ghostel--process)
@@ -5375,6 +5477,8 @@ spawn after initialization."
           ghostel-title nil
           ghostel--osc-title nil
           ghostel--command-running nil
+          ghostel--prompt-positions nil
+          ghostel--given-size nil
           ghostel--last-foreground nil
           ghostel--shell-comm nil
           ghostel--shell-pgid-cache nil
@@ -5423,12 +5527,12 @@ spawn after initialization."
       (ghostel--apply-bold-config ghostel--term))
     buffer))
 
-(defun ghostel--create (name &optional display-action rows cols)
+(defun ghostel--create (name &optional display-action rows cols bridged)
   "Create a fresh ghostel buffer NAME and initialize its terminal.
 DISPLAY-ACTION, when non-nil, is passed to `pop-to-buffer' before
 terminal creation so size detection observes the window that will
-display the terminal.  Optional ROWS and COLS are passed through to
-`ghostel--init-buffer'.  If initialization is interrupted by an error
+display the terminal.  Optional ROWS, COLS and BRIDGED are passed
+through to `ghostel--init-buffer'.  If initialization is interrupted by an error
 or quit, the partially created buffer is killed before re-signaling."
   (let ((buffer (generate-new-buffer name)))
     (condition-case err
@@ -5439,7 +5543,7 @@ or quit, the partially created buffer is killed before re-signaling."
             (ghostel-mode))
           (when display-action
             (pop-to-buffer buffer display-action))
-          (ghostel--init-buffer buffer rows cols)
+          (ghostel--init-buffer buffer rows cols bridged)
           buffer)
       ((error quit)
        (when (buffer-live-p buffer)
@@ -5463,14 +5567,14 @@ other non-nil value creates the next free instance.  Returns the
 buffer."
   (let* ((fresh (and arg (not (numberp arg))))
          (instance (cond ((numberp arg) arg)
-                         (fresh (ghostel--next-instance context))
+                         (fresh (ghostel-next-instance context))
                          (t 1)))
          (identity (append context `((instance . ,instance))))
          (buf-name (if (> instance 1) (format "%s<%d>" name instance) name))
          (display-action (append display-buffer--same-window-action
                                  '((category . comint))))
          (existing (and (not fresh)
-                        (ghostel--find-buffer-by-identity identity))))
+                        (ghostel-find-buffer-by-identity identity))))
     (if existing
         (progn
           (unless (buffer-local-value 'ghostel--term existing)
@@ -5563,7 +5667,7 @@ To run a specific program instead of a shell, see `ghostel-exec'."
          (buf-name name))
     (unless identity
       (let* ((context `((kind . term) (name . ,name)))
-             (instance (ghostel--next-instance context)))
+             (instance (ghostel-next-instance context)))
         (setq identity `(,@context (instance . ,instance)))
         ;; Keep `ghostel--start's NAME<N> = instance N convention, so the
         ;; name suffix and the slot number cannot drift apart after a

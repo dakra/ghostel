@@ -31,7 +31,7 @@
 
 (declare-function ghostel--enter-readonly-input-mode "ghostel")
 (declare-function ghostel--file-uri-decode "ghostel" (path))
-(declare-function ghostel--local-host-p "ghostel" (host))
+(declare-function ghostel-local-host-p "ghostel" (host))
 (declare-function ghostel--tramp-path "ghostel" (host path))
 (declare-function ghostel--windows-local-path "ghostel" (path))
 (defvar ghostel--input-mode)
@@ -172,7 +172,7 @@ Anything else goes to `browse-url'."
             (file (ghostel--file-uri-decode (match-string 2 url))))
         (when file
           (find-file-other-window
-           (cond ((not (ghostel--local-host-p host))
+           (cond ((not (ghostel-local-host-p host))
                   (ghostel--tramp-path host file))
                  ((eq system-type 'windows-nt)
                   (ghostel--windows-local-path file))

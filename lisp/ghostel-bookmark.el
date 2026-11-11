@@ -76,7 +76,7 @@ is non-nil, a `cd' is typed into it, but only while the shell is idle
          ;; by name.
          (buf (cond
                ((alist-get 'instance identity)
-                (ghostel--find-buffer-by-identity identity live-p))
+                (ghostel-find-buffer-by-identity identity live-p))
                (command
                 (let ((match-p
                        (lambda (b)

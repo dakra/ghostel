@@ -130,7 +130,7 @@ higher in `buffer-list' the handler must still reuse the live one."
                             (ghostel-test--dummy-process "bm-shadow" nil)))
               (bury-buffer live)
               ;; Precondition: the dead buffer outranks the live one.
-              (should (eq (ghostel--find-buffer-by-identity id) dead))
+              (should (eq (ghostel-find-buffer-by-identity id) dead))
               (cl-letf (((symbol-function 'ghostel--load-module) #'ignore)
                         ((symbol-function 'ghostel--create)
                          (lambda (&rest _)

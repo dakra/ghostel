@@ -56,7 +56,7 @@ Reuse needs an `instance' key and a live shell -- with
 `ghostel-kill-buffer-on-exit' nil a dead shell's buffer lingers,
 identity included."
   (let ((buf (and (alist-get 'instance identity)
-                  (ghostel--find-buffer-by-identity
+                  (ghostel-find-buffer-by-identity
                    identity
                    (lambda (b)
                      (let ((p (buffer-local-value 'ghostel--process b)))

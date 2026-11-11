@@ -464,11 +464,11 @@ the path, `%0D' decodes to a carriage return, and when only the raw
       (delete-directory base t))))
 
 (ert-deftest ghostel-test-local-host-p-preserves-match-data ()
-  "`ghostel--local-host-p' keeps the caller's match data intact.
+  "`ghostel-local-host-p' keeps the caller's match data intact.
 The glued-drive parse reads `match-string' after probing the host; a
 dotted host reaches the `split-string' clause, which matches internally."
   (string-match "\\`\\(foo\\)\\(bar\\)\\'" "foobar")
-  (ghostel--local-host-p "somehost.local")
+  (ghostel-local-host-p "somehost.local")
   (should (equal "bar" (match-string 2 "foobar"))))
 
 (ert-deftest ghostel-test-update-directory-windows-drive-glued-host ()
@@ -613,10 +613,10 @@ the buffer is misclassified as remote, switching on TRAMP."
         ;; applies in `ghostel--update-directory'.  Asserting the predicate
         ;; (not strict equality with `system-name') is deliberate: on hosts
         ;; where (system-name) is an FQDN but \H is the short form (or vice
-        ;; versa) the two strings differ, yet `ghostel--local-host-p' accepts
+        ;; versa) the two strings differ, yet `ghostel-local-host-p' accepts
         ;; either via its split- on-`.' fallback - which is exactly the
         ;; production behavior we care about.
-        (should (ghostel--local-host-p emitted))))))
+        (should (ghostel-local-host-p emitted))))))
 
 (ert-deftest ghostel-test-bash-osc7-wins-race-vs-prompt-command ()
   "Bash `__ghostel_osc7' must fire last so it wins the OSC 7 race.
@@ -2337,21 +2337,21 @@ prompt line (no `ghostel-prompt' property exists after point)."
 
 (ert-deftest ghostel-test-local-host-p ()
   "Test local hostname detection."
-  (should (ghostel--local-host-p nil))
-  (should (ghostel--local-host-p ""))
-  (should (ghostel--local-host-p "localhost"))
-  (should (ghostel--local-host-p (system-name)))
-  (should (ghostel--local-host-p (car (split-string (system-name) "\\."))))
+  (should (ghostel-local-host-p nil))
+  (should (ghostel-local-host-p ""))
+  (should (ghostel-local-host-p "localhost"))
+  (should (ghostel-local-host-p (system-name)))
+  (should (ghostel-local-host-p (car (split-string (system-name) "\\."))))
   ;; mDNS drift: gethostname(2) may report NAME.local while
   ;; `system-name' holds NAME.
-  (should (ghostel--local-host-p
+  (should (ghostel-local-host-p
            (concat (car (split-string (system-name) "\\.")) ".local")))
-  (should (ghostel--local-host-p
+  (should (ghostel-local-host-p
            (upcase (concat (car (split-string (system-name) "\\.")) ".local"))))
-  (should-not (ghostel--local-host-p "ghostel-other-machine.local"))
-  (should-not (ghostel--local-host-p
+  (should-not (ghostel-local-host-p "ghostel-other-machine.local"))
+  (should-not (ghostel-local-host-p
                (concat (car (split-string (system-name) "\\.")) ".example.com")))
-  (should-not (ghostel--local-host-p "remote-server.example.com")))
+  (should-not (ghostel-local-host-p "remote-server.example.com")))
 
 (defun ghostel-test--remote-home (root)
   "Create a temp HOME with ROOT's etc/shell and etc/terminfo pushed into it.

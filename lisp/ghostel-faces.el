@@ -185,5 +185,22 @@ Falls back to white (for :foreground) or black (for :background)."
                             '(1 3 5)))
       'dark 'light))
 
+(defun ghostel-theme-colors ()
+  "Return the terminal colors that ghostel's faces give, as an alist.
+A color is a string \"#RRGGBB\".  The keys are `foreground' and
+`background', from the face `ghostel-default'; `cursor', the background
+of the face `cursor', or nil when it has none; `scheme', `dark' or
+`light' as the background is; and `palette', a vector of the 16 colors
+of `ghostel-color-palette'."
+  (let ((bg (ghostel--face-hex-color 'ghostel-default :background)))
+    `((foreground . ,(ghostel--face-hex-color 'ghostel-default :foreground))
+      (background . ,bg)
+      (cursor . ,(and (face-background 'cursor nil t)
+                      (ghostel--face-hex-color 'cursor :background)))
+      (scheme . ,(ghostel--hex-color-scheme bg))
+      (palette . ,(vconcat (mapcar (lambda (face)
+                                     (ghostel--face-hex-color face :foreground))
+                                   ghostel-color-palette))))))
+
 (provide 'ghostel-faces)
 ;;; ghostel-faces.el ends here

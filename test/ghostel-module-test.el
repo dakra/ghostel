@@ -846,10 +846,11 @@ in-process so no Emacs restart is needed."
           (cl-pushnew 'ghostel-module features)
         (setq features (delq 'ghostel-module features))))))
 
-(defun ghostel-test--load-module-skipped-install (stale-sidecar)
+(defun ghostel-test--load-module-skipped-install (stale-sidecar &optional loader)
   "Run `ghostel--load-module' with PROMPT-USER and a skipped install.
 With STALE-SIDECAR the module file exists with an old sidecar,
-otherwise no module file exists.  Return the signaled error, or nil."
+otherwise no module file exists.  LOADER, if non-nil, is called instead.
+Return the signaled error, or nil."
   (let* ((tmp (make-temp-file "ghostel-test-skip-install" t))
          (ghostel--minimum-module-version "0.25.0")
          (ensure-calls nil)
@@ -874,7 +875,10 @@ otherwise no module file exists.  Return the signaled error, or nil."
                      (lambda (dir) (push dir ensure-calls) nil))
                     ((symbol-function 'display-warning) #'ignore))
             (prog1 (condition-case err
-                       (progn (ghostel--load-module t) nil)
+                       (progn (if loader
+                                  (funcall loader)
+                                (ghostel--load-module t))
+                              nil)
                      (user-error err))
               (should (equal 1 (length ensure-calls))))))
       (delete-directory tmp t)
@@ -890,6 +894,11 @@ otherwise no module file exists.  Return the signaled error, or nil."
 (ert-deftest ghostel-test-load-module-signals-when-stale-install-skipped ()
   "Interactive entry signals `user-error' when a stale module is not replaced."
   (should (ghostel-test--load-module-skipped-install t)))
+
+(ert-deftest ghostel-test-ensure-module-offers-install-then-signals ()
+  "`ghostel-ensure-module' offers the install and signals without a module."
+  (should (ghostel-test--load-module-skipped-install
+           nil #'ghostel-ensure-module)))
 
 (ert-deftest ghostel-test-load-module-prompts-when-loaded-but-stale ()
   "Stale already-loaded module triggers a prompt at interactive entry.

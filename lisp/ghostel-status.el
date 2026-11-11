@@ -26,7 +26,7 @@
 (declare-function alert "alert")
 (declare-function spinner-start "spinner")
 (declare-function spinner-stop "spinner")
-(declare-function ghostel--buffer-focused-p "ghostel")
+(declare-function ghostel-buffer-focused-p "ghostel")
 (declare-function ghostel--cycle "ghostel")
 (declare-function ghostel-buffer-list "ghostel")
 (declare-function ghostel--defer "ghostel")
@@ -259,7 +259,7 @@ Each element is (ID . RECORD); see `ghostel-program-status-functions'.")
   "Acknowledge when `ghostel-status-auto-acknowledge' is `seen' and looked at."
   (when (and (eq ghostel-status-auto-acknowledge 'seen)
              ghostel-program-status
-             (ghostel--buffer-focused-p (current-buffer)))
+             (ghostel-buffer-focused-p (current-buffer)))
     (ghostel-status-acknowledge)))
 
 (defun ghostel-status--kill-buffer ()
@@ -471,7 +471,7 @@ have, and the current buffer is not the one being looked at."
   (let ((state (plist-get new :state)))
     (and (memq state ghostel-status-notify-states)
          (not (eq state (plist-get old :state)))
-         (not (ghostel--buffer-focused-p (current-buffer))))))
+         (not (ghostel-buffer-focused-p (current-buffer))))))
 
 (defun ghostel-status-notify (id old new)
   "Notify when record ID changing from OLD to NEW needs attention.

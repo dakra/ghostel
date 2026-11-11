@@ -101,7 +101,7 @@
   "With `seen', finished records go once the buffer is looked at."
   (let ((focused nil)
         (ghostel-status-auto-acknowledge 'seen))
-    (cl-letf (((symbol-function 'ghostel--buffer-focused-p)
+    (cl-letf (((symbol-function 'ghostel-buffer-focused-p)
                (lambda (_buf) focused)))
       (ghostel-status-test--with-log log
         (ghostel-status-test--report "done" "c")
@@ -134,14 +134,14 @@
       (with-temp-buffer
         (let ((buf (current-buffer)))
           (set-window-buffer (selected-window) buf)
-          (should (ghostel--buffer-focused-p buf))
+          (should (ghostel-buffer-focused-p buf))
           (setq state t)
-          (should (ghostel--buffer-focused-p buf))
+          (should (ghostel-buffer-focused-p buf))
           (setq state nil)
-          (should-not (ghostel--buffer-focused-p buf))
+          (should-not (ghostel-buffer-focused-p buf))
           (setq state t)
           (set-window-buffer (selected-window) (get-buffer-create "*scratch*"))
-          (should-not (ghostel--buffer-focused-p buf)))))))
+          (should-not (ghostel-buffer-focused-p buf)))))))
 
 ;;; Across terminals
 
@@ -454,7 +454,7 @@ Equal labels count together with a tooltip line each."
         (focused nil))
     (cl-letf (((symbol-function 'ghostel--defer)
                (lambda (fn &rest args) (apply fn args)))
-              ((symbol-function 'ghostel--buffer-focused-p)
+              ((symbol-function 'ghostel-buffer-focused-p)
                (lambda (_buf) focused))
               (ghostel-notification-functions
                (list (lambda (title body) (push (cons title body) calls))))
@@ -491,7 +491,7 @@ Equal labels count together with a tooltip line each."
           (list (lambda (title body) (push (cons title body) calls)))))
     (cl-letf (((symbol-function 'ghostel--defer)
                (lambda (fn &rest args) (apply fn args)))
-              ((symbol-function 'ghostel--buffer-focused-p) #'ignore))
+              ((symbol-function 'ghostel-buffer-focused-p) #'ignore))
       (with-temp-buffer
         (ghostel--handle-notification "T" "before")
         (should (equal '(("T" . "before")) calls))

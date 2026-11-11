@@ -128,7 +128,7 @@ Runs BUFFERS through `consult--buffer-query', so its visibility sort,
                                         (project-root
                                          . ,(ghostel--normalize-root
                                              default-directory))))
-                             (next-instance (ghostel--next-instance context))
+                             (next-instance (ghostel-next-instance context))
                              (identity
                               `(,@context (instance . ,next-instance))))
                         (consult-ghostel--spawn name identity)))))

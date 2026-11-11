@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Functions for packages that bridge a terminal running elsewhere, such
+  as a multiplexer's: `ghostel-make-terminal` makes a terminal without a
+  process, `ghostel-write-output` writes its output, `ghostel-set-size`
+  gives it the size decided elsewhere, and `ghostel-terminal-size` and
+  `ghostel-window-size` return the terminal's size and the size its
+  windows fit.  `ghostel-set-directory` and `ghostel-set-command-running`
+  tell a terminal what a client learns without OSC 7 and OSC 133, and
+  `ghostel-theme-colors` returns the colors of ghostel's faces.
+- `ghostel-fit-window` sizes a window's terminal to its windows.
+- `ghostel-ensure-module` loads the native module for a command that
+  makes terminals, offering to install it, and signals a `user-error`
+  when none is loaded.
+- `ghostel-send-string` takes a second argument for bytes that do not
+  count as typed.
+- `ghostel-buffer-focused-p`, `ghostel-local-host-p`,
+  `ghostel-find-buffer-by-identity` and `ghostel-next-instance` are
+  public; their `ghostel--` names are obsolete aliases, as is
+  `ghostel--desired-size` for `ghostel-window-size`.
+
+### Fixed
+- A buffer reused for a new terminal kept the prompt positions of its
+  previous one.
+
 ## [0.63.0] — 2026-11-10
 
 ### Added

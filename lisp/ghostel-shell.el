@@ -577,6 +577,19 @@ not here.  This handler only tracks prompt positions and exit status."
                                (current-buffer) param)
      (setq ghostel--command-running nil))))
 
+(defun ghostel-set-command-running (running &optional status)
+  "Record whether a command runs in this terminal, as OSC 133 marks do.
+For a client that learns it by other means.  When RUNNING differs from
+what is recorded, run `ghostel-command-start-functions', or
+`ghostel-command-finish-functions' with the exit STATUS."
+  (unless (eq (not running) (not ghostel--command-running))
+    (setq ghostel--command-running (and running t))
+    (if running
+        (ghostel--run-hook-safely 'ghostel-command-start-functions
+                                  (current-buffer))
+      (ghostel--run-hook-safely 'ghostel-command-finish-functions
+                                (current-buffer) status))))
+
 (defun ghostel--prompt-input-start ()
   "From the start of a `ghostel-prompt' region, move past the prefix.
 If `ghostel-input' begins on the same line, point lands at its

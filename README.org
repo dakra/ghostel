@@ -2355,6 +2355,67 @@ second argument before IDENTITY).
 =ghostel-project-buffer-list= prompts to choose a project when there is no
 current one.
 
+=ghostel-find-buffer-by-identity= returns the terminal buffer with a given
+identity, and =ghostel-next-instance= the next free =instance= number for an
+identity without one.
+
+** Bridged terminals
+:properties:
+:custom_id: bridged-terminals
+:end:
+#+cindex: bridged terminal
+#+cindex: multiplexer
+#+findex: ghostel-make-terminal
+#+findex: ghostel-write-output
+#+findex: ghostel-set-size
+#+findex: ghostel-terminal-size
+#+findex: ghostel-window-size
+#+findex: ghostel-fit-window
+#+findex: ghostel-snapshot-restore
+#+findex: ghostel-set-directory
+#+findex: ghostel-set-command-running
+#+findex: ghostel-theme-colors
+#+findex: ghostel-ensure-module
+#+vindex: ghostel-pty-out-function
+#+vindex: ghostel-resize-function
+#+vindex: ghostel-send-files-function
+
+A bridged terminal has no process.  A client package, such as one for a
+terminal multiplexer, writes it the output of a terminal that runs elsewhere
+and receives what is typed into it:
+
+#+begin_src emacs-lisp
+(with-current-buffer (ghostel-make-terminal "*remote*" 24 80)
+  (setq ghostel-pty-out-function #'my-send-bytes     ; typed input and replies
+        ghostel-resize-function #'my-request-size)   ; called with ROWS and COLS
+  (ghostel-write-output "hello\r\n"))                ; output of the remote program
+#+end_src
+
+| =ghostel-make-terminal=       | Make a terminal without a process, in a new buffer or an existing one.               |
+| =ghostel-pty-out-function=    | Receives the outbound bytes: typed input, pastes, and the terminal's replies.        |
+| =ghostel-resize-function=     | Receives the size the windows ask for, instead of the terminal being resized.        |
+| =ghostel-send-files-function= | Receives the local files dropped on or pasted into the terminal.                     |
+| =ghostel-write-output=        | Writes output of the remote program to the terminal.                                 |
+| =ghostel-set-size=            | Gives the terminal the size the remote side decided on.                              |
+| =ghostel-terminal-size=       | The size the terminal was last given, as =(COLS . ROWS)=.                            |
+| =ghostel-window-size=         | The size fitting the windows that show the buffer, as =(COLS . ROWS)=.               |
+| =ghostel-fit-window=          | Sizes a window's terminal to its windows now.                                        |
+| =ghostel-snapshot-restore=    | Loads a libghostty snapshot into a terminal that has seen no output.                 |
+| =ghostel-set-directory=       | Sets the terminal's directory when the client learns it without OSC 7.               |
+| =ghostel-set-command-running= | Records a command's start or end when the client learns it without OSC 133.          |
+| =ghostel-theme-colors=        | The colors of ghostel's faces, for a remote side that answers color queries itself.  |
+
+=ghostel-make-terminal= resets the three functions, so set them after it.  It
+never asks to install the native module and signals an error without one, so
+it is safe in a process filter.  A command that makes terminals calls
+=ghostel-ensure-module= first: it offers to install a missing or stale module
+and signals a =user-error= when none is loaded.  =ghostel-write-output= with
+a non-nil second argument drops the terminal's replies, for a remote side that
+answers the program's queries itself.  =ghostel-set-size= redraws at once, also in copy
+mode, so that output after it is read at the new size.
+=ghostel-send-string= with a non-nil second argument sends bytes that do not
+count as typed: the mark, the input mode and the scroll position stay.
+
 ** Project integration
 :properties:
 :custom_id: project-integration
