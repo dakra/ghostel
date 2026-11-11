@@ -492,6 +492,17 @@ it still snaps point to the cursor."
       (set-window-buffer (selected-window) previous-buffer)
       (kill-buffer buf))))
 
+(ert-deftest evil-ghostel-test-remaps-active-after-reenable ()
+  "Turning the mode off and on in normal state restores the remaps at once."
+  (evil-ghostel-test--with-evil-buffer
+   (evil-normal-state)
+   (evil-ghostel-mode -1)
+   ;; Any command while the mode is off rebuilds evil's keymap cache.
+   (evil-normalize-keymaps)
+   (should (eq 'evil-delete-char (key-binding "x")))
+   (evil-ghostel-mode 1)
+   (should (eq 'evil-ghostel-delete-char (key-binding "x")))))
+
 (ert-deftest evil-ghostel-test-anchor-inhibit-predicate ()
   "`evil-ghostel--anchor-inhibit' vetoes only when roaming off the cursor.
 Fires only where evil-ghostel drives PTY input (`evil-ghostel--prompt-active-p':
@@ -1725,6 +1736,22 @@ live-terminal detection."
        (call-interactively #'evil-ghostel-paste-before)
        (should pasted)))))
 
+(ert-deftest evil-ghostel-test-paste-interactive-passes-register ()
+  "Interactive p/P hand the register chosen with \" to the paste."
+  (evil-ghostel-test--with-evil-buffer
+   (let (args)
+     (cl-letf (((symbol-function 'evil-ghostel--prompt-active-p) (lambda () t))
+               ((symbol-function 'evil-ghostel--do-paste)
+                (lambda (&rest a) (setq args a))))
+       (let ((evil-this-register ?a)
+             (current-prefix-arg 2))
+         (call-interactively #'evil-ghostel-paste-after)
+         (should (equal '(2 ?a t) args))
+         (call-interactively #'evil-ghostel-paste-before)
+         (should (equal '(2 ?a nil) args)))
+       (call-interactively #'evil-ghostel-paste-after)
+       (should (equal '(nil nil t) args))))))
+
 ;; -----------------------------------------------------------------------
 ;; Test: insert-state Ctrl key passthrough
 ;; -----------------------------------------------------------------------
@@ -2315,8 +2342,10 @@ and with `ghostel--send-encoded' captured into the local list `sent'."
   "An out-of-range numeric prefix signals `user-error' and leaves state alone."
   (evil-ghostel-test--with-evil-buffer
    (setq evil-ghostel--escape-mode 'auto)
-   (should-error (evil-ghostel-toggle-send-escape 7) :type 'user-error)
-   (should (eq 'auto evil-ghostel--escape-mode))))
+   (setq evil-ghostel--escape-mode 'evil)
+   (dolist (n '(7 0 -1))
+     (should-error (evil-ghostel-toggle-send-escape n) :type 'user-error)
+     (should (eq 'evil evil-ghostel--escape-mode)))))
 
 (ert-deftest evil-ghostel-test-escape-mode-buffer-local ()
   "Setting the mode in one ghostel buffer must not leak into another."

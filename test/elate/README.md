@@ -394,17 +394,11 @@ for s in motions yank escape modes; do
 - **`~` (toggle-case) on all shells** — evil-ghostel doesn't remap `~`, so vanilla Evil
   edits the `*ghostel*` render buffer; the next redraw repairs it and the typed input
   is unchanged.
-- **`register`** (yank) — `"ap` pastes the latest yank: the paste commands never receive
-  the register.
 - **`p-output-row` / `P-output-row`** (yank) — with point on an output row the paste
   first sends Up arrows, which the shell reads as history recall.
 - **`visual-p`** (yank) — `viw p` appends instead of replacing and stays in visual state.
-- **`mode-toggle`** (modes) — after the mode is turned off and on in normal state, the
-  remaps stay inactive until the next state change.
 - **`cursor-shape`** (modes) — a program's cursor style is not shown in the alternate
   screen; evil's cursor refresh resets it.
-- **`prefix`** (escape) — prefix 0 and negative prefixes select `auto` instead of
-  signalling a `user-error`.
 
 Each is marked `expect: "fail"` so a regression elsewhere still shows red and a future
 fix shows **XPASS**. Everything else passed on bash/zsh/fish/nu (incl. `a X s S p P`,

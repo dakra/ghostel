@@ -820,7 +820,7 @@ unless at end-of-input, where a right arrow would accept a suggestion."
 (defun evil-ghostel-paste-after (&optional count register yank-handler)
   "Paste after the cursor via bracketed paste COUNT times from REGISTER.
 YANK-HANDLER is used by Evil outside live terminal input.  Covers p."
-  (interactive "P")
+  (interactive (list current-prefix-arg evil-this-register))
   (if (evil-ghostel--prompt-active-p)
       (evil-ghostel--do-paste count register t)
     (evil-paste-after count register yank-handler)))
@@ -828,7 +828,7 @@ YANK-HANDLER is used by Evil outside live terminal input.  Covers p."
 (defun evil-ghostel-paste-before (&optional count register yank-handler)
   "Paste before the cursor via bracketed paste COUNT times from REGISTER.
 YANK-HANDLER is used by Evil outside live terminal input.  Covers P."
-  (interactive "P")
+  (interactive (list current-prefix-arg evil-this-register))
   (if (evil-ghostel--prompt-active-p)
       (evil-ghostel--do-paste count register nil)
     (evil-paste-before count register yank-handler)))
@@ -993,7 +993,7 @@ the default."
   (let ((target
          (cond (arg
                 (let ((n (prefix-numeric-value arg)))
-                  (or (nth (1- n) evil-ghostel--escape-modes)
+                  (or (and (> n 0) (nth (1- n) evil-ghostel--escape-modes))
                       (user-error
                        "Invalid prefix %d; use 1 (auto), 2 (terminal), or 3 (evil)"
                        n))))
@@ -1109,7 +1109,10 @@ Enabling installs global advice while any buffer has the mode enabled."
         (advice-add 'ghostel--redraw :around #'evil-ghostel--around-redraw)
         (advice-add 'ghostel--apply-cursor-style :around
                     #'evil-ghostel--override-cursor-style)
-        (evil-refresh-cursor))
+        (evil-refresh-cursor)
+        ;; Evil caches the active keymaps per buffer.
+        (when (bound-and-true-p evil-local-mode)
+          (evil-normalize-keymaps)))
     (remove-hook 'evil-insert-state-entry-hook
                  #'evil-ghostel--insert-state-entry t)
     (remove-hook 'evil-emacs-state-entry-hook

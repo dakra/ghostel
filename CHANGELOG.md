@@ -51,6 +51,13 @@ All notable changes to this project will be documented in this file.
 - evil-ghostel: normal-state point on the cursor's row no longer stops
   following the output when the program draws two or more rows below
   the cursor, such as a status area under its prompt.
+- evil-ghostel: `p` and `P` paste from the register chosen with `"`.
+  They pasted the latest yank.
+- evil-ghostel: turning `evil-ghostel-mode` off and on in normal state
+  restores the terminal-aware operators at once, not after the next
+  state change.
+- evil-ghostel: `evil-ghostel-toggle-send-escape` rejects a zero or
+  negative prefix.  It selected `auto`.
 
 ## [0.63.0] — 2026-11-10
 

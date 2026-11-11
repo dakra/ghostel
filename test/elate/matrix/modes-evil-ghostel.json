@@ -171,7 +171,7 @@
     {"eval": "(eg-modes-await (lambda () (equal cursor-type (quote (bar . 2)))) 5)"},
     {"eval": "(unless (equal cursor-type (quote (bar . 2))) (error \"AFTER ALT CURSOR %S want evil insert bar\" cursor-type))"},
 
-    {"group": "mode-toggle", "comment": "evil-ghostel-mode off then on in normal state: hooks and advice leave and return, vanilla x does not reach the PTY while off; the PTY-routed x remap is not back until a state change (xfail)"},
+    {"group": "mode-toggle", "comment": "evil-ghostel-mode off then on in normal state: hooks and advice leave and return, vanilla x does not reach the PTY while off, and the PTY-routed x remap is back at once"},
     {"eval": "(eg-modes-main)"},
     {"wait": "idle", "min_idle": 0.5, "timeout": 8.0},
     {"type": "echo mt9okZ"},
@@ -185,11 +185,11 @@
     {"eval": "(unless (eq (key-binding \"x\") (quote evil-delete-char)) (error \"OFF REMAP x -> %s\" (key-binding \"x\")))"},
     {"eval": "(evil-ghostel-mode 1)"},
     {"eval": "(unless (and (evil-ghostel--prompt-active-p) (memq (quote evil-ghostel--insert-state-entry) evil-insert-state-entry-hook) (memq (quote evil-ghostel--insert-state-entry) evil-emacs-state-entry-hook) (memq (quote evil-ghostel--anchor-inhibit) ghostel-inhibit-anchor-functions) (advice-member-p (function evil-ghostel--around-redraw) (quote ghostel--redraw)) (advice-member-p (function evil-ghostel--override-cursor-style) (quote ghostel--apply-cursor-style))) (error \"NOT RESTORED\"))"},
-    {"eval": "(unless (eq (key-binding \"x\") (quote evil-ghostel-delete-char)) (error \"ON REMAP x -> %s\" (key-binding \"x\")))", "expect": "fail", "reason": "re-enabling the mode in normal state leaves evil's keymaps unnormalized: x stays evil-delete-char (edits the read-only render buffer) until the next state change; evil-normalize-keymaps at the end of the mode body would fix it"},
+    {"eval": "(unless (eq (key-binding \"x\") (quote evil-ghostel-delete-char)) (error \"ON REMAP x -> %s\" (key-binding \"x\")))"},
     {"keys": "$ x A RET"},
-    {"wait": "text", "pattern": "^mt9ok$", "buffer": "*ghostel*", "timeout": 4.0, "expect": "fail", "reason": "same: the first x after re-enabling edits the render buffer, so the shell still has the Z"},
+    {"wait": "text", "pattern": "^mt9ok$", "buffer": "*ghostel*", "timeout": 4.0},
 
-    {"group": "mode-toggle-resume", "comment": "evil-ghostel-mode off then on from insert state: after the next state change the PTY-routed x works again (shell as oracle)"},
+    {"group": "mode-toggle-resume", "comment": "evil-ghostel-mode off then on from insert state: the PTY-routed x works again (shell as oracle)"},
     {"eval": "(eg-modes-main)"},
     {"wait": "idle", "min_idle": 0.5, "timeout": 8.0},
     {"type": "echo mr10okZ"},
