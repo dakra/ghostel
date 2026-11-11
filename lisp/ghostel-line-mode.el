@@ -197,7 +197,9 @@ literal newline in the input for multi-line prompts."
   "C-a"        #'ghostel-beginning-of-input-or-line
   "TAB"        #'ghostel-line-mode-complete-at-point
   "<tab>"      #'ghostel-line-mode-complete-at-point
-  "<remap> <self-insert-command>" #'ghostel-line-mode-self-insert)
+  "<remap> <self-insert-command>" #'ghostel-line-mode-self-insert
+  "<remap> <kill-line>" #'ghostel-line-mode-kill-line
+  "<remap> <move-end-of-line>" #'ghostel-line-mode-end-of-input-or-line)
 
 (defun ghostel-line-mode-send-or-open-link ()
   "Follow the link at point, or send the current line-mode input."
@@ -241,6 +243,32 @@ read-only scrollback portion, mirroring `ghostel-line-mode-self-insert'."
       (goto-char end)))
   (insert "\n"))
 
+(defun ghostel--line-mode-in-input (fn)
+  "Call FN narrowed to the input when point is inside it, else plainly."
+  (let ((start (and (markerp ghostel--line-input-start)
+                    (marker-position ghostel--line-input-start)))
+        (end (and (markerp ghostel--line-input-end)
+                  (marker-position ghostel--line-input-end))))
+    (if (and start end (<= start (point) end))
+        (save-restriction
+          (narrow-to-region start end)
+          (funcall fn))
+      (funcall fn))))
+
+(defun ghostel-line-mode-kill-line (&optional arg)
+  "Like `kill-line' with ARG, but within the input when point is in it.
+At the end of the input, kill nothing."
+  (interactive "P")
+  (ghostel--line-mode-in-input
+   (lambda ()
+     (unless (and (eobp) (> (prefix-numeric-value arg) 0))
+       (kill-line arg)))))
+
+(defun ghostel-line-mode-end-of-input-or-line (&optional arg)
+  "Like `move-end-of-line' with ARG, but within the input when point is in it."
+  (interactive "^p")
+  (ghostel--line-mode-in-input (lambda () (move-end-of-line arg))))
+
 (defun ghostel--line-mode-prompt-on-screen-p ()
   "Return non-nil when a real OSC 133 prompt char sits on the cursor's row.
 Only a `ghostel-prompt' property counts (no regex or cursor fallback),
@@ -264,17 +292,16 @@ WINDOW's buffer must be current."
              (= wp ghostel--cursor-char-pos))
         (= wp (point-max)))))
 
-(defun ghostel--line-mode-apply-readonly (marker-pos)
-  "Mark `[point-min, MARKER-POS)' read-only with the rear-nonsticky trick.
-The non-sticky flag lands on the last protected character so
-insertion at MARKER-POS itself stays legal while edits inside the
-region still signal `text-read-only'.  Setting `rear-nonsticky' to
-t also stops typed input from inheriting the prompt char's `face'
-\(and any other rendered-style properties libghostty painted on
-it) — without this, text typed after a colored prompt picks up
-the prompt's color until RET."
+(defun ghostel--line-mode-apply-readonly (marker-pos end-pos)
+  "Mark everything outside `[MARKER-POS, END-POS)' read-only.
+Text after END-POS, such as an app's suggestion or status rows, is
+renderer-owned like the scrollback.  Insertion at END-POS stays legal
+because `read-only' is not front-sticky.  Insertion at MARKER-POS stays
+legal because the last character before it is rear-nonsticky, which
+also stops typed input from inheriting the prompt's `face'."
   (let ((inhibit-read-only t))
     (put-text-property (point-min) marker-pos 'read-only t)
+    (put-text-property end-pos (point-max) 'read-only t)
     (when (> marker-pos (point-min))
       (put-text-property (1- marker-pos) marker-pos
                          'rear-nonsticky t))))
@@ -369,7 +396,7 @@ was inside the input region, and left untouched otherwise."
               (insert input)))
           (let ((start-pos (marker-position ghostel--line-input-start))
                 (end-pos (marker-position ghostel--line-input-end)))
-            (ghostel--line-mode-apply-readonly start-pos)
+            (ghostel--line-mode-apply-readonly start-pos end-pos)
             ;; Mark the line-mode input region with `ghostel-input' so
             ;; `ghostel--skip-match-p' skips it on the cursor's
             ;; line — without this, a path the user typed locally
@@ -453,14 +480,15 @@ in line mode (the interactive entry validates these)."
       (use-local-map ghostel-line-mode-map)
       (setq ghostel--mode-line-tag (ghostel--mode-line-tag-make 'line ":Line"))
       (ghostel--mode-line-refresh)
-      ;; Protect everything before the input marker with a read-only
-      ;; text property so commands that would modify the buffer
+      ;; Protect everything outside the input with a read-only text
+      ;; property so commands that would modify the buffer
       ;; (self-insert, delete-char, yank, …) signal `text-read-only'
-      ;; when point is in the scrollback / previous output region.
+      ;; when point is in the scrollback or the rows after the input.
       ;; The redraw path binds `inhibit-read-only' so it is
       ;; unaffected.
       (ghostel--line-mode-apply-readonly
-       (marker-position ghostel--line-input-start))
+       (marker-position ghostel--line-input-start)
+       (marker-position ghostel--line-input-end))
       ;; Make sure the adopted input carries `ghostel-input' (the
       ;; renderer should have applied it for PTY-typed cells; reapply
       ;; for consistency, and so URL detection skips the region even

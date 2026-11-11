@@ -36,8 +36,9 @@ the parallel bash/zsh/fish/python3 sessions from the evil-ghostel rewrite
   shell, on both PTY backends; see the paste section below.
 - `matrix/readonly-evil-ghostel.json` / `matrix/readonly-ghostel.json` — copy and Emacs
   mode entry and exit, with and without evil; see the read-only section below.
-- `matrix/line-suggestion-ghostel.json` — line mode hiding an app-drawn autosuggestion;
-  see the line-suggestion section below.
+- `matrix/line-suggestion-ghostel.json` / `matrix/line-suggestion-evil-ghostel.json` —
+  line mode hiding an app-drawn autosuggestion, and evil operators editing only the input
+  next to it; see the line-suggestion section below.
 
 ## Running (elate 0.11.0+)
 
@@ -263,8 +264,15 @@ it with `read`. Groups: `empty` (no input: the suggestion stays visible), `typin
 input hides it across redraws), `cleared` (deleting the input shows it again), `send` (RET
 sends only the typed input).
 
+`matrix/line-suggestion-evil-ghostel.json` draws the same row under evil-ghostel and edits
+the input in normal state. Groups: `change-line` (`C`), `delete-word` (`dw` on the last
+word), `delete-line` (`dd` clears the input and the suggestion shows again),
+`change-whole-line` (`cc`, then sending sends only the input). Each checks that the app's
+text after the input is untouched.
+
 ```sh
 elate run --keep-going --format json test/elate/matrix/line-suggestion-ghostel.json
+elate run --keep-going --format json test/elate/matrix/line-suggestion-evil-ghostel.json
 ```
 
 ## Paste suite (plain ghostel, TTY 120x40, every shell and both PTY backends)

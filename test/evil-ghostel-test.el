@@ -2012,6 +2012,45 @@ C-d (`ghostel-line-mode-delete-char-or-eof')."
       (should (= bs-count 0))
       (should (equal " world" (buffer-string))))))
 
+;; Line mode: "out" scrollback row, "$ " prompt, input "foo bar" at
+;; 7..14, then app text "Try" on the row and a rule below, read-only
+;; around the input as line mode leaves it.
+(defconst evil-ghostel-test--line-tail-cases
+  '(("dw"  11 (evil-ghostel-delete 11 17 'exclusive) "foo ")
+    ("d$"  7  (evil-ghostel-delete 7 17 'inclusive) "")
+    ("d0"  11 (evil-ghostel-delete 5 11 'exclusive) "bar")
+    ("dd"  9  (evil-ghostel-delete 5 18 'line) "")
+    ("D"   11 (evil-ghostel-delete-line 11 11 nil) "foo ")
+    ("cc"  9  (evil-ghostel-change 5 18 'line) "")
+    ("C"   11 (evil-ghostel-change-line 11 17 'inclusive) "foo "))
+  "Line-mode operator cases: NAME POINT FORM INPUT-AFTER.")
+
+(ert-deftest evil-ghostel-test-line-mode-operators-stay-in-input ()
+  "Line-mode operators whose range runs past the input edit only the input."
+  (dolist (case evil-ghostel-test--line-tail-cases)
+    (pcase-let ((`(,name ,pos ,form ,expected) case))
+      (evil-ghostel-test--with-line-mode "out\n$ foo barTry\n──" 7 14
+        (ghostel--line-mode-apply-readonly 7 14)
+        (evil-normal-state)
+        (goto-char pos)
+        (eval form t)
+        (should (equal (list name (buffer-substring-no-properties
+                                   ghostel--line-input-start
+                                   ghostel--line-input-end)
+                             (buffer-substring-no-properties
+                              ghostel--line-input-end (point-max)))
+                       (list name expected "Try\n──")))))))
+
+(ert-deftest evil-ghostel-test-line-mode-operator-outside-input-unchanged ()
+  "A line-mode operator on a scrollback row is not moved into the input."
+  (evil-ghostel-test--with-line-mode "out\n$ foo barTry\n──" 7 14
+    (ghostel--line-mode-apply-readonly 7 14)
+    (evil-normal-state)
+    (goto-char 2)
+    (should-error (evil-ghostel-delete 1 5 'line) :type 'text-read-only)
+    (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                   "out\n$ foo barTry\n──"))))
+
 ;; -----------------------------------------------------------------------
 ;; Test: evil-undo advice
 ;; -----------------------------------------------------------------------

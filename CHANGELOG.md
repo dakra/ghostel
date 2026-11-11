@@ -30,6 +30,11 @@ All notable changes to this project will be documented in this file.
 - Line mode hides an autosuggestion the program drew after the cursor,
   such as Claude Code's, while the input is non-empty.  Typing pushed it
   to the right of the input.
+- In line mode the text after the input, such as an app's status rows,
+  is read-only, and `kill-line` and `move-end-of-line` stop at the end of
+  the input.  `C-k` deleted the app's text and joined its rows.
+- evil-ghostel operators in line mode edit only the input; `dd` and `cc`
+  clear it.  Operators reaching past the input deleted the app's text.
 
 ## [0.63.0] — 2026-11-10
 
