@@ -52,8 +52,9 @@ current.  Remove `ghostel-ding' to silence the bell."
 Each function is called with TITLE and BODY, strings, the originating
 terminal buffer current.  Runs for OSC 9 / OSC 777, TITLE empty for
 OSC 9, and through `ghostel-status-notify' for program status changes.
-OSC 9 / OSC 777 are skipped from a program's first OSC 7501 report until
-its root `clear', the next shell-integration prompt or process exit.
+OSC 9 / OSC 777 are skipped from a program's first OSC 7501 report, or
+a non-empty `ghostel-set-program-status', until its root `clear', an empty
+`ghostel-set-program-status', the next shell-integration prompt or process exit.
 Runs via `run-at-time', so handlers may block without stalling the terminal."
   :type 'hook
   :group 'ghostel)
@@ -149,7 +150,11 @@ A key of `spinner-types' from spinner.el, or nil for the plain
 
 (defvar-local ghostel-status--osc7501-seen nil
   "Non-nil while the program reports its status with OSC 7501.
-Set by a report, cleared by a root `clear', a new prompt, process exit or RIS.")
+Set by a report or a non-empty `ghostel-set-program-status', cleared by a
+root `clear', an empty one, a new prompt, process exit or RIS.")
+
+(defvar ghostel-status-inhibit-notify nil
+  "Non-nil while status changes must not notify.")
 
 (defun ghostel-default-notify (title body)
   "Show TITLE and BODY with `alert', else `message'.
@@ -317,6 +322,19 @@ dropped by `ghostel-status-acknowledge' leaves the walk."
 (defconst ghostel-status--kinds '(permission question auth)
   "OSC 7501 kinds accepted from the native module.")
 
+(defun ghostel-status--valid-record (record)
+  "Return the record plist RECORD with its values checked.
+An unknown state becomes `idle'; an invalid or unknown kind is dropped."
+  (let ((state (plist-get record :state))
+        (progress (plist-get record :progress)))
+    (ghostel-status--record
+     (if (memq state ghostel-status--urgency) state 'idle)
+     :kind (car (memq (plist-get record :kind) ghostel-status--kinds))
+     :progress (and (natnump progress) (<= progress 100) progress)
+     :app (plist-get record :app)
+     :title (plist-get record :title)
+     :msg (plist-get record :msg))))
+
 (defun ghostel--osc-program-status (state id kind progress app title msg)
   "Apply an OSC 7501 report from the native module.
 STATE is the state name.  ID, KIND, APP, TITLE and MSG are strings or nil;
@@ -327,11 +345,36 @@ PROGRESS is an integer or nil."
         (ghostel-status--clear id)
       (setq ghostel-status--osc7501-seen t)
       (ghostel-status--set
-         id (ghostel-status--record state
-                                    :kind (car (memq (intern-soft kind)
-                                                     ghostel-status--kinds))
-                                    :progress progress :app app
-                                    :title title :msg msg)))))
+       id (ghostel-status--valid-record
+           (list :state state :kind (intern-soft kind) :progress progress
+                 :app app :title title :msg msg))))))
+
+(defun ghostel-set-program-status (records &optional quiet)
+  "Replace the current terminal's program status records with RECORDS.
+For a bridged terminal whose far end keeps the records.  RECORDS is a list
+of (ID . RECORD), most recently updated first: ID a string, \"\" for the root,
+RECORD a plist as described in `ghostel-program-status-functions'.
+An unknown state counts as `idle'. An unknown or invalid kind is dropped.
+`ghostel-program-status-functions' runs only for records added, changed
+or removed.  With non-nil QUIET none of these changes notifies."
+  (let* ((new (seq-take
+               (mapcar (lambda (entry)
+                         (cons (car entry)
+                               (ghostel-status--valid-record (cdr entry))))
+                       records)
+               ghostel-status--max-records))
+         (old ghostel-program-status)
+         (ghostel-status-inhibit-notify (or quiet ghostel-status-inhibit-notify)))
+    (setq ghostel-program-status new
+          ghostel-status--osc7501-seen (and new t))
+    (dolist (entry old)
+      (unless (assoc (car entry) new)
+        (ghostel-status--change (car entry) (cdr entry) nil)))
+    (pcase-dolist (`(,id . ,record) new)
+      (let ((was (cdr (assoc id old))))
+        (unless (equal was record)
+          (ghostel-status--change id was record))))
+    (ghostel-status--acknowledge-seen)))
 
 (defun ghostel--osc-progress (state progress)
   "Apply a ConEmu OSC 9;4 report from the native module to the root record.
@@ -467,9 +510,11 @@ lone root record working without a percentage runs a spinner when
 (defun ghostel-status-attention-p (old new)
   "Non-nil when a record changing from OLD to NEW needs your attention.
 That is, NEW enters a `ghostel-status-notify-states' state OLD did not
-have, and the current buffer is not the one being looked at."
+have, the current buffer is not the one being looked at, and
+`ghostel-status-inhibit-notify' is nil."
   (let ((state (plist-get new :state)))
-    (and (memq state ghostel-status-notify-states)
+    (and (not ghostel-status-inhibit-notify)
+         (memq state ghostel-status-notify-states)
          (not (eq state (plist-get old :state)))
          (not (ghostel-buffer-focused-p (current-buffer))))))
 

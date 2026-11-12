@@ -1053,6 +1053,9 @@ default members:
                                (symbol-name (plist-get new :state)))
                            :buttons (eq (plist-get new :kind) 'permission)))))
   #+end_src
+  =ghostel-status-attention-p= is nil while =ghostel-status-inhibit-notify= is
+  non-nil, as during a quiet =ghostel-set-program-status=; a member that
+  notifies on its own condition checks that variable.
 
 A root record's =title= takes the place of the OSC 2 title in =ghostel-title=
 and the buffer name.
@@ -2375,6 +2378,7 @@ identity without one.
 #+findex: ghostel-snapshot-restore
 #+findex: ghostel-set-directory
 #+findex: ghostel-set-command-running
+#+findex: ghostel-set-program-status
 #+findex: ghostel-theme-colors
 #+findex: ghostel-ensure-module
 #+vindex: ghostel-pty-out-function
@@ -2404,6 +2408,7 @@ and receives what is typed into it:
 | =ghostel-snapshot-restore=    | Loads a libghostty snapshot into a terminal that has seen no output.                 |
 | =ghostel-set-directory=       | Sets the terminal's directory when the client learns it without OSC 7.               |
 | =ghostel-set-command-running= | Records a command's start or end when the client learns it without OSC 133.          |
+| =ghostel-set-program-status=  | Replaces the program status records with those the remote side keeps.                |
 | =ghostel-theme-colors=        | The colors of ghostel's faces, for a remote side that answers color queries itself.  |
 
 =ghostel-make-terminal= resets the three functions, so set them after it.  It
@@ -2414,6 +2419,10 @@ and signals a =user-error= when none is loaded.  =ghostel-write-output= with
 a non-nil second argument drops the terminal's replies, for a remote side that
 answers the program's queries itself.  =ghostel-set-size= redraws at once, also in copy
 mode, so that output after it is read at the new size.
+=ghostel-set-program-status= takes a list of =(ID . RECORD)= as in
+=ghostel-program-status= and runs =ghostel-program-status-functions= only for
+records added, changed or removed; with a non-nil second argument none of
+them notifies.
 =ghostel-send-string= with a non-nil second argument sends bytes that do not
 count as typed: the mark, the input mode and the scroll position stay.
 

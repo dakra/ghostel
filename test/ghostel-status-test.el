@@ -528,6 +528,123 @@ Equal labels count together with a tooltip line each."
       (ghostel-status-test--report "clear")
       (should (equal "zsh" ghostel-title)))))
 
+;;; Setting the records as a whole
+
+(ert-deftest ghostel-status-test-set-replaces-records ()
+  "Setting runs the hook for additions, changes and removals, not equal records."
+  (ghostel-status-test--with-log log
+    (ghostel-status-test--report "working" "same" nil 10)
+    (ghostel-status-test--report "working" "changed")
+    (ghostel-status-test--report "done" "gone")
+    (setq log nil)
+    (ghostel-set-program-status
+     '(("added" :state blocked :kind question)
+       ("changed" :state done)
+       ("same" :state working :progress 10)))
+    (should (equal '(("added" :state blocked :kind question)
+                     ("changed" :state done)
+                     ("same" :state working :progress 10))
+                   ghostel-program-status))
+    (should (equal '(("gone" (:state done) nil)
+                     ("added" nil (:state blocked :kind question))
+                     ("changed" (:state working) (:state done)))
+                   (nreverse log)))
+    (setq log nil)
+    (ghostel-set-program-status ghostel-program-status)
+    (should-not log)))
+
+(ert-deftest ghostel-status-test-set-keeps-child-of-removed-parent ()
+  "Removing a parent leaves a child the new records keep."
+  (ghostel-status-test--with-log log
+    (ghostel-status-test--report "working" "deploy")
+    (ghostel-status-test--report "blocked" "deploy/eu" "permission")
+    (setq log nil)
+    (ghostel-set-program-status '(("deploy/eu" :state blocked :kind permission)))
+    (should (equal '(("deploy/eu" :state blocked :kind permission))
+                   ghostel-program-status))
+    (should (equal '(("deploy" (:state working) nil)) log))))
+
+(ert-deftest ghostel-status-test-set-validates-records ()
+  "An unknown state counts as idle; unknown kinds and out-of-range progress drop."
+  (ghostel-status-test--with-log log
+    (ghostel-set-program-status
+     '(("a" :state bogus :msg "m")
+       ("b" :state clear)
+       ("c" :state blocked :kind bogus :progress 101)
+       ("d" :state working :progress -1)
+       ("e" :state working :progress 100)))
+    (should (equal '(("a" :state idle :msg "m")
+                     ("b" :state idle)
+                     ("c" :state blocked)
+                     ("d" :state working)
+                     ("e" :state working :progress 100))
+                   ghostel-program-status))))
+
+(ert-deftest ghostel-status-test-set-quiet-does-not-notify ()
+  "A quiet set notifies nobody; the hooks still see the attention states."
+  (let ((calls nil)
+        (seen nil))
+    (cl-letf (((symbol-function 'ghostel--defer)
+               (lambda (fn &rest args) (apply fn args)))
+              ((symbol-function 'ghostel-buffer-focused-p) #'ignore)
+              (ghostel-notification-functions
+               (list (lambda (title body) (push (cons title body) calls)))))
+      (ghostel-status-test--with-terminals (a)
+        (let ((ghostel-program-status-functions
+               (list #'ghostel-status-notify
+                     (lambda (&rest _)
+                       (push (list ghostel-status-notify-states
+                                   (ghostel-status-buffers))
+                             seen)))))
+          (with-current-buffer a
+            (ghostel-set-program-status
+             '(("" :state blocked :app "agent") ("x" :state done)) t)
+            (should-not calls)
+            (should (equal (make-list 2 (list '(blocked done error) (list a)))
+                           seen))
+            ;; Without QUIET it notifies as a live report does.
+            (ghostel-set-program-status
+             '(("" :state blocked :app "agent") ("x" :state error)))
+            (should (equal '(("agent" . "error")) calls))))))))
+
+(ert-deftest ghostel-status-test-set-silences-osc9 ()
+  "Records set count as OSC 7501 use; an empty set accepts OSC 9 again."
+  (let ((calls nil)
+        (ghostel-program-status-functions nil))
+    (cl-letf (((symbol-function 'ghostel--defer)
+               (lambda (fn &rest args) (apply fn args)))
+              (ghostel-notification-functions
+               (list (lambda (title body) (push (cons title body) calls)))))
+      (with-temp-buffer
+        (ghostel-set-program-status '(("" :state working)))
+        (ghostel--handle-notification "T" "set")
+        (ghostel--osc-progress "set" 50)
+        (should-not calls)
+        (should (equal '(("" :state working)) ghostel-program-status))
+        (ghostel-set-program-status nil)
+        (ghostel--handle-notification "T" "empty")
+        (should (equal '(("T" . "empty")) calls))))))
+
+(ert-deftest ghostel-status-test-set-root-title ()
+  "The set root record's title shows as `ghostel-title' until it goes."
+  (let ((ghostel-program-status-functions nil))
+    (with-temp-buffer
+      (ghostel--set-title "shell")
+      (ghostel-set-program-status '(("" :state working :title "Deploying")))
+      (should (equal "Deploying" ghostel-title))
+      (ghostel-set-program-status '(("x" :state working)))
+      (should (equal "shell" ghostel-title)))))
+
+(ert-deftest ghostel-status-test-set-acknowledges-when-seen ()
+  "With `seen', finished records set into the buffer looked at go at once."
+  (let ((ghostel-status-auto-acknowledge 'seen))
+    (cl-letf (((symbol-function 'ghostel-buffer-focused-p) (lambda (_) t)))
+      (ghostel-status-test--with-log log
+        (ghostel-set-program-status
+         '(("a" :state working) ("b" :state done) ("c" :state error)))
+        (should (equal '(("a" :state working)) ghostel-program-status))
+        (should (member '("b" (:state done) nil) log))))))
+
 (ert-deftest ghostel-status-test-osc7501-report-reaches-store ()
   "An OSC 7501 report from the PTY becomes a record with decoded text."
   :tags '(native)
