@@ -5782,15 +5782,14 @@ The program status as in the buffer's mode line, the text of
 `ghostel-annotation-title-width' columns."
   (when-let* ((buffer (get-buffer name)))
     (with-current-buffer buffer
-      (let ((status (ghostel-status--text))
+      (let ((status (ghostel-status-label ghostel-program-status))
             (extra (and ghostel-annotation-function
                         (condition-case-unless-debug nil
                             (funcall ghostel-annotation-function)
                           (error nil))))
             (title ghostel-title))
         (when (or status extra title)
-          ;; The label quotes percents for the mode line.
-          (concat (and status (string-replace "%%" "%" status))
+          (concat status
                   (and extra (concat "  " extra))
                   (when title
                     (concat "  " (if ghostel-annotation-title-width

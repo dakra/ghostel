@@ -305,11 +305,13 @@ dropped by `ghostel-status-acknowledge' leaves the walk."
                   "No terminal needs attention"
                   "Only this terminal needs attention"))
 
-(defun ghostel-status-app (id)
-  "Return the app of record ID, inherited from the nearest ancestor that has one."
-  (or (plist-get (cdr (assoc id ghostel-program-status)) :app)
-      (and (not (string-empty-p id))
-           (ghostel-status-app (string-trim-right id "/?[^/]*")))))
+(defun ghostel-status-app (id &optional records)
+  "Return the app of record ID, inherited from the nearest ancestor that has one.
+RECORDS is the (ID . RECORD) list to search, default `ghostel-program-status'."
+  (let ((records (or records ghostel-program-status)))
+    (or (plist-get (cdr (assoc id records)) :app)
+        (and (not (string-empty-p id))
+             (ghostel-status-app (string-trim-right id "/?[^/]*") records)))))
 
 (defun ghostel-status--record (state &rest props)
   "Return a record plist with STATE and the non-nil values in PROPS."
@@ -407,11 +409,13 @@ libghostty reports `clear' for every record on RIS by itself."
 (defvar ghostel-status--spinner-available (locate-library "spinner")
   "Non-nil when spinner.el was on `load-path' at load time.")
 
-(defun ghostel-status--describe (entry)
-  "Return the message, title or app of the (ID . RECORD) ENTRY, or nil."
+(defun ghostel-status--describe (entry records)
+  "Return the message, title or app of the (ID . RECORD) ENTRY, or nil.
+An entry without an app inherits one from an ancestor in RECORDS."
   (or (plist-get (cdr entry) :msg)
       (plist-get (cdr entry) :title)
-      (ghostel-status-app (car entry))))
+      ;; ENTRY first, so a record with the same ID never lends its app.
+      (ghostel-status-app (car entry) (cons entry records))))
 
 (defun ghostel-status--labels-alist ()
   "Return the label alist `ghostel-status-mode-line-labels' selects."
@@ -423,13 +427,11 @@ libghostty reports `clear' for every record on RIS by itself."
               ghostel-status-word-labels))
     (alist alist)))
 
-(defun ghostel-status--label (entries &optional tip)
-  "Return the mode-line text for the (ID . RECORD) list ENTRIES, or nil.
+(defun ghostel-status--label (entries tip)
+  "Return the label for the (ID . RECORD) list ENTRIES, or nil.
 The first entry's record gives the state; the others only add to the count.
-TIP is the list of help-echo lines, by default what
-`ghostel-status--describe' says of each entry."
+TIP is the list of help-echo lines."
   (let* ((record (cdar entries))
-         (tip (or tip (delq nil (mapcar #'ghostel-status--describe entries))))
          (state (plist-get record :state))
          (progress (plist-get record :progress))
          (kind (plist-get record :kind))
@@ -440,16 +442,13 @@ TIP is the list of help-echo lines, by default what
          (count (length entries))
          (several (> count 1)))
     (when spec
-      ;; The mode line reads "%]" as a construct; a bare percent is lost.
       (propertize (concat
                    " "
-                   (string-replace
-                    "%" "%%"
-                    (format-spec spec `((?p . ,(or progress 0))
-                                        (?k . ,(if kind (symbol-name kind) ""))
-                                        (?n . ,count)
-                                        (?c . ,(if several count ""))
-                                        (?x . ,(if several (format " ×%d" count) ""))))))
+                   (format-spec spec `((?p . ,(or progress 0))
+                                       (?k . ,(if kind (symbol-name kind) ""))
+                                       (?n . ,count)
+                                       (?c . ,(if several count ""))
+                                       (?x . ,(if several (format " ×%d" count) "")))))
                   'face (pcase state
                           ('blocked 'warning)
                           ('error 'error)
@@ -459,7 +458,7 @@ TIP is the list of help-echo lines, by default what
 (defun ghostel-status--labels (items)
   "Return one label per distinct label among ITEMS, counted, or nil.
 ITEMS are (ENTRY . TIP) most urgent first, ENTRY an (ID . RECORD) and
-TIP its help-echo line, nil for what `ghostel-status--describe' says."
+TIP its help-echo line or nil."
   (let ((parts (delq nil (mapcar
                           (lambda (group)
                             (ghostel-status--label
@@ -467,20 +466,26 @@ TIP its help-echo line, nil for what `ghostel-status--describe' says."
                              (delq nil (mapcar #'cdr (cdr group)))))
                           (seq-group-by
                            (lambda (item)
-                             (ghostel-status--label (list (car item)) '("")))
+                             (ghostel-status--label (list (car item)) nil))
                            items)))))
     (and parts (apply #'concat parts))))
 
-(defun ghostel-status--text ()
-  "Return the mode-line text for the records of the current terminal, or nil.
-One label per distinct label, most urgent first, counted when several
-records read the same."
-  (ghostel-status--labels
-   (mapcar #'list (seq-sort-by
-                   (lambda (entry)
-                     (cl-position (plist-get (cdr entry) :state)
-                                  ghostel-status--urgency))
-                   #'< ghostel-program-status))))
+(defun ghostel-status-label (records)
+  "Return the mode-line label for RECORDS, or nil if none.
+RECORDS is a list of (ID . RECORD) as `ghostel-set-program-status' takes;
+it may mix terminals and repeat IDs.  A record without an app inherits
+that of the first ancestor ID in RECORDS that has one."
+  (let ((records (mapcar (lambda (entry)
+                           (cons (car entry)
+                                 (ghostel-status--valid-record (cdr entry))))
+                         records)))
+    (ghostel-status--labels
+     (mapcar (lambda (entry)
+               (cons entry (ghostel-status--describe entry records)))
+             (seq-sort-by (lambda (entry)
+                            (cl-position (plist-get (cdr entry) :state)
+                                         ghostel-status--urgency))
+                          #'< records)))))
 
 (defun ghostel-status-mode-line (_id _old _new)
   "Show the program status in `mode-line-process'.
@@ -501,7 +506,10 @@ lone root record working without a percentage runs a spinner when
       (when ghostel--spinner-active
         (ignore-errors (spinner-stop))
         (setq ghostel--spinner-active nil))
-      (setq ghostel--mode-line-status (ghostel-status--text)))
+      ;; Double each % for the mode line, keeping its text properties.
+      (setq ghostel--mode-line-status
+            (when-let* ((text (ghostel-status-label ghostel-program-status)))
+              (replace-regexp-in-string "%" (lambda (m) (concat m m)) text t t))))
     (ghostel--mode-line-refresh)))
 
 
@@ -565,7 +573,9 @@ else the newest record that does; TIP names BUFFER and the record."
                              :key (lambda (entry)
                                     (plist-get (cdr entry) :state))))))
       (cons entry (format "%s: %s" (buffer-name)
-                          (or (ghostel-status--describe entry) state))))))
+                          (or (ghostel-status--describe
+                               entry ghostel-program-status)
+                              state))))))
 
 (defun ghostel-status--indicator-text ()
   "Return one label per distinct terminal label, with its count, or nil.

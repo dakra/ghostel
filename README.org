@@ -2379,6 +2379,7 @@ identity without one.
 #+findex: ghostel-set-directory
 #+findex: ghostel-set-command-running
 #+findex: ghostel-set-program-status
+#+findex: ghostel-status-label
 #+findex: ghostel-theme-colors
 #+findex: ghostel-ensure-module
 #+vindex: ghostel-pty-out-function
@@ -2409,6 +2410,7 @@ and receives what is typed into it:
 | =ghostel-set-directory=       | Sets the terminal's directory when the client learns it without OSC 7.               |
 | =ghostel-set-command-running= | Records a command's start or end when the client learns it without OSC 133.          |
 | =ghostel-set-program-status=  | Replaces the program status records with those the remote side keeps.                |
+| =ghostel-status-label=        | The label the mode line shows for program status records, also without a buffer.     |
 | =ghostel-theme-colors=        | The colors of ghostel's faces, for a remote side that answers color queries itself.  |
 
 =ghostel-make-terminal= resets the three functions, so set them after it.  It
@@ -2422,7 +2424,9 @@ mode, so that output after it is read at the new size.
 =ghostel-set-program-status= takes a list of =(ID . RECORD)= as in
 =ghostel-program-status= and runs =ghostel-program-status-functions= only for
 records added, changed or removed; with a non-nil second argument none of
-them notifies.
+them notifies.  =ghostel-status-label= takes the same list, of one terminal or
+several, and returns the label with its percent signs not doubled, or nil
+when nothing shows.
 =ghostel-send-string= with a non-nil second argument sends bytes that do not
 count as typed: the mark, the input mode and the scroll position stay.
 

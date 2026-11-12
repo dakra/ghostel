@@ -237,12 +237,12 @@
             (ghostel-status-test--report "working" nil nil 42)
             ;; The root stands for the terminal over a newer child.
             (ghostel-status-test--report "working" "child"))
-          (should (equal " [working] [42%%]" ghostel-status--indicator))
+          (should (equal " [working] [42%]" ghostel-status--indicator))
           (should-not (ghostel-status-buffers))
           (should (eq 'working (ghostel-status-buffer-state a '(working))))
           (should (equal (list a b) (ghostel-status-buffers '(working))))
           (with-current-buffer a (ghostel-status--drop-running))
-          (should (equal " [42%%]" ghostel-status--indicator))
+          (should (equal " [42%]" ghostel-status--indicator))
           (dolist (states '((done) nil))
             (let ((ghostel-status-indicator-states states))
               (ghostel-status--update-indicator)
@@ -332,6 +332,7 @@ mode line and the picker."
             (progress . "%%%p") (done . "%%D%c")))
     (ghostel-status-test--report "blocked" nil "permission")
     (should (equal " %%P1" ghostel--mode-line-status))
+    (should (eq 'warning (get-text-property 2 'face ghostel--mode-line-status)))
     (should (equal " %P1" (ghostel-annotate-buffer (buffer-name))))
     (ghostel-status-test--report "blocked" nil "auth")
     (should (equal " %%Bauth" ghostel--mode-line-status))
@@ -398,6 +399,43 @@ Equal labels count together with a tooltip line each."
       (should (equal "root" (ghostel-status-app "missing/child")))
       (ghostel-status-test--report "clear")
       (should-not (ghostel-status-app "x")))))
+
+(ert-deftest ghostel-status-test-label-mixed-records ()
+  "Records of several terminals label most urgent first, equal labels counted.
+A record without text inherits its app from an ancestor in RECORDS only."
+  (let ((ghostel-status-mode-line-labels 'words)
+        (records '(("" :state working :progress 42 :app "deploy")
+                   ("eu" :state blocked :kind permission :msg "Approve eu")
+                   ("us" :state done)
+                   ("eu" :state done)
+                   ("x" :state blocked :kind question))))
+    (with-temp-buffer
+      (setq ghostel-program-status '(("" :state idle :app "local")))
+      (let ((label (ghostel-status-label records)))
+        (should (equal " [blocked: permission] [blocked: question] [done ×2] [42%]"
+                       label))
+        (should (eq 'warning (get-text-property 1 'face label)))
+        (should (equal "Approve eu" (get-text-property 1 'help-echo label)))
+        (should (equal "deploy" (get-text-property 23 'help-echo label)))
+        (should (equal "deploy\ndeploy" (get-text-property 44 'help-echo label)))
+        (should (eq 'success (get-text-property 44 'face label))))
+      (should-not (get-text-property
+                   1 'help-echo (ghostel-status-label '(("" :state done :app "claude")
+                                                        ("" :state blocked)))))
+      (should (equal "claude\ncodex"
+                     (get-text-property
+                      1 'help-echo
+                      (ghostel-status-label '(("" :state done :app "claude")
+                                              ("" :state done :app "codex")))))))))
+
+(ert-deftest ghostel-status-test-label-checks-records ()
+  "An unknown state counts as idle, an unknown kind as none; idle shows nothing."
+  (let ((ghostel-status-mode-line-labels 'words))
+    (should (equal " [blocked]"
+                   (ghostel-status-label '(("" :state bogus)
+                                           ("a" :state blocked :kind bogus)
+                                           ("b" :state "done")))))
+    (should-not (ghostel-status-label '(("" :state idle) ("a" :state idle))))))
 
 (ert-deftest ghostel-status-test-mode-line-keeps-input-mode-tag ()
   "Status text composes with the input-mode tag in `mode-line-process'."
