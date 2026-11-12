@@ -1,13 +1,13 @@
 {
   "name": "kitty-ghostel",
-  "comment": "Kitty graphics placements as rendered into the ghostel buffer: a pinned image, relative placements (P=/Q=/H=/V=) rooted at it including left-edge clipping and off-screen children, deletion, the overlay display path on empty rows, unicode-placeholder (virtual) placements, and eviction of a placement whose rows left the scrollback limit. Structural assertions on the ghostel-kitty display slices, so no screenshot is needed; the session must be GUI because image display is gated on display-graphic-p.",
+  "comment": "Static Kitty graphics projected by the normal row renderer: pinned and relative placements, blank-row padding, Unicode placeholders, deletion, source cropping, and ordinary scrollback eviction. Assertions inspect PNG image spans in a graphical session.",
   "session": {
     "ui": "gui",
     "size": "80x24",
     "config": "minimal",
     "eval": [
-      "(load \"/Users/daniel/.emacs.d/lib/ghostel/test/elate/lib/ghostel-setup.el\")",
-      "(setq ghostel-shell \"/opt/homebrew/bin/bash\" ghostel-max-scrollback 65536)"
+      "(load \"{{repo}}/test/elate/lib/ghostel-setup.el\")",
+      "(setq ghostel-shell \"/bin/bash\" ghostel-max-scrollback 65536)"
     ]
   },
   "steps": [
@@ -30,7 +30,7 @@
     },
     {
       "group": "pin-relative",
-      "comment": "root 4x2 at col 0; child +1,+2 (2 cols); child H=-2,V=3 clipped to 2 visible cols with slice x=2; children at H=200 and V=100 not drawn"
+      "comment": "Root 4x2; relative children include left clipping and wholly offscreen placements."
     },
     {
       "eval": "(ghostel-elate--vt \"\u001b_Ga=d,d=A,q=2\u001b\\\\0123456789\\n0123456789\\n0123456789\\n0123456789\\n0123456789\\n0123456789\\n\u001b[6A\u001b_Ga=t,i=1,f=24,s=2,v=2,q=2;/wAA/wAA/wAA/wAA\u001b\\\\\u001b_Ga=p,i=1,p=1,c=4,r=2,q=2\u001b\\\\\u001b_Ga=p,i=1,p=2,P=1,Q=1,H=1,V=2,c=2,r=1,q=2\u001b\\\\\u001b_Ga=p,i=1,p=3,P=1,Q=1,H=-2,V=3,c=4,r=1,q=2\u001b\\\\\u001b_Ga=p,i=1,p=4,P=1,Q=1,H=200,V=4,c=2,r=1,q=2\u001b\\\\\u001b_Ga=p,i=1,p=5,P=1,Q=1,H=0,V=100,c=2,r=1,q=2\u001b\\\\\u001b[6B\" \"k1-done\")"
@@ -48,7 +48,7 @@
     },
     {
       "assert": {
-        "eval": "(equal (ghostel-elate--kitty-slices) '((0 0 0 4) (1 0 0 4) (2 1 0 2) (3 0 2 2)))",
+        "eval": "(equal (ghostel-elate--kitty-slices) '((0 0 0 4) (1 0 0 4) (2 1 0 2) (3 0 0 2)))",
         "buffer": "*ghostel*"
       }
     },
@@ -77,8 +77,8 @@
       }
     },
     {
-      "group": "overlay",
-      "comment": "rows shorter than the placement use the before-string overlay path"
+      "group": "blank-row-padding",
+      "comment": "Blank rows are padded and carry image text properties, never image overlays."
     },
     {
       "eval": "(ghostel-elate--vt \"\\n\\n\\n\u001b[3A\u001b_Ga=p,i=1,p=1,c=4,r=2,q=2\u001b\\\\\u001b[3B\" \"k3-done\")"
@@ -125,7 +125,7 @@
       "comment": "U=1 placement drawn on a U+10EEEE placeholder run; d=i removes it"
     },
     {
-      "eval": "(ghostel-elate--vt \"\u001b_Ga=t,i=2,f=24,s=2,v=2,q=2;AAD/AAD/AAD/AAD/\u001b\\\\\u001b_Ga=p,i=2,U=1,c=2,r=1,q=2\u001b\\\\\u001b[38;5;2m􎻮̅̅􎻮̅̍\u001b[0m\\n\" \"k4-done\")"
+      "eval": "(ghostel-elate--vt \"\u001b_Ga=t,i=2,f=24,s=2,v=2,q=2;AAD/AAD/AAD/AAD/\u001b\\\\\u001b_Ga=p,i=2,U=1,c=2,r=1,q=2\u001b\\\\\u001b[38;5;2m􎻮̅̅􎻮̅̍\u001b[0mvirtual-row\\n\" \"k4-done\")"
     },
     {
       "wait": "text",
@@ -140,7 +140,7 @@
     },
     {
       "assert": {
-        "eval": "(let ((l (save-excursion (goto-char (point-min)) (search-forward (string #x10EEEE)) (line-number-at-pos)))) (equal (ghostel-elate--kitty-cells) (list (cons l 0))))",
+        "eval": "(let ((line (save-excursion (goto-char (point-min)) (re-search-forward \"^  virtual-row$\") (line-number-at-pos)))) (equal (ghostel-elate--kitty-cells) (list (cons line 0))))",
         "buffer": "*ghostel*"
       }
     },
@@ -199,12 +199,12 @@
     },
     {
       "wait": "idle",
-      "min_idle": 1.0,
+      "min_idle": 1,
       "timeout": 10
     },
     {
       "assert": {
-        "eval": "(and (null (ghostel-elate--kitty-cells)) (not ghostel--kitty-active))",
+        "eval": "(null (ghostel-elate--kitty-cells))",
         "buffer": "*ghostel*"
       }
     },
@@ -213,7 +213,7 @@
       "comment": "3-row virtual placement (U=1, c=2,r=3) pushed out of the 24-row window by 40 trailing lines in one feed; rows that leave the active area between redraws must still be tagged"
     },
     {
-      "eval": "(ghostel-elate--vt \"\u001b_Ga=t,f=100,i=3,q=2;iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAE0lEQVR4nGP4z8AAQmAKSDAwAAA/0gX7BydG0gAAAABJRU5ErkJggg==\u001b\\\\\u001b_Ga=p,i=3,U=1,c=2,r=3,q=2\u001b\\\\\u001b[38;5;3m􎻮̅̅􎻮̅̍\n􎻮̍̅􎻮̍̍\n􎻮̎̅􎻮̎̍\u001b[0m\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n\" \"k6-done\")"
+      "eval": "(ghostel-elate--vt (concat (ghostel-elate--kitty-solid 3 2 3) \"\u001b_Ga=p,i=3,U=1,c=2,r=3,q=2\u001b\\\\\u001b[38;5;3m􎻮̅̅􎻮̅̍\n􎻮̍̅􎻮̍̍\n􎻮̎̅􎻮̎̍\u001b[0m\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n0123456789\n\") \"k6-done\")"
     },
     {
       "wait": "text",
@@ -228,19 +228,19 @@
     },
     {
       "assert": {
-        "eval": "(let* ((ch (default-font-height)) (cells (ghostel-elate--kitty-cells)) (slices (ghostel-elate--kitty-slices)) (vp-line (line-number-at-pos (or (ghostel--viewport-start) (point-min)))) (ys (mapcar (lambda (c) (save-excursion (goto-char (point-min)) (forward-line (1- (car c))) (move-to-column (cdr c)) (/ (nth 2 (car (get-text-property (point) 'display))) ch))) cells))) (and (= (length cells) 3) (equal ys '(0 1 2)) (equal (mapcar (lambda (s) (nth 3 s)) slices) '(2 2 2)) (not (memq nil (mapcar (lambda (c) (< (car c) vp-line)) cells)))))",
+        "eval": "(let* ((cells (ghostel-elate--kitty-cells)) (slices (ghostel-elate--kitty-slices)) (vp-line (line-number-at-pos (or (ghostel--viewport-start) (point-min))))) (and (= (length cells) 3) (equal (mapcar (lambda (s) (nth 3 s)) slices) '(2 2 2)) (seq-every-p (lambda (c) (< (car c) vp-line)) cells)))",
         "buffer": "*ghostel*"
       }
     },
     {
       "assert": {
-        "eval": "(let ((ok t)) (save-excursion (goto-char (point-min)) (while (and ok (search-forward (string #x10EEEE) nil t)) (unless (get-text-property (match-beginning 0) 'ghostel-kitty) (setq ok nil)))) ok)",
+        "eval": "(let ((cells (ghostel-elate--kitty-cells))) (and (= (length cells) 3) (seq-every-p (lambda (cell) (save-excursion (goto-char (point-min)) (forward-line (1- (car cell))) (move-to-column (cdr cell)) (equal (buffer-substring-no-properties (point) (+ (point) 2)) \"  \"))) cells)))",
         "buffer": "*ghostel*"
       }
     },
     {
       "group": "virtual-two-images",
-      "comment": "two virtual placements (U=1, c=2,r=1 each) on one line, ab<run-A>xy<run-B>; runs are located by placeholder ordinal and resolved to their own image"
+      "comment": "Disjoint placeholder runs show distinct source images while intervening text remains visible."
     },
     {
       "eval": "(ghostel-elate--vt \"\u001b_Ga=t,i=4,f=24,s=2,v=2,q=2;/wAA/wAA/wAA/wAA\u001b\\\\\u001b_Ga=t,i=5,f=24,s=2,v=2,q=2;AAD/AAD/AAD/AAD/\u001b\\\\\u001b_Ga=p,i=4,U=1,c=2,r=1,q=2\u001b\\\\\u001b_Ga=p,i=5,U=1,c=2,r=1,q=2\u001b\\\\ab\u001b[38;5;4m􎻮̅̅􎻮̅̍\u001b[0mxy\u001b[38;5;5m􎻮̅̅􎻮̅̍\u001b[0m\n\" \"k7-done\")"
@@ -258,7 +258,7 @@
     },
     {
       "assert": {
-        "eval": "(let* ((cw (default-font-width)) (all (ghostel-elate--kitty-cells)) (line (car (car (last all)))) (cells (seq-filter (lambda (c) (= (car c) line)) all)) (pos (lambda (c) (save-excursion (goto-char (point-min)) (forward-line (1- (car c))) (move-to-column (cdr c)) (point)))) (p1 (funcall pos (nth 0 cells))) (p2 (funcall pos (nth 1 cells))) (e1 (next-single-property-change p1 'ghostel-kitty nil p2)) (spec1 (get-text-property p1 'display)) (spec2 (get-text-property p2 'display))) (and (= (length cells) 2) (= (/ (nth 3 (car spec1)) cw) 2) (= (/ (nth 3 (car spec2)) cw) 2) (equal (buffer-substring-no-properties e1 p2) \"xy\") (not (get-text-property e1 'display)) (not (equal (image-property (nth 1 spec1) :data) (image-property (nth 1 spec2) :data)))))",
+        "eval": "(let* ((cw (default-font-width)) (all (ghostel-elate--kitty-cells)) (line (car (car (last all)))) (cells (seq-filter (lambda (c) (= (car c) line)) all)) (pos (lambda (c) (save-excursion (goto-char (point-min)) (forward-line (1- (car c))) (move-to-column (cdr c)) (point)))) (p1 (funcall pos (nth 0 cells))) (p2 (funcall pos (nth 1 cells))) (e1 (next-single-property-change p1 'ghostel-kitty nil p2)) (img1 (get-text-property p1 'display)) (img2 (get-text-property p2 'display))) (and (= (length cells) 2) (= (nth 3 (car img1)) (* 2 cw)) (= (nth 3 (car img2)) (* 2 cw)) (equal (buffer-substring-no-properties e1 p2) \"xy\") (not (get-text-property e1 'display)) (not (equal img1 img2))))",
         "buffer": "*ghostel*"
       }
     },
@@ -282,7 +282,7 @@
     },
     {
       "assert": {
-        "eval": "(let ((tail (last (ghostel-elate--kitty-slices) 2))) (and (equal (mapcar #'cdr tail) '((0 0 4) (0 0 4))) (= (car (nth 1 tail)) (1+ (car (nth 0 tail)))) (equal (car (last (ghostel-elate--kitty-data))) \"P6\\n2 2\\n255\\n\\377\\0\\0\\0\\0\\377\\0\\377\\0\\377\\377\\377\") (not ghostel--kitty-last-error)))",
+        "eval": "(let ((tail (last (ghostel-elate--kitty-slices) 2))) (and (= (length tail) 2) (equal (mapcar #'cdr tail) '((0 0 4) (0 0 4))) (= (car (nth 1 tail)) (1+ (car (nth 0 tail)))) (seq-every-p (lambda (data) (equal (substring data 0 8) (unibyte-string 137 80 78 71 13 10 26 10))) (ghostel-elate--kitty-data))))",
         "buffer": "*ghostel*"
       }
     },
@@ -302,7 +302,7 @@
     },
     {
       "assert": {
-        "eval": "(and (equal (cdr (car (last (ghostel-elate--kitty-slices)))) '(0 0 2)) (equal (car (last (ghostel-elate--kitty-data))) \"P6\\n1 1\\n255\\n\\0\\0\\377\") (not ghostel--kitty-last-error))",
+        "eval": "(and (equal (cdr (car (last (ghostel-elate--kitty-slices)))) '(0 0 2)) (seq-every-p (lambda (data) (equal (substring data 0 8) (unibyte-string 137 80 78 71 13 10 26 10))) (ghostel-elate--kitty-data)))",
         "buffer": "*ghostel*"
       }
     }

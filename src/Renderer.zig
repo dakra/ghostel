@@ -7,6 +7,7 @@ const gt = @import("ghostty-vt");
 
 const GhostelTerm = @import("GhostelTerm.zig");
 const GlyphMetricsCache = @import("GlyphMetricsCache.zig");
+const KittyRenderer = @import("KittyRenderer.zig");
 const SavedBufferMarkers = @import("saved_markers.zig").SavedBufferMarkers;
 const emacs = @import("emacs.zig");
 const utils = @import("utils.zig");
@@ -50,6 +51,9 @@ pending_resize: ?ViewportSize = null,
 
 /// Accumulates adjacent dirty rows before inserting them into Emacs.
 span: SpanContent,
+
+/// Graphics layout and image realization, with its own renderer state.
+kitty: KittyRenderer,
 
 /// Cached font metrics and rendering parameters that affect glyph layout.
 /// When any field changes between redraws the viewport is fully invalidated.
@@ -110,6 +114,7 @@ pub fn init(alloc: Allocator, env: emacs.Env, term: *gt.Terminal) !Self {
         .rendered_cursor = null,
         .pending_resize = .{ .cols = term.cols, .rows = term.rows, .cell_w = 1, .cell_h = 1 },
         .span = .{ .alloc = alloc },
+        .kitty = .init(alloc, env),
     };
     try renderer.commitResize(env);
     return renderer;
@@ -118,6 +123,7 @@ pub fn init(alloc: Allocator, env: emacs.Env, term: *gt.Terminal) !Self {
 pub fn deinit(self: *Self) void {
     self.saved_markers.deinit(self.alloc);
     self.span.deinit();
+    self.kitty.deinit();
     self.untrackActivePinIfLive();
     if (self.font_info) |*fi| fi.deinit(self.alloc);
 }
@@ -162,6 +168,7 @@ pub fn redraw(self: *Self, env: emacs.Env, force_full: bool, force_sync: bool) !
     if (self.is_rendering) return error.ReentrantRedraw;
     self.is_rendering = true;
     defer self.is_rendering = false;
+    defer self.span.clear();
 
     self.repainted = null;
 
@@ -203,6 +210,13 @@ pub fn redraw(self: *Self, env: emacs.Env, force_full: bool, force_sync: bool) !
     }
     self.frame_completed = false;
     return true;
+}
+
+fn prepareImages(self: *Self, env: emacs.Env) !void {
+    const has_images = self.term.screens.active.kitty_images.placements.count() > 0;
+    const cell_w = if (self.font_info) |f| f.width else if (has_images) @max(1, env.cast(u32, env.f("default-font-width", .{}))) else 1;
+    const cell_h = if (self.font_info) |f| f.ascent + f.descent else if (has_images) @max(1, env.cast(u32, env.f("default-font-height", .{}))) else 1;
+    try self.kitty.prepare(self.term, cell_w, cell_h, env.isNotNil(env.f("display-graphic-p", .{})));
 }
 
 fn clearPageDirtyFlags(from_node: *gt.PageList.List.Node) void {
@@ -479,6 +493,7 @@ pub const SpanContent = struct {
         start_char: usize,
         end_char: usize,
         key: ?CellPropKey,
+        image: ?emacs.Value,
     };
 
     const CellInfo = struct {
@@ -507,6 +522,7 @@ pub const SpanContent = struct {
             }
             for (span.runs.items) |run| {
                 if (pos >= run.start_char and pos < run.end_char) {
+                    if (run.image != null) return true;
                     const key = run.key orelse return false;
                     return key.spaceVisiblyStyled(span.node.?.page());
                 }
@@ -550,9 +566,25 @@ pub const SpanContent = struct {
 
     pub fn addRow(
         self: *SpanContent,
+        env: emacs.Env,
         renderer: *Self,
         row_pin: gt.Pin,
         adjustment_threshold: u32,
+    ) !usize {
+        return if (try renderer.kitty.getRow(env, renderer.term, row_pin)) |image_row|
+            self.addRowImpl(env, renderer, row_pin, adjustment_threshold, image_row, true)
+        else
+            self.addRowImpl(env, renderer, row_pin, adjustment_threshold, undefined, false);
+    }
+
+    fn addRowImpl(
+        self: *SpanContent,
+        env: emacs.Env,
+        renderer: *Self,
+        row_pin: gt.Pin,
+        adjustment_threshold: u32,
+        image_row: KittyRenderer.Row,
+        comptime with_images: bool,
     ) !usize {
         if (self.node) |n| std.debug.assert(n == row_pin.node);
         self.node = row_pin.node;
@@ -575,39 +607,54 @@ pub const SpanContent = struct {
         const page = row_pin.node.page();
         const row = row_pin.rowAndCell().row;
         var current_prop_key: ?CellPropKey = null;
+        var current_image: ?emacs.Value = null;
         var first_cell = true;
+        var images: KittyRenderer.Row.Iterator = if (with_images)
+            image_row.iterator(env)
+        else
+            undefined;
         for (page.getCells(row), 0..) |*cell, col| {
             const has_cursor = @as(u16, @intCast(col)) == cursor_col;
             if (has_cursor) self.cursor_char_pos = self.char_len;
 
-            if (cell.wide == .spacer_tail or cell.wide == .spacer_head) continue;
+            if (cell.wide == .spacer_tail) continue;
+            const image = if (with_images) images.imageAt(col) else null;
+            const has_image = image != null;
+            if (cell.wide == .spacer_head and !has_image) continue;
 
-            // We use a "key" that holds a minimum set of values that are cheap to
-            // compare to detect style run breaks.
             const prop_key = CellPropKey.create(page, cell);
-            if (first_cell or !std.meta.eql(prop_key, current_prop_key)) {
+            if (first_cell or !std.meta.eql(prop_key, current_prop_key) or
+                (with_images and !imagesEqual(env, image, current_image)))
+            {
                 try self.runs.append(self.alloc, .{
                     .start_char = self.char_len,
                     .end_char = self.char_len,
                     .key = prop_key,
+                    .image = image,
                 });
                 current_prop_key = prop_key;
+                current_image = image;
                 first_cell = false;
             }
 
             const byte_start = self.text.items.len;
             const char_start = self.char_len;
 
-            const codepoint: u21 = if (cell.hasText()) cell.codepoint() else ' ';
+            var codepoint: u21 = if (cell.hasText()) cell.codepoint() else ' ';
+            var has_grapheme = cell.hasGrapheme();
+            if (codepoint == gt.kitty.graphics.unicode.placeholder) {
+                codepoint = ' ';
+                has_grapheme = false;
+            }
             try self.appendCodepoints(&[1]u21{codepoint});
-            if (cell.hasGrapheme()) {
+            if (has_grapheme) {
                 try self.appendCodepoints(page.lookupGrapheme(cell).?);
             }
 
             // If this is a grapheme cluster, or if the char is not covered by
             // the default font, we register it as needing font glyph adjustment
             // to fit into the monospace grid.
-            if (cell.hasGrapheme() or codepoint >= adjustment_threshold) {
+            if (!has_image and (has_grapheme or codepoint >= adjustment_threshold)) {
                 try self.adjust_cells.append(self.alloc, .{
                     .col = @intCast(col),
                     .char_start = @intCast(char_start),
@@ -626,7 +673,7 @@ pub const SpanContent = struct {
             // We trim cells that neither have content nor styling. A blank
             // cursor cell only requires enough whitespace to place point at
             // the cursor column, not an extra rendered space under it.
-            if (cell.hasText() or last_run.key != null) {
+            if (has_image or cell.hasText() or last_run.key != null) {
                 trim_byte_len = self.text.items.len;
                 trim_char_len = self.char_len;
             } else if (has_cursor) {
@@ -634,6 +681,9 @@ pub const SpanContent = struct {
                 trim_char_len = char_start;
             }
         }
+
+        // Check display construction once per row, before committing it.
+        if (with_images) try env.checkNonLocalExit();
 
         // Trim trailing blank cells. Style runs extending past the trim point
         // are clipped when properties are applied.
@@ -647,6 +697,10 @@ pub const SpanContent = struct {
         return self.char_len - row_start;
     }
 
+    fn imagesEqual(env: emacs.Env, a: ?emacs.Value, b: ?emacs.Value) bool {
+        return a == b or (a != null and b != null and env.eq(a.?, b.?));
+    }
+
     fn appendCodepoints(self: *SpanContent, cluster: []const u21) !void {
         for (cluster) |cp| {
             const slice = try self.text.addManyAsSlice(
@@ -658,7 +712,7 @@ pub const SpanContent = struct {
         }
     }
 
-    pub fn clear(self: *SpanContent) !void {
+    pub fn clear(self: *SpanContent) void {
         self.text.clearRetainingCapacity();
         self.line_wraps.clearRetainingCapacity();
         self.adjust_cells.clearRetainingCapacity();
@@ -888,8 +942,9 @@ fn findGlyphString(
     return if (env.isNil(gstring)) null else gstring;
 }
 
-fn addRowToSpan(self: *Self, row_pin: gt.Pin) !usize {
+fn addRowToSpan(self: *Self, env: emacs.Env, row_pin: gt.Pin) !usize {
     return try self.span.addRow(
+        env,
         self,
         row_pin,
         if (self.font_info) |f| f.coverage else std.math.maxInt(u32),
@@ -909,10 +964,16 @@ fn flushSpan(self: *Self, env: emacs.Env) !void {
     } else .{ .min = span_start, .max = span_end };
 
     for (self.span.runs.items) |*run| {
-        if (run.key) |*key| {
-            const prop_start = span_start + @as(usize, @intCast(run.start_char));
-            const prop_end = span_start + @as(usize, @intCast(run.end_char));
-            try self.applyProps(env, prop_start, prop_end, self.span.node.?, key);
+        const prop_start = span_start + run.start_char;
+        const prop_end = span_start + run.end_char;
+        if (prop_start >= prop_end) continue;
+        if (run.key) |*key| try self.applyProps(env, prop_start, prop_end, self.span.node.?, key);
+        if (run.image) |image| {
+            _ = env.f("add-text-properties", .{
+                prop_start,
+                prop_end,
+                env.list(.{ emacs.sym.display, image, emacs.sym.@"ghostel-kitty", env.t() }),
+            });
         }
     }
 
@@ -941,7 +1002,7 @@ fn isSameRow(a: gt.Pin, b: gt.Pin) bool {
 }
 
 fn isRowDirty(self: *Self, pin: gt.Pin) bool {
-    if (pin.isDirty()) return true;
+    if (pin.isDirty() or self.kitty.isRowDirty(pin)) return true;
 
     const cursor: ?gt.Pin = self.term.screens.active.cursor.page_pin.*;
 
@@ -962,6 +1023,8 @@ fn render(
     env: emacs.Env,
     start_pin: gt.Pin,
 ) !void {
+    try self.prepareImages(env);
+
     var eob = false;
     var current_span: ?struct {
         start_val: emacs.Value,
@@ -972,6 +1035,7 @@ fn render(
     var it = start_pin.rowIterator(.right_down, null);
     while (it.next()) |row_pin| {
         const row = row_pin.rowAndCell().row;
+        try self.kitty.prepareRow(self.term, row_pin);
         eob = eob or env.isNotNil(env.f("eobp", .{}));
 
         const clean = !eob and !self.isRowDirty(row_pin);
@@ -996,10 +1060,10 @@ fn render(
                     .node = row_pin.node,
                     .adjusted_line_start = env.cast(usize, line_start_val),
                 };
-                try self.span.clear();
+                self.span.clear();
             }
 
-            const new_line_len = try self.addRowToSpan(row_pin);
+            const new_line_len = try self.addRowToSpan(env, row_pin);
             const line_start = env.cast(usize, line_start_val);
             const old_line_len = env.cast(usize, old_line_end_val) - line_start;
             if (old_line_len > 0) {

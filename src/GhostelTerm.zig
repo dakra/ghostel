@@ -12,7 +12,6 @@ const GhostelHandler = @import("handler.zig").GhostelHandler;
 const Renderer = @import("Renderer.zig");
 const RecursiveMutex = @import("RecursiveMutex.zig");
 const input = @import("input.zig");
-const kitty_graphics = @import("kitty_graphics.zig");
 const utils = @import("utils.zig");
 const parseHexColor = utils.parseHexColor;
 const platform = @import("platform.zig");
@@ -104,9 +103,6 @@ pub fn redraw(self: *Self, force_full: bool, force_sync: bool) !bool {
     const pre_size = .{ self.terminal.cols, self.terminal.rows };
     if (!try self.renderer.redraw(env, force_full, force_sync)) return false;
 
-    _ = env.f("ghostel--kitty-clear", .{});
-    try kitty_graphics.emitPlacements(env, self);
-
     if (self.process) |proc| {
         const size = self.winSize();
         if (!std.meta.eql(size, self.pty_size)) {
@@ -151,7 +147,7 @@ pub fn ptyWrite(self: *Self, data: []const u8) !void {
     if (self.process) |proc| {
         try proc.ptyWrite(env, data);
     } else {
-        const bytes = env.makeUnibyteString(data) orelse return error.UnibyteStringUnavailable;
+        const bytes = env.makeUnibyteString(data);
         _ = env.f("ghostel--pty-out", .{bytes});
         const exit = env.nonLocalExitGet();
         if (exit.status == .signal) {
@@ -686,7 +682,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 var encode_buf: [128]u8 = undefined;
                 const sent = try term.encode(&encode_buf, event);
                 return if (sent) |bytes|
-                    env.makeUnibyteString(bytes) orelse env.t()
+                    env.makeUnibyteString(bytes)
                 else
                     env.nil();
             }
