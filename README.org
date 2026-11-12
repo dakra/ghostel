@@ -2356,8 +2356,8 @@ a real TTY with no shell integration.  Both read =default-directory=, and both
 accept an optional IDENTITY alist stored as the buffer's =ghostel-identity=
 for later lookup (=ghostel-create= takes a =display-buffer= action as its
 second argument before IDENTITY).
-=ghostel-project-buffer-list= prompts to choose a project when there is no
-current one.
+=ghostel-project-buffer-list= takes an optional project and otherwise prompts to
+choose one when there is no current project.
 
 =ghostel-find-buffer-by-identity= returns the terminal buffer with a given
 identity, and =ghostel-next-instance= the next free =instance= number for an
@@ -2431,7 +2431,8 @@ count as typed: the mark, the input mode and the scroll position stay.
 :custom_id: project-integration
 :end:
 
-=ghostel-project= opens a terminal in the current project's root directory with a
+=ghostel-project= switches to the project's most recently used terminal, as
+scoped by =ghostel-project-buffer-scope=, or opens one in the project root with a
 project-prefixed buffer name.  To make it available from =project-switch-project=
 (=C-x p p=):
 

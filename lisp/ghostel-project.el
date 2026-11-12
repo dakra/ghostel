@@ -24,8 +24,7 @@
 (require 'project)
 
 (defcustom ghostel-project-buffer-scope 'both
-  "How `ghostel-project-next', `-previous', and `-list-buffers' scope buffers.
-Controls which ghostel buffers are considered part of the current project:
+  "Which ghostel buffers the `ghostel-project' commands consider the project's.
 - `default-directory': match each buffer's `default-directory'
   against the current project root.  Follows shell `cd'.
   A terminal that walked out of the project is excluded; a plain
@@ -55,22 +54,33 @@ and a remote project with the same name get distinct buffers."
 
 ;;;###autoload
 (defun ghostel-project (&optional arg)
-  "Start a new Ghostel terminal in the current project's root.
+  "Switch to or start a Ghostel terminal in the current project's root.
 The buffer name is prefixed with the project name; remote (TRAMP) projects also
 carry the remote host, to distinguish equally named local and remote projects.
-If a buffer already exists for this project, switch to it.
-Otherwise create a new Ghostel buffer.  ARG is passed through to
-`ghostel' and accepts the same universal argument conventions.
+Without ARG, switch to the project's most recently used terminal (see
+`ghostel-project-buffer-scope'), or create one if there is none.
+ARG is passed through to `ghostel' and accepts the same universal arguments.
 To add this to `project-switch-commands':
   (add-to-list \\='project-switch-commands \\='(ghostel-project \"Ghostel\") t)
 Returns the buffer."
   (interactive "P")
-  (let ((default-directory (project-root (project-current t))))
-    (ghostel--start `((kind . term)
-                      (project-root . ,(ghostel--normalize-root
-                                        default-directory)))
-                    (ghostel--project-buffer-name default-directory)
-                    arg)))
+  (let* ((proj (project-current t))
+         (default-directory (project-root proj))
+         (bufs (and (not arg) (ghostel-project-buffer-list proj)))
+         (recent (seq-find (lambda (b)
+                             (and (memq b bufs)
+                                  (eq (alist-get 'kind (buffer-local-value
+                                                        'ghostel-identity b))
+                                      'term)))
+                           (buffer-list))))
+    (if recent
+        (pop-to-buffer recent (append display-buffer--same-window-action
+                                      '((category . comint))))
+      (ghostel--start `((kind . term)
+                        (project-root . ,(ghostel--normalize-root
+                                          default-directory)))
+                      (ghostel--project-buffer-name default-directory)
+                      arg))))
 
 ;;;###autoload
 (defun ghostel-project-new ()
@@ -80,16 +90,15 @@ Like \\[universal-argument] `ghostel-project'.  Returns the buffer."
   (ghostel-project t))
 
 ;;;###autoload
-(defun ghostel-project-buffer-list ()
-  "Return ghostel buffers belonging to the current project, sorted by name.
+(defun ghostel-project-buffer-list (&optional project)
+  "Return ghostel buffers belonging to PROJECT, sorted by name.
+PROJECT defaults to the current project, prompting when there is none.
 Scoping is controlled by `ghostel-project-buffer-scope'.
-Prompts to choose a project when there is none.
 
 Buffers whose `default-directory' is remote are skipped in the
 `default-directory' scope branch; querying `project-current' against a TRAMP
 path would walk the remote filesystem synchronously on every cycle."
-  (let* ((proj (project-current t))
-         (root (project-root proj))
+  (let* ((root (project-root (or project (project-current t))))
          (scope ghostel-project-buffer-scope)
          (all (ghostel-buffer-list))
          (by-dir

@@ -14,7 +14,8 @@
   (let ((ghostel-buffer-name "*ghostel*")
         result)
     (cl-letf (((symbol-function 'project-current)
-               (lambda (_maybe-prompt) '(transient . "/tmp/myproj/")))
+               (lambda (&optional _prompt dir)
+                 (unless dir '(transient . "/tmp/myproj/"))))
               ((symbol-function 'project-root)
                (lambda (proj) (cdr proj)))
               ((symbol-function 'project-prefixed-buffer-name)
@@ -91,8 +92,9 @@ same name must get separate buffers."
                           (instance . 1)))
             (setq-local ghostel--term 'fake-term))
           (cl-letf (((symbol-function 'project-current)
-                     (lambda (&rest _)
-                       '(transient . "/ssh:user@host:/tmp/myproj/")))
+                     (lambda (&optional _prompt dir)
+                       (unless dir
+                         '(transient . "/ssh:user@host:/tmp/myproj/"))))
                     ((symbol-function 'project-root)
                      (lambda (proj) (cdr proj)))
                     ((symbol-function 'project-prefixed-buffer-name)
@@ -132,8 +134,9 @@ same name must get separate buffers."
                           (instance . 1)))
             (setq-local ghostel--term 'fake-term))
           (cl-letf (((symbol-function 'project-current)
-                     (lambda (&rest _)
-                       '(transient . "/ssh:user@host:/tmp/myproj/")))
+                     (lambda (&optional _prompt dir)
+                       (unless dir
+                         '(transient . "/ssh:user@host:/tmp/myproj/"))))
                     ((symbol-function 'project-root)
                      (lambda (proj) (cdr proj)))
                     ((symbol-function 'project-prefixed-buffer-name)
@@ -226,7 +229,8 @@ same name must get separate buffers."
             (setq-local ghostel--term 'fake-term))
           (with-current-buffer existing (rename-buffer "*ghostel: zsh*"))
           (cl-letf (((symbol-function 'project-current)
-                     (lambda (&optional _) '(transient . "/tmp/myproj/")))
+                     (lambda (&optional _prompt dir)
+                       (unless dir '(transient . "/tmp/myproj/"))))
                     ((symbol-function 'project-root)
                      (lambda (proj) (cdr proj)))
                     ((symbol-function 'project-prefixed-buffer-name)
@@ -240,6 +244,69 @@ same name must get separate buffers."
           (should (equal "*ghostel: zsh*" (buffer-name existing)))
           (should (= pre-count (length (buffer-list)))))
       (when (buffer-live-p existing) (kill-buffer existing)))))
+
+(defun ghostel-test--project-buffer (name identity dir)
+  "Return a new `ghostel-mode' buffer NAME with IDENTITY in DIR."
+  (with-current-buffer (generate-new-buffer name)
+    (ghostel-mode)
+    (setq-local ghostel-identity identity)
+    (setq-local default-directory dir)
+    (current-buffer)))
+
+(ert-deftest ghostel-test-project-reuses-most-recent-terminal ()
+  "`ghostel-project' switches to the project's most recently used terminal.
+A plain terminal cd'd into the project counts; non-terminal kinds do not."
+  (let* ((older (ghostel-test--project-buffer
+                 "*myproj-ghostel*"
+                 `((kind . term)
+                   (project-root . ,(ghostel--normalize-root "/tmp/myproj/"))
+                   (instance . 1))
+                 "/tmp/myproj/"))
+         (cd-term (ghostel-test--project-buffer
+                   "*ghostel*"
+                   '((kind . term) (name . "*ghostel*") (instance . 1))
+                   "/tmp/myproj/sub/"))
+         (exec (ghostel-test--project-buffer
+                "*htop*" '((kind . exec) (command . ("htop")))
+                "/tmp/myproj/"))
+         (outside (ghostel-test--project-buffer
+                   "*ghostel*<2>"
+                   '((kind . term) (name . "*ghostel*") (instance . 2))
+                   "/tmp/other/"))
+         (ghostel-project-buffer-scope 'both)
+         popped)
+    (unwind-protect
+        (cl-letf (((symbol-function 'project-current)
+                   (lambda (&optional _prompt dir)
+                     (and (or (null dir) (string-prefix-p "/tmp/myproj/" dir))
+                          '(transient . "/tmp/myproj/"))))
+                  ((symbol-function 'project-root) #'cdr)
+                  ((symbol-function 'ghostel--start) (lambda (&rest _) 'started))
+                  ((symbol-function 'pop-to-buffer)
+                   (lambda (b &rest _) (setq popped b))))
+          ;; Most recent first: EXEC, OUTSIDE, CD-TERM, OLDER.
+          (bury-buffer cd-term)
+          (bury-buffer older)
+          (should (eq (ghostel-project) cd-term))
+          (should (eq popped cd-term))
+          (bury-buffer cd-term)
+          (should (eq (ghostel-project) older))
+          (should (eq (ghostel-project '(4)) 'started))
+          (kill-buffer cd-term)
+          (kill-buffer older)
+          (should (eq (ghostel-project) 'started)))
+      (mapc #'kill-buffer (list older cd-term exec outside)))))
+
+(ert-deftest ghostel-test-project-prompts-once ()
+  "`ghostel-project' prompts for the project at most once."
+  (let ((prompts 0))
+    (cl-letf (((symbol-function 'project-current)
+               (lambda (&optional prompt _dir)
+                 (when prompt (cl-incf prompts))
+                 '(transient . "/tmp/myproj/")))
+              ((symbol-function 'ghostel--start) #'ignore))
+      (ghostel-project)
+      (should (= prompts 1)))))
 
 (ert-deftest ghostel-test-ghostel-records-identity ()
   "`ghostel' records the identity it will use for later reuse."
@@ -386,7 +453,8 @@ prompt in `ghostel-mode'.  Uses `condition-case' directly since
         result)
     (unwind-protect
         (cl-letf (((symbol-function 'project-current)
-                   (lambda (&optional _) '(transient . "/tmp/retproj/")))
+                   (lambda (&optional _prompt dir)
+                     (unless dir '(transient . "/tmp/retproj/"))))
                   ((symbol-function 'project-root)
                    (lambda (proj) (cdr proj)))
                   ((symbol-function 'project-prefixed-buffer-name)

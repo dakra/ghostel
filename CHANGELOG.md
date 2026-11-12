@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- `ghostel-project-buffer-list` takes an optional project.
+- `ghostel-project` switches to the project's most recently used
+  terminal as scoped by `ghostel-project-buffer-scope`, so it also finds
+  a terminal that was `cd`'d into the project.
+
 ## [0.64.0] — 2026-11-11
 
 ### Added
