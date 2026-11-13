@@ -41,22 +41,35 @@ jobs:
             - `lisp/` — Emacs Lisp sources (the `ghostel` package).
             - `src/` — Zig native module wrapping libghostty (the
               terminal engine). Read `src/CLAUDE.md` before commenting
-              on any `.zig` file; it documents the error-handling and
-              accessor patterns the codebase requires.
+              on any `.zig` file; it documents renderer ownership of
+              dirty state, error handling, and Emacs-call conventions.
             - `extensions/<pkg>/` — independent MELPA packages that
-              depend on ghostel (currently `evil-ghostel`).
+              depend on ghostel (currently `evil-ghostel` and
+              `consult-ghostel`).
             - `etc/terminfo/`, `etc/shell/` — bundled terminfo and
-              shell integration assets.
+              shell integration assets (bash, zsh, fish, nushell).
 
-            Elisp calls Zig functions (e.g. `ghostel--write-input`,
+            Elisp calls Zig functions (e.g. `ghostel--write-vt`,
             `ghostel--redraw`). Zig calls back into Elisp via a stashed
             env pointer that is only valid during an Elisp→Zig call.
+            Local terminals use a native PTY: a reader thread
+            (`src/NativeProcess.zig`) parses output off the Emacs
+            thread and reports to Elisp only through an event pipe, so
+            it must never touch the Emacs env.
 
-            Tests are ERT-based in `test/ghostel-test.el`, split into:
+            All packages support Emacs 28.1+ (CI runs 28.2 and 29.4).
+            Newer Emacs APIs need `compat` or a `fboundp`/`boundp`
+            guard, and every `lisp/` file using a compat-provided
+            macro needs its own `(require 'compat)`.
+
+            Tests are ERT-based in per-topic `test/ghostel-*-test.el`
+            files (shared helpers in `test/ghostel-test-helpers.el`),
+            split by ERT tag into:
             - elisp-only (`make test`) — fast, no native module needed.
-            - native (`make test-native`) — requires the Zig build.
-            Native tests use `ghostel--debug-feed` to feed VT data
-            without a live PTY. Pre-commit convention is `make -j4 all`
+            - native (`make test-native`, tagged `native`) — requires
+              the Zig build.
+            Native tests use `ghostel--write-vt` to feed VT data
+            without a live PTY. Pre-commit convention is `make -j8 all`
             (build + all tests + lint).
 
             ## Rules for findings
@@ -81,11 +94,11 @@ jobs:
 
             ## Focus areas
 
-            Code quality, security, performance, testing, documentation.
+            Code quality, security, performance, simplicity, testing, documentation.
 
             Provide inline comments on specific lines. Use top-level
             comments for general observations.
 
           claude_args: |
-            --model claude-opus-4-7
-            --allowedTools "Read,Grep,Glob,WebFetch,mcp__github_inline_comment__create_inline_comment,Bash(gh pr:*),Bash(gh api:*),Bash(gh release:*)"
+            --model claude-opus-5-5
+            --allowedTools "Read,Grep,Glob,WebFetch,mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr checks:*),Bash(gh api:*),Bash(gh release:*)"
