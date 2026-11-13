@@ -8,6 +8,7 @@
 
 (require 'ghostel-test-helpers)
 
+(defvar image-types)
 (defvar ghostel--kitty-image-cache)
 
 (ert-deftest ghostel-test-create ()
@@ -696,9 +697,11 @@ state from the wrong buffer after feeding output to the native module."
   :tags '(native)
   (with-temp-buffer
     (let ((term (ghostel--new 5 20 1000))
+          (image-types '(png))
           (inhibit-read-only t))
       (ghostel--set-size term 5 20 1 1)
       (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                ((symbol-function 'image-type-available-p) (lambda (type) (eq type 'png)))
                 ((symbol-function 'fontp) (lambda (&rest _) nil))
                 ((symbol-function 'default-font-width) (lambda () 1))
                 ((symbol-function 'default-font-height) (lambda () 1)))

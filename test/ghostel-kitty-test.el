@@ -10,6 +10,7 @@
 (require 'cl-lib)
 (require 'image-mode)
 
+(defvar image-types)
 (defvar ghostel--kitty-image-cache)
 
 (defun ghostel-test--kitty-init-storage-limit (graphic &optional dummy)
@@ -124,14 +125,16 @@ Emacs uses banker's rounding."
 
 (defmacro ghostel-test--with-kitty (&rest body)
   "Run BODY with a native TERM and one-pixel cells in a fresh buffer.
-Only display availability and font metrics are faked; PNG creation,
-row projection, properties, padding, and caching use production code."
+Image/display availability and font metrics are faked; PNG encoding,
+image specifications, row projection, properties, and caching use production code."
   (declare (indent 0) (debug t))
   `(with-temp-buffer
      (let ((term (ghostel--new 5 20 1000))
+           (image-types '(png))
            (inhibit-read-only t))
        (ghostel--set-size term 5 20 1 1)
        (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                 ((symbol-function 'image-type-available-p) (lambda (type) (eq type 'png)))
                  ((symbol-function 'fontp) (lambda (&rest _) nil))
                  ((symbol-function 'default-font-width) (lambda () 1))
                  ((symbol-function 'default-font-height) (lambda () 1)))
@@ -989,9 +992,11 @@ row projection, properties, padding, and caching use production code."
   :tags '(native)
   (with-temp-buffer
     (let ((term (ghostel--new 10 40 1000))
+          (image-types '(png))
           (inhibit-read-only t))
       (ghostel--set-size term 10 40 1 1)
       (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                ((symbol-function 'image-type-available-p) (lambda (type) (eq type 'png)))
                 ((symbol-function 'fontp) (lambda (&rest _) nil))
                 ((symbol-function 'default-font-width) (lambda () 1))
                 ((symbol-function 'default-font-height) (lambda () 1)))
