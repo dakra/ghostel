@@ -119,10 +119,17 @@ the buffer line is long enough to hold the placement's column range."
                            (list 'line-height ch 'ghostel-kitty t)))
     (setq ghostel--kitty-active t)))
 
+(defun ghostel--kitty-image-type (data)
+  "Return the image type of the module's image DATA.
+The module sends `png' for images with transparent pixels, which PPM
+cannot carry, and `pbm' for the rest."
+  (if (string-prefix-p "\211PNG" data) 'png 'pbm))
+
 (defun ghostel--kitty-display-image (data abs-row vp-col grid-cols grid-rows pixel-w pixel-h)
   "Display a kitty graphics image placement in the buffer.
 Called from the native module during redraw for each visible placement.
-DATA is a unibyte PPM string of the placement's source rect.
+DATA is a unibyte PPM, or PNG when it has transparency, string of the
+placement's source rect.
 ABS-ROW is the buffer row (0-indexed from `point-min') of the image's
 top: libghostty's screen row, which the renderer keeps equal to the
 buffer line.  May be negative when the top is above the first line.
@@ -151,7 +158,7 @@ user shouldn't have to trigger one)."
                          (max 1 (/ (+ pixel-w cw -1) cw))))
                (g-rows (if (> grid-rows 0) grid-rows
                          (max 1 (/ (+ pixel-h ch -1) ch))))
-               (img (create-image data 'pbm t
+               (img (create-image data (ghostel--kitty-image-type data) t
                                   :width (* g-cols cw)
                                   :height (* g-rows ch)
                                   :scale 1
@@ -194,7 +201,7 @@ user shouldn't have to trigger one)."
 (defun ghostel--kitty-display-virtual (data row-up nth img-row img-col
                                             width grid-cols grid-rows)
   "Display one placeholder run of a virtual kitty placement.
-DATA is a unibyte PPM string.  ROW-UP is the run's row counted up from
+DATA is a unibyte PPM or PNG string.  ROW-UP is the run's row counted up from
 the last screen row (0 = last row); its first cell is the NTH (0-based)
 U+10EEEE placeholder on that row.  IMG-ROW and IMG-COL are the image
 cell it starts at, WIDTH its length in cells, GRID-COLS and GRID-ROWS
@@ -204,7 +211,7 @@ their combining diacritics make buffer width differ from cell width."
     (condition-case err
         (let* ((cw (default-font-width))
                (ch (default-font-height))
-               (img (create-image data 'pbm t
+               (img (create-image data (ghostel--kitty-image-type data) t
                                   :width (* grid-cols cw)
                                   :height (* grid-rows ch)
                                   :scale 1
