@@ -592,12 +592,13 @@ what is recorded, run `ghostel-command-start-functions', or
 
 (defun ghostel--prompt-input-start ()
   "From the start of a `ghostel-prompt' region, move past the prefix.
-If `ghostel-input' begins on the same line, point lands at its
-start; otherwise point lands just past the prompt-prefix region -
-the natural position where the user would begin typing."
-  (goto-char (or (next-single-property-change
-                  (point) 'ghostel-prompt nil (line-end-position))
-                 (line-end-position))))
+Point lands just past the prompt-prefix region, which is where the
+user would begin typing.  The region may span several lines (a
+multi-line prompt), so the search is not limited to the current line.
+Outside a prompt region point stays where it is."
+  (when (get-text-property (point) 'ghostel-prompt)
+    (goto-char (or (next-single-property-change (point) 'ghostel-prompt)
+                   (point-max)))))
 
 (defun ghostel--navigate-next-prompt (&optional n)
   "Move point to the start of the Nth next prompt region."

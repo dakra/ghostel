@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Prompt navigation (`ghostel-next-prompt`, `ghostel-previous-prompt`, imenu
+  jumps) lands on the input line of a multi-line prompt, not at the end
+  of its first line.
+
 ### Changed
 - `ghostel-project-buffer-list` takes an optional project.
 - `ghostel-project` switches to the project's most recently used
