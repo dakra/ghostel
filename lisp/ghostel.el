@@ -2671,7 +2671,8 @@ Accepts an optional unused WINDOW argument so it can serve as a
 
 (defun ghostel--leave-input-mode (&optional discard)
   "Leave the current input mode for semi-char mode; return non-nil if left.
-DISCARD non-nil drops pending line-mode input instead of sending it."
+DISCARD non-nil leaves line mode without writing to or redrawing the
+terminal, dropping pending input."
   (setq ghostel--line-mode-paused nil)
   (unless (eq ghostel--input-mode 'semi-char)
     (pcase ghostel--input-mode
@@ -2710,15 +2711,11 @@ Even keys listed in `ghostel-keymap-exceptions' (\\`C-c', \\`C-x',
 \\[ghostel-semi-char-mode]."
   (interactive)
   (ghostel--ensure-ghostel-buffer)
-  ;; Manual mode switch — see `ghostel-semi-char-mode' for why.
+  ;; A manual mode switch cancels an armed line-mode resume.
   (setq ghostel--line-mode-paused nil)
   (unless (eq ghostel--input-mode 'char)
-    (pcase ghostel--input-mode
-      ('copy  (ghostel--leave-readonly-state))
-      ('emacs (ghostel--leave-readonly-state))
-      ('line  (ghostel--line-mode-teardown)))
+    (ghostel--leave-input-mode)
     (setq ghostel--input-mode 'char)
-    (ghostel--sync-read-only)
     ;; Route char mode through `emulation-mode-map-alists' so it
     ;; overrides minor-mode keymaps (without this, a minor mode that
     ;; binds a prefix like \\`C-c' would steal those keys before
@@ -2789,7 +2786,7 @@ MODE is `copy' or `emacs'.  FREEZE non-nil pauses live terminal
 output (copy mode); nil keeps it streaming (Emacs mode).  LABEL is
 the `mode-line-process' tag.  STICKY non-nil enters with fast exit
 off, or toggles fast exit when already in a read-only mode."
-  ;; Manual mode switch — see `ghostel-semi-char-mode' for why.
+  ;; A manual mode switch cancels an armed line-mode resume.
   (setq ghostel--line-mode-paused nil)
   (let* ((from ghostel--input-mode)
          (readonly-p (memq from '(copy emacs))))
@@ -5486,11 +5483,6 @@ spawn after initialization.  With BRIDGED non-nil none will be, and
     (when ghostel--plain-link-detection-timer
       (cancel-timer ghostel--plain-link-detection-timer))
     (ghostel--clear-plain-link-detection-bounds)
-    (let ((inhibit-read-only t))
-      (erase-buffer))
-    ;; A reused buffer may be in another input mode.  Leave it without
-    ;; writing to or redrawing the terminal being replaced.
-    (ghostel--leave-input-mode t)
     (ghostel-status--clear "")
     (setq ghostel--term nil
           ghostel--term-rows nil
@@ -5517,7 +5509,14 @@ spawn after initialization.  With BRIDGED non-nil none will be, and
           ghostel--repair-pending nil
           ghostel--cursor-pos nil
           ghostel--cursor-char-pos nil
-          ghostel--repainted-region nil)
+          ghostel--repainted-region nil
+          ghostel--pending-initial-line-mode nil)
+    ;; A reused buffer may be in another input mode.  Leave it before
+    ;; erasing, so that mode's change hooks don't see the erase.
+    (ghostel--leave-input-mode t)
+    (let ((inhibit-read-only t))
+      (erase-buffer))
+    (ghostel--sync-read-only)
     (ghostel--top-pad-set 0)
     ;; Reused buffers hold the previous session's title; drop it from
     ;; the mode line along with the buffer-local reset above.

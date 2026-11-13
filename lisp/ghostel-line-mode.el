@@ -729,10 +729,10 @@ it from the buffer before calling this, so no double-send happens.
 Forces a final redraw so the buffer truncation done at entry is
 re-materialized from libghostty.
 
-When PAUSE is non-nil, skip forwarding pending input to the PTY,
-skip the readline-clearing backspaces (the alt-screen TUI would receive them),
-and skip the trailing redraw; used by `ghostel--line-mode-pause',
-which discards any type-ahead and runs inside `ghostel--redraw-now'."
+When PAUSE is non-nil, skip forwarding pending input to the PTY, the
+readline-clearing backspaces (the alt-screen TUI would receive them) and
+the trailing redraw.  Used by `ghostel--line-mode-pause' inside
+`ghostel--redraw-now' and by `ghostel--init-buffer' replacing the terminal."
   ;; Undo is off outside line mode; disable it before the teardown edits
   ;; below so none of them are recorded.
   (setq buffer-undo-list t)

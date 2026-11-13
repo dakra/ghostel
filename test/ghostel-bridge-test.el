@@ -72,6 +72,7 @@ ENTER is called at a shell prompt, with input written to the bridge recorded."
       (funcall enter)
       (should ghostel--mode-line-tag)
       (should-not (eq ghostel-semi-char-mode-map (current-local-map)))
+      (setq ghostel--pending-initial-line-mode t)
       (ghostel-make-terminal buffer 10 40)
       (should (eq 'semi-char ghostel--input-mode))
       (should (eq ghostel-semi-char-mode-map (current-local-map)))
@@ -80,6 +81,9 @@ ENTER is called at a shell prompt, with input written to the bridge recorded."
       (should-not ghostel--char-mode-override-active)
       (should-not ghostel--line-mode-paused)
       (should-not ghostel--line-input-start)
+      (should-not ghostel--pending-initial-line-mode)
+      ;; Read-only like a new terminal until its bridge is set up.
+      (should buffer-read-only)
       (should-not (memq #'ghostel--fake-cursor-update pre-redisplay-functions))
       ;; Nothing is sent to the replaced terminal.
       (should-not sent))))
@@ -88,6 +92,11 @@ ENTER is called at a shell prompt, with input written to the bridge recorded."
   "A buffer in copy mode is left for semi-char mode."
   :tags '(native)
   (ghostel-bridge-test--reuse-from #'ghostel-copy-mode))
+
+(ert-deftest ghostel-test-make-terminal-reuses-char-mode-buffer ()
+  "A buffer in char mode is left for semi-char mode."
+  :tags '(native)
+  (ghostel-bridge-test--reuse-from #'ghostel-char-mode))
 
 (ert-deftest ghostel-test-make-terminal-reuses-emacs-mode-buffer ()
   "A buffer in Emacs mode is left for semi-char mode."
