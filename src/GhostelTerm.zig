@@ -567,7 +567,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .doc =
         \\Replace TERM's state with the snapshot DATA.
         \\
-        \\See `ghostel-snapshot-restore'.
+        \\See `ghostel-restore-snapshot'.
         \\
         \\(ghostel--restore-snapshot TERM DATA)
         ,

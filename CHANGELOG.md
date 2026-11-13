@@ -18,6 +18,7 @@ All notable changes to this project will be documented in this file.
   variables `ghostel-pty-out-function`, `ghostel-resize-function` and
   `ghostel-send-files-function`.  Sizes are a cons `(COLS . ROWS)`
   throughout, also for `ghostel-set-size` and the `:resize` function.
+- `ghostel-snapshot-restore` is now `ghostel-restore-snapshot`.
 - `ghostel-project-buffer-list` takes an optional project.
 - `ghostel-project` switches to the project's most recently used
   terminal as scoped by `ghostel-project-buffer-scope`, so it also finds

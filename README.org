@@ -2377,7 +2377,7 @@ identity without one.
 #+findex: ghostel-terminal-size
 #+findex: ghostel-window-size
 #+findex: ghostel-fit-window
-#+findex: ghostel-snapshot-restore
+#+findex: ghostel-restore-snapshot
 #+findex: ghostel-set-directory
 #+findex: ghostel-set-command-running
 #+findex: ghostel-set-program-status
@@ -2406,7 +2406,7 @@ and receives what is typed into it:
 | =ghostel-terminal-size=       | The size the terminal was last given, as =(COLS . ROWS)=.                            |
 | =ghostel-window-size=         | The size fitting the windows that show the buffer, as =(COLS . ROWS)=.               |
 | =ghostel-fit-window=          | Sizes a window's terminal to its windows now.                                        |
-| =ghostel-snapshot-restore=    | Loads a libghostty snapshot into a terminal that has seen no output.                 |
+| =ghostel-restore-snapshot=    | Loads a libghostty snapshot into a terminal that has seen no output.                 |
 | =ghostel-set-directory=       | Sets the terminal's directory when the client learns it without OSC 7.               |
 | =ghostel-set-command-running= | Records a command's start or end when the client learns it without OSC 133.          |
 | =ghostel-set-program-status=  | Replaces the program status records with those the remote side keeps.                |

@@ -1626,7 +1626,7 @@ redraw to take effect."
       (and ghostel--term-cols ghostel--term-rows
            (cons ghostel--term-cols ghostel--term-rows))))
 
-(defun ghostel-snapshot-restore (data)
+(defun ghostel-restore-snapshot (data)
   "Replace this terminal's state with the libghostty snapshot DATA.
 DATA is a unibyte string in the format of ghostel's libghostty version.
 Call this before the terminal has seen any output."

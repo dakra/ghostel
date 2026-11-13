@@ -690,37 +690,37 @@ state from the wrong buffer after feeding output to the native module."
     (should (string-match-p "!" (ghostel--copy-all-text term)))))
 
 (ert-deftest ghostel-test-snapshot-restore-applies-buffer-settings ()
-  "`ghostel-snapshot-restore' reapplies colors and schedules a full redraw."
+  "`ghostel-restore-snapshot' reapplies colors and schedules a full redraw."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
     (let (applied)
       (cl-letf (((symbol-function 'ghostel--apply-palette)
                  (lambda (arg) (push arg applied)))
                 ((symbol-function 'ghostel--invalidate) #'ignore))
-        (ghostel-snapshot-restore (ghostel-test--snapshot-fixture)))
+        (ghostel-restore-snapshot (ghostel-test--snapshot-fixture)))
       (should (equal (list term) applied))
       (should ghostel--force-next-redraw))))
 
 (ert-deftest ghostel-test-snapshot-restore-read-only-buffer ()
-  "`ghostel-snapshot-restore' replaces a read-only buffer's text."
+  "`ghostel-restore-snapshot' replaces a read-only buffer's text."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
     (let ((inhibit-read-only t))
       (insert "old"))
     (setq buffer-read-only t)
-    (ghostel-snapshot-restore (ghostel-test--snapshot-fixture))
+    (ghostel-restore-snapshot (ghostel-test--snapshot-fixture))
     (should-not (string-match-p "old" (buffer-string)))
     (should-not ghostel--repair-pending)))
 
 (ert-deftest ghostel-test-snapshot-restore-keeps-cell-size ()
-  "`ghostel-snapshot-restore' keeps the terminal's cell size in pixels."
+  "`ghostel-restore-snapshot' keeps the terminal's cell size in pixels."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
     (let (sent)
       (setq ghostel--pty-out-function (lambda (data) (push data sent)))
       (cl-letf (((symbol-function 'ghostel--reported-cell-width) (lambda () 9))
                 ((symbol-function 'ghostel--reported-cell-height) (lambda () 18)))
-        (ghostel-snapshot-restore (ghostel-test--snapshot-fixture)))
+        (ghostel-restore-snapshot (ghostel-test--snapshot-fixture)))
       (ghostel--write-vt term "\e[16t")
       (should (equal "\e[6;18;9t" (car sent))))))
 
