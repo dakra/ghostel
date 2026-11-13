@@ -348,7 +348,7 @@ paste/yank and mode-switch anchors) by returning nil when it is set."
 
 (defcustom ghostel-readonly-change-hook nil
   "Hook run after `buffer-read-only' changes in a ghostel buffer.
-Fires on process spawn and exit and on input-mode switches."
+Fires when a terminal starts or ends, and on input-mode switches."
   :type 'hook)
 
 (defcustom ghostel-adaptive-fps t
@@ -1512,40 +1512,69 @@ A child map, so `ghostel-menu' is not also active via the local map.")
 ;; multiplexer, writes it the output of a terminal elsewhere and receives
 ;; what is typed into it.
 
-(defvar-local ghostel-pty-out-function nil
-  "Function called with outbound bytes as one unibyte string.
-These are typed input and the terminal's own replies; errors are ignored.
-A paste is one call and must arrive without a pause, as zsh ends a paste
-at a gap longer than KEYTIMEOUT.
+(defvar-local ghostel--pty-out-function nil
+  "The SEND function of `ghostel-make-terminal', nil without one.
 Replaces `ghostel--process' in terminals whose I/O is bridged elsewhere.")
 
-(defvar-local ghostel-resize-function nil
-  "Function called with ROWS and COLS instead of resizing the terminal.
-It may be called repeatedly with the same size.")
+(defvar-local ghostel--resize-function nil
+  "The RESIZE function of `ghostel-make-terminal', nil without one.")
 
-(defvar-local ghostel-send-files-function nil
-  "Function called with the local files dropped on or pasted into the terminal.
-It is called in the terminal buffer with a list of file names, instead of
-pasting their shell-quoted names.  A drop may call it once per file.")
+(defvar-local ghostel--send-files-function nil
+  "The SEND-FILES function of `ghostel-make-terminal', nil without one.")
 
-(defun ghostel-make-terminal (buffer-or-name &optional rows cols)
+(defconst ghostel--ended-reset
+  "\e[?2026l\e[?1000l\e[?1002l\e[?1003l\e[?1004l"
+  "Output for a terminal whose program or client is gone.
+It ends a mode 2026 frame, so that it is drawn, and the mouse and focus
+reports, so that the wheel and clicks scroll and select.")
+
+(cl-defun ghostel-make-terminal (buffer-or-name
+                                 &key size send resize send-files)
   "Make a terminal without a process and return its buffer.
 BUFFER-OR-NAME is a buffer to turn into one, or the name of a new buffer,
 made unique.  A buffer is emptied, and a terminal it has is replaced.
-ROWS and COLS, given together, are the terminal's size; by default it
-fits the buffer's window, or the selected window.
+SIZE is (COLS . ROWS); by default the terminal fits the buffer's window,
+or the selected window, and later only `ghostel-set-size' resizes it.
+Write its output with `ghostel-write-output'.
 
-This resets `ghostel-pty-out-function', `ghostel-resize-function' and
-`ghostel-send-files-function' in the buffer.  Set them afterwards, and
-write the terminal's output with `ghostel-write-output'.
+The other keywords are the client's functions, called in the buffer
+until `ghostel-end-terminal':
+SEND with outbound bytes, typed input and replies, as one unibyte
+string; its errors are ignored.  A paste is one call and must arrive
+without a pause, as zsh ends a paste at a gap longer than KEYTIMEOUT.
+Without SEND the buffer is read-only.
+RESIZE with the size (COLS . ROWS) fitting the buffer's windows, also
+when unchanged.
+SEND-FILES with the local files dropped on or pasted into the terminal,
+instead of pasting their quoted names.  A drop may call it once per file.
 
 Signal an error when the native module is not loaded.  Nothing is asked
 and nothing installed here, so a process filter can call this."
   (unless (fboundp 'ghostel--new)
     (error "Ghostel: the native module is not loaded"))
-  (if (bufferp buffer-or-name)
-      (ghostel--init-buffer buffer-or-name rows cols t)
-    (ghostel--create buffer-or-name nil rows cols t)))
+  (with-current-buffer
+      (if (bufferp buffer-or-name)
+          (ghostel--init-buffer buffer-or-name (cdr size) (car size) t)
+        (ghostel--create buffer-or-name nil (cdr size) (car size) t))
+    (setq ghostel--pty-out-function send
+          ghostel--resize-function resize
+          ghostel--send-files-function send-files)
+    (ghostel--sync-read-only)
+    (current-buffer)))
+
+(defun ghostel-end-terminal ()
+  "End this bridged terminal, whose other side is gone.
+Its client's functions are called no more and input typed in line mode
+is dropped.  The buffer stays as a read-only snapshot, with mouse and
+focus reports off, until `ghostel-make-terminal'."
+  (when (eq ghostel--input-mode 'line)
+    (ghostel--leave-input-mode t))
+  (setq ghostel--pty-out-function nil
+        ghostel--resize-function nil
+        ghostel--send-files-function nil)
+  (ghostel-status--drop-running)
+  (ghostel-write-output ghostel--ended-reset)
+  (ghostel--sync-read-only))
 
 (defun ghostel-write-output (bytes &optional no-reply)
   "Write BYTES, output of this terminal's program, to the terminal.
@@ -1557,16 +1586,15 @@ with its next redraw."
     ;; Native callbacks dispatched while parsing (OSC 52;e for one) may
     ;; select another buffer.
     (save-current-buffer
-      (if no-reply
-          (let ((ghostel-pty-out-function #'ignore))
-            (ghostel--write-vt ghostel--term bytes))
+      (let ((ghostel--pty-out-function
+             (if no-reply #'ignore ghostel--pty-out-function)))
         (ghostel--write-vt ghostel--term bytes)))
     (ghostel--invalidate)))
 
-(defun ghostel-set-size (rows cols)
-  "Give this terminal the size ROWS by COLS.
+(defun ghostel-set-size (size)
+  "Give this terminal SIZE, a cons (COLS . ROWS).
 For a bridged terminal sized elsewhere, as by a multiplexer's server;
-the size its windows ask for goes to `ghostel-resize-function'.
+the size its windows ask for goes to its RESIZE function.
 
 Output written after this is read at the new size.  For that the buffer
 is redrawn now, also in copy mode.  Line mode is the exception while no
@@ -1575,9 +1603,9 @@ lose the typed input, so the size takes effect with the next redraw and
 output until then is read at the old size."
   (when ghostel--term
     (let ((buffer (current-buffer))
-          (same-size (equal (cons cols rows) (ghostel-terminal-size))))
+          (same-size (equal size (ghostel-terminal-size))))
       ;; An unchanged size still passes on the cell size in pixels.
-      (ghostel--set-size-with-cell-dims ghostel--term rows cols)
+      (ghostel--set-size-with-cell-dims ghostel--term (cdr size) (car size))
       (cond
        (same-size (ghostel--invalidate))
        ((eq ghostel--input-mode 'line)
@@ -1638,8 +1666,8 @@ keyboard protocol receives the protocol-correct sequence."
 
 (defun ghostel--pty-out (data)
   "Send outbound DATA bytes from a terminal without a native PTY."
-  (if ghostel-pty-out-function
-      (funcall ghostel-pty-out-function data)
+  (if ghostel--pty-out-function
+      (funcall ghostel--pty-out-function data)
     (process-send-string ghostel--process data)))
 
 (defun ghostel--send-string (string)
@@ -1848,7 +1876,7 @@ Also suppresses automatic input-mode switching (point-leave, mark-activation).")
   (and (not ghostel--inhibit-insert-forwarding)
        (ghostel--terminal-input-mode-p)
        ghostel--term
-       (or ghostel-pty-out-function
+       (or ghostel--pty-out-function
            (process-live-p ghostel--process))))
 
 (defun ghostel--forward-inserts-p ()
@@ -2076,11 +2104,11 @@ parity with `xterm-paste'."
 
 (defun ghostel--dnd-send-files (files)
   "Send FILES, dropped on or pasted into the terminal, to its program.
-`ghostel-send-files-function' receives them when set.  Otherwise their
+`ghostel--send-files-function' receives them when set.  Otherwise their
 shell-quoted names are pasted, followed by a space."
-  (if ghostel-send-files-function
+  (if ghostel--send-files-function
       (progn (ghostel--on-user-input)
-             (funcall ghostel-send-files-function files))
+             (funcall ghostel--send-files-function files))
     (ghostel-paste-string
      (concat (mapconcat #'shell-quote-argument files " ") " "))))
 
@@ -2089,24 +2117,24 @@ shell-quoted names are pasted, followed by a space."
 Handles `dnd-protocol-alist' file drops on the ports that dispatch
 drops through `special-event-map' (X11, pgtk).  A non-local URI is
 ignored with a message; a drop into a terminal with neither a live
-process nor `ghostel-send-files-function' opens the file with ACTION."
+process nor `ghostel--send-files-function' opens the file with ACTION."
   (let* ((local (if (string-match-p "\\`file://[^/]" uri)
                     (dnd-get-local-file-uri uri)
                   uri))
          (file (and local (dnd-get-local-file-name local))))
     (cond ((null file)
            (message "ghostel: ignoring dropped %s (not a local file)" uri))
-          ((or ghostel-send-files-function (process-live-p ghostel--process))
+          ((or ghostel--send-files-function (process-live-p ghostel--process))
            (ghostel--dnd-send-files (list file)))
           (t (dnd-open-local-file local action))))
   'private)
 
 (defun ghostel--yank-media-data (mimetype data)
   "Write clipboard DATA of MIMETYPE to a temp file and send it.
-`ghostel-send-files-function' gets a file on this machine.  Otherwise the
+`ghostel--send-files-function' gets a file on this machine.  Otherwise the
 file is created in the temp directory of the host the shell runs on, and
 the shell receives its shell-quoted path followed by a space."
-  (unless (or ghostel-send-files-function (process-live-p ghostel--process))
+  (unless (or ghostel--send-files-function (process-live-p ghostel--process))
     (user-error "Terminal has no live process"))
   (let* ((ext (pcase (cadr (split-string (symbol-name mimetype) "/"))
                 ("svg+xml" "svg")
@@ -2114,7 +2142,7 @@ the shell receives its shell-quoted path followed by a space."
          (temp (let ((coding-system-for-write 'binary))
                  (make-temp-file
                   (expand-file-name "ghostel-clipboard-"
-                                    (if ghostel-send-files-function
+                                    (if ghostel--send-files-function
                                         temporary-file-directory
                                       (temporary-file-directory)))
                   nil (concat "." ext) data))))
@@ -4999,7 +5027,7 @@ path even when the row/column count is unchanged."
   ;; with an arbitrary buffer current, so the terminal state must be
   ;; resolved from WINDOW's buffer.
   (with-current-buffer (window-buffer window)
-    (when (and ghostel--term (or ghostel--process ghostel-resize-function)
+    (when (and ghostel--term (or ghostel--process ghostel--resize-function)
                (ghostel--terminal-live-p))
       (when (ghostel--window-anchored-p
              window (window-old-body-pixel-height window))
@@ -5018,8 +5046,9 @@ path even when the row/column count is unchanged."
                                            (eql width ghostel--term-cols)
                                            (not (ghostel--alt-screen-p ghostel--term)))))
           (when (or force (and (not same-size-p) (not minibuffer-excepted-p)))
-            (if ghostel-resize-function
-                (funcall ghostel-resize-function (max 1 height) (max 1 width))
+            (if ghostel--resize-function
+                (funcall ghostel--resize-function
+                         (cons (max 1 width) (max 1 height)))
               (ghostel--set-size-with-cell-dims ghostel--term (max 1 height) (max 1 width))
               (setq ghostel--force-next-redraw t)
               ;; Redraw synchronously so the buffer is updated before
@@ -5028,15 +5057,15 @@ path even when the row/column count is unchanged."
 
 (defun ghostel-fit-window (window)
   "Size the terminal that WINDOW shows to the windows showing it.
-The size is applied, or passed to `ghostel-resize-function', also when
-it is the terminal's size already.  Copy mode keeps the terminal's size."
+The size is applied, or passed to a bridged terminal's RESIZE function,
+also when it is the terminal's size already.  Copy mode keeps the size."
   (ghostel--adjust-size window t))
 
 (defun ghostel--adjust-displayed-sizes (_frame)
   "Refit every displayed terminal whose windows no longer match its grid."
   (dolist (buffer (ghostel-buffer-list))
     (with-current-buffer buffer
-      (when-let* ((size (and (or ghostel--process ghostel-resize-function)
+      (when-let* ((size (and (or ghostel--process ghostel--resize-function)
                              (ghostel-window-size))))
         (unless (and (eql (cdr size) ghostel--term-rows)
                      (eql (car size) ghostel--term-cols))
@@ -5488,9 +5517,9 @@ spawn after initialization.  With BRIDGED non-nil none will be, and
           ghostel--term-rows nil
           ghostel--term-cols nil
           ghostel--process nil
-          ghostel-pty-out-function nil
-          ghostel-resize-function nil
-          ghostel-send-files-function nil
+          ghostel--pty-out-function nil
+          ghostel--resize-function nil
+          ghostel--send-files-function nil
           ghostel--pid nil
           ghostel--last-directory nil
           ghostel-title nil

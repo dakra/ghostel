@@ -11,8 +11,8 @@
 (require 'ghostel-test-helpers)
 
 (defmacro ghostel-bridge-test--with-terminal (spec &rest body)
-  "Run BODY in a bridged terminal's buffer.
-SPEC is (ROWS COLS) for `ghostel-make-terminal'."
+  "Run BODY in a bridged terminal's buffer, bound to `buffer'.
+SPEC is the keywords for `ghostel-make-terminal'."
   (declare (indent 1))
   `(let ((buffer (ghostel-make-terminal " *ghostel-bridge-test*" ,@spec)))
      (unwind-protect
@@ -23,7 +23,7 @@ SPEC is (ROWS COLS) for `ghostel-make-terminal'."
 (defun ghostel-bridge-test--columns ()
   "Return the number of columns this terminal reads its output at."
   (let* (reply
-         (ghostel-pty-out-function (lambda (data) (setq reply data))))
+         (ghostel--pty-out-function (lambda (data) (setq reply data))))
     (ghostel-write-output "\e[999C\e[6n")
     (and (string-match "\\`\e\\[[0-9]+;\\([0-9]+\\)R\\'" reply)
          (string-to-number (match-string 1 reply)))))
@@ -33,47 +33,50 @@ SPEC is (ROWS COLS) for `ghostel-make-terminal'."
   :tags '(native)
   (let ((taken (generate-new-buffer " *ghostel-bridge-test*")))
     (unwind-protect
-        (ghostel-bridge-test--with-terminal (10 40)
+        (ghostel-bridge-test--with-terminal (:size '(40 . 10))
           (should-not (eq buffer taken))
           (should (derived-mode-p 'ghostel-mode))
           (should ghostel--term)
           (should-not ghostel--process)
+          (should buffer-read-only)
           (should (equal '(40 . 10) (ghostel-terminal-size))))
       (kill-buffer taken))))
 
 (ert-deftest ghostel-test-make-terminal-replaces-terminal ()
   "A terminal buffer is emptied and gets a new terminal."
   :tags '(native)
-  (ghostel-bridge-test--with-terminal (10 40)
-    (let ((old ghostel--term))
-      (setq ghostel-pty-out-function #'ignore
-            ghostel--prompt-positions '((1 . 0)))
-      (setq-local ghostel-bridge-test--own 'kept)
-      (ghostel-write-output "old")
-      (ghostel--commit-frame buffer)
-      (should (string-prefix-p "old" (buffer-string)))
-      (should (eq buffer (ghostel-make-terminal buffer 5 20)))
-      (should-not (eq old ghostel--term))
-      (should (equal "" (buffer-string)))
-      (should-not (ghostel--copy-all-text ghostel--term))
-      (should-not ghostel-pty-out-function)
-      (should-not ghostel--prompt-positions)
-      (should (eq 'kept (bound-and-true-p ghostel-bridge-test--own)))
-      (should (equal '(20 . 5) (ghostel-terminal-size))))))
+  (let (sent)
+    (ghostel-bridge-test--with-terminal
+        (:size '(40 . 10) :send (lambda (data) (push data sent)))
+      (let ((old ghostel--term))
+        (setq ghostel--prompt-positions '((1 . 0)))
+        (setq-local ghostel-bridge-test--own 'kept)
+        (ghostel-write-output "old")
+        (ghostel--commit-frame buffer)
+        (should (string-prefix-p "old" (buffer-string)))
+        (should (eq buffer (ghostel-make-terminal buffer :size '(20 . 5))))
+        (should-not (eq old ghostel--term))
+        (should (equal "" (buffer-string)))
+        (should-not (ghostel--copy-all-text ghostel--term))
+        (ghostel-send-string "typed")
+        (should-not sent)
+        (should-not ghostel--prompt-positions)
+        (should (eq 'kept (bound-and-true-p ghostel-bridge-test--own)))
+        (should (equal '(20 . 5) (ghostel-terminal-size)))))))
 
 (defun ghostel-bridge-test--reuse-from (enter)
   "Check that a terminal made in a buffer that ENTER switched mode starts clean.
 ENTER is called at a shell prompt, with input written to the bridge recorded."
-  (ghostel-bridge-test--with-terminal (10 40)
-    (let (sent)
-      (setq ghostel-pty-out-function (lambda (data) (push data sent)))
+  (let (sent)
+    (ghostel-bridge-test--with-terminal
+        (:size '(40 . 10) :send (lambda (data) (push data sent)))
       (ghostel-write-output "\e]133;A\e\\$ \e]133;B\e\\")
       (ghostel--commit-frame buffer)
       (funcall enter)
       (should ghostel--mode-line-tag)
       (should-not (eq ghostel-semi-char-mode-map (current-local-map)))
       (setq ghostel--pending-initial-line-mode t)
-      (ghostel-make-terminal buffer 10 40)
+      (ghostel-make-terminal buffer :size '(40 . 10))
       (should (eq 'semi-char ghostel--input-mode))
       (should (eq ghostel-semi-char-mode-map (current-local-map)))
       (should-not ghostel--mode-line-tag)
@@ -82,7 +85,7 @@ ENTER is called at a shell prompt, with input written to the bridge recorded."
       (should-not ghostel--line-mode-paused)
       (should-not ghostel--line-input-start)
       (should-not ghostel--pending-initial-line-mode)
-      ;; Read-only like a new terminal until its bridge is set up.
+      ;; Read-only, as it is made without a SEND function.
       (should buffer-read-only)
       (should-not (memq #'ghostel--fake-cursor-update pre-redisplay-functions))
       ;; Nothing is sent to the replaced terminal.
@@ -120,7 +123,7 @@ ENTER is called at a shell prompt, with input written to the bridge recorded."
   "A bridged terminal does not need `default-directory' to exist."
   :tags '(native)
   (let ((default-directory "/ghostel-bridge-test-no-such-directory/"))
-    (ghostel-bridge-test--with-terminal (10 40)
+    (ghostel-bridge-test--with-terminal (:size '(40 . 10))
       (should ghostel--term)
       (should-error (ghostel--init-buffer buffer 10 40) :type 'user-error))))
 
@@ -151,12 +154,90 @@ ENTER is called at a shell prompt, with input written to the bridge recorded."
         (should-error (ghostel-make-terminal (current-buffer))
                       :type 'user-error)))))
 
+(ert-deftest ghostel-test-make-terminal-input-method ()
+  "A Quail input method translates what is typed into a bridged terminal."
+  :tags '(native)
+  (skip-unless (assoc "chinese-py" input-method-alist))
+  (ghostel-bridge-test--with-terminal (:size '(40 . 10) :send #'ignore)
+    (activate-input-method "chinese-py")
+    (let ((unread-command-events (list ?i ?\s)))
+      (should (equal (list ?你) (funcall input-method-function ?n))))))
+
+(ert-deftest ghostel-test-make-terminal-functions ()
+  "RESIZE and SEND-FILES get the windows' size and dropped files."
+  :tags '(native)
+  (let (sizes files)
+    (ghostel-bridge-test--with-terminal
+        (:size '(40 . 10) :resize (lambda (size) (push size sizes))
+               :send-files (lambda (names) (push names files)))
+      (save-window-excursion
+        (set-window-buffer (selected-window) buffer)
+        (ghostel-fit-window (selected-window))
+        (should (equal (list (ghostel-window-size)) sizes)))
+      (should (equal '(40 . 10) (ghostel-terminal-size)))
+      (ghostel--dnd-send-files '("/tmp/a"))
+      (should (equal '(("/tmp/a")) files)))))
+
+(ert-deftest ghostel-test-end-terminal ()
+  "An ended terminal is a read-only snapshot that sends and reports nothing."
+  :tags '(native)
+  (let (sent changes)
+    (ghostel-bridge-test--with-terminal
+        (:size '(40 . 10) :send (lambda (data) (push data sent))
+               :resize #'ignore :send-files #'ignore)
+      (ghostel-write-output "\e[?1000h\e[?1004h\e[?2026hshown")
+      (ghostel-set-program-status '(("" :state working)))
+      (add-hook 'ghostel-readonly-change-hook
+                (lambda () (push buffer-read-only changes)) nil t)
+      (ghostel-end-terminal)
+      (should buffer-read-only)
+      (should (equal '(t) changes))
+      (should-not (ghostel--mouse-tracking-p ghostel--term))
+      (should-not (ghostel--mode-enabled ghostel--term 1004))
+      (should-not ghostel-program-status)
+      (should-not ghostel--resize-function)
+      (should-not ghostel--send-files-function)
+      (ghostel-send-string "typed")
+      (should-not sent)
+      ;; The frame left open is drawn.
+      (should (ghostel-test--redraw ghostel--term))
+      (should (string-match-p "shown" (buffer-string))))))
+
+(ert-deftest ghostel-test-end-terminal-made-again ()
+  "`ghostel-make-terminal' makes a live terminal of an ended one."
+  :tags '(native)
+  (let (sent)
+    (ghostel-bridge-test--with-terminal (:size '(40 . 10) :send #'ignore)
+      (ghostel-end-terminal)
+      (ghostel-make-terminal buffer :size '(40 . 10)
+                             :send (lambda (data) (push data sent)))
+      (should-not buffer-read-only)
+      (ghostel-send-string "typed")
+      (should (equal '("typed") sent)))))
+
+(ert-deftest ghostel-test-end-terminal-in-line-mode ()
+  "A terminal ended in line mode is read-only and drops the typed input."
+  :tags '(native)
+  (let (sent)
+    (ghostel-bridge-test--with-terminal
+        (:size '(40 . 10) :send (lambda (data) (push data sent)))
+      (ghostel-write-output "\e]133;A\e\\$ \e]133;B\e\\")
+      (ghostel--commit-frame buffer)
+      (ghostel-line-mode)
+      (insert "typed")
+      (setq sent nil)
+      (ghostel-end-terminal)
+      (should (eq 'semi-char ghostel--input-mode))
+      (should buffer-read-only)
+      (should-not sent)
+      (should-not (string-match-p "typed" (buffer-string))))))
+
 (ert-deftest ghostel-test-write-output ()
   "Written output reaches the terminal and its replies the bridge."
   :tags '(native)
-  (ghostel-bridge-test--with-terminal (10 40)
-    (let (sent)
-      (setq ghostel-pty-out-function (lambda (data) (push data sent)))
+  (let (sent)
+    (ghostel-bridge-test--with-terminal
+        (:size '(40 . 10) :send (lambda (data) (push data sent)))
       (ghostel-write-output "hello\e[6n")
       (should (equal "hello" (ghostel--copy-all-text ghostel--term)))
       (should (equal '("\e[1;6R") sent))
@@ -165,9 +246,9 @@ ENTER is called at a shell prompt, with input written to the bridge recorded."
 (ert-deftest ghostel-test-write-output-no-reply ()
   "Replies to output written with NO-REPLY are dropped, later input is not."
   :tags '(native)
-  (ghostel-bridge-test--with-terminal (10 40)
-    (let (sent)
-      (setq ghostel-pty-out-function (lambda (data) (push data sent)))
+  (let (sent)
+    (ghostel-bridge-test--with-terminal
+        (:size '(40 . 10) :send (lambda (data) (push data sent)))
       (cl-letf (((symbol-function 'ghostel--invalidate)
                  (lambda () (ghostel--pty-out "typed"))))
         (ghostel-write-output "hello\e[6n" t))
@@ -183,9 +264,9 @@ ENTER is called at a shell prompt, with input written to the bridge recorded."
 (ert-deftest ghostel-test-set-size-hidden ()
   "A hidden terminal has its new size before the next output."
   :tags '(native)
-  (ghostel-bridge-test--with-terminal (10 40)
+  (ghostel-bridge-test--with-terminal (:size '(40 . 10))
     (should (= 40 (ghostel-bridge-test--columns)))
-    (ghostel-set-size 5 60)
+    (ghostel-set-size '(60 . 5))
     (should (equal '(60 . 5) (ghostel-terminal-size)))
     (should ghostel--repair-pending)
     (should ghostel--pending-redraw)
@@ -194,17 +275,17 @@ ENTER is called at a shell prompt, with input written to the bridge recorded."
 (ert-deftest ghostel-test-set-size-waits-in-hidden-line-mode ()
   "A hidden terminal in line mode gets a new size when it is next redrawn."
   :tags '(native)
-  (ghostel-bridge-test--with-terminal (10 40)
+  (ghostel-bridge-test--with-terminal (:size '(40 . 10))
     (setq ghostel--input-mode 'line)
     (cl-letf (((symbol-function 'ghostel--commit-frame)
                (lambda (&rest _) (ert-fail "rendered"))))
-      (ghostel-set-size 5 60))
+      (ghostel-set-size '(60 . 5)))
     (should (equal '(60 . 5) (ghostel-terminal-size)))
     (should (= 40 (ghostel-bridge-test--columns)))
     (should ghostel--pending-redraw)
     (should ghostel--force-next-redraw)
     ;; The same size again leaves it waiting.
-    (ghostel-set-size 5 60)
+    (ghostel-set-size '(60 . 5))
     (should (= 40 (ghostel-bridge-test--columns)))
     (setq ghostel--input-mode 'semi-char)
     (save-window-excursion
@@ -216,24 +297,24 @@ ENTER is called at a shell prompt, with input written to the bridge recorded."
   "A terminal in copy mode has its new size at once, shown or hidden."
   :tags '(native)
   (dolist (shown '(nil t))
-    (ghostel-bridge-test--with-terminal (10 40)
+    (ghostel-bridge-test--with-terminal (:size '(40 . 10))
       (save-window-excursion
         (when shown
           (set-window-buffer (selected-window) buffer))
         (setq ghostel--input-mode 'copy)
-        (ghostel-set-size 5 60)
+        (ghostel-set-size '(60 . 5))
         (should (= 60 (ghostel-bridge-test--columns)))))))
 
 (ert-deftest ghostel-test-set-size-held-back-redraw ()
   "A redraw held back delays the size in line mode only."
   :tags '(native)
   (dolist (mode '(semi-char line))
-    (ghostel-bridge-test--with-terminal (10 40)
+    (ghostel-bridge-test--with-terminal (:size '(40 . 10))
       (save-window-excursion
         (set-window-buffer (selected-window) buffer)
         (setq ghostel--input-mode mode)
         (let ((ghostel-inhibit-redraw-functions (list (lambda (_buffer) t))))
-          (ghostel-set-size 5 60))
+          (ghostel-set-size '(60 . 5)))
         (when ghostel--redraw-timer
           (cancel-timer ghostel--redraw-timer))
         (should (= (if (eq mode 'line) 40 60)
@@ -242,23 +323,23 @@ ENTER is called at a shell prompt, with input written to the bridge recorded."
 (ert-deftest ghostel-test-set-size-shown-commits-through-held-frame ()
   "A shown terminal has its new size at once, also with mode 2026 open."
   :tags '(native)
-  (ghostel-bridge-test--with-terminal (10 40)
+  (ghostel-bridge-test--with-terminal (:size '(40 . 10))
     (save-window-excursion
       (set-window-buffer (selected-window) buffer)
       (ghostel-write-output "\e[?2026h")
-      (ghostel-set-size 5 60)
+      (ghostel-set-size '(60 . 5))
       (should (= 60 (ghostel-bridge-test--columns)))
       (should-not ghostel--repair-pending))))
 
 (ert-deftest ghostel-test-set-size-unchanged ()
   "The terminal's own size renders nothing."
   :tags '(native)
-  (ghostel-bridge-test--with-terminal (10 40)
+  (ghostel-bridge-test--with-terminal (:size '(40 . 10))
     (cl-letf (((symbol-function 'ghostel--commit-frame)
                (lambda (&rest _) (ert-fail "rendered")))
               ((symbol-function 'ghostel--redraw-now)
                (lambda (&rest _) (ert-fail "rendered"))))
-      (ghostel-set-size 10 40))
+      (ghostel-set-size '(40 . 10)))
     (should (equal '(40 . 10) (ghostel-terminal-size)))
     (should-not ghostel--repair-pending)))
 
@@ -274,8 +355,8 @@ ENTER is called at a shell prompt, with input written to the bridge recorded."
           (ghostel--term-rows 40)
           (ghostel--term-cols 120)
           received)
-      (setq-local ghostel-resize-function
-                  (lambda (rows cols) (push (list rows cols) received)))
+      (setq-local ghostel--resize-function
+                  (lambda (size) (push size received)))
       (cl-letf (((symbol-function 'ghostel--window-anchored-p) #'ignore)
                 ((symbol-function 'window-old-body-pixel-height) #'ignore)
                 ((symbol-function 'ghostel--windows) (lambda (&rest _) '(fake)))
@@ -284,14 +365,15 @@ ENTER is called at a shell prompt, with input written to the bridge recorded."
                 ((default-value 'window-adjust-process-window-size-function)
                  (lambda (&rest _) '(120 . 40))))
         (ghostel-fit-window 'fake-window))
-      (should (equal '((40 120)) received)))))
+      (should (equal '((120 . 40)) received)))))
 
 (ert-deftest ghostel-test-send-string-raw ()
   "A raw string reaches the bridge without the effects of typing."
   :tags '(native)
-  (ghostel-bridge-test--with-terminal (10 40)
-    (let (sent)
-      (setq ghostel-pty-out-function (lambda (data) (push data sent)))
+  (let (sent)
+    (ghostel-bridge-test--with-terminal
+        (:size '(40 . 10) :send (lambda (data) (push data sent)))
+      (should-not buffer-read-only)
       (cl-letf (((symbol-function 'ghostel--on-user-input)
                  (lambda () (ert-fail "counted as typed"))))
         (ghostel-send-string "raw" t))

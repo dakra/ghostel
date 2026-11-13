@@ -285,20 +285,20 @@ has been rendered."
         (should-not set-size-called)))))
 
 (ert-deftest ghostel-test-resize-function-replaces-set-size ()
-  "Without a process, `ghostel-resize-function' receives the fitted size."
+  "Without a process, `ghostel--resize-function' receives the fitted size."
   (with-temp-buffer
     (let ((ghostel--term 'fake)
           (resized nil)
           (received nil))
-      (setq-local ghostel-resize-function
-                  (lambda (rows cols) (setq received (list rows cols))))
+      (setq-local ghostel--resize-function
+                  (lambda (size) (setq received size)))
       (cl-letf (((symbol-function 'ghostel--set-size-with-cell-dims)
                  (lambda (&rest _) (setq resized t)))
                 ((symbol-function 'ghostel--redraw-now)
                  (lambda (_buffer) (setq resized t))))
         (ghostel-test--with-resize-stubs '(120 . 40)
           (ghostel--adjust-size 'fake-window)))
-      (should (equal '(40 120) received))
+      (should (equal '(120 . 40) received))
       (should-not resized))))
 
 (ert-deftest ghostel-test-resize-force-same-dims-still-runs ()
@@ -717,7 +717,7 @@ state from the wrong buffer after feeding output to the native module."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
     (let (sent)
-      (setq ghostel-pty-out-function (lambda (data) (push data sent)))
+      (setq ghostel--pty-out-function (lambda (data) (push data sent)))
       (cl-letf (((symbol-function 'ghostel--reported-cell-width) (lambda () 9))
                 ((symbol-function 'ghostel--reported-cell-height) (lambda () 18)))
         (ghostel-snapshot-restore (ghostel-test--snapshot-fixture)))
@@ -754,20 +754,20 @@ state from the wrong buffer after feeding output to the native module."
   "Reinitializing a buffer drops the functions of its previous bridge."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
-    (setq ghostel-pty-out-function #'ignore
-          ghostel-resize-function #'ignore
-          ghostel-send-files-function #'ignore)
+    (setq ghostel--pty-out-function #'ignore
+          ghostel--resize-function #'ignore
+          ghostel--send-files-function #'ignore)
     (ghostel--init-buffer buffer 25 80)
-    (should-not ghostel-pty-out-function)
-    (should-not ghostel-resize-function)
-    (should-not ghostel-send-files-function)))
+    (should-not ghostel--pty-out-function)
+    (should-not ghostel--resize-function)
+    (should-not ghostel--send-files-function)))
 
 (ert-deftest ghostel-test-pty-out-function-receives-output ()
-  "Outbound bytes reach `ghostel-pty-out-function' when there is no process."
+  "Outbound bytes reach `ghostel--pty-out-function' when there is no process."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
     (let (sent)
-      (setq ghostel-pty-out-function (lambda (data) (push data sent)))
+      (setq ghostel--pty-out-function (lambda (data) (push data sent)))
       (ghostel--write-pty term "typed")
       ;; A DA1 query is answered through the same hook.
       (ghostel--write-vt term "\e[c")
@@ -778,11 +778,11 @@ state from the wrong buffer after feeding output to the native module."
       (should-not buffer-read-only))))
 
 (ert-deftest ghostel-test-paste-is-one-pty-write ()
-  "A paste reaches `ghostel-pty-out-function' in a single call."
+  "A paste reaches `ghostel--pty-out-function' in a single call."
   :tags '(native)
   (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
     (let (sent)
-      (setq ghostel-pty-out-function (lambda (data) (push data sent)))
+      (setq ghostel--pty-out-function (lambda (data) (push data sent)))
       (ghostel--write-vt term "\e[?2004h")
       (ghostel-paste-string "one\ntwo")
       (should (equal '("\e[200~one\ntwo\e[201~") sent))

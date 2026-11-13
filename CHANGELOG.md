@@ -5,15 +5,27 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- `ghostel-end-terminal` ends a bridged terminal whose other side is
+  gone: its buffer stays as a read-only snapshot.
 - A `file://` OSC 8 link with a `#23`, `#L23`, `#L23C5` or `#L23-L42`
   fragment opens the file at that line, marking a line range as the
   region.
 
 ### Changed
+- `ghostel-make-terminal` takes keywords.  `:size`, a cons
+  `(COLS . ROWS)`, replaces the arguments ROWS and COLS.  `:send`,
+  `:resize` and `:send-files` are the client's functions and replace the
+  variables `ghostel-pty-out-function`, `ghostel-resize-function` and
+  `ghostel-send-files-function`.  Sizes are a cons `(COLS . ROWS)`
+  throughout, also for `ghostel-set-size` and the `:resize` function.
 - `ghostel-project-buffer-list` takes an optional project.
 - `ghostel-project` switches to the project's most recently used
   terminal as scoped by `ghostel-project-buffer-scope`, so it also finds
   a terminal that was `cd`'d into the project.
+
+### Fixed
+- An Emacs input method such as `chinese-py` composes in a bridged
+  terminal, whose buffer was read-only.
 
 ## [0.64.0] — 2026-11-11
 

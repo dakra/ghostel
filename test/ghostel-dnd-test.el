@@ -147,24 +147,24 @@ layer runs no default handler such as `find-file'."
         (delete-file file)))))
 
 (ert-deftest ghostel-test-dnd-send-files-function-receives-files ()
-  "`ghostel-send-files-function' gets a dropped file and nothing is pasted."
+  "`ghostel--send-files-function' gets a dropped file and nothing is pasted."
   (ghostel-dnd-test--with-mode-buffer
     (let ((file (make-temp-name "/nonexistent-"))
           (received nil))
-      (setq ghostel-send-files-function
+      (setq ghostel--send-files-function
             (lambda (files) (push files received)))
       (should (equal (ghostel-dnd-test--dispatch (list (concat "file://" file)))
                      ""))
       (should (equal received (list (list file)))))))
 
 (ert-deftest ghostel-test-dnd-processless-terminal-send-files-function ()
-  "`ghostel-send-files-function' gets a drop into a terminal with no process."
+  "`ghostel--send-files-function' gets a drop into a terminal with no process."
   (ghostel-dnd-test--with-mode-buffer
     (delete-process ghostel--process)
     (setq ghostel--process nil)
     (let ((file (make-temp-name "/nonexistent-"))
           (received nil))
-      (setq ghostel-send-files-function (lambda (files) (setq received files)))
+      (setq ghostel--send-files-function (lambda (files) (setq received files)))
       (ghostel-dnd-test--dispatch (list (concat "file://" file)))
       (should (equal received (list file))))))
 
@@ -173,7 +173,7 @@ layer runs no default handler such as `find-file'."
   (ghostel-dnd-test--with-mode-buffer
     (delete-process ghostel--process)
     (setq ghostel--process nil
-          ghostel-pty-out-function #'ignore)
+          ghostel--pty-out-function #'ignore)
     (let ((file (make-temp-name "/nonexistent-"))
           (opened nil))
       (cl-letf (((symbol-function 'dnd-open-local-file)
@@ -203,7 +203,7 @@ layer runs no default handler such as `find-file'."
                                    (shell-quote-argument "/tmp/c d.png") " ")))))))
 
 (ert-deftest ghostel-test-drop-file-calls-send-files-function ()
-  "A file drop hands its paths to `ghostel-send-files-function'.
+  "A file drop hands its paths to `ghostel--send-files-function'.
 It counts as user input."
   (let ((pasted nil)
         (received nil)
@@ -214,7 +214,7 @@ It counts as user input."
               ((symbol-function 'ghostel--on-user-input)
                (lambda () (setq inputs (1+ inputs)))))
       (with-temp-buffer
-        (setq-local ghostel-send-files-function
+        (setq-local ghostel--send-files-function
                     (lambda (files) (push files received)))
         (ghostel--drop event))
       (should (equal received '(("/tmp/a b.png" "/tmp/c d.png"))))

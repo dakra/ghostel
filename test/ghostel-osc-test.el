@@ -705,7 +705,7 @@ fresh."
     (let ((ghostel-term (car case))
           sent)
       (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
-        (setq ghostel-pty-out-function (lambda (data) (push data sent)))
+        (setq ghostel--pty-out-function (lambda (data) (push data sent)))
         (ghostel--write-vt term "\e[>q")
         (should (equal (list (format "\eP>|%s\e\\" (cdr case))) sent))))))
 
