@@ -736,7 +736,8 @@ APIs are shared by both paths.
 :end:
 
 - *OSC 8 hyperlinks* - clickable URLs emitted by terminal programs (click or
-  =RET= to open).
+  =RET= to open).  A =file://= link's =#L23= or =#L23-L42= fragment opens the
+  file at that line, marking a line range as the region.
 - *Plain-text URL detection* - automatically linkifies =http://= and =https://=
   URLs even without OSC 8 (toggle with =ghostel-enable-url-detection=).
 - *File path detection* - patterns like =/path/to/file.el:42= become clickable,

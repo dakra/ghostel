@@ -195,6 +195,48 @@ row.  Navigation should land on the link only once, not on each chunk."
         (ghostel--open-link url)
         (should (equal opened expected))))))
 
+(ert-deftest ghostel-test-open-file-uri-fragment ()
+  "A file URI's line fragment sets point, and a line range the region."
+  (let (opened)
+    (cl-letf (((symbol-function 'find-file-other-window)
+               (lambda (file) (setq opened file))))
+      ;; URL, opened file, point (line . column), marked range end or nil.
+      (pcase-dolist (`(,url ,file ,pos ,mark-line)
+                     '(("file:///nonexistent/x.el" "/nonexistent/x.el" (1 . 0) nil)
+                       ("file:///tmp/x.el#L3" "/tmp/x.el" (3 . 0) nil)
+                       ("file:///tmp/x.el#3" "/tmp/x.el" (3 . 0) nil)
+                       ("file:///tmp/x.el#L3C4" "/tmp/x.el" (3 . 3) nil)
+                       ("file:///tmp/x.el#L2-L4" "/tmp/x.el" (2 . 0) 5)
+                       ("file:///tmp/x.el#2-4" "/tmp/x.el" (2 . 0) 5)
+                       ("file:///tmp/x.el#L4-L2" "/tmp/x.el" (2 . 0) 5)
+                       ("file:///tmp/x.el#L3-L3" "/tmp/x.el" (3 . 0) 4)
+                       ("file:///tmp/x.el#L2C3-L4" "/tmp/x.el" (2 . 2) 5)
+                       ("file:///tmp/x.el#L2C3-L4C5" "/tmp/x.el" (2 . 2) 5)
+                       ("file:///tmp/%23x.el#L2" "/tmp/#x.el" (2 . 0) nil)
+                       ("file:///tmp/#x.el#" "/tmp/#x.el#" (1 . 0) nil)
+                       ("file:///tmp/x.el#Lfoo" "/tmp/x.el#Lfoo" (1 . 0) nil)))
+        (with-temp-buffer
+          (insert "line1\nline2\nline3\nline4\nline5\nline6\n")
+          (goto-char (point-min))
+          (setq opened nil)
+          (ghostel--open-link url)
+          (should (equal opened file))
+          (should (equal (cons (line-number-at-pos) (current-column)) pos))
+          (if mark-line
+              (progn (should mark-active)
+                     (should (equal (line-number-at-pos (mark)) mark-line))
+                     (should (save-excursion (goto-char (mark)) (bolp))))
+            (should-not mark-active))))
+      ;; A later jump into the same buffer drops the previous range.
+      (with-temp-buffer
+        (insert "line1\nline2\nline3\nline4\nline5\nline6\n")
+        (let ((transient-mark-mode t))
+          (ghostel--open-link "file:///tmp/x.el#L2-L4")
+          (should mark-active)
+          (ghostel--open-link "file:///tmp/x.el#L6")
+          (should (equal (line-number-at-pos) 6))
+          (should-not mark-active))))))
+
 (ert-deftest ghostel-test-open-schemeless-file-target ()
   "Bare OSC 8 targets resolve against the terminal directory."
   (let ((default-directory (file-name-as-directory

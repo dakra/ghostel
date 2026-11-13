@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- A `file://` OSC 8 link with a `#23`, `#L23`, `#L23C5` or `#L23-L42`
+  fragment opens the file at that line, marking a line range as the
+  region.
+
 ### Changed
 - `ghostel-project-buffer-list` takes an optional project.
 - `ghostel-project` switches to the project's most recently used

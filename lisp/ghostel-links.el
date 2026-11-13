@@ -93,6 +93,13 @@ one is kept while an unbalanced one, as in `(see https://x)', is not.")
   "\\`fileref:\\(.*?\\)\\(?::\\([0-9]+\\)\\(?::\\([0-9]+\\)\\)?\\)?\\'"
   "Match a `fileref:' URI into path (group 1), line (2), and column (3).")
 
+(defconst ghostel--file-uri-regex
+  (concat "\\`file://\\([^/]*\\)\\(/.*?\\)"
+          "\\(?:#L?\\([0-9]+\\)\\(?:C\\([0-9]+\\)\\)?"
+          "\\(?:-L?\\([0-9]+\\)\\(?:C[0-9]+\\)?\\)?\\)?\\'")
+  "Match a `file://' URI: host, path, line, column, end line (groups 1-5).
+A `#' that does not start a trailing line fragment stays in the path.")
+
 
 ;;; Internal state
 
@@ -148,35 +155,54 @@ For `eldoc-documentation-functions'."
                       uri)))
     (funcall callback link :thing "Link" :face 'link)))
 
+(defun ghostel--goto-file-location (line col &optional end-line)
+  "Go to 1-based digit strings LINE and COL in the current buffer.
+An END-LINE also marks the lines from LINE to END-LINE as the region."
+  (when line
+    (let ((start (max 1 (string-to-number line)))
+          (end (and end-line (max 1 (string-to-number end-line)))))
+      (deactivate-mark)
+      (goto-char (point-min))
+      (forward-line (1- (if end (min start end) start)))
+      (when end
+        (save-excursion
+          (forward-line (1+ (abs (- end start))))
+          (push-mark nil t t)))
+      (when col (move-to-column (max 0 (1- (string-to-number col))))))))
+
 (defun ghostel--open-file-at (file line col)
   "Open existing FILE in another window at 1-based digit strings LINE and COL."
   (when (file-exists-p file)
     (find-file-other-window file)
-    (when line
-      (goto-char (point-min))
-      (forward-line (1- (max 1 (string-to-number line))))
-      (when col (move-to-column (max 0 (1- (string-to-number col))))))))
+    (ghostel--goto-file-location line col)))
 
 (defun ghostel--open-link (url)
   "Open URL by scheme.
 `fileref:' and `file://' open in another window, a fileref at its line
-and column.  A bare path[:LINE[:COL]] resolves against `default-directory'.
+and column, a file URI at its `#23', `#L23', `#L23C5' or `#L23-L42'
+fragment, marking a line range.  A file URI opens even when the file does not
+exist.  A bare path[:LINE[:COL]] resolves against `default-directory'.
 Anything else goes to `browse-url'."
   (when (stringp url)
     (cond
      ((string-match ghostel--fileref-regex url)
       (ghostel--open-file-at (match-string 1 url)
                              (match-string 2 url) (match-string 3 url)))
-     ((string-match "\\`file://\\([^/]*\\)\\(/.*\\)" url)
-      (let ((host (downcase (match-string 1 url)))
-            (file (ghostel--file-uri-decode (match-string 2 url))))
+     ((string-match ghostel--file-uri-regex url)
+      (let* ((host (downcase (match-string 1 url)))
+             (path (match-string 2 url))
+             (line (match-string 3 url))
+             (col (match-string 4 url))
+             (end-line (match-string 5 url))
+             (file (ghostel--file-uri-decode path)))
         (when file
           (find-file-other-window
            (cond ((not (ghostel-local-host-p host))
                   (ghostel--tramp-path host file))
                  ((eq system-type 'windows-nt)
                   (ghostel--windows-local-path file))
-                 (t file))))))
+                 (t file)))
+          (ghostel--goto-file-location line col end-line))))
      ;; A Windows drive letter is not a scheme, nor is NAME:LINE[:COL].
      ((and (not (file-name-absolute-p url))
            (string-match-p "\\`[[:alpha:]][[:alnum:]+.-]*:" url)
