@@ -7,6 +7,7 @@
 ;;; Code:
 
 (require 'ghostel-test-helpers)
+(require 'image)
 
 (defvar image-types)
 (defvar ghostel--kitty-image-cache)

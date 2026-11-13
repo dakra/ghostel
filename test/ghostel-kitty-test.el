@@ -126,7 +126,8 @@ Emacs uses banker's rounding."
 (defmacro ghostel-test--with-kitty (&rest body)
   "Run BODY with a native TERM and one-pixel cells in a fresh buffer.
 Image/display availability and font metrics are faked; PNG encoding,
-image specifications, row projection, properties, and caching use production code."
+image specifications, row projection, properties, and caching use
+production code."
   (declare (indent 0) (debug t))
   `(with-temp-buffer
      (let ((term (ghostel--new 5 20 1000))
