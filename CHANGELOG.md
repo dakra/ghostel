@@ -26,6 +26,8 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - An Emacs input method such as `chinese-py` composes in a bridged
   terminal, whose buffer was read-only.
+- A terminal kept after its process exited no longer has mouse tracking
+  or focus reporting on, so the wheel scrolls and clicks select.
 
 ## [0.64.0] — 2026-11-11
 

@@ -520,18 +520,21 @@ unmodified so later visual buffers still send `q' to the program."
                                 (ghostel-test--terminal-text)))))))
 
 (ert-deftest ghostel-test-exec-exit-marker-renders-inside-open-sync-frame ()
-  "A child dying inside a mode 2026 frame does not block the exit marker."
+  "A child's exit ends its mode 2026 frame and its mouse and focus reports."
   :tags '(native)
   (skip-unless (not (ghostel-test--windows-p)))
   (ghostel-test--with-pty-matrix backend
     (ghostel-test--with-exec-buffer
-        (_buf proc "/bin/sh" (list "-c" "printf 'GHOSTEL_SYNC\\033[?2026h'"))
+        (_buf proc "/bin/sh"
+              (list "-c" "printf 'GHOSTEL_SYNC\\033[?1000h\\033[?1004h\\033[?2026h'"))
       (ghostel-test--wait-until
        (lambda () (not (process-live-p proc))) nil 5)
       (ghostel-test--wait-for-text "[Process exited]" nil 5)
       (should (ghostel-test--redraw ghostel--term))
       (should (string-match-p "GHOSTEL_SYNC" (buffer-string)))
-      (should (string-match-p "\\[Process exited\\]" (buffer-string))))))
+      (should (string-match-p "\\[Process exited\\]" (buffer-string)))
+      (should-not (ghostel--mouse-tracking-p ghostel--term))
+      (should-not (ghostel--mode-enabled ghostel--term 1004)))))
 
 (provide 'ghostel-exec-test)
 ;;; ghostel-exec-test.el ends here

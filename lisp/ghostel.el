@@ -4070,12 +4070,9 @@ EVENT is the state-change description passed by Emacs."
               (kill-buffer buf)
             ;; Written into the terminal, not the buffer: a redraw still
             ;; pending for the final output would otherwise overwrite it.
-            ;; DECSTR restores a readable charset and margins; leaving
-            ;; mode 2026 lets the renderer draw a frame the child never closed.
-            (when ghostel--term
-              (ghostel--write-vt ghostel--term
-                                 "\e[!p\e[?2026l\r\n[Process exited]\r\n")
-              (ghostel--invalidate))))))))
+            ;; DECSTR restores a readable charset and margins.
+            (ghostel-write-output (concat "\e[!p" ghostel--ended-reset
+                                          "\r\n[Process exited]\r\n"))))))))
 
 (defun ghostel--resolve-local-executable (program)
   "Return the absolute local executable path for PROGRAM.
