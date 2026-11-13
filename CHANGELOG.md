@@ -17,6 +17,9 @@ All notable changes to this project will be documented in this file.
 - With the native PTY, a terminal kept after its process exited no
   longer asks for a password when another program's prompt appears on
   the tty it used.
+- Prompt navigation (`ghostel-next-prompt`, `ghostel-previous-prompt`, imenu
+  jumps) lands on the input line of a multi-line prompt, not at the end
+  of its first line.
 
 ## [0.65.0] — 2026-11-14
 
