@@ -2669,33 +2669,38 @@ Accepts an optional unused WINDOW argument so it can serve as a
 
 ;;; Input mode switching commands
 
-(defun ghostel-semi-char-mode ()
-  "Switch to semi-char mode — the default terminal input mode.
-Most keys are sent to the terminal; keys in
-`ghostel-keymap-exceptions' pass through to Emacs."
-  (interactive)
-  (ghostel--ensure-ghostel-buffer)
+(defun ghostel--leave-input-mode (&optional discard)
+  "Leave the current input mode for semi-char mode; return non-nil if left.
+DISCARD non-nil drops pending line-mode input instead of sending it."
   (setq ghostel--line-mode-paused nil)
   (unless (eq ghostel--input-mode 'semi-char)
     (pcase ghostel--input-mode
       ('copy  (ghostel--leave-readonly-state))
       ('emacs (ghostel--leave-readonly-state))
-      ('line  (ghostel--line-mode-teardown)))
+      ('line  (ghostel--line-mode-teardown discard)))
     (setq ghostel--char-mode-override-active nil)
     (setq ghostel--input-mode 'semi-char)
     (ghostel--sync-read-only)
     (use-local-map ghostel-semi-char-mode-map)
     (setq ghostel--mode-line-tag nil)
     (ghostel--mode-line-refresh)
-    (when ghostel--term
-      (deactivate-mark)  ; A region left active would grow with point.
-      ;; Snap the window to the live viewport so the user lands back at the
-      ;; prompt after exiting copy/emacs/line.  FORCE so a deliberate switch
-      ;; wins over any `ghostel-inhibit-anchor-functions' roaming veto.
-      (goto-char (point-max))
-      (ghostel--anchor-window nil t)
-      (setq ghostel--force-next-redraw t)
-      (ghostel--invalidate))))
+    t))
+
+(defun ghostel-semi-char-mode ()
+  "Switch to semi-char mode — the default terminal input mode.
+Most keys are sent to the terminal; keys in
+`ghostel-keymap-exceptions' pass through to Emacs."
+  (interactive)
+  (ghostel--ensure-ghostel-buffer)
+  (when (and (ghostel--leave-input-mode) ghostel--term)
+    (deactivate-mark)  ; A region left active would grow with point.
+    ;; Snap the window to the live viewport so the user lands back at the
+    ;; prompt after exiting copy/emacs/line.  FORCE so a deliberate switch
+    ;; wins over any `ghostel-inhibit-anchor-functions' roaming veto.
+    (goto-char (point-max))
+    (ghostel--anchor-window nil t)
+    (setq ghostel--force-next-redraw t)
+    (ghostel--invalidate)))
 
 (defun ghostel-char-mode ()
   "Switch to char mode — send all keys to the terminal.
@@ -5483,9 +5488,9 @@ spawn after initialization.  With BRIDGED non-nil none will be, and
     (ghostel--clear-plain-link-detection-bounds)
     (let ((inhibit-read-only t))
       (erase-buffer))
-    ;; A reused buffer may still be in line mode; restore the barrier.
-    (setq ghostel--input-mode 'semi-char)
-    (ghostel--sync-read-only)
+    ;; A reused buffer may be in another input mode.  Leave it without
+    ;; writing to or redrawing the terminal being replaced.
+    (ghostel--leave-input-mode t)
     (ghostel-status--clear "")
     (setq ghostel--term nil
           ghostel--term-rows nil

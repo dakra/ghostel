@@ -61,6 +61,52 @@ SPEC is (ROWS COLS) for `ghostel-make-terminal'."
       (should (eq 'kept (bound-and-true-p ghostel-bridge-test--own)))
       (should (equal '(20 . 5) (ghostel-terminal-size))))))
 
+(defun ghostel-bridge-test--reuse-from (enter)
+  "Check that a terminal made in a buffer that ENTER switched mode starts clean.
+ENTER is called at a shell prompt, with input written to the bridge recorded."
+  (ghostel-bridge-test--with-terminal (10 40)
+    (let (sent)
+      (setq ghostel-pty-out-function (lambda (data) (push data sent)))
+      (ghostel-write-output "\e]133;A\e\\$ \e]133;B\e\\")
+      (ghostel--commit-frame buffer)
+      (funcall enter)
+      (should ghostel--mode-line-tag)
+      (should-not (eq ghostel-semi-char-mode-map (current-local-map)))
+      (ghostel-make-terminal buffer 10 40)
+      (should (eq 'semi-char ghostel--input-mode))
+      (should (eq ghostel-semi-char-mode-map (current-local-map)))
+      (should-not ghostel--mode-line-tag)
+      (should-not mode-line-process)
+      (should-not ghostel--char-mode-override-active)
+      (should-not ghostel--line-mode-paused)
+      (should-not ghostel--line-input-start)
+      (should-not (memq #'ghostel--fake-cursor-update pre-redisplay-functions))
+      ;; Nothing is sent to the replaced terminal.
+      (should-not sent))))
+
+(ert-deftest ghostel-test-make-terminal-reuses-copy-mode-buffer ()
+  "A buffer in copy mode is left for semi-char mode."
+  :tags '(native)
+  (ghostel-bridge-test--reuse-from #'ghostel-copy-mode))
+
+(ert-deftest ghostel-test-make-terminal-reuses-emacs-mode-buffer ()
+  "A buffer in Emacs mode is left for semi-char mode."
+  :tags '(native)
+  (ghostel-bridge-test--reuse-from #'ghostel-emacs-mode))
+
+(ert-deftest ghostel-test-make-terminal-reuses-line-mode-buffer ()
+  "A buffer in line mode is left for semi-char mode, dropping its input."
+  :tags '(native)
+  (ghostel-bridge-test--reuse-from
+   (lambda ()
+     ;; Input typed before entry is adopted, to be erased from the shell
+     ;; on exit.
+     (ghostel-write-output "l")
+     (ghostel--commit-frame (current-buffer))
+     (ghostel-line-mode)
+     (should (equal 1 ghostel--line-mode-adopted-count))
+     (insert "s"))))
+
 (ert-deftest ghostel-test-make-terminal-missing-directory ()
   "A bridged terminal does not need `default-directory' to exist."
   :tags '(native)

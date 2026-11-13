@@ -22,6 +22,7 @@
 (declare-function ghostel--cursor-row-input-start "ghostel")
 (declare-function ghostel--ensure-ghostel-buffer "ghostel")
 (declare-function ghostel--invalidate "ghostel")
+(declare-function ghostel--leave-input-mode "ghostel")
 (declare-function ghostel--leave-readonly-state "ghostel")
 (declare-function ghostel--mode-line-refresh "ghostel")
 (declare-function ghostel--mode-line-tag-make "ghostel")
@@ -45,7 +46,6 @@
 (defvar ghostel--mode-line-tag)
 (defvar ghostel--term)
 (defvar ghostel--term-cols)
-(defvar ghostel-semi-char-mode-map)
 
 
 ;;; Customization
@@ -779,13 +779,7 @@ which discards any type-ahead and runs inside `ghostel--redraw-now'."
 Called by `ghostel--line-mode-pre-redraw' on a 1049/1047 transition into
 the alt screen.  Arms `ghostel--line-mode-paused' so the alt-screen-off cycle
 re-enters line mode at the new prompt."
-  (ghostel--line-mode-teardown 'pause)
-  (setq ghostel--char-mode-override-active nil)
-  (setq ghostel--input-mode 'semi-char)
-  (ghostel--sync-read-only)
-  (use-local-map ghostel-semi-char-mode-map)
-  (setq ghostel--mode-line-tag nil)
-  (ghostel--mode-line-refresh)
+  (ghostel--leave-input-mode t)
   (setq ghostel--line-mode-paused
         (list :input "" :point-offset nil :mark-offset nil))
   (message "Line mode paused; resumes when the TUI exits (%s to force now)"
