@@ -2380,6 +2380,7 @@ identity without one.
 #+findex: ghostel-restore-snapshot
 #+findex: ghostel-set-directory
 #+findex: ghostel-set-command-running
+#+findex: ghostel-last-prompt
 #+findex: ghostel-set-program-status
 #+findex: ghostel-status-label
 #+findex: ghostel-theme-colors
@@ -2409,6 +2410,7 @@ and receives what is typed into it:
 | =ghostel-restore-snapshot=    | Loads a libghostty snapshot into a terminal that has seen no output.                 |
 | =ghostel-set-directory=       | Sets the terminal's directory when the client learns it without OSC 7.               |
 | =ghostel-set-command-running= | Records a command's start or end when the client learns it without OSC 133.          |
+| =ghostel-last-prompt=         | The newest prompt the shell marked with OSC 133, to tell whether one came since.     |
 | =ghostel-set-program-status=  | Replaces the program status records with those the remote side keeps.                |
 | =ghostel-status-label=        | The label the mode line shows for program status records, also without a buffer.     |
 | =ghostel-theme-colors=        | The colors of ghostel's faces, for a remote side that answers color queries itself.  |

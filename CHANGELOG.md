@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 - `ghostel-end-terminal` ends a bridged terminal whose other side is
   gone: its buffer stays as a read-only snapshot.
+- `ghostel-last-prompt` returns the newest prompt marked with OSC 133.
 - A `file://` OSC 8 link with a `#23`, `#L23`, `#L23C5` or `#L23-L42`
   fragment opens the file at that line, marking a line range as the
   region.

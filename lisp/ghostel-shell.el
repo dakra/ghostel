@@ -590,6 +590,11 @@ what is recorded, run `ghostel-command-start-functions', or
       (ghostel--run-hook-safely 'ghostel-command-finish-functions
                                 (current-buffer) status))))
 
+(defun ghostel-last-prompt ()
+  "Return the newest prompt the shell marked with OSC 133, or nil.
+The value is opaque; one not `eq' to an earlier one was marked since."
+  (car ghostel--prompt-positions))
+
 (defun ghostel--prompt-input-start ()
   "From the start of a `ghostel-prompt' region, move past the prefix.
 If `ghostel-input' begins on the same line, point lands at its

@@ -381,6 +381,19 @@ ENTER is called at a shell prompt, with input written to the bridge recorded."
       (ghostel-send-string "typed")
       (should (equal '("typed" "raw") sent)))))
 
+(ert-deftest ghostel-test-last-prompt ()
+  "`ghostel-last-prompt' changes with each prompt the shell marks."
+  (with-temp-buffer
+    (should-not (ghostel-last-prompt))
+    (ghostel--osc133-marker "A" nil)
+    (let ((first (ghostel-last-prompt)))
+      (should first)
+      (ghostel--osc133-marker "C" nil)
+      (ghostel--osc133-marker "D" 0)
+      (should (eq first (ghostel-last-prompt)))
+      (ghostel--osc133-marker "A" nil)
+      (should-not (eq first (ghostel-last-prompt))))))
+
 (ert-deftest ghostel-test-set-directory ()
   "`ghostel-set-directory' moves the buffer to a directory or a file URL."
   (with-temp-buffer
