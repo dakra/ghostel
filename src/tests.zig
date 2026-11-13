@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 test {
     _ = @import("emacs.zig");
     _ = @import("png.zig");
+    _ = @import("ppm.zig");
     _ = @import("image_composition.zig");
     _ = @import("KittyRenderer.zig");
     _ = @import("GlyphMetricsCache.zig");

@@ -179,6 +179,51 @@ production code."
         (should (<= (+ y height) (be32 20)))
         (cons width height)))))
 
+(ert-deftest ghostel-test-kitty-prefers-png-and-flattens-ppm-on-default-background ()
+  "PNG preserves alpha; PPM flattens onto the current Ghostel background."
+  :tags '(native)
+  (ghostel-test--with-kitty
+    (let ((image-types '(png pbm))
+          (available '(png pbm))
+          (background "#14283c")
+          (background-reads 0))
+      (cl-letf (((symbol-function 'image-type-available-p)
+                 (lambda (type) (memq type available)))
+                ((symbol-function 'ghostel--face-hex-color)
+                 (lambda (face attr)
+                   (should (eq face 'ghostel-default))
+                   (should (eq attr :background))
+                   (cl-incf background-reads)
+                   background)))
+        (ghostel--write-vt term
+                           (concat "abc\e[H"
+                                   (ghostel-test--kitty-transmit
+                                    1 '(0 0 0 0 255 0 0 128 1 2 3 255) 3 1)
+                                   (ghostel-test--kitty-place 1)))
+        (ghostel-test--redraw term)
+        (should (eq (image-property (ghostel-test--kitty-image-at 0 1) :type) 'png))
+        (should (= background-reads 0))
+        (setq available '(pbm))
+        (ghostel-test--redraw term)
+        (let ((image (ghostel-test--kitty-image-at 0 1)))
+          (should (eq (image-property image :type) 'pbm))
+          (should (equal (image-property image :data)
+                         (concat "P6\n3 1\n255\n"
+                                 (unibyte-string 20 40 60 138 20 30 1 2 3))))
+          (should-not (ghostel-test--kitty-image-at 0 0))
+          (should (= (char-after (point-min)) ?a))
+          (ghostel-test--redraw term t)
+          (should (eq image (ghostel-test--kitty-image-at 0 1)))
+          (setq background "#ffffff")
+          (ghostel-test--redraw term)
+          (should-not (eq image (ghostel-test--kitty-image-at 0 1)))
+          (should (equal (image-property (ghostel-test--kitty-image-at 0 1) :data)
+                         (concat "P6\n3 1\n255\n"
+                                 (unibyte-string 255 255 255 255 127 127 1 2 3))))
+          (setq available '(png pbm))
+          (ghostel-test--redraw term)
+          (should (eq (image-property (ghostel-test--kitty-image-at 0 1) :type) 'png)))))))
+
 (ert-deftest ghostel-test-kitty-pads-empty-rows ()
   "Image extents preserve spaces that normal row rendering would trim."
   :tags '(native)

@@ -5,6 +5,7 @@ const gt = @import("ghostty-vt");
 const emacs = @import("emacs.zig");
 const pixels = @import("image_composition.zig");
 const png = @import("png.zig");
+const ppm = @import("ppm.zig");
 const Self = @This();
 const Allocator = std.mem.Allocator;
 const Storage = gt.kitty.graphics.ImageStorage;
@@ -13,6 +14,7 @@ alloc: Allocator,
 frames: [2]Frame,
 current: u1 = 0,
 enabled: bool = false,
+ppm_background: ?gt.color.RGB = null,
 display_cell_width: u32 = 1,
 display_cell_height: u32 = 1,
 reported_cell_width: u32 = 1,
@@ -180,10 +182,12 @@ pub fn prepare(
     display_cell_width: u32,
     display_cell_height: u32,
     enabled: bool,
+    ppm_background: ?gt.color.RGB,
 ) !void {
     const next = &self.frames[self.current ^ 1];
     next.clear();
     self.enabled = enabled;
+    self.ppm_background = ppm_background;
     self.display_cell_width = @max(1, display_cell_width);
     self.display_cell_height = @max(1, display_cell_height);
     self.reported_cell_width = @max(1, term.width_px / term.cols);
@@ -452,6 +456,7 @@ fn finishPlan(self: *Self, alloc: Allocator, pin: gt.Pin, plan: *Plan) !void {
     if (cells[plan.end_col - 1].wide == .wide and plan.end_col < cells.len) plan.end_col += 1;
 
     var key: std.ArrayList(u8) = .empty;
+    try appendKey(alloc, &key, self.ppm_background);
     try appendKey(alloc, &key, self.display_cell_width);
     try appendKey(alloc, &key, self.display_cell_height);
     try appendKey(alloc, &key, plan.end_col - plan.first_col);
@@ -505,7 +510,7 @@ pub fn getRow(self: *Self, env: emacs.Env, term: *gt.Terminal, pin: gt.Pin) !?Ro
     return self.layoutRow(env, pin, plan, raster);
 }
 
-/// Cache one PNG and its pre-layout visibility mask, both owned by Emacs.
+/// Cache one image and its pre-layout visibility mask, both owned by Emacs.
 fn makeRaster(self: *Self, env: emacs.Env, term: *gt.Terminal, plan: Plan) !emacs.Value {
     const cols = plan.end_col - plan.first_col;
     const width = try std.math.mul(u32, cols, self.display_cell_width);
@@ -530,13 +535,17 @@ fn makeRaster(self: *Self, env: emacs.Env, term: *gt.Terminal, plan: Plan) !emac
         return env.f("vector", .{ env.nil(), env.nil() });
     }
     const mask = env.makeUnibyteString(visible);
-    pixels.unpremultiply(canvas);
-    const data = try png.encode(self.alloc, canvas, width, self.display_cell_height, width * 4);
+    const data = if (self.ppm_background) |bg|
+        try ppm.encode(self.alloc, canvas, width, self.display_cell_height, .{ bg.r, bg.g, bg.b })
+    else png_data: {
+        pixels.unpremultiply(canvas);
+        break :png_data try png.encode(self.alloc, canvas, width, self.display_cell_height, width * 4);
+    };
     defer self.alloc.free(data);
     const bytes = env.makeUnibyteString(data);
     const image = env.f("create-image", .{
         bytes,
-        emacs.sym.png,
+        if (self.ppm_background != null) emacs.sym.pbm else emacs.sym.png,
         env.t(),
         emacs.sym.@":scale",
         1,
@@ -844,7 +853,7 @@ test "pinned plans are eager and placeholder plans are limited to requested rows
         .frames = .{ .{ .arena = .init(alloc) }, .{ .arena = .init(alloc) } },
     };
     defer renderer.deinit();
-    try renderer.prepare(&term, 1, 1, true);
+    try renderer.prepare(&term, 1, 1, true, null);
     const plans = &renderer.frames[renderer.current].rows;
     try testing.expectEqual(@as(usize, 1), plans.count());
     try testing.expect(plans.contains(RowKey.init(anchor.*)));
@@ -859,28 +868,28 @@ test "pinned plans are eager and placeholder plans are limited to requested rows
     try testing.expect(!renderer.isRowDirty(active));
 
     screen.pages.clearDirty();
-    try renderer.prepare(&term, 1, 1, true);
+    try renderer.prepare(&term, 1, 1, true, null);
     try renderer.prepareRow(&term, placeholder);
     try testing.expect(!renderer.isRowDirty(anchor.*));
     storage.images.getPtr(1).?.generation += 1;
-    try renderer.prepare(&term, 1, 1, true);
+    try renderer.prepare(&term, 1, 1, true, null);
     try renderer.prepareRow(&term, placeholder);
     try testing.expect(renderer.isRowDirty(anchor.*));
     try testing.expect(!renderer.isRowDirty(placeholder));
     try testing.expect(!anchor.isDirty());
 
     anchor.x = 3;
-    try renderer.prepare(&term, 1, 1, true);
+    try renderer.prepare(&term, 1, 1, true, null);
     try renderer.prepareRow(&term, placeholder);
     try testing.expect(renderer.isRowDirty(anchor.*));
     try testing.expect(!anchor.isDirty());
 
-    try renderer.prepare(&term, 1, 1, false);
+    try renderer.prepare(&term, 1, 1, false, null);
     try renderer.prepareRow(&term, placeholder);
     try testing.expect(renderer.isRowDirty(anchor.*));
     try testing.expect(renderer.isRowDirty(placeholder));
     try testing.expect(!anchor.isDirty());
-    try renderer.prepare(&term, 1, 1, false);
+    try renderer.prepare(&term, 1, 1, false, null);
     try testing.expect(!renderer.isRowDirty(anchor.*));
     try testing.expect(!renderer.isRowDirty(placeholder));
 }
@@ -898,7 +907,7 @@ test "reported-to-display scaling uses independent axes and refreshed cell metri
     };
     defer renderer.deinit();
 
-    try renderer.prepare(&term, 4, 3, false);
+    try renderer.prepare(&term, 4, 3, false, null);
     try testing.expectEqual(@as(i64, 4), renderer.scaleX(8));
     try testing.expectEqual(@as(i64, 3), renderer.scaleY(12));
     try testing.expectEqual(@as(i64, 2), renderer.scaleX(3));
@@ -907,7 +916,7 @@ test "reported-to-display scaling uses independent axes and refreshed cell metri
 
     term.width_px = 320;
     term.height_px = 120;
-    try renderer.prepare(&term, 4, 3, false);
+    try renderer.prepare(&term, 4, 3, false, null);
     try testing.expectEqual(@as(i64, 4), renderer.scaleX(16));
     try testing.expectEqual(@as(i64, 3), renderer.scaleY(24));
 }

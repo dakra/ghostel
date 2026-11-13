@@ -216,7 +216,15 @@ fn prepareImages(self: *Self, env: emacs.Env) !void {
     const has_images = self.term.screens.active.kitty_images.placements.count() > 0;
     const cell_w = if (self.font_info) |f| f.width else if (has_images) @max(1, env.cast(u32, env.f("default-font-width", .{}))) else 1;
     const cell_h = if (self.font_info) |f| f.ascent + f.descent else if (has_images) @max(1, env.cast(u32, env.f("default-font-height", .{}))) else 1;
-    try self.kitty.prepare(self.term, cell_w, cell_h, env.isNotNil(env.f("display-graphic-p", .{})));
+    const graphical = env.isNotNil(env.f("display-graphic-p", .{}));
+    var ppm_background: ?gt.color.RGB = null;
+    if (has_images and graphical and
+        env.isNil(env.f("image-type-available-p", .{emacs.sym.png})) and
+        env.isNotNil(env.f("image-type-available-p", .{emacs.sym.pbm})))
+    {
+        ppm_background = try style_face.getGhostelDefaultColor(env, ":background");
+    }
+    try self.kitty.prepare(self.term, cell_w, cell_h, graphical, ppm_background);
 }
 
 fn clearPageDirtyFlags(from_node: *gt.PageList.List.Node) void {
