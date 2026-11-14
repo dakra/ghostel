@@ -10,15 +10,25 @@ pub const SavedMarker = struct {
     pos: usize,
     pin: ?*gt.Pin = null,
 
-    pub fn pinPos(self: *SavedMarker, screen: *gt.Screen, env: emacs.Env) void {
-        if (utils.bufferPosToPin(screen, env, self.pos)) |pin| {
+    pub fn pinPos(
+        self: *SavedMarker,
+        screen: *gt.Screen,
+        env: emacs.Env,
+        map: utils.RowMap,
+    ) void {
+        if (utils.bufferPosToPin(screen, env, self.pos, map)) |pin| {
             self.pin = screen.pages.trackPin(pin) catch null;
         }
     }
 
-    pub fn unpinPos(self: *SavedMarker, screen: *gt.Screen, env: emacs.Env) void {
+    pub fn unpinPos(
+        self: *SavedMarker,
+        screen: *gt.Screen,
+        env: emacs.Env,
+        map: utils.RowMap,
+    ) void {
         if (self.pin) |pin| {
-            self.pos = utils.pinToBufferPos(screen, env, pin.*) orelse self.pos;
+            self.pos = utils.pinToBufferPos(screen, env, pin.*, map) orelse self.pos;
             screen.pages.untrackPin(pin);
             self.pin = null;
         }
@@ -91,25 +101,35 @@ pub const SavedBufferMarkers = struct {
         }
     }
 
-    pub fn pin(self: *SavedBufferMarkers, screen: *gt.Screen, env: emacs.Env) void {
+    pub fn pin(
+        self: *SavedBufferMarkers,
+        screen: *gt.Screen,
+        env: emacs.Env,
+        map: utils.RowMap,
+    ) void {
         if (self.mark) |*mark| {
-            mark.pinPos(screen, env);
+            mark.pinPos(screen, env, map);
         }
 
         for (self.windows.items) |*win| {
-            win.point.pinPos(screen, env);
-            win.start.pinPos(screen, env);
+            win.point.pinPos(screen, env, map);
+            win.start.pinPos(screen, env, map);
         }
     }
 
-    fn unpin(self: *SavedBufferMarkers, screen: *gt.Screen, env: emacs.Env) void {
+    fn unpin(
+        self: *SavedBufferMarkers,
+        screen: *gt.Screen,
+        env: emacs.Env,
+        map: utils.RowMap,
+    ) void {
         if (self.mark) |*mark| {
-            mark.unpinPos(screen, env);
+            mark.unpinPos(screen, env, map);
         }
 
         for (self.windows.items) |*win| {
-            win.point.unpinPos(screen, env);
-            win.start.unpinPos(screen, env);
+            win.point.unpinPos(screen, env, map);
+            win.start.unpinPos(screen, env, map);
         }
     }
 
@@ -117,8 +137,9 @@ pub const SavedBufferMarkers = struct {
         self: *SavedBufferMarkers,
         screen: *gt.Screen,
         env: emacs.Env,
+        map: utils.RowMap,
     ) void {
-        self.unpin(screen, env);
+        self.unpin(screen, env, map);
 
         if (self.mark) |mark| {
             _ = env.f(
