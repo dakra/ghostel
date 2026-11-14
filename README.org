@@ -797,14 +797,21 @@ Detection has two layers.  The primary signal mirrors libghostty's heuristic: th
 slave tty is in canonical mode with echo off, read via a small =tcgetattr= Zig
 binding.  This catches local programs that flip =!ECHO= (sudo, ssh's own prompt,
 gpg, ...).  A cursor-row regex fallback (=ghostel-password-prompt-regex=,
-defaulting to =comint-password-prompt-regexp=) covers cases the tty signal cannot
-see: when the foreground shell is on a remote host (=ghostel--remote-shell-p=,
-derived from the TRAMP =default-directory= ghostel keeps in sync via OSC 7), or
-when the local tty state could not be read.  Not using the regex for local
-shells avoids false positives from local raw-mode TUIs like vim or less, and
-structural anchoring keeps shell-typed lines such as =$ echo Password:= from
-triggering.  See =ghostel-debug-start= / =ghostel-debug-password-events-show=
-for diagnostics.
+defaulting to =comint-password-prompt-regexp=) covers the case the tty signal
+cannot see: a foreground shell on a remote host (=ghostel--remote-shell-p=,
+derived from the TRAMP =default-directory= ghostel keeps in sync via OSC 7).
+Not using the regex for local shells avoids false positives from local raw-mode
+TUIs like vim or less, and structural anchoring keeps shell-typed lines such as
+=$ echo Password:= from triggering.  See =ghostel-debug-start= /
+=ghostel-debug-password-events-show= for diagnostics.
+
+#+findex: ghostel-set-password-pid
+Behind a local relay or multiplexer, such as =zmx attach=, the buffer's own tty
+is in raw mode and never shows the program's echo state.  A package that knows a
+process on the tty the program runs on passes its pid to
+=ghostel-set-password-pid=, and ghostel tests that tty as well, for as long as
+the process holds it.  For zmx, that is the =pid= =zmx list= prints for the
+session.
 
 The mode line shows = 🔒Password= while a prompt is open.  Wrong-password
 retries are detected automatically (the cursor moves to the new prompt row).
@@ -2383,6 +2390,7 @@ identity without one.
 #+findex: ghostel-last-prompt
 #+findex: ghostel-set-program-status
 #+findex: ghostel-status-label
+#+findex: ghostel-set-password-pid
 #+findex: ghostel-theme-colors
 #+findex: ghostel-ensure-module
 
@@ -2413,6 +2421,7 @@ and receives what is typed into it:
 | =ghostel-last-prompt=         | The newest prompt the shell marked with OSC 133, to tell whether one came since.     |
 | =ghostel-set-program-status=  | Replaces the program status records with those the remote side keeps.                |
 | =ghostel-status-label=        | The label the mode line shows for program status records, also without a buffer.     |
+| =ghostel-set-password-pid=    | Detects password prompts on the tty of a process on this machine.                    |
 | =ghostel-theme-colors=        | The colors of ghostel's faces, for a remote side that answers color queries itself.  |
 
 The functions are called in the terminal's buffer.  Without =:send= the

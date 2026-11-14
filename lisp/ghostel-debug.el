@@ -43,6 +43,7 @@
 (declare-function ghostel--remote-shell-p "ghostel")
 (declare-function ghostel--password-prompt-detected-p "ghostel")
 (defvar ghostel--password-mode-p)
+(defvar ghostel--password-tty)
 
 ;; Forward declarations for TRAMP symbols read by `ghostel-debug-info'
 ;; that don't exist on every supported Emacs.  The actual reads are
@@ -128,12 +129,13 @@ Each entry is a plist:
   :time          (current-time)
   :buffer        ghostel buffer (may have been killed)
   :buffer-name   string snapshot
-  :source        symbol - `zig', `regex-remote', `regex-unknown', or
+  :source        symbol - `zig', `tty', `regex', or
                  nil if the underlying signal vanished by the time the
                  advice re-probed (still useful: indicates a transient)
   :cursor        (COL . ROW) at the moment of the fire, or nil
   :row-text      cursor row text, or nil
-  :tty           value of `process-tty-name', or nil
+  :tty           terminal of the pid given to `ghostel-set-password-pid'
+                 for source `tty', else `process-tty-name', or nil
   :default-dir   `default-directory' at fire time
   :remote-p      `ghostel--remote-shell-p' result
 
@@ -149,7 +151,7 @@ Called only while `ghostel-debug-start' has installed it.  Wraps ORIG
 the `ghostel--password-mode-p' transition from nil to t, and on a fresh
 rising edge pushes a snapshot onto `ghostel-debug--password-events'.
 
-The source attribution (`zig' / `regex-remote' / `regex-unknown') is
+The source attribution (`zig' / `tty' / `regex') is
 recovered by re-running the probe after the call.  Termios may have
 changed in the microseconds between the original detection and the
 re-probe, so a nil source on a logged event means the rising edge
@@ -158,16 +160,19 @@ fired but the underlying signal vanished by the time we looked again
   (let ((was-on ghostel--password-mode-p))
     (apply orig args)
     (when (and (not was-on) ghostel--password-mode-p)
-      (let ((event (list :time (current-time)
-                         :buffer (current-buffer)
-                         :buffer-name (buffer-name)
-                         :source (ghostel--password-prompt-detected-p)
-                         :cursor ghostel--cursor-pos
-                         :row-text (ghostel--cursor-row-text)
-                         :tty (and ghostel--process
-                                   (process-tty-name ghostel--process))
-                         :default-dir default-directory
-                         :remote-p (ghostel--remote-shell-p))))
+      (let* ((source (ghostel--password-prompt-detected-p))
+             (event (list :time (current-time)
+                          :buffer (current-buffer)
+                          :buffer-name (buffer-name)
+                          :source source
+                          :cursor ghostel--cursor-pos
+                          :row-text (ghostel--cursor-row-text)
+                          :tty (if (eq source 'tty)
+                                   ghostel--password-tty
+                                 (and ghostel--process
+                                      (process-tty-name ghostel--process)))
+                          :default-dir default-directory
+                          :remote-p (ghostel--remote-shell-p))))
         (push event ghostel-debug--password-events)
         (when (> (length ghostel-debug--password-events)
                  ghostel-debug--password-events-cap)

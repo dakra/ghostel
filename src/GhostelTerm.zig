@@ -383,7 +383,8 @@ pub fn isPasswordMode(self: *Self) !bool {
         return pty_utils.isPasswordMode(process.replicaName());
     } else if (emacs.current_env) |env| {
         const process = env.symbolValue("ghostel--process");
-        if (env.isNil(process)) return false;
+        // Emacs keeps a dead process's tty name, which another PTY may reuse.
+        if (env.isNil(env.f("process-live-p", .{process}))) return false;
         const tty_name_val = env.f("process-tty-name", .{process});
         if (env.isNil(tty_name_val)) return false;
         const tty_name = try env.extractStringAlloc(
@@ -1065,6 +1066,25 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 if (env.isNil(args[0])) return env.nil();
                 const term = env.getUserPtr(Self, args[0]) orelse return error.InvalidTerminalHandle;
                 return if (try term.isPasswordMode()) env.t() else env.nil();
+            }
+        },
+    },
+    .{
+        .name = "ghostel--tty-password-input-p",
+        .arity = .{ 1, 1 },
+        .doc =
+        \\Return t when the PTY device PATH appears to be reading a password.
+        \\
+        \\Nil when PATH is not a readable tty or not in canonical no-echo mode.
+        \\
+        \\(ghostel--tty-password-input-p PATH)
+        ,
+        .impl = struct {
+            pub fn call(env: emacs.Env, _: isize, args: [*c]emacs.Value) !emacs.Value {
+                var buf: ?[]u8 = null;
+                defer if (buf) |b| module_alloc.free(b);
+                const path = try env.extractStringAlloc(module_alloc, args[0], &buf);
+                return if (pty_utils.isPasswordMode(path)) env.t() else env.nil();
             }
         },
     },

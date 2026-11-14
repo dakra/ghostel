@@ -8,6 +8,10 @@ All notable changes to this project will be documented in this file.
 - `ghostel-end-terminal` ends a bridged terminal whose other side is
   gone: its buffer stays as a read-only snapshot.
 - `ghostel-last-prompt` returns the newest prompt marked with OSC 133.
+- `ghostel-set-password-pid` detects password prompts on the tty of
+  another process, for a program behind a local relay or multiplexer
+  such as `zmx attach`, or in a bridged terminal whose program runs on
+  this machine.
 - A `file://` OSC 8 link with a `#23`, `#L23`, `#L23C5` or `#L23-L42`
   fragment opens the file at that line, marking a line range as the
   region.
@@ -30,6 +34,8 @@ All notable changes to this project will be documented in this file.
   terminal, whose buffer was read-only.
 - A terminal kept after its process exited no longer has mouse tracking
   or focus reporting on, so the wheel scrolls and clicks select.
+- A terminal kept after its process exited no longer asks for a password
+  when another program's prompt appears on the tty it used.
 
 ## [0.64.0] — 2026-11-11
 
