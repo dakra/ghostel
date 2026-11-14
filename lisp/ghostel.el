@@ -3300,34 +3300,28 @@ default."
 
 (defun ghostel--password-prompt-detected-p ()
   "Return non-nil if the foreground program looks like it's reading a password.
-Three arms:
+The value names the test that hit:
 
-  - Zig heuristic (`ghostel--pty-password-input-p'): the current
-    PTY is in canonical mode with echo off.  Catches local sudo, ssh's
-    own password prompt, gpg, etc.
-
-  - The same test on the terminal of the process given to
-    `ghostel-set-password-pid', tried first while the buffer's terminal
-    is live and that process still holds it.
-
-  - cursor-row regex (`ghostel-password-prompt-regex', defaulting to
-    `comint-password-prompt-regexp').  Used when `ghostel--remote-shell-p'
-    indicates a remote shell, where the remote pty's canonical+!echo state
-    isn't visible through a local pty probe.
-
-Returns nil on miss, or a symbol naming the arm on hit (`zig', `tty' or
-`regex')."
+  - `regex': in a remote shell, the cursor row matches
+    `ghostel-password-prompt-regex'.
+  - `tty': the terminal of the process given to `ghostel-set-password-pid'
+    is in canonical mode with echo off.
+  - `zig': the buffer's own PTY is in that mode."
+  ;; A device name is reused once its PTY closes, so a dead terminal reads
+  ;; no tty, and the pid's tty counts only while the pid holds it.
   (cond
+   ;; A remote shell's echo state isn't visible on the local pty.
    ((ghostel--remote-shell-p)
     (when (ghostel--password-regex-matches-cursor-row-p) 'regex))
-   ;; A device name is reused once its PTY closes.
    ((and ghostel--password-tty
          (or ghostel--pty-out-function (process-live-p ghostel--process))
          (ghostel--tty-password-input-p ghostel--password-tty)
          (equal ghostel--password-tty
                 (ghostel--process-tty ghostel--password-pid)))
     'tty)
-   ((ghostel--pty-password-input-p ghostel--term) 'zig)))
+   ((and (process-live-p ghostel--process)
+         (ghostel--pty-password-input-p ghostel--term))
+    'zig)))
 
 (defun ghostel--process-tty (pid)
   "Return the terminal device of process PID on this machine, or nil."
@@ -3341,11 +3335,13 @@ Returns nil on miss, or a symbol naming the arm on hit (`zig', `tty' or
 
 (defun ghostel-set-password-pid (pid)
   "Detect password prompts on the terminal of process PID too.
-For a program behind a local relay or multiplexer, or in a bridged terminal,
-whose terminal is not the buffer's own PTY.  PID is a process on this machine,
-such as the shell of a multiplexer pane; nil reads only the buffer's own PTY
-again.  Prompts count only while PID holds the terminal it held at this call.
-Making the buffer a terminal again resets it."
+Use it for a program behind a local relay or multiplexer, or in a bridged
+terminal, whose terminal is not the buffer's own PTY.  PID is a process on
+this machine, such as the shell of a multiplexer pane; nil reads only the
+buffer's own PTY again.  The password goes to the buffer's program, so PID
+must be on the terminal that program's input reaches.  Prompts count only
+while PID holds the terminal it held at this call.  Making the buffer a
+terminal again resets it."
   (setq ghostel--password-pid pid
         ghostel--password-tty (and pid (ghostel--process-tty pid)))
   (when ghostel--term

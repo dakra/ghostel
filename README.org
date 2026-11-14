@@ -805,13 +805,14 @@ TUIs like vim or less, and structural anchoring keeps shell-typed lines such as
 =$ echo Password:= from triggering.  See =ghostel-debug-start= /
 =ghostel-debug-password-events-show= for diagnostics.
 
-#+findex: ghostel-set-password-pid
 Behind a local relay or multiplexer, such as =zmx attach=, the buffer's own tty
 is in raw mode and never shows the program's echo state.  A package that knows a
 process on the tty the program runs on passes its pid to
-=ghostel-set-password-pid=, and ghostel tests that tty as well, for as long as
-the process holds it.  For zmx, that is the =pid= =zmx list= prints for the
-session.
+=ghostel-set-password-pid= in the terminal's buffer, and ghostel tests that tty
+as well, for as long as the process holds it.  For zmx, that is the =pid=
+=zmx list= prints for the session.  The password goes to the buffer's program,
+so the process must be on the tty that program's input reaches: pass nil once
+it is not, as when the relay detaches.
 
 The mode line shows = 🔒Password= while a prompt is open.  Wrong-password
 retries are detected automatically (the cursor moves to the new prompt row).
@@ -1561,7 +1562,7 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 |-----------------------------------+------------------------------------+--------------------------------------------------------------------------|
 | =ghostel-detect-password-prompts=   | =t=                                  | Watch for password prompts and pop =read-passwd=.                          |
 | =ghostel-password-prompt-functions= | =(ghostel--default-password-source)= | Sources tried in order to obtain a password (prepend auth-source, etc.). |
-| =ghostel-password-prompt-regex=     | =comint-password-prompt-regexp=      | Cursor-row regex fallback (remote shells, or unreadable local tty).      |
+| =ghostel-password-prompt-regex=     | =comint-password-prompt-regexp=      | Cursor-row regex for remote shells.                                      |
 | =ghostel-password-prompt-debounce=  | =0.2=                                | Seconds to wait after a rising edge before opening =read-passwd=.          |
 
 ** Notifications and progress

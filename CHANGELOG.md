@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- With the native PTY, a terminal kept after its process exited no
+  longer asks for a password when another program's prompt appears on
+  the tty it used.
+
 ## [0.65.0] — 2026-11-14
 
 ### Added

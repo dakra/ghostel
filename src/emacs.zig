@@ -583,7 +583,6 @@ const interned_symbols = [_][:0]const u8{
     "point-max",
     "pos-bol",
     "process-environment",
-    "process-live-p",
     "process-tty-name",
     "propertize",
     "provide",

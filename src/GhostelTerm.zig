@@ -390,8 +390,7 @@ pub fn isPasswordMode(self: *Self) !bool {
         return pty_utils.isPasswordMode(process.replicaName());
     } else if (emacs.current_env) |env| {
         const process = env.symbolValue("ghostel--process");
-        // Emacs keeps a dead process's tty name, which another PTY may reuse.
-        if (env.isNil(env.f("process-live-p", .{process}))) return false;
+        if (env.isNil(process)) return false;
         const tty_name_val = env.f("process-tty-name", .{process});
         if (env.isNil(tty_name_val)) return false;
         const tty_name = try env.extractStringAlloc(
@@ -1063,8 +1062,9 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
         .doc =
         \\Return t when TERM's foreground PTY appears to be reading a password.
         \\
-        \\This checks the active PTY's terminal attributes and returns nil when
-        \\there is no process or the PTY is not in canonical no-echo mode.
+        \\This checks the terminal attributes of the PTY of TERM's process, also
+        \\after the process exited, when another PTY may have taken its name.
+        \\Nil when there is no process or the PTY is not in canonical no-echo mode.
         \\
         \\(ghostel--pty-password-input-p TERM)
         ,
