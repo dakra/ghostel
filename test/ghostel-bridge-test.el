@@ -49,7 +49,9 @@ SPEC is the keywords for `ghostel-make-terminal'."
     (ghostel-bridge-test--with-terminal
         (:size '(40 . 10) :send (lambda (data) (push data sent)))
       (let ((old ghostel--term))
-        (setq ghostel--prompt-positions '((1 . 0)))
+        (setq ghostel--prompt-positions '((1 . 0))
+              ghostel--password-pid 42
+              ghostel--password-tty "/dev/ttys999")
         (setq-local ghostel-bridge-test--own 'kept)
         (ghostel-write-output "old")
         (ghostel--commit-frame buffer)
@@ -61,6 +63,7 @@ SPEC is the keywords for `ghostel-make-terminal'."
         (ghostel-send-string "typed")
         (should-not sent)
         (should-not ghostel--prompt-positions)
+        (should-not (or ghostel--password-pid ghostel--password-tty))
         (should (eq 'kept (bound-and-true-p ghostel-bridge-test--own)))
         (should (equal '(20 . 5) (ghostel-terminal-size)))))))
 

@@ -1448,7 +1448,7 @@ so the regex arm is even reachable."
 
 (ert-deftest ghostel-test-password-detect-source-symbols ()
   "`ghostel--password-prompt-detected-p' reports which arm fired.
-Returning a symbol (`zig' or `regex') instead of a bare t lets
+Returning a symbol (`zig', `tty' or `regex') instead of a bare t lets
 diagnostic tooling (e.g. `ghostel-debug-start') record exactly which
 detection arm misfired when investigating a spurious prompt."
   :tags '(native)
@@ -1468,7 +1468,244 @@ detection arm misfired when investigating a spurious prompt."
                      (lambda (_term) nil))
                     ((symbol-function 'ghostel--remote-shell-p)
                      (lambda () t)))
-            (should (eq (ghostel--password-prompt-detected-p) 'regex))))
+            (should (eq (ghostel--password-prompt-detected-p) 'regex)))
+          (setq ghostel--password-pid 42
+                ghostel--password-tty "/dev/ttys999"
+                ghostel--pty-out-function #'ignore)
+          (cl-letf (((symbol-function 'ghostel--tty-password-input-p)
+                     (lambda (_path) t))
+                    ((symbol-function 'ghostel--process-tty)
+                     (lambda (_pid) "/dev/ttys999")))
+            (should (eq (ghostel--password-prompt-detected-p) 'tty))))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-tty-password-input-p-reads-path ()
+  "The tty probe reads another process's PTY, which a bridged terminal uses."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (should-not (ghostel--tty-password-input-p "/nonexistent/ghostel-tty"))
+  (pcase-dolist (`(,mode . ,password) '(("-echo" . t) ("echo" . nil)))
+    (let* ((output "")
+           (proc (make-process
+                  :name "ghostel-test-tty" :buffer nil :connection-type 'pty
+                  :command (list "/bin/sh" "-c"
+                                 (format "stty %s; printf READY; sleep 5" mode))
+                  :filter (lambda (_proc string)
+                            (setq output (concat output string)))))
+           (buf nil))
+      (unwind-protect
+          (let ((tty (process-tty-name proc)))
+            (unless tty
+              (ert-skip "Emacs PTY process has no tty name in this environment"))
+            (ghostel-test--wait-for
+             proc (lambda () (string-search "READY" output)))
+            (should (eq password (ghostel--tty-password-input-p tty)))
+            (setq buf (ghostel-make-terminal " *ghostel-test-pwd-tty*"
+                                             :size '(40 . 5) :send #'ignore))
+            (with-current-buffer buf
+              (setq-local ghostel-detect-password-prompts nil)
+              (ghostel-set-password-pid (process-id proc))
+              (should (equal tty ghostel--password-tty))
+              (should (eq (and password 'tty)
+                          (ghostel--password-prompt-detected-p)))
+              ;; An ended terminal stops reading the tty.
+              (ghostel-end-terminal)
+              (should-not (ghostel--password-prompt-detected-p))))
+        (delete-process proc)
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+(ert-deftest ghostel-test-password-pid-tty-reused ()
+  "The tty of an exited process is not read once another process gets it."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let* ((output "")
+         (filter (lambda (_proc string) (setq output (concat output string))))
+         (old (make-process :name "ghostel-test-old" :buffer nil
+                            :connection-type 'pty :filter filter
+                            :command '("/bin/sh" "-c" "printf READY; read x")))
+         (tty (process-tty-name old))
+         new buf)
+    (unwind-protect
+        (progn
+          (unless tty
+            (ert-skip "Emacs PTY process has no tty name in this environment"))
+          (ghostel-test--wait-for old (lambda () (string-search "READY" output)))
+          (setq buf (ghostel-make-terminal " *ghostel-test-pwd-reused*"
+                                           :size '(40 . 5) :send #'ignore))
+          (with-current-buffer buf
+            (setq-local ghostel-detect-password-prompts nil)
+            (ghostel-set-password-pid (process-id old))
+            (should (equal tty ghostel--password-tty)))
+          (process-send-string old "\n")
+          (ghostel-test--wait-until
+           (lambda () (memq (process-status old) '(exit signal))) old 5)
+          (setq output ""
+                new (make-process
+                     :name "ghostel-test-new" :buffer nil :connection-type 'pty
+                     :filter filter
+                     :command '("/bin/sh" "-c" "stty -echo; printf READY; sleep 5")))
+          (unless (equal tty (process-tty-name new))
+            (ert-skip "The new process got another tty"))
+          (ghostel-test--wait-for new (lambda () (string-search "READY" output)))
+          (should (ghostel--tty-password-input-p tty))
+          (with-current-buffer buf
+            (should-not (ghostel--password-prompt-detected-p))))
+      (delete-process old)
+      (when new (delete-process new))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-password-detect-tty-order ()
+  "The tty is tried before the own PTY while the terminal is live, not the regex.
+The pid is checked only once the tty looks like a prompt."
+  :tags '(native)
+  (let ((buf (generate-new-buffer " *ghostel-test-pwd-tty-order*"))
+        (tty-hit t)
+        (holder "/dev/ttys999")
+        probed)
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (setq ghostel--term (ghostel--new 5 80 1000)
+                ghostel--term-rows 5
+                ghostel--password-pid 42
+                ghostel--password-tty "/dev/ttys999"
+                ghostel--pty-out-function #'ignore)
+          (cl-letf (((symbol-function 'ghostel--tty-password-input-p)
+                     (lambda (path) (push path probed) tty-hit))
+                    ((symbol-function 'ghostel--process-tty)
+                     (lambda (pid) (push pid probed) holder))
+                    ((symbol-function 'ghostel--pty-password-input-p)
+                     (lambda (_term) (push 'own probed) t))
+                    ((symbol-function 'ghostel--remote-shell-p) #'ignore))
+            (should (eq (ghostel--password-prompt-detected-p) 'tty))
+            (should (equal '(42 "/dev/ttys999") probed))
+            ;; A miss on the tty falls back to the own PTY.
+            (setq probed nil tty-hit nil)
+            (should (eq (ghostel--password-prompt-detected-p) 'zig))
+            (should (equal '(own "/dev/ttys999") probed))
+            ;; So does a tty the pid no longer holds.
+            (setq probed nil tty-hit t holder nil)
+            (should (eq (ghostel--password-prompt-detected-p) 'zig))
+            (should (equal '(own 42 "/dev/ttys999") probed))
+            ;; A remote shell is left to the regex; the row is empty.
+            (setq probed nil holder "/dev/ttys999")
+            (cl-letf (((symbol-function 'ghostel--remote-shell-p)
+                       (lambda () t)))
+              (should-not (ghostel--password-prompt-detected-p)))
+            (should-not probed)
+            ;; Without its other side the terminal reads only its own PTY.
+            (setq ghostel--pty-out-function nil)
+            (should (eq (ghostel--password-prompt-detected-p) 'zig))
+            (should (equal '(own) probed))))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-password-detect-tty-with-process ()
+  "A live process, as behind `zmx attach', keeps the tty read."
+  :tags '(native)
+  (skip-unless (ghostel-test--posix-p))
+  (let ((buf (generate-new-buffer " *ghostel-test-pwd-tty-proc*"))
+        (proc (make-process :name "ghostel-test-relay" :buffer nil
+                            :command '("sleep" "5"))))
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (setq ghostel--term (ghostel--new 5 80 1000)
+                ghostel--term-rows 5
+                ghostel--password-pid 42
+                ghostel--password-tty "/dev/ttys999"
+                ghostel--process proc)
+          (cl-letf (((symbol-function 'ghostel--tty-password-input-p)
+                     (lambda (_path) t))
+                    ((symbol-function 'ghostel--process-tty)
+                     (lambda (_pid) "/dev/ttys999"))
+                    ((symbol-function 'ghostel--pty-password-input-p)
+                     (lambda (_term) nil))
+                    ((symbol-function 'ghostel--remote-shell-p) #'ignore))
+            (should (eq (ghostel--password-prompt-detected-p) 'tty))
+            (delete-process proc)
+            (should-not (ghostel--password-prompt-detected-p))))
+      (delete-process proc)
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-set-password-pid ()
+  "`ghostel-set-password-pid' finds the pid's tty here and asks for a redraw."
+  :tags '(native)
+  (skip-unless (ghostel-test--posix-p))
+  (let ((buf (generate-new-buffer " *ghostel-test-set-pwd-pid*"))
+        (ghostel-detect-password-prompts t)
+        (ttys '((1 . "ttys000") (2 . "/dev/pts/3")))
+        dirs)
+    (unwind-protect
+        (with-current-buffer buf
+          (ghostel-mode)
+          (cl-letf (((symbol-function 'process-attributes)
+                     (lambda (pid)
+                       (push default-directory dirs)
+                       (when-let* ((tty (alist-get pid ttys)))
+                         `((ttname . ,tty)))))
+                    ((symbol-function 'ghostel--tty-password-input-p)
+                     (lambda (_path) t)))
+            ;; A remote `default-directory' would look the pid up there.
+            (let ((default-directory "/ssh:host:/"))
+              (ghostel-set-password-pid 2))
+            (should (equal "/dev/pts/3" ghostel--password-tty))
+            (should (equal (list temporary-file-directory) dirs))
+            (setq ghostel--term (ghostel--new 5 80 1000)
+                  ghostel--term-rows 5
+                  ghostel--pty-out-function #'ignore)
+            ;; A hidden buffer is checked once a window shows it.
+            (ghostel-set-password-pid 1)
+            (should (equal "/dev/ttys000" ghostel--password-tty))
+            (should ghostel--pending-redraw)
+            (should-not ghostel--password-mode-p)
+            (set-window-buffer (selected-window) buf)
+            (ghostel--redraw-now buf)
+            (should ghostel--password-mode-p)
+            (ghostel--cancel-password-confirm-timer)
+            (ghostel-set-password-pid nil)
+            (should-not (or ghostel--password-pid ghostel--password-tty))
+            (should ghostel--redraw-timer)
+            (ghostel--redraw-now buf)
+            (should-not ghostel--password-mode-p)))
+      (when (buffer-live-p buf)
+        (with-current-buffer buf (ghostel--cancel-password-confirm-timer))
+        (kill-buffer buf)))))
+
+(ert-deftest ghostel-test-pty-password-input-p-ignores-dead-process ()
+  "A dead process's tty is not read, though its name stays and gets reused."
+  :tags '(native)
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let* ((output "")
+         (old (make-process :name "ghostel-test-old" :buffer nil
+                            :connection-type 'pty
+                            :command '("/bin/sh" "-c" "exit 0")))
+         (tty (process-tty-name old))
+         new buf)
+    (unwind-protect
+        (progn
+          (unless tty
+            (ert-skip "Emacs PTY process has no tty name in this environment"))
+          (ghostel-test--wait-until
+           (lambda () (memq (process-status old) '(exit signal))) old 5)
+          (should (equal tty (process-tty-name old)))
+          (setq new (make-process
+                     :name "ghostel-test-new" :buffer nil :connection-type 'pty
+                     :command '("/bin/sh" "-c" "stty -echo; printf READY; sleep 5")
+                     :filter (lambda (_proc string)
+                               (setq output (concat output string)))))
+          (unless (equal tty (process-tty-name new))
+            (ert-skip "The new process got another tty"))
+          (ghostel-test--wait-for new (lambda () (string-search "READY" output)))
+          (setq buf (generate-new-buffer " *ghostel-test-dead-pty*"))
+          (with-current-buffer buf
+            (ghostel-mode)
+            (setq ghostel--term (ghostel--new 5 80 1000)
+                  ghostel--process new)
+            (should (ghostel--pty-password-input-p ghostel--term))
+            (setq ghostel--process old)
+            (should-not (ghostel--pty-password-input-p ghostel--term))))
+      (delete-process old)
+      (when new (delete-process new))
       (when (buffer-live-p buf) (kill-buffer buf)))))
 
 (ert-deftest ghostel-test-prompt-password-sends-via-subprocess ()

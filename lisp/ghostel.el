@@ -485,10 +485,9 @@ command output could silently overwrite your clipboard."
 
 (defcustom ghostel-password-prompt-regex comint-password-prompt-regexp
   "Regex matched against the cursor row to detect a password prompt.
-Used when the libghostty heuristic (canonical mode + echo off via
-`ghostel--pty-password-input-p') can't decide on its own - that is, when
-the local pty's termios was unreadable, or when `ghostel--remote-shell-p'
-indicates a remote shell whose echo state isn't reflected on the local pty."
+Used instead of the libghostty heuristic (canonical mode + echo off via
+`ghostel--pty-password-input-p') when `ghostel--remote-shell-p' indicates a
+remote shell, whose echo state isn't reflected on the local pty."
   :type 'regexp)
 
 (defcustom ghostel-password-prompt-functions
@@ -816,6 +815,7 @@ to nil to disable the regex fallback entirely (OSC 133 only)."
 (declare-function ghostel--write-vt "ghostel-module")
 (declare-function ghostel--write-pty "ghostel-module")
 (declare-function ghostel--pty-password-input-p "ghostel-module" (term))
+(declare-function ghostel--tty-password-input-p "ghostel-module" (path))
 (declare-function ghostel--pty-foreground-pgid "ghostel-module" (term))
 (declare-function ghostel--spawn-native-process "ghostel-module" (term command pipe))
 (declare-function ghostel--kill-native-process "ghostel-module" (term))
@@ -3206,8 +3206,8 @@ available."
 ;; ghostty/src/termio/Exec.zig) so password input from sudo/ssh/gpg/etc is read
 ;; through `read-passwd' instead of streamed through Emacs's key handling (where
 ;; it would land in `view-lossage' and the recent-keys ring).  Falls back to a
-;; regex match on the cursor row for cases where the local tty's echo state
-;; can't be observed — remote ssh sessions, programs that don't toggle echo.
+;; regex match on the cursor row for remote shells, whose echo state the local
+;; tty can't show.
 
 (defvar-local ghostel--password-mode-p nil
   "Non-nil while a password prompt is currently active.
@@ -3256,6 +3256,13 @@ cancelled on the falling edge or before re-scheduling.  The timer
 body (`ghostel--confirm-and-prompt') re-runs the heuristic before calling
 `ghostel--prompt-password' so short-lived flips never reach the user.")
 
+(defvar-local ghostel--password-pid nil
+  "Process whose terminal is also read for password prompts, or nil.
+Set with `ghostel-set-password-pid'.")
+
+(defvar-local ghostel--password-tty nil
+  "Terminal `ghostel--password-pid' held when it was set, or nil.")
+
 (defvar-local ghostel--password-prompt-mb-buffer nil
   "Minibuffer buffer of our currently-open `read-passwd' prompt, or nil.
 Captured by a `minibuffer-with-setup-hook' wrapped around the
@@ -3293,21 +3300,56 @@ default."
 
 (defun ghostel--password-prompt-detected-p ()
   "Return non-nil if the foreground program looks like it's reading a password.
-Two arms:
+Three arms:
 
   - Zig heuristic (`ghostel--pty-password-input-p'): the current
     PTY is in canonical mode with echo off.  Catches local sudo, ssh's
     own password prompt, gpg, etc.
+
+  - The same test on the terminal of the process given to
+    `ghostel-set-password-pid', tried first while the buffer's terminal
+    is live and that process still holds it.
 
   - cursor-row regex (`ghostel-password-prompt-regex', defaulting to
     `comint-password-prompt-regexp').  Used when `ghostel--remote-shell-p'
     indicates a remote shell, where the remote pty's canonical+!echo state
     isn't visible through a local pty probe.
 
-Returns nil on miss, or a symbol naming the arm on hit (`zig' or`regex')."
-  (if (ghostel--remote-shell-p)
-      (when (ghostel--password-regex-matches-cursor-row-p) 'regex)
-    (when (ghostel--pty-password-input-p ghostel--term) 'zig)))
+Returns nil on miss, or a symbol naming the arm on hit (`zig', `tty' or
+`regex')."
+  (cond
+   ((ghostel--remote-shell-p)
+    (when (ghostel--password-regex-matches-cursor-row-p) 'regex))
+   ;; A device name is reused once its PTY closes.
+   ((and ghostel--password-tty
+         (or ghostel--pty-out-function (process-live-p ghostel--process))
+         (ghostel--tty-password-input-p ghostel--password-tty)
+         (equal ghostel--password-tty
+                (ghostel--process-tty ghostel--password-pid)))
+    'tty)
+   ((ghostel--pty-password-input-p ghostel--term) 'zig)))
+
+(defun ghostel--process-tty (pid)
+  "Return the terminal device of process PID on this machine, or nil."
+  (when-let* ((tty (alist-get 'ttname
+                              ;; A remote `default-directory' would ask its host.
+                              (let ((default-directory temporary-file-directory))
+                                (process-attributes pid)))))
+    ;; On GNU/Linux Emacs names the PTY /dev/pts/1 "/dev/pts1".
+    (replace-regexp-in-string "\\`/dev/pts\\([0-9]+\\)\\'" "/dev/pts/\\1"
+                              (expand-file-name tty "/dev/"))))
+
+(defun ghostel-set-password-pid (pid)
+  "Detect password prompts on the terminal of process PID too.
+For a program behind a local relay or multiplexer, or in a bridged terminal,
+whose terminal is not the buffer's own PTY.  PID is a process on this machine,
+such as the shell of a multiplexer pane; nil reads only the buffer's own PTY
+again.  Prompts count only while PID holds the terminal it held at this call.
+Making the buffer a terminal again resets it."
+  (setq ghostel--password-pid pid
+        ghostel--password-tty (and pid (ghostel--process-tty pid)))
+  (when ghostel--term
+    (ghostel--invalidate)))
 
 (defun ghostel--password-regex-matches-cursor-row-p ()
   "Return non-nil if the cursor row looks like a password prompt.
@@ -5517,6 +5559,8 @@ spawn after initialization.  With BRIDGED non-nil none will be, and
           ghostel--pty-out-function nil
           ghostel--resize-function nil
           ghostel--send-files-function nil
+          ghostel--password-pid nil
+          ghostel--password-tty nil
           ghostel--pid nil
           ghostel--last-directory nil
           ghostel-title nil
