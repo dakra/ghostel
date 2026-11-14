@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- `ghostel-set-password-pid` returns the tty it found, or nil, so a
+  caller can call it again until the process has one.
+
 ### Fixed
 - With the native PTY, a terminal kept after its process exited no
   longer asks for a password when another program's prompt appears on

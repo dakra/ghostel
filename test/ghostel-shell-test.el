@@ -1651,9 +1651,12 @@ The pid is checked only once the tty looks like a prompt."
                      (lambda (_path) t)))
             ;; A remote `default-directory' would look the pid up there.
             (let ((default-directory "/ssh:host:/"))
-              (ghostel-set-password-pid 2))
+              (should (equal "/dev/pts/3" (ghostel-set-password-pid 2))))
             (should (equal "/dev/pts/3" ghostel--password-tty))
-            (should (equal (list temporary-file-directory) dirs))
+            ;; A process without a terminal yet.
+            (should-not (ghostel-set-password-pid 3))
+            (should (equal (list temporary-file-directory temporary-file-directory)
+                           dirs))
             (setq ghostel--term (ghostel--new 5 80 1000)
                   ghostel--term-rows 5
                   ghostel--pty-out-function #'ignore)
@@ -1666,7 +1669,7 @@ The pid is checked only once the tty looks like a prompt."
             (ghostel--redraw-now buf)
             (should ghostel--password-mode-p)
             (ghostel--cancel-password-confirm-timer)
-            (ghostel-set-password-pid nil)
+            (should-not (ghostel-set-password-pid nil))
             (should-not (or ghostel--password-pid ghostel--password-tty))
             (should ghostel--redraw-timer)
             (ghostel--redraw-now buf)

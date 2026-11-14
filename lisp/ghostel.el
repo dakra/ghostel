@@ -3339,13 +3339,15 @@ Use it for a program behind a local relay or multiplexer, or in a bridged
 terminal, whose terminal is not the buffer's own PTY.  PID is a process on
 this machine, such as the shell of a multiplexer pane; nil reads only the
 buffer's own PTY again.  The password goes to the buffer's program, so PID
-must be on the terminal that program's input reaches.  Prompts count only
-while PID holds the terminal it held at this call.  Making the buffer a
-terminal again resets it."
+must be on the terminal that program's input reaches.
+Prompts count only while PID holds the terminal it held at this call.
+Making the buffer a terminal again resets it.
+Return PID's terminal, or nil when it has none."
   (setq ghostel--password-pid pid
         ghostel--password-tty (and pid (ghostel--process-tty pid)))
   (when ghostel--term
-    (ghostel--invalidate)))
+    (ghostel--invalidate))
+  ghostel--password-tty)
 
 (defun ghostel--password-regex-matches-cursor-row-p ()
   "Return non-nil if the cursor row looks like a password prompt.

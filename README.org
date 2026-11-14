@@ -2422,7 +2422,7 @@ and receives what is typed into it:
 | =ghostel-last-prompt=         | The newest prompt the shell marked with OSC 133, to tell whether one came since.     |
 | =ghostel-set-program-status=  | Replaces the program status records with those the remote side keeps.                |
 | =ghostel-status-label=        | The label the mode line shows for program status records, also without a buffer.     |
-| =ghostel-set-password-pid=    | Detects password prompts on the tty of a process on this machine.                    |
+| =ghostel-set-password-pid=    | Detects password prompts on the tty of a process on this machine; returns that tty.  |
 | =ghostel-theme-colors=        | The colors of ghostel's faces, for a remote side that answers color queries itself.  |
 
 The functions are called in the terminal's buffer.  Without =:send= the
