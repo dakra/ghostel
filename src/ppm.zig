@@ -21,10 +21,8 @@ pub const Rect = struct {
 /// 4 (RGBA) channels.  Returns null when RECT is empty or extends past
 /// the image.
 ///
-/// Alpha is dropped, not composited.  Transparent pixels render as
-/// whatever the underlying color value happens to be (most decoders
-/// emit black, which looks fine for opaque-content image previews like
-/// thumbnails and screenshots — the typical kitty graphics payload).
+/// Alpha is dropped, not composited: `kitty_graphics` sends images
+/// with transparent pixels as PNG (`png.encode`) instead.
 ///
 /// Returns an allocated slice owned by the caller-supplied allocator.
 pub fn createPpm(
@@ -35,20 +33,11 @@ pub fn createPpm(
     channels: u32,
     rect: Rect,
 ) ?[]u8 {
-    if (rect.width == 0 or rect.height == 0 or channels == 0) return null;
-    if (rect.width > width or rect.height > height) return null;
-    if (rect.x > width - rect.width or rect.y > height - rect.height) return null;
+    if (!validRect(data, width, height, channels, rect)) return null;
     const stride: usize = @intCast(width);
     const w: usize = @intCast(rect.width);
     const h: usize = @intCast(rect.height);
     const ch: usize = @intCast(channels);
-
-    // Checked arithmetic — width*height*channels can otherwise overflow
-    // `usize` for adversarial inputs and lead to under-allocation +
-    // out-of-bounds writes in ReleaseFast.
-    const total_px = std.math.mul(usize, stride, @intCast(height)) catch return null;
-    const expected = std.math.mul(usize, total_px, ch) catch return null;
-    if (data.len < expected) return null;
     const wh = std.math.mul(usize, w, h) catch return null;
     const rgb_len = std.math.mul(usize, wh, 3) catch return null;
 
@@ -89,6 +78,20 @@ pub fn createPpm(
     }
 
     return buf;
+}
+
+/// Whether RECT is a non-empty sub-rectangle of a WIDTH x HEIGHT image
+/// whose DATA holds all CHANNELS bytes of every pixel.
+pub fn validRect(data: []const u8, width: u32, height: u32, channels: u32, rect: Rect) bool {
+    if (rect.width == 0 or rect.height == 0 or channels == 0) return false;
+    if (rect.width > width or rect.height > height) return false;
+    if (rect.x > width - rect.width or rect.y > height - rect.height) return false;
+    // Checked arithmetic — width*height*channels can otherwise overflow
+    // `usize` for adversarial inputs and lead to under-allocation +
+    // out-of-bounds writes in ReleaseFast.
+    const total_px = std.math.mul(usize, @intCast(width), @intCast(height)) catch return false;
+    const expected = std.math.mul(usize, total_px, @intCast(channels)) catch return false;
+    return data.len >= expected;
 }
 
 // ---------------------------------------------------------------------------
