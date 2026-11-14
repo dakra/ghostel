@@ -36,6 +36,11 @@ All notable changes to this project will be documented in this file.
   or focus reporting on, so the wheel scrolls and clicks select.
 - A terminal kept after its process exited no longer asks for a password
   when another program's prompt appears on the tty it used.
+- Mouse reports in SGR-Pixels mode (DEC mode 1016) carry pixel
+  coordinates, the centre of the cell under the pointer.  They carried
+  cell indices, so programs using the mode saw every click in the top
+  left corner.  A mouse position outside the grid, in a window larger
+  than the terminal, is reported at the nearest cell.
 
 ## [0.64.0] — 2026-11-11
 

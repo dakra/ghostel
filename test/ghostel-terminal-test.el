@@ -221,6 +221,64 @@ has been rendered."
       (should (equal "\e[6;23;9t\e[4;575;720t\e[8;25;80t"
                      (apply #'concat (nreverse replies)))))))
 
+(defun ghostel-test--mouse-presses (modes cells &optional cell-size)
+  "Return the concatenated reports for left presses at CELLS.
+CELLS is a list of (COL . ROW).  MODES is written first to an 80x25
+terminal whose cells are CELL-SIZE, a cons (WIDTH . HEIGHT) in pixels,
+one pixel square when nil."
+  (let ((term (ghostel--new 25 80 1000))
+        (ghostel--process 'fake-process)
+        (replies nil))
+    (cl-letf (((symbol-function 'process-send-string)
+               (lambda (_process string) (push string replies))))
+      (when cell-size
+        (ghostel--set-size term 25 80 (car cell-size) (cdr cell-size)))
+      (ghostel--write-vt term modes)
+      (dolist (cell cells)
+        (ghostel--mouse-event term 0 1 (cdr cell) (car cell) 0))
+      (apply #'concat (nreverse replies)))))
+
+(ert-deftest ghostel-test-mouse-report-cells ()
+  "SGR mouse reports carry 1-based cells whatever the cell size in pixels."
+  :tags '(native)
+  (should (equal "\e[<0;1;1M\e[<0;41;11M\e[<0;80;25M"
+                 (ghostel-test--mouse-presses
+                  "\e[?1000h\e[?1006h" '((0 . 0) (40 . 10) (79 . 24))
+                  '(9 . 20))))
+  (should (equal "\e[32;41;11M"
+                 (ghostel-test--mouse-presses
+                  "\e[?1000h\e[?1015h" '((40 . 10)) '(9 . 20)))))
+
+(ert-deftest ghostel-test-mouse-report-after-column-mode-switch ()
+  "Mouse reports keep their cells when DECCOLM widens the grid in-band."
+  :tags '(native)
+  (should (equal "\e[<0;11;6M\e[<0;132;6M"
+                 (ghostel-test--mouse-presses
+                  "\e[?40h\e[?3h\e[?1000h\e[?1006h" '((10 . 5) (131 . 5))))))
+
+(ert-deftest ghostel-test-mouse-report-pixels ()
+  "SGR-Pixels mouse reports carry the pixel at the centre of the cell."
+  :tags '(native)
+  (should (equal "\e[<0;4;10M\e[<0;364;210M\e[<0;715;490M"
+                 (ghostel-test--mouse-presses
+                  "\e[?1000h\e[?1006h\e[?1016h" '((0 . 0) (40 . 10) (79 . 24))
+                  '(9 . 20))))
+  ;; A one-pixel cell reports itself.
+  (should (equal "\e[<0;40;10M"
+                 (ghostel-test--mouse-presses
+                  "\e[?1000h\e[?1006h\e[?1016h" '((40 . 10))))))
+
+(ert-deftest ghostel-test-mouse-report-clamps-to-grid ()
+  "A mouse position outside the grid reports the nearest cell."
+  :tags '(native)
+  (should (equal "\e[<0;80;25M\e[<0;1;1M"
+                 (ghostel-test--mouse-presses
+                  "\e[?1000h\e[?1006h" '((85 . 30) (-1 . -1)) '(9 . 20))))
+  (should (equal "\e[<0;715;490M\e[<0;4;10M"
+                 (ghostel-test--mouse-presses
+                  "\e[?1000h\e[?1006h\e[?1016h" '((85 . 30) (-1 . -1))
+                  '(9 . 20)))))
+
 (defmacro ghostel-test--with-resize-stubs (size &rest body)
   "Run BODY with resize stubs returning SIZE for process window size."
   (declare (indent 1))

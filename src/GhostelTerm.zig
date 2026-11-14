@@ -253,24 +253,31 @@ pub fn encodeMouse(
     col: i64,
     mods_val: i64,
 ) !bool {
-    const options = blk: {
+    const options, const pos = blk: {
         try self.lock();
         defer self.unlock();
-        break :blk gt.input.MouseEncodeOptions.fromTerminal(&self.terminal, .{
-            .screen = .{
-                .width = self.terminal.cols,
-                .height = self.terminal.rows,
-            },
-            .cell = .{ .width = 1, .height = 1 },
-            .padding = .{ .top = 0, .bottom = 0, .right = 0, .left = 0 },
-        });
+        const t = &self.terminal;
+        // An in-band column switch leaves the pixel size stale.
+        const cell_w = @max(1, t.width_px / t.cols);
+        const cell_h = @max(1, t.height_px / t.rows);
+        // The centre of the cell, clamped to the grid.
+        const x = std.math.clamp(col, 0, t.cols - 1) * cell_w + cell_w / 2;
+        const y = std.math.clamp(row, 0, t.rows - 1) * cell_h + cell_h / 2;
+        break :blk .{
+            gt.input.MouseEncodeOptions.fromTerminal(t, .{
+                .screen = .{ .width = t.cols * cell_w, .height = t.rows * cell_h },
+                .cell = .{ .width = cell_w, .height = cell_h },
+                .padding = .{ .top = 0, .bottom = 0, .right = 0, .left = 0 },
+            }),
+            gt.input.MouseEncodeEvent.Pos{ .x = @floatFromInt(x), .y = @floatFromInt(y) },
+        };
     };
 
     const event = gt.input.MouseEncodeEvent{
         .action = @fromBackingInt(@intCast(action)),
         .button = @fromBackingInt(@intCast(button)),
         .mods = @bitCast(@as(i16, @truncate(mods_val))),
-        .pos = .{ .x = @floatFromInt(col), .y = @floatFromInt(row) },
+        .pos = pos,
     };
 
     // Encode
