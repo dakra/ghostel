@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.65.0] — 2026-11-14
+
 ### Added
 - `ghostel-end-terminal` ends a bridged terminal whose other side is
   gone: its buffer stays as a read-only snapshot.
@@ -15,6 +17,14 @@ All notable changes to this project will be documented in this file.
 - A `file://` OSC 8 link with a `#23`, `#L23`, `#L23C5` or `#L23-L42`
   fragment opens the file at that line, marking a line range as the
   region.
+- `ghostel-set-program-status` replaces a terminal's program status
+  records (OSC 7501) as a whole, for a bridged terminal whose far end
+  keeps them; with QUIET none of the changes notifies.  Binding
+  `ghostel-status-inhibit-notify` silences `ghostel-status-notify` and
+  notifiers built on `ghostel-status-attention-p`.
+- `ghostel-status-label` returns the label the mode line would show for
+  status records outside a buffer, such as a multiplexer's detached
+  sessions.
 
 ### Changed
 - `ghostel-make-terminal` takes keywords.  `:size`, a cons
@@ -32,6 +42,10 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - An Emacs input method such as `chinese-py` composes in a bridged
   terminal, whose buffer was read-only.
+- A buffer reused for a new terminal leaves its copy, Emacs or line
+  mode, and a reused bridged buffer is no longer left writable.
+- `ghostel-status-indicator-mode` no longer shows doubled percent
+  signs, as in "42%%".
 - A terminal kept after its process exited no longer has mouse tracking
   or focus reporting on, so the wheel scrolls and clicks select.
 - A terminal kept after its process exited no longer asks for a password
