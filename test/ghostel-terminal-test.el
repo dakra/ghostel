@@ -7,6 +7,10 @@
 ;;; Code:
 
 (require 'ghostel-test-helpers)
+(require 'image)
+
+(defvar image-types)
+(defvar ghostel--kitty-image-cache)
 
 (ert-deftest ghostel-test-create ()
   "Test terminal creation and basic properties."
@@ -746,6 +750,36 @@ state from the wrong buffer after feeding output to the native module."
     (should (equal "B\n\nC" (ghostel--copy-all-text term)))
     (ghostel--write-vt term "!")
     (should (string-match-p "!" (ghostel--copy-all-text term)))))
+
+(ert-deftest ghostel-test-snapshot-restore-resets-renderer-image-cache ()
+  "Replacing the renderer also replaces its Kitty plans and Lisp cache."
+  :tags '(native)
+  (with-temp-buffer
+    (let ((term (ghostel--new 5 20 1000))
+          (image-types '(png))
+          (inhibit-read-only t))
+      (ghostel--set-size term 5 20 1 1)
+      (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                ((symbol-function 'image-type-available-p) (lambda (type) (eq type 'png)))
+                ((symbol-function 'fontp) (lambda (&rest _) nil))
+                ((symbol-function 'default-font-width) (lambda () 1))
+                ((symbol-function 'default-font-height) (lambda () 1)))
+        (ghostel--write-vt term "\e_Ga=T,f=24,s=1,v=1,C=1,q=2;/wAA\e\\")
+        (ghostel-test--redraw term)
+        (let ((cache ghostel--kitty-image-cache)
+              (old-image (cadr (get-text-property 1 'display))))
+          (should (= (hash-table-count cache) 1))
+          (should (get-text-property 1 'ghostel-kitty))
+          (ghostel--restore-snapshot term (ghostel-test--snapshot-fixture))
+          (should-not (eq cache ghostel--kitty-image-cache))
+          (should (= (hash-table-count ghostel--kitty-image-cache) 0))
+          (ghostel-test--redraw term t)
+          ;; The fixture includes its own gray image, not the old red image.
+          (should (> (hash-table-count ghostel--kitty-image-cache) 0))
+          (should (get-text-property 1 'ghostel-kitty))
+          (should-not (equal (image-property old-image :data)
+                             (image-property (cadr (get-text-property 1 'display)) :data)))
+          (should (equal "B\n\nC" (ghostel--copy-all-text term))))))))
 
 (ert-deftest ghostel-test-snapshot-restore-applies-buffer-settings ()
   "`ghostel-restore-snapshot' reapplies colors and schedules a full redraw."

@@ -33,10 +33,17 @@ With SENTINEL, echo it afterwards so a `wait text' step can synchronise on it."
      (format "cat %s%s\n" (shell-quote-argument file)
              (if sentinel (format "; echo %s" sentinel) "")))))
 
+(defun ghostel-elate--kitty-solid (id cols rows)
+  "Transmit a solid image ID whose aspect ratio fits COLS by ROWS exactly."
+  (let ((width (* cols (ghostel--reported-cell-width)))
+        (height (* rows (ghostel--reported-cell-height))))
+    (format "\e_Ga=t,i=%d,f=24,s=%d,v=%d,q=2;%s\e\\"
+            id width height
+            (base64-encode-string (make-string (* width height 3) 127) t))))
+
 (defun ghostel-elate--kitty-cells ()
-  "Return (LINE . COL) for every kitty image slice in the current buffer.
-Covers both the text-property and the overlay display paths.  Lines are
-1-based, columns 0-based."
+  "Return (LINE . COL) for every image span in the current buffer.
+Lines are 1-based and columns 0-based."
   (let (cells)
     (save-excursion
       (let ((pos (point-min)))
@@ -45,51 +52,34 @@ Covers both the text-property and the overlay display paths.  Lines are
                      (get-text-property pos 'display))
             (goto-char pos)
             (push (cons (line-number-at-pos) (current-column)) cells))
-          (setq pos (next-single-property-change pos 'display nil (point-max)))))
-      (dolist (ov (overlays-in (point-min) (point-max)))
-        (when (overlay-get ov 'ghostel-kitty)
-          (goto-char (overlay-start ov))
-          (push (cons (line-number-at-pos) (current-column)) cells))))
-    (sort (delete-dups cells)
-          (lambda (a b) (or (< (car a) (car b))
-                            (and (= (car a) (car b)) (< (cdr a) (cdr b))))))))
+          (setq pos (next-single-property-change pos 'display nil (point-max))))))
+    (nreverse cells)))
 
 (defun ghostel-elate--kitty-slices ()
-  "Return (DLINE COL X W) per kitty slice, in cells, relative to the first.
-DLINE is the line offset from the first slice's line; X and W are the
-slice's x-origin and width in the image divided by the cell width."
-  (let ((cw (default-font-width)) (base nil) slices)
+  "Return (DLINE COL X W) for each row image, relative to the first.
+X is the horizontal slice offset in pixels; W is its width in terminal cells."
+  (let ((cw (default-font-width)) base slices)
     (dolist (cell (ghostel-elate--kitty-cells))
       (save-excursion
         (goto-char (point-min))
         (forward-line (1- (car cell)))
         (move-to-column (cdr cell))
-        (let* ((ov (seq-find (lambda (o) (overlay-get o 'ghostel-kitty))
-                             (overlays-in (point) (point))))
-               (spec (if ov
-                         (get-text-property 0 'display (overlay-get ov 'before-string))
-                       (get-text-property (point) 'display)))
-               (slice (car spec)))
+        (let ((slice (car (get-text-property (point) 'display))))
           (unless base (setq base (car cell)))
-          (push (list (- (car cell) base) (cdr cell)
-                      (/ (nth 1 slice) cw) (/ (nth 3 slice) cw))
+          (push (list (- (car cell) base) (cdr cell) (nth 1 slice)
+                      (/ (nth 3 slice) cw))
                 slices))))
     (nreverse slices)))
 
 (defun ghostel-elate--kitty-data ()
-  "Return the distinct PPM `:data' strings of the kitty slices, in cell order."
+  "Return the distinct PNG data strings of image spans in cell order."
   (let (data)
     (dolist (cell (ghostel-elate--kitty-cells))
       (save-excursion
         (goto-char (point-min))
         (forward-line (1- (car cell)))
         (move-to-column (cdr cell))
-        (let* ((ov (seq-find (lambda (o) (overlay-get o 'ghostel-kitty))
-                             (overlays-in (point) (point))))
-               (spec (if ov
-                         (get-text-property 0 'display (overlay-get ov 'before-string))
-                       (get-text-property (point) 'display))))
-          (push (image-property (nth 1 spec) :data) data))))
+        (push (image-property (cadr (get-text-property (point) 'display)) :data) data)))
     (delete-dups (nreverse data))))
 
 (defun ghostel-elate--line-wrap-columns ()

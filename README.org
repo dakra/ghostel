@@ -877,9 +877,9 @@ It supports both placement modes used by real-world tools:
 - *Unicode-placeholder placements* (U+10EEEE) - used by =yazi= and other modern
   image previewers to anchor images to the buffer's text grid.
 
-Pixel data is rendered through Emacs's built-in image support: PNG payloads are
-decoded by a vendored stb_image, and raw RGB/RGBA/Gray/GrayAlpha transmissions
-are converted to PPM in the native module - no external ImageMagick dependency.
+Images support cropping, scaling, and transparency, including overlapping
+images and placement on empty lines.  No ImageMagick installation or other
+external image-processing tool is required.
 
 Images need a graphical frame.  Buffers created in a terminal frame (=emacs
 -nw=, =emacsclient -t=) do not advertise the protocol, so apps that probe for
@@ -896,16 +896,21 @@ Wayland with fractional scaling or non-standard DPI), set an explicit number.
 
 *** Limitations
 
-- *Alpha is dropped, not composited.*  All formats - raw RGBA, GrayAlpha, and
-  PNG - go through an RGBA→PPM conversion that strips the alpha channel (PNGs are
-  decoded to RGBA by libghostty's PNG hook at transmit time, then follow the same
-  path).  Transparent pixels render as whatever the underlying color value
-  happens to be (most decoders emit black).  Acceptable for thumbnails and
-  screenshots; not ideal for icons with semi-transparent edges.
-- *Virtual placements are stretched to their cell grid.*  A unicode-placeholder
-  placement whose =c=/=r= grid has a different aspect ratio than the image is
-  scaled to fill the grid, where kitty and Ghostty letterbox it.  =yazi= and
-  =timg= size the grid to the image, so the difference stays under one cell.
+- *Images replace text cell by cell.*  Completely transparent cells leave
+  ordinary underlying text alone; a partially covered cell replaces its text
+  display.  Resolved Unicode placeholders are image slots and stay hidden even
+  in transparent or letterboxed cells.  Alpha between images is composited, but
+  exact text/background blending is not guaranteed across Emacs display backends.
+- *All images render in front of text.*  Negative z values still determine
+  image-to-image ordering, but do not place images behind text or backgrounds.
+- *Scrollback is best effort.*  Untouched rows keep their image properties;
+  redraws reconstruct from current terminal state.  Historical images are
+  neither deliberately frozen nor actively kept in sync.  The image cache
+  limit does not bound images still referenced by buffer properties.
+- *Animation and relative placements rooted in Unicode placeholders* are not
+  currently rendered.
+- *Oversized rendering jobs* are omitted rather than blocking terminal text.
+  Individual row canvases and resampler working buffers are limited to 64 MiB.
 
 ** Calling Elisp from the shell
 :properties:

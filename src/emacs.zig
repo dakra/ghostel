@@ -104,8 +104,8 @@ pub const Env = struct {
     /// Invalid UTF-8 keeps its bad bytes as raw-byte chars instead of signalling.
     pub fn makeString(self: Env, str: []const u8) Value {
         if (!std.unicode.utf8ValidateSlice(str)) {
-            if (self.makeUnibyteString(str)) |unibyte|
-                return self.f("decode-coding-string", .{ unibyte, sym.@"utf-8-unix" });
+            const unibyte = self.makeUnibyteString(str);
+            return self.f("decode-coding-string", .{ unibyte, sym.@"utf-8-unix" });
         }
         return self.makeUtf8String(str);
     }
@@ -301,6 +301,11 @@ pub const Env = struct {
         return @fromBackingInt(@intCast(self.raw.non_local_exit_check.?(self.raw)));
     }
 
+    /// Propagate a pending Emacs signal or throw without clearing it.
+    pub fn checkNonLocalExit(self: Env) error{EmacsNonLocalExit}!void {
+        if (self.nonLocalExitCheck() != .normal) return error.EmacsNonLocalExit;
+    }
+
     pub fn nonLocalExitClear(self: Env) void {
         self.raw.non_local_exit_clear.?(self.raw);
     }
@@ -392,11 +397,8 @@ pub const Env = struct {
         inline for (entries) |*entry| self.registerFunction(entry);
     }
 
-    /// Create a unibyte string (for binary data like PNG images).
-    /// Returns null if the API is unavailable (Emacs < 28).
-    pub fn makeUnibyteString(self: Env, str: []const u8) ?Value {
-        const func = self.raw.make_unibyte_string orelse return null;
-        return func(self.raw, str.ptr, @intCast(str.len));
+    pub fn makeUnibyteString(self: Env, str: []const u8) Value {
+        return self.raw.make_unibyte_string.?(self.raw, str.ptr, @intCast(str.len));
     }
 
     pub fn openChannel(self: Env, pipe: Value) c_int {
@@ -466,6 +468,7 @@ pub const Env = struct {
 // ---------------------------------------------------------------------------
 
 const interned_symbols = [_][:0]const u8{
+    ":ascent",
     ":background",
     ":color",
     ":error",
@@ -474,23 +477,29 @@ const interned_symbols = [_][:0]const u8{
     ":inherit",
     ":inverse-video",
     ":overline",
+    ":scale",
     ":strike-through",
     ":style",
     ":test",
     ":underline",
     ":width",
+    "add-text-properties",
     "bright",
     "car",
     "cdr",
+    "center",
     "char-after",
     "clrhash",
     "composition-get-gstring",
     "cons",
+    "create-image",
     "current-buffer",
     "dash",
     "decode-coding-string",
     "default",
     "default-directory",
+    "default-font-height",
+    "default-font-width",
     "delete-region",
     "display",
     "display-graphic-p",
@@ -500,6 +509,7 @@ const interned_symbols = [_][:0]const u8{
     "encode-coding-string",
     "eobp",
     "eq",
+    "equal",
     "erase-buffer",
     "error",
     "expand-file-name",
@@ -529,9 +539,7 @@ const interned_symbols = [_][:0]const u8{
     "ghostel--defer",
     "ghostel--face-hex-color",
     "ghostel--handle-notification",
-    "ghostel--kitty-clear",
-    "ghostel--kitty-display-image",
-    "ghostel--kitty-display-virtual",
+    "ghostel--kitty-image-cache",
     "ghostel--osc-program-status",
     "ghostel--osc-progress",
     "ghostel--osc133-marker",
@@ -553,15 +561,18 @@ const interned_symbols = [_][:0]const u8{
     "ghostel-glyph-scale-floor",
     "ghostel-input",
     "ghostel-italic",
+    "ghostel-kitty",
     "ghostel-link-id",
     "ghostel-link-map",
     "ghostel-module",
     "ghostel-prompt",
     "ghostel-wrap",
     "goto-char",
+    "hash-table-count",
     "height",
     "help-echo",
     "highlight",
+    "image-type-available-p",
     "insert",
     "keymap",
     "light",
@@ -579,6 +590,8 @@ const interned_symbols = [_][:0]const u8{
     "nil",
     "nth",
     "numberp",
+    "pbm",
+    "png",
     "point",
     "point-max",
     "pos-bol",
@@ -599,11 +612,13 @@ const interned_symbols = [_][:0]const u8{
     "set-process-window-size",
     "set-window-point",
     "set-window-start",
+    "slice",
     "space",
     "symbol-value",
     "t",
     "temporary-file-directory",
     "utf-8-unix",
+    "vector",
     "wave",
     "window-buffer",
     "window-point",
@@ -665,4 +680,24 @@ fn debugKillEmacsHook(_: ?*c.emacs_env, _: isize, _: [*c]c.emacs_value, _: ?*any
     debug_userptrs.deinit(module_alloc);
     @import("NativeProcess.zig").waitForReaders();
     return sym.nil;
+}
+
+test "Emacs error checks preserve signals and throws" {
+    const Stub = struct {
+        var status: c.enum_emacs_funcall_exit = c.emacs_funcall_exit_return;
+
+        fn check(_: RawEnv) callconv(.c) c.enum_emacs_funcall_exit {
+            return status;
+        }
+    };
+    var raw = std.mem.zeroes(c.emacs_env);
+    raw.non_local_exit_check = &Stub.check;
+    const env = Env.init(&raw);
+    try env.checkNonLocalExit();
+
+    for ([_]c.enum_emacs_funcall_exit{ c.emacs_funcall_exit_signal, c.emacs_funcall_exit_throw }) |status| {
+        Stub.status = status;
+        try std.testing.expectError(error.EmacsNonLocalExit, env.checkNonLocalExit());
+        try std.testing.expectEqual(status, Stub.status);
+    }
 }
