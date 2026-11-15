@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Block elements (U+2580–U+259F: halves, eighths and quadrants such as
+  `▀ ▄ █ ▌ ▐ ▛`) are drawn to fill their cells to the pixel, as a
+  terminal's own renderer does, instead of taken from the font, whose
+  glyphs leave seams across pictures built of blocks.  They keep the
+  cell's colors.  The shades `░ ▒ ▓` stay with the font.
+  `ghostel-draw-block-elements` turns this off.
+
 ### Changed
 - `ghostel-set-password-pid` returns the tty it found, or nil, so a
   caller can call it again until the process has one.
