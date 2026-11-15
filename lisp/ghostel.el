@@ -376,9 +376,9 @@ call is considered interactive echo and redrawn immediately."
 (defcustom ghostel-buffer-name-function nil
   "Function returning the ghostel buffer name, or nil to leave it unchanged.
 Called in the ghostel buffer with one argument, the terminal TITLE (the
-OSC 2 string; nil when the terminal has no title), on both a title change
-and a `cd' \(OSC 7).  A title clear (empty OSC 0/2) reverts a
-title-derived name to the buffer's original name.
+OSC 2 string; nil when the terminal has no title), on a title change, a
+`cd' \(OSC 7) and by `ghostel-update-buffer-name'.  A title clear (empty
+OSC 0/2) reverts a title-derived name to the buffer's original name.
 Read `default-directory' for the current directory.
 Renames the buffer to the returned string, declining after a manual rename.
 The mode line shows the title independently of this variable;
@@ -3659,8 +3659,18 @@ Declines after a manual rename; a nil or unchanged NEW-NAME is a no-op."
              (or (null ghostel--managed-buffer-name)
                  (equal (buffer-name) ghostel--managed-buffer-name))
              (not (equal new-name (buffer-name))))
-    (rename-buffer new-name t)
+    ;; Skip the rename when this buffer already is NEW-NAME<N>.
+    (unless (equal (buffer-name)
+                   (generate-new-buffer-name new-name (buffer-name)))
+      (rename-buffer new-name t))
     (setq ghostel--managed-buffer-name (buffer-name))))
+
+(defun ghostel-update-buffer-name ()
+  "Rename the buffer to what `ghostel-buffer-name-function' returns now.
+For a name function that reads more than the title and the directory."
+  (when ghostel-buffer-name-function
+    (ghostel--rename-managed
+     (funcall ghostel-buffer-name-function ghostel-title))))
 
 (defun ghostel--set-title (title)
   "Record TITLE from OSC 0/2 and update the buffer title.
@@ -3844,9 +3854,7 @@ URL does not match the local machine, construct a TRAMP path."
           (when (file-directory-p path)
             (setq default-directory (file-name-as-directory path)
                   list-buffers-directory default-directory))))
-      (when ghostel-buffer-name-function
-        (ghostel--rename-managed
-         (funcall ghostel-buffer-name-function ghostel-title)))
+      (ghostel-update-buffer-name)
       (ghostel--buffer-identification-update))))
 
 (defun ghostel-set-directory (dir)

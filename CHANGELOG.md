@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `ghostel-update-buffer-name` renames a buffer by
+  `ghostel-buffer-name-function` on request, for a name function that
+  reads more than the title and the directory.
+
 ### Changed
 - `ghostel-set-password-pid` returns the tty it found, or nil, so a
   caller can call it again until the process has one.

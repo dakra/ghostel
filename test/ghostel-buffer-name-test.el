@@ -310,6 +310,59 @@ Guards against renaming to \"*ghostel: nil*\" before a title is set."
             (should (equal dir default-directory))))
       (delete-directory dir))))
 
+;;; Renaming on request
+
+(ert-deftest ghostel-test-update-buffer-name ()
+  "`ghostel-update-buffer-name' renames a buffer until it is renamed by hand."
+  (with-temp-buffer
+    (let ((tab "a"))
+      (setq-local ghostel-buffer-name-function
+                  (lambda (title) (format "*ghostel-test-%s-%s*" tab title)))
+      (setq ghostel-title "t")
+      (ghostel-update-buffer-name)
+      (should (equal "*ghostel-test-a-t*" (buffer-name)))
+      (setq tab "b")
+      (ghostel-update-buffer-name)
+      (should (equal "*ghostel-test-b-t*" (buffer-name)))
+      (rename-buffer "*ghostel-test-manual*")
+      (ghostel-update-buffer-name)
+      (should (equal "*ghostel-test-manual*" (buffer-name))))))
+
+(ert-deftest ghostel-test-update-buffer-name-taken ()
+  "A buffer whose name another one keeps is NAME<2>, renamed once and claimed."
+  (let ((other (generate-new-buffer "*ghostel-test-taken*"))
+        (renames 0))
+    (unwind-protect
+        (with-temp-buffer
+          (setq-local ghostel-buffer-name-function
+                      (lambda (_title) "*ghostel-test-taken*"))
+          (ghostel-update-buffer-name)
+          (should (equal "*ghostel-test-taken*<2>" (buffer-name)))
+          (let ((buffer-list-update-hook (list (lambda () (cl-incf renames)))))
+            (ghostel-update-buffer-name))
+          (should (zerop renames))
+          ;; The name is this buffer's once the other gives it up.
+          (kill-buffer other)
+          (ghostel-update-buffer-name)
+          (should (equal "*ghostel-test-taken*" (buffer-name))))
+      (when (buffer-live-p other) (kill-buffer other)))))
+
+(ert-deftest ghostel-test-update-buffer-name-claims-taken-name ()
+  "A buffer made as NAME<2> is claimed, so a rename by hand is kept."
+  (let ((other (generate-new-buffer "*ghostel-test-taken*"))
+        (buffer (generate-new-buffer "*ghostel-test-taken*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq-local ghostel-buffer-name-function
+                      (lambda (_title) "*ghostel-test-taken*"))
+          (ghostel-update-buffer-name)
+          (should (equal "*ghostel-test-taken*<2>" (buffer-name)))
+          (rename-buffer "*ghostel-test-manual*")
+          (ghostel-update-buffer-name)
+          (should (equal "*ghostel-test-manual*" (buffer-name))))
+      (kill-buffer other)
+      (kill-buffer buffer))))
+
 ;;; Mode-line buffer identification
 
 (ert-deftest ghostel-test-buffer-name-function-default-nil ()
