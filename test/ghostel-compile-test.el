@@ -1877,7 +1877,7 @@ dropping what `ghostel--init-buffer' seeded."
                    ((symbol-function 'default-font-width) (lambda () 8))
                    ((symbol-function 'default-font-height) (lambda () 16))
                    ((symbol-function 'ghostel--set-size)
-                    (lambda (_term rows cols &optional cell-w cell-h)
+                    (lambda (_term rows cols &optional cell-w cell-h _pixel-scale)
                       (push 'set-size call-order)
                       (push (list rows cols cell-w cell-h) set-size-calls)))
                    ((symbol-function 'ghostel-compile--render-header-live)

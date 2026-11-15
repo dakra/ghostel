@@ -250,7 +250,7 @@ high-throughput output (e.g. `cat huge.log')."
   :type 'integer)
 
 (defcustom ghostel-cell-pixel-scale 'auto
-  "Physical-to-logical pixel ratio for cell-size reporting.
+  "Integer pixel multiplier for cell reporting and image rendering.
 
 Used when answering XTWINOPS queries (CSI 14/16 t) and when telling
 libghostty's kitty graphics protocol the cell dimensions.  Image
@@ -260,27 +260,17 @@ smaller than what the standalone Ghostty terminal would report, they
 either fall back to half-block rendering (timg) or fill more cells
 than expected with upscaled, blocky output (yazi).
 
-`auto' computes the display DPI from `display-mm-width' and
-`display-pixel-width' and uses DPI/96 directly as a float.  Standard
-~96 DPI displays resolve to ~1.0; HiDPI displays (~150 DPI) resolve
-to ~1.5; ~192 DPI displays to ~2.0.  If the display's physical size
-isn't reported (some multi-monitor setups, virtual displays), falls
-back to 1.
+`auto' uses `frame-scale-factor', rounded up to a positive integer.
+Emacs reports this scale on NS and PGTK frames; other display backends
+return 1.  For example, a detected factor of 1.5 selects multiplier 2
+for both reported cell sizes and image pixels.
 
-This is a heuristic — Emacs has no portable API for the OS-level
-backing scale factor, so exact parity with standalone Ghostty
-\(which measures cell size in real physical pixels via the window
-server) requires setting an explicit number here.  Useful overrides:
-the exact `physical_cell_w / default-font-width' ratio (e.g. 2.28) for
-pixel-perfect parity with standalone Ghostty's image rendering, or
-1 to opt out of HiDPI-aware reporting altogether.
-
-Note that `image-scaling-factor' is *not* a useful signal here:
-Emacs's `auto' resolves it from `frame-char-width' (a font-width
-heuristic for image-vs-text scaling), not from the display's DPI
-or backing scale factor."
-  :type '(choice (const :tag "Auto-detect from display DPI" auto)
-                 (number :tag "Explicit ratio")))
+An explicit positive integer overrides automatic detection for both
+reporting and rendering.  Use 2 to force HiDPI images when Emacs
+reports a scale of 1, or 1 to disable HiDPI scaling.  Fractional
+overrides are rejected.  Images still occupy the same terminal cells."
+  :type '(choice (const :tag "Use frame backing scale" auto)
+                 (integer :tag "Explicit multiplier")))
 
 (defcustom ghostel-glyph-scale-floor 0.0
   "Minimum scale for glyphs whose font metrics don't fit the cell.
@@ -811,7 +801,8 @@ to nil to disable the regex fallback entirely (OSC 133 only)."
 (declare-function ghostel--set-bold-config "ghostel-module")
 (declare-function ghostel--set-default-colors "ghostel-module")
 (declare-function ghostel--set-palette "ghostel-module")
-(declare-function ghostel--set-size "ghostel-module" (term rows cols &optional cell-w cell-h))
+(declare-function ghostel--set-size "ghostel-module"
+                  (term rows cols &optional cell-w cell-h pixel-scale))
 (declare-function ghostel--write-vt "ghostel-module")
 (declare-function ghostel--write-pty "ghostel-module")
 (declare-function ghostel--pty-password-input-p "ghostel-module" (term))
@@ -4995,61 +4986,42 @@ Requires the buffer to be visible in a window; has no effect otherwise."
 ;;; Window resize
 
 (defun ghostel--cell-pixel-scale ()
-  "Return the active cell pixel-size scaling factor as a positive number.
-May be a float - callers are expected to round when converting to a
-pixel count."
+  "Return one positive integer multiplier for reporting and image rendering.
+Use the configured override, or automatic frame detection."
   (cond
-   ((numberp ghostel-cell-pixel-scale)
-    (max 1 ghostel-cell-pixel-scale))
-   (t (or (ghostel--detect-cell-pixel-scale) 1))))
+   ((eq ghostel-cell-pixel-scale 'auto)
+    (or (ghostel--detect-cell-pixel-scale) 1))
+   ((and (integerp ghostel-cell-pixel-scale) (> ghostel-cell-pixel-scale 0))
+    ghostel-cell-pixel-scale)
+   (t (user-error "Option ghostel-cell-pixel-scale must be auto or a positive integer (got %S)"
+                  ghostel-cell-pixel-scale))))
 
 (defun ghostel--detect-cell-pixel-scale ()
-  "Compute cell pixel-size scale from display DPI, or nil if unknown.
-Returns a positive number: ratio of the display's DPI to the 96 DPI
-reference, kept as a float so non-integer scales (1.5x displays) flow
-through correctly.  Returns nil when the display's physical size isn't
-reported (some multi-monitor setups), letting the caller fall back."
+  "Return the graphical frame's backing scale rounded up, or nil on a TTY.
+The resulting positive integer is used for both reporting and rendering."
   (when (display-graphic-p)
-    ;; Pass the selected frame so multi-monitor setups resolve to the
-    ;; display actually showing the ghostel buffer rather than the
-    ;; primary display.
-    (let* ((frame (selected-frame))
-           (mm-w (display-mm-width frame))
-           (px-w (display-pixel-width frame))
-           (mm-per-inch 25.4)
-           (reference-dpi 96.0))
-      (when (and (numberp mm-w) (> mm-w 0)
-                 (numberp px-w) (> px-w 0))
-        (let ((dpi (/ (* px-w mm-per-inch) mm-w)))
-          (max 1.0 (/ dpi reference-dpi)))))))
-
-(defun ghostel--reported-cell-width ()
-  "Return cell width to report to libghostty, in physical pixels."
-  (round (* (default-font-width) (ghostel--cell-pixel-scale))))
+    (max 1 (ceiling (frame-scale-factor (selected-frame))))))
 
 (defun ghostel--cell-height ()
   "Return the terminal cell height in logical pixels.
 The buffer's default font height plus its `line-spacing' in pixels.
 Redisplay scales a float `line-spacing' by the frame's char height, not
-by the buffer's font height."
-  (+ (default-font-height)
-     (cond ((not (display-graphic-p)) 0)
-           ((integerp line-spacing) (max 0 line-spacing))
-           ((floatp line-spacing)
-            (max 0 (round (* line-spacing (frame-char-height)))))
-           (t 0))))
+by the buffer's font height, and truncates the result."
+  (+ (default-font-height) (ghostel--line-spacing-pixels)))
 
-(defun ghostel--reported-cell-height ()
-  "Return cell height to report to libghostty, in physical pixels."
-  (round (* (ghostel--cell-height) (ghostel--cell-pixel-scale))))
+(defun ghostel--line-spacing-pixels ()
+  "Return the buffer's nonnegative extra row spacing in logical pixels."
+  (cond ((not (display-graphic-p)) 0)
+        ((integerp line-spacing) (max 0 line-spacing))
+        ((floatp line-spacing)
+         (max 0 (truncate (* line-spacing (frame-char-height)))))
+        (t 0)))
 
 (defun ghostel--set-size-with-cell-dims (term rows cols)
-  "Resize TERM to ROWS×COLS, including the reported cell pixel dimensions.
-Convenience wrapper to keep the resize sites consistent.  Resolves the cell
-dimensions from the current buffer, so call it with TERM's buffer current."
-  (ghostel--set-size term rows cols
-                     (ghostel--reported-cell-width)
-                     (ghostel--reported-cell-height))
+  "Resize TERM to ROWS×COLS with logical cell dimensions and pixel scale.
+Native code derives reported pixels and raster density from this package."
+  (ghostel--set-size term rows cols (default-font-width) (ghostel--cell-height)
+                     (ghostel--cell-pixel-scale))
   (setq ghostel--given-size (cons cols rows)))
 
 (define-obsolete-function-alias 'ghostel--desired-size

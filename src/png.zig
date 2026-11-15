@@ -57,6 +57,72 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) gt.sys.DecodeError
     };
 }
 
+/// Encode straight-alpha RGBA, optionally using a stride for a canvas subregion.
+pub fn encode(allocator: std.mem.Allocator, data: []const u8, width: u32, height: u32, stride: u32) ![]u8 {
+    const row_bytes = try std.math.mul(u32, width, 4);
+    if (width == 0 or height == 0 or stride < row_bytes) return error.InvalidImage;
+    const needed = try std.math.add(usize, try std.math.mul(usize, height - 1, stride), row_bytes);
+    if (data.len < needed) return error.InvalidImage;
+    const Context = struct {
+        alloc: std.mem.Allocator,
+        bytes: std.ArrayList(u8) = .empty,
+        failure: ?std.mem.Allocator.Error = null,
+
+        fn write(context: ?*anyopaque, ptr: ?*anyopaque, size: c_int) callconv(.c) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            if (self.failure != null) return;
+            const chunk: [*]const u8 = @ptrCast(ptr.?);
+            self.bytes.appendSlice(self.alloc, chunk[0..@intCast(size)]) catch |err| {
+                self.failure = err;
+            };
+        }
+    };
+    var context: Context = .{ .alloc = allocator };
+    errdefer context.bytes.deinit(allocator);
+    const ok = stb.stbi_write_png_to_func(
+        &Context.write,
+        &context,
+        std.math.cast(c_int, width) orelse return error.ImageTooLarge,
+        std.math.cast(c_int, height) orelse return error.ImageTooLarge,
+        4,
+        data.ptr,
+        std.math.cast(c_int, stride) orelse return error.ImageTooLarge,
+    );
+    if (context.failure) |err| return err;
+    if (ok == 0) return error.PngEncodeFailed;
+    return context.bytes.toOwnedSlice(allocator);
+}
+
+fn compressZlib(allocator: std.mem.Allocator, data: []const u8) std.mem.Allocator.Error![]u8 {
+    const flate = std.compress.flate;
+    const Workspace = struct {
+        history: [flate.max_window_len]u8,
+        compressor: flate.Compress,
+    };
+    const workspace = try allocator.create(Workspace);
+    defer allocator.destroy(workspace);
+    var output = try std.Io.Writer.Allocating.initCapacity(allocator, 128);
+    defer output.deinit();
+    // This writer only fails when its output buffer cannot grow.
+    workspace.compressor = flate.Compress.init(&output.writer, &workspace.history, .zlib, .fastest) catch
+        return error.OutOfMemory;
+    workspace.compressor.writer.writeAll(data) catch return error.OutOfMemory;
+    workspace.compressor.finish() catch return error.OutOfMemory;
+    return output.toOwnedSlice();
+}
+
+/// stb's compression hook: return a malloc-compatible buffer or null on failure.
+export fn ghostel_png_compress(data: [*]const u8, data_len: c_int, out_len: *c_int, _: c_int) callconv(.c) ?[*]u8 {
+    const len = std.math.cast(usize, data_len) orelse return null;
+    // Byte-aligned c_allocator allocations are released by stb's ordinary free.
+    const compressed = compressZlib(std.heap.c_allocator, data[0..len]) catch return null;
+    out_len.* = std.math.cast(c_int, compressed.len) orelse {
+        std.heap.c_allocator.free(compressed);
+        return null;
+    };
+    return compressed.ptr;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -88,6 +154,47 @@ test "decode: 2x2 RGBA PNG yields expected dimensions and pixels" {
     try testing.expectEqualSlices(u8, &.{ 0xFF, 0x00, 0x00, 0xFF }, result.data[0..4]);
     // Pixel (1,1): fully transparent — alpha = 0
     try testing.expectEqual(@as(u8, 0), result.data[15]);
+}
+
+test "encode: strided RGBA roundtrips with alpha" {
+    const rgba = [_]u8{ 0, 0, 0, 0, 255, 0, 0, 128, 0, 0, 0, 0, 0, 0, 255, 255 };
+    const encoded = try encode(testing.allocator, rgba[4..], 1, 2, 8);
+    defer testing.allocator.free(encoded);
+    const decoded = try decode(testing.allocator, encoded);
+    defer testing.allocator.free(decoded.data);
+    try testing.expectEqual(@as(u32, 1), decoded.width);
+    try testing.expectEqual(@as(u32, 2), decoded.height);
+    try testing.expectEqualSlices(u8, &.{ 255, 0, 0, 128, 0, 0, 255, 255 }, decoded.data);
+}
+
+test "encode: compression propagates allocation failures without leaking" {
+    const Exercise = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var data: [std.compress.flate.max_window_len + 1]u8 = undefined;
+            var random = std.Random.DefaultPrng.init(0);
+            random.random().bytes(&data);
+            const compressed = try compressZlib(allocator, &data);
+            defer allocator.free(compressed);
+            var input: std.Io.Reader = .fixed(compressed);
+            var history: [std.compress.flate.max_window_len]u8 = undefined;
+            var decompressor: std.compress.flate.Decompress = .init(&input, .zlib, &history);
+            var restored: [data.len]u8 = undefined;
+            try decompressor.reader.readSliceAll(&restored);
+            try testing.expectError(error.EndOfStream, decompressor.reader.takeByte());
+            try testing.expectEqualSlices(u8, &data, &restored);
+        }
+    };
+    try testing.checkAllAllocationFailures(testing.allocator, Exercise.run, .{});
+}
+
+test "encode: output allocation failures propagate without leaking" {
+    const Exercise = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const encoded = try encode(allocator, &.{ 255, 0, 0, 128 }, 1, 1, 4);
+            defer allocator.free(encoded);
+        }
+    };
+    try testing.checkAllAllocationFailures(testing.allocator, Exercise.run, .{});
 }
 
 test "decode: empty data returns InvalidData" {

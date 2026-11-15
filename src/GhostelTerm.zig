@@ -12,7 +12,6 @@ const GhostelHandler = @import("handler.zig").GhostelHandler;
 const Renderer = @import("Renderer.zig");
 const RecursiveMutex = @import("RecursiveMutex.zig");
 const input = @import("input.zig");
-const kitty_graphics = @import("kitty_graphics.zig");
 const utils = @import("utils.zig");
 const parseHexColor = utils.parseHexColor;
 const platform = @import("platform.zig");
@@ -104,9 +103,6 @@ pub fn redraw(self: *Self, force_full: bool, force_sync: bool) !bool {
     const pre_size = .{ self.terminal.cols, self.terminal.rows };
     if (!try self.renderer.redraw(env, force_full, force_sync)) return false;
 
-    _ = env.f("ghostel--kitty-clear", .{});
-    try kitty_graphics.emitPlacements(env, self);
-
     if (self.process) |proc| {
         const size = self.winSize();
         if (!std.meta.eql(size, self.pty_size)) {
@@ -151,7 +147,7 @@ pub fn ptyWrite(self: *Self, data: []const u8) !void {
     if (self.process) |proc| {
         try proc.ptyWrite(env, data);
     } else {
-        const bytes = env.makeUnibyteString(data) orelse return error.UnibyteStringUnavailable;
+        const bytes = env.makeUnibyteString(data);
         _ = env.f("ghostel--pty-out", .{bytes});
         const exit = env.nonLocalExitGet();
         if (exit.status == .signal) {
@@ -329,10 +325,10 @@ pub fn encodePaste(self: *Self, data: []u8) !bool {
 /// Resize the terminal. The col/row size gets committed on next redraw in order
 /// to ensure that the we fully render the very latest state in case any rows
 /// get promoted to scrollback due to vertical shrinking of the viewport.
-pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u16, cell_h: u16) !void {
+pub fn resize(self: *Self, cols: u16, rows: u16, cell_w: u32, cell_h: u32, pixel_scale: u32) !void {
     try self.lock();
     defer self.unlock();
-    try self.renderer.resize(cols, rows, cell_w, cell_h);
+    try self.renderer.resize(cols, rows, cell_w, cell_h, pixel_scale);
 }
 
 pub fn lock(self: *Self) !void {
@@ -610,11 +606,13 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
     },
     .{
         .name = "ghostel--set-size",
-        .arity = .{ 3, 5 },
+        .arity = .{ 3, 6 },
         .doc =
-        \\Resize the terminal.
+        \\Set the grid, logical cell dimensions and integer PIXEL-SCALE.
+        \\CELL-W, CELL-H and PIXEL-SCALE default to 1. Native code derives the
+        \\reported pixel dimensions and raster density from the same scale.
         \\
-        \\(ghostel--set-size TERM ROWS COLS &optional CELL-W CELL-H)
+        \\(ghostel--set-size TERM ROWS COLS &optional CELL-W CELL-H PIXEL-SCALE)
         ,
         .impl = struct {
             pub fn call(env: emacs.Env, nargs: isize, args: [*c]emacs.Value) !emacs.Value {
@@ -629,17 +627,22 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 // pre-cast) value would propagate into the OPT_SIZE answer, and
                 // some apps treat zero cell sizes as "kitty graphics not
                 // supported" and fall back to half-block rendering.
-                const cell_w: u16 = if (nargs > 3 and env.isNotNil(args[3])) blk: {
+                const cell_w: u32 = if (nargs > 3 and env.isNotNil(args[3])) blk: {
                     const raw = env.cast(i64, args[3]);
                     if (raw < 1) break :blk 1;
-                    break :blk std.math.cast(u16, raw) orelse 1;
+                    break :blk std.math.cast(u32, raw) orelse return error.OutOfRange;
                 } else 1;
-                const cell_h: u16 = if (nargs > 4 and env.isNotNil(args[4])) blk: {
+                const cell_h: u32 = if (nargs > 4 and env.isNotNil(args[4])) blk: {
                     const raw = env.cast(i64, args[4]);
                     if (raw < 1) break :blk 1;
-                    break :blk std.math.cast(u16, raw) orelse 1;
+                    break :blk std.math.cast(u32, raw) orelse return error.OutOfRange;
                 } else 1;
-                try term.resize(cols, rows, cell_w, cell_h);
+                const pixel_scale: u32 = if (nargs > 5 and env.isNotNil(args[5]))
+                    std.math.cast(u32, env.cast(i64, args[5])) orelse return error.OutOfRange
+                else
+                    1;
+                try env.checkNonLocalExit();
+                try term.resize(cols, rows, cell_w, cell_h, pixel_scale);
                 return env.nil();
             }
         },
@@ -693,7 +696,7 @@ pub const emacs_functions = [_]emacs.FunctionEntry{
                 var encode_buf: [128]u8 = undefined;
                 const sent = try term.encode(&encode_buf, event);
                 return if (sent) |bytes|
-                    env.makeUnibyteString(bytes) orelse env.t()
+                    env.makeUnibyteString(bytes)
                 else
                     env.nil();
             }
