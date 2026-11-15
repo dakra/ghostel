@@ -84,6 +84,7 @@ const FontInfo = struct {
     descent: u32,
     coverage: u32,
     glyph_scale_floor: f64,
+    draw_block_elements: bool,
     metrics_cache: GlyphMetricsCache = .{},
 
     pub fn deinit(self: *@This(), alloc: Allocator) void {
@@ -225,10 +226,13 @@ fn updateFontInfo(self: *Self, env: emacs.Env) !void {
 
     const raw_floor = env.symbolValue("ghostel-glyph-scale-floor");
     const floor = std.math.clamp(env.asFloat(raw_floor, 0.0), 0.0, 1.0);
+    const draw_block_elements = env.isNotNil(env.symbolValue("ghostel-draw-block-elements"));
 
     // Fast path: nothing changed since last redraw.
     if (env.eq(new_font, current_font) and
-        (self.font_info == null or self.font_info.?.glyph_scale_floor == floor))
+        (self.font_info == null or
+            (self.font_info.?.glyph_scale_floor == floor and
+                self.font_info.?.draw_block_elements == draw_block_elements)))
     {
         return;
     }
@@ -254,6 +258,7 @@ fn updateFontInfo(self: *Self, env: emacs.Env) !void {
             .descent = cell_descent,
             .coverage = probeCoverage(env, new_font),
             .glyph_scale_floor = floor,
+            .draw_block_elements = draw_block_elements,
         };
     }
 
@@ -523,6 +528,11 @@ pub const SpanContent = struct {
         }
     };
 
+    const BlockCell = struct {
+        char_start: usize,
+        codepoint: u21,
+    };
+
     alloc: Allocator,
 
     /// UTF-8 text for the accumulated rows.
@@ -533,6 +543,9 @@ pub const SpanContent = struct {
 
     /// Cells whose glyph metrics need display-property adjustment.
     adjust_cells: std.ArrayList(CellInfo) = .empty,
+
+    /// Cells holding a block element drawn by ghostel instead of the font.
+    block_cells: std.ArrayList(BlockCell) = .empty,
 
     /// The number of codepoints (as opposed to bytes) in the text. Emacs
     /// treats each codepoint as a separate character for buffer positions, even
@@ -572,6 +585,8 @@ pub const SpanContent = struct {
         else
             null;
 
+        const draw_block_elements = if (renderer.font_info) |fi| fi.draw_block_elements else false;
+
         const page = row_pin.node.page();
         const row = row_pin.rowAndCell().row;
         var current_prop_key: ?CellPropKey = null;
@@ -604,10 +619,20 @@ pub const SpanContent = struct {
                 try self.appendCodepoints(page.lookupGrapheme(cell).?);
             }
 
-            // If this is a grapheme cluster, or if the char is not covered by
-            // the default font, we register it as needing font glyph adjustment
-            // to fit into the monospace grid.
-            if (cell.hasGrapheme() or codepoint >= adjustment_threshold) {
+            // A block element is drawn to fill the cell exactly, the way a
+            // terminal's own renderer does: font glyphs rarely match the cell
+            // to the pixel, and the gaps show as seams between blocks.
+            // Otherwise, if this is a grapheme cluster, or if the char is not
+            // covered by the default font, we register it as needing font
+            // glyph adjustment to fit into the monospace grid.
+            if (draw_block_elements and !cell.hasGrapheme() and
+                cell.wide == .narrow and isDrawnBlockElement(codepoint))
+            {
+                try self.block_cells.append(self.alloc, .{
+                    .char_start = char_start,
+                    .codepoint = codepoint,
+                });
+            } else if (cell.hasGrapheme() or codepoint >= adjustment_threshold) {
                 try self.adjust_cells.append(self.alloc, .{
                     .col = @intCast(col),
                     .char_start = @intCast(char_start),
@@ -662,6 +687,7 @@ pub const SpanContent = struct {
         self.text.clearRetainingCapacity();
         self.line_wraps.clearRetainingCapacity();
         self.adjust_cells.clearRetainingCapacity();
+        self.block_cells.clearRetainingCapacity();
         self.runs.clearRetainingCapacity();
         self.char_len = 0;
         self.cursor_char_pos = null;
@@ -672,9 +698,37 @@ pub const SpanContent = struct {
         self.text.deinit(self.alloc);
         self.line_wraps.deinit(self.alloc);
         self.adjust_cells.deinit(self.alloc);
+        self.block_cells.deinit(self.alloc);
         self.runs.deinit(self.alloc);
     }
 };
+
+/// Whether ghostel draws CODEPOINT itself: the Block Elements range
+/// U+2580..U+259F, except the shades U+2591..U+2593.  A shade is a blend of
+/// foreground and background, which a two-colour image cannot draw, so the
+/// font keeps those.
+fn isDrawnBlockElement(codepoint: u21) bool {
+    return codepoint >= 0x2580 and codepoint <= 0x259F and
+        !(codepoint >= 0x2591 and codepoint <= 0x2593);
+}
+
+/// Give each block element in the span the image `ghostel--block-element-display'
+/// draws for it, sized to the cell.  The image takes its colours from the
+/// cell's face, so the runs' faces must already be applied.
+fn drawBlockElements(self: *Self, env: emacs.Env, span_start: usize) void {
+    const fi = self.font_info orelse return;
+    for (self.span.block_cells.items) |cell| {
+        const display = env.f("ghostel--block-element-display", .{
+            cell.codepoint,
+            fi.width,
+            fi.ascent,
+            fi.descent,
+        });
+        if (env.isNil(display)) continue;
+        const start = span_start + cell.char_start;
+        _ = env.f("put-text-property", .{ start, start + 1, emacs.sym.display, display });
+    }
+}
 
 fn adjustGlyphs(
     self: *Self,
@@ -917,6 +971,7 @@ fn flushSpan(self: *Self, env: emacs.Env) !void {
     }
 
     try self.adjustGlyphs(env, span_start);
+    self.drawBlockElements(env, span_start);
 
     for (self.span.line_wraps.items) |offset| {
         // Mark newlines from soft-wrapped rows so copy mode can filter them
