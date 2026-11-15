@@ -79,7 +79,7 @@ pub fn build(b: *std.Build) void {
     };
 
     const translate_stb = b.addTranslateC(.{
-        .root_source_file = b.path("vendor/stb/stb_image.h"),
+        .root_source_file = b.path("src/stb.h"),
         .target = target,
         .optimize = optimize,
     });
@@ -101,7 +101,7 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // stb_image for PNG decoding (kitty graphics)
+    // stb image decoding, resampling, and PNG encoding for Kitty graphics.
     mod.addIncludePath(b.path("vendor/stb"));
     mod.addCSourceFile(.{ .file = b.path("src/stb_image.c") });
 

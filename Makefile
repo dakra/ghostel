@@ -54,8 +54,8 @@ else
   MODULE := ghostel-module.so
 endif
 ZIG_BUILD_FLAGS := --prefix . -Doptimize=ReleaseFast -Dcpu=baseline $(ZIG_TARGET_FLAG)
-ZIG_SOURCES := $(wildcard src/*.zig src/*.c build.zig build.zig.zon symbols.map) \
-               $(wildcard vendor/*.h)
+ZIG_SOURCES := $(wildcard src/*.zig src/*.c src/*.h build.zig build.zig.zon symbols.map) \
+               $(wildcard vendor/*.h vendor/stb/*.h)
 
 .PHONY: all build test test-native test-zig test-hypothesis test-hypothesis-cases test-all test-evil test-consult lint melpazoid melpazoid-ghostel melpazoid-evil-ghostel melpazoid-consult-ghostel byte-compile checkdoc docquotes package-lint bench bench-quick bench-e2e bench-tui-partial html clean regen-terminfo
 
