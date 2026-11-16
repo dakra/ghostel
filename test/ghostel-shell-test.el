@@ -2312,28 +2312,69 @@ prefix only, `ghostel-input' on the user-typed command."
     (ghostel--navigate-previous-prompt 1)
     (should (looking-at "echo bb cc"))))
 
+(defun ghostel-test--insert-multiline-prompt (lines cmd)
+  "Insert a prompt of LINES followed by CMD, as the renderer does.
+Each line of the prompt gets `ghostel-prompt', but the newlines
+between them get no property; CMD gets `ghostel-input'."
+  (let ((first t))
+    (dolist (line lines)
+      (unless first (insert "\n"))
+      (setq first nil)
+      (let ((start (point)))
+        (insert line)
+        (put-text-property start (point) 'ghostel-prompt t))))
+  (let ((start (point)))
+    (insert cmd)
+    (put-text-property start (point) 'ghostel-input t))
+  (insert "\n"))
+
 (ert-deftest ghostel-test-prompt-navigation-multiline-prompt ()
   "Navigation lands on the input line of a multi-line prompt.
-The prompt region spans the info line and the line holding the input
-\(zsh themes such as powerlevel10k); it must not stop at the end of
-the first line."
+The prompt spans an info line, a soft-wrapped continuation of it, and
+the line holding the input (zsh themes such as powerlevel10k).  The
+renderer leaves the newlines between these lines without
+`ghostel-prompt'; navigation must not stop on any of them."
   (with-temp-buffer
     (dolist (cmd '("echo a" "echo b"))
-      (let ((start (point)))
-        (insert "~/src  main\n> ")
-        (put-text-property start (point) 'ghostel-prompt t))
-      (let ((start (point)))
-        (insert cmd)
-        (put-text-property start (point) 'ghostel-input t))
-      (insert "\nout\n"))
+      (ghostel-test--insert-multiline-prompt '("~/src  ma" "in" "> ") cmd)
+      (insert "out\n\n"))
+    (ghostel-test--insert-multiline-prompt '("~/src  ma" "in" "> ") "")
     (goto-char (point-max))
+    (ghostel--navigate-previous-prompt 1)
+    (should (looking-at "$"))
+    (should (looking-back "^> " (line-beginning-position)))
     (ghostel--navigate-previous-prompt 1)
     (should (looking-at "echo b$"))
     (ghostel--navigate-previous-prompt 1)
     (should (looking-at "echo a$"))
+    ;; At the first prompt already: stay put.
+    (ghostel--navigate-previous-prompt 1)
+    (should (looking-at "echo a$"))
+    ;; From inside the prompt lines, previous skips the whole prompt.
+    (ghostel--navigate-next-prompt 1)
+    (forward-line -1)
+    (ghostel--navigate-previous-prompt 1)
+    (should (looking-at "echo a$"))
     (goto-char (point-min))
     (ghostel--navigate-next-prompt 1)
+    (should (looking-at "echo b$"))
+    (ghostel--navigate-next-prompt 1)
+    (should (looking-back "^> " (line-beginning-position)))
+    ;; From inside the first line of a prompt, next skips that prompt.
+    (goto-char (point-min))
+    (forward-char 2)
+    (ghostel--navigate-next-prompt 1)
     (should (looking-at "echo b$"))))
+
+(ert-deftest ghostel-test-imenu-multiline-prompt ()
+  "A multi-line prompt yields one imenu entry, labelled with its command."
+  (with-temp-buffer
+    (ghostel-test--insert-multiline-prompt '("~/src  main" "> ") "echo a")
+    (insert "out\n")
+    (ghostel-test--insert-multiline-prompt '("~/src  main" "> ") "")
+    (let ((index (ghostel--imenu-create-index)))
+      (should (equal (mapcar #'car index) '("echo a")))
+      (should (= (cdar index) (point-min))))))
 
 (ert-deftest ghostel-test-imenu-empty-buffer ()
   "Empty buffer yields an empty imenu index."

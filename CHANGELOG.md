@@ -20,6 +20,9 @@ All notable changes to this project will be documented in this file.
 - Prompt navigation (`ghostel-next-prompt`, `ghostel-previous-prompt`, imenu
   jumps) lands on the input line of a multi-line prompt, not at the end
   of its first line.
+- zsh: prompts redrawn by `zle reset-prompt` (powerlevel10k does this on
+  async updates and when a command is accepted) stay marked as prompts,
+  so prompt navigation finds them.
 
 ## [0.65.0] — 2026-11-14
 

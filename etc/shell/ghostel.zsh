@@ -154,10 +154,23 @@ __ghostel_ensure_prompt_wrap() {
 # col 0, pushing the input cursor onto a blank line below the prompt
 # char.  133;P is the side-effect-free prompt-start marker.  Also
 # emit 133;B to mark the input area.
+#
+# Also add the same marks to PROMPT.  Without them, a later redraw of
+# this prompt (`zle reset-prompt', which powerlevel10k runs on async
+# updates and on line finish) writes the prompt cells after the old
+# 133;B, so libghostty records them as input and the prompt is lost to
+# prompt navigation.  Themes such as powerlevel10k set PROMPT again in
+# every precmd, which removes these marks; the 133;P check below keeps
+# them from being added twice when PROMPT stays.
 __ghostel_zle_line_init_hook() {
     builtin emulate -L zsh -o no_warn_create_global -o no_aliases
-    [[ "$PROMPT" != *$'%{\e]133;A'* ]] && \
+    if [[ "$PROMPT" != *$'%{\e]133;'[AP]* ]]; then
         builtin printf '\e]133;P;k=i\a\e]133;B\a'
+        if [[ -o prompt_percent ]]; then
+            [[ $PROMPT == *[^%]% || $PROMPT == % ]] && PROMPT=$PROMPT%
+            PROMPT=$'%{\e]133;P;k=i\a%}'${PROMPT}$'%{\e]133;B\a%}'
+        fi
+    fi
 }
 
 # One-shot installer: registered as a precmd, runs once on the first
