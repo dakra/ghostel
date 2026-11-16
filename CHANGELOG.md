@@ -4,16 +4,26 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.66.0] — 2026-11-16
+
 ### Added
 - `ghostel-update-buffer-name` renames a buffer by
   `ghostel-buffer-name-function` on request, for a name function that
   reads more than the title and the directory.
 
 ### Changed
+- Kitty graphics are rendered by the native row renderer, with support
+  for layered images, transparency, Unicode placeholders, cropping, and
+  scrollback.
+- `ghostel-cell-pixel-scale` accepts `auto` or a positive integer.
+  Automatic detection rounds the frame's backing scale up to an integer;
+  images use the same pixel multiplier as terminal size reports.
 - `ghostel-set-password-pid` returns the tty it found, or nil, so a
   caller can call it again until the process has one.
 
 ### Fixed
+- `ghostel ssh` works from shells Ghostel did not start.
+- Kitty graphics work with Emacs builds that support PPM but not PNG.
 - With the native PTY, a terminal kept after its process exited no
   longer asks for a password when another program's prompt appears on
   the tty it used.
