@@ -2641,11 +2641,18 @@ Returns (EXIT-CODE OUTPUT)."
             (should (string-prefix-p "export X=1\n" rc))
             (should-not (string-match-p "old hook" rc))
             (should (string-match-p
-                     "source ~/.local/share/ghostel/etc/shell/ghostel.bash" rc)))
+                     "source ~/.local/share/ghostel/etc/shell/ghostel.bash" rc))
+            (should (string-match-p "\"$TERM\" = 'xterm-rex'" rc)))
+          (should (zerop (car (run "/bin/zsh" "--hook"))))
+          (let ((rc (file-text ".zshrc")))
+            (should (string-match-p
+                     "source ~/.local/share/ghostel/etc/shell/ghostel.zsh" rc))
+            (should (string-match-p "\"$TERM\" = 'xterm-rex'" rc)))
           ;; fish and nushell use drop-in files instead of an rc edit.
           (should (zerop (car (run "/usr/bin/fish" "--hook"))))
-          (should (string-match-p "etc/shell/ghostel.fish"
-                                  (file-text ".config/fish/conf.d/ghostel.fish")))
+          (let ((conf (file-text ".config/fish/conf.d/ghostel.fish")))
+            (should (string-match-p "etc/shell/ghostel.fish" conf))
+            (should (string-match-p "test \"$TERM\" = 'xterm-rex'" conf)))
           ;; The nushell drop-in path is platform-specific (asked from
           ;; `nu' when installed), so take it from the script's report.
           (let ((res (run "/usr/bin/nu" "--hook")))
@@ -2659,6 +2666,95 @@ Returns (EXIT-CODE OUTPUT)."
             (should (= 1 (car res)))
             (should (string-match-p "unsupported login shell" (cadr res)))))
       (delete-directory home t))))
+
+(ert-deftest ghostel-test-shell-scripts-find-own-install ()
+  "A script sets EMACS_GHOSTEL_PATH to its own install when it names none.
+That covers a script sourced through a symlink.  A copy outside an
+install's etc/shell leaves the variable as it was."
+  (let* ((root (directory-file-name (file-truename (ghostel--resource-root))))
+         (home (ghostel-test--remote-home root))
+         (pushed (directory-file-name
+                  (file-truename (expand-file-name ".local/share/ghostel" home))))
+         (flat (expand-file-name "flat" home)))
+    (unwind-protect
+        (cl-flet ((sourced (program args script &optional value)
+                    (let ((process-environment
+                           (cons (if value
+                                     (concat "EMACS_GHOSTEL_PATH=" value)
+                                   "EMACS_GHOSTEL_PATH")
+                                 process-environment)))
+                      (with-temp-buffer
+                        (apply #'call-process program nil t nil
+                               (append args
+                                       (list "-c" (format "source %s; echo \"[$EMACS_GHOSTEL_PATH]\""
+                                                          (shell-quote-argument script)))))
+                        (goto-char (point-max))
+                        (and (re-search-backward "^\\[\\(.*\\)\\]$" nil t)
+                             (match-string 1)))))
+                  (script (dir ext)
+                    (expand-file-name (concat "etc/shell/ghostel." ext) dir)))
+          (make-directory flat)
+          (dolist (spec '(("bash" ("--noprofile" "--norc") "bash")
+                          ("zsh" ("-f") "zsh")
+                          ("fish" ("--no-config") "fish")))
+            (pcase-let ((`(,program ,args ,ext) spec))
+              (when (executable-find program)
+                (should (equal root (sourced program args (script root ext))))
+                (should (equal pushed (sourced program args (script pushed ext))))
+                ;; A value naming no install is replaced, a valid one kept.
+                (should (equal root (sourced program args (script root ext) "/nonexistent")))
+                (should (equal pushed (sourced program args (script root ext) pushed)))
+                (let ((link (expand-file-name (concat "link." ext) flat)))
+                  (make-symbolic-link (script root ext) link t)
+                  (should (equal root (sourced program args link))))
+                (let ((copy (expand-file-name (concat "ghostel." ext) flat)))
+                  (copy-file (script root ext) copy t)
+                  (should (equal "" (sourced program args copy))))))))
+      (delete-directory home t))))
+
+(ert-deftest ghostel-test-ssh-push-follows-symlinks ()
+  "`ghostel ssh' pushes the files behind a tree of symlinks.
+Package managers such as straight and elpaca build such trees."
+  (skip-unless (executable-find "bash"))
+  (let* ((root (ghostel--resource-root))
+         (dir (make-temp-file "ghostel-test-push-" t))
+         (tree (expand-file-name "tree" dir))
+         (home (expand-file-name "home" dir))
+         (bin (expand-file-name "bin" dir))
+         (ssh (expand-file-name "ssh" bin)))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "etc" tree) t)
+          (make-directory home)
+          (make-directory bin)
+          (dolist (sub '("shell" "terminfo"))
+            (make-symbolic-link (expand-file-name (concat "etc/" sub) root)
+                                (expand-file-name (concat "etc/" sub) tree)))
+          ;; A fake ssh that runs the remote command locally under HOME.
+          (with-temp-file ssh
+            (insert "#!/bin/sh\nfor a; do last=$a; done\nHOME=$FAKE_HOME exec sh -c \"$last\"\n"))
+          (set-file-modes ssh #o755)
+          (let* ((process-environment
+                  (append (list (concat "EMACS_GHOSTEL_PATH=" tree)
+                                (concat "FAKE_HOME=" home)
+                                (concat "PATH=" bin path-separator (getenv "PATH")))
+                          process-environment))
+                 (hashes (with-temp-buffer
+                           (call-process
+                            "bash" nil t nil "--noprofile" "--norc" "-c"
+                            (format "source %s; __ghostel_ssh_push '' host >/dev/null; __ghostel_ssh_hash; printf '' | cksum | awk '{print $1}'"
+                                    (shell-quote-argument
+                                     (expand-file-name "etc/shell/ghostel.bash" tree))))
+                           (split-string (buffer-string) "\n" t)))
+                 (bash (expand-file-name
+                        ".local/share/ghostel/etc/shell/ghostel.bash" home)))
+            (should (file-regular-p bash))
+            (should-not (file-symlink-p bash))
+            (should (file-exists-p (expand-file-name ".terminfo/x/xterm-ghostty" home)))
+            ;; The hash covers the files behind the links.
+            (should (= 2 (length hashes)))
+            (should-not (equal (car hashes) (cadr hashes)))))
+      (delete-directory dir t))))
 
 (ert-deftest ghostel-test-remote-login-script ()
   "`etc/shell/remote/login.sh' execs the login shell with the local bootstrap env."

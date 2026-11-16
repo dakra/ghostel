@@ -33,14 +33,14 @@ hook() {
 case ${SHELL##*/} in
     bash)
         hook "$HOME/.bashrc" <<'EOT'
-if [[ "${INSIDE_EMACS%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' ]]; then
+if [[ "${INSIDE_EMACS%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' || "$TERM" = 'xterm-rex' ]]; then
     source ~/.local/share/ghostel/etc/shell/ghostel.bash
 fi
 EOT
         ;;
     zsh)
         hook "${ZDOTDIR:-$HOME}/.zshrc" <<'EOT'
-if [[ "${${INSIDE_EMACS-}%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' ]]; then
+if [[ "${${INSIDE_EMACS-}%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' || "$TERM" = 'xterm-rex' ]]; then
     source ~/.local/share/ghostel/etc/shell/ghostel.zsh
 fi
 EOT
@@ -49,7 +49,7 @@ EOT
         f=${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/ghostel.fish
         mkdir -p "${f%/*}"
         cat > "$f" <<'EOT'
-if string match -qr '^ghostel(,|$)' -- "$INSIDE_EMACS"; or test "$TERM" = 'xterm-ghostty'
+if string match -qr '^ghostel(,|$)' -- "$INSIDE_EMACS"; or test "$TERM" = 'xterm-ghostty'; or test "$TERM" = 'xterm-rex'
     source ~/.local/share/ghostel/etc/shell/ghostel.fish
 end
 EOT

@@ -1274,21 +1274,21 @@ Then add the appropriate gate to the remote shell config:
 
 #+begin_src bash
 # bash - ~/.bashrc on the remote host:
-if [[ "${INSIDE_EMACS%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' ]]; then
+if [[ "${INSIDE_EMACS%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' || "$TERM" = 'xterm-rex' ]]; then
     source ~/.local/share/ghostel/etc/shell/ghostel.bash
 fi
 #+end_src
 
 #+begin_src sh
 # zsh - ~/.zshrc on the remote host:
-if [[ "${${INSIDE_EMACS-}%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' ]]; then
+if [[ "${${INSIDE_EMACS-}%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' || "$TERM" = 'xterm-rex' ]]; then
     source ~/.local/share/ghostel/etc/shell/ghostel.zsh
 fi
 #+end_src
 
 #+begin_src fish
 # fish - ~/.config/fish/config.fish on the remote host:
-if string match -qr '^ghostel(,|$)' -- "$INSIDE_EMACS"; or test "$TERM" = 'xterm-ghostty'
+if string match -qr '^ghostel(,|$)' -- "$INSIDE_EMACS"; or test "$TERM" = 'xterm-ghostty'; or test "$TERM" = 'xterm-rex'
     source ~/.local/share/ghostel/etc/shell/ghostel.fish
 end
 #+end_src
@@ -1300,7 +1300,7 @@ end
 source ~/.local/share/ghostel/etc/shell/ghostel.nu
 #+end_src
 
-The two-clause gate covers both ways a remote ghostel shell can be reached:
+The gate covers the ways a remote ghostel shell can be reached:
 
 - *TRAMP-launched ghostel* (=M-x ghostel= from a =/ssh:host:= path) rewrites
   =INSIDE_EMACS= to =ghostel,tramp:VER= on the remote.  The =${INSIDE_EMACS%%,*}=
@@ -1311,17 +1311,22 @@ The two-clause gate covers both ways a remote ghostel shell can be reached:
   Ghostel sets =TERM=xterm-ghostty= in the local PTY shell environment (controlled
   by =ghostel-term=), so any =ssh= spawned from inside the buffer inherits and
   forwards that value.
+- *Plain =ssh REMOTE= from a [[https://www.superlogical.com/rex][Rex]] terminal*, such as a block shown in Emacs
+  through rexel.  Rex sets =TERM=xterm-rex=, its own name for Ghostty's
+  terminfo entry, once =rex terminfo setup= has run, and its ssh configuration
+  forwards that value only to hosts recorded with =rex terminfo host install=.
+  Other hosts receive =xterm-256color= and the gate does not match.
 
-False positives - situations where the second clause matches but the session is
-not actually ghostel - include any =ssh= from a non-ghostel ghostty terminal,
-nested ssh hops carrying the same =TERM= through, and anyone who manually exports
+False positives - situations where a =TERM= clause matches but the session is
+not actually ghostel - include any =ssh= from a non-ghostel ghostty terminal or
+from Rex.app, nested ssh hops carrying the same =TERM= through, and anyone who manually exports
 =TERM=xterm-ghostty=.  Sourcing the integration in those cases is harmless: OSC 7
 / OSC 133 work in plain ghostty and kitty too (the cwd report uses kitty's
 =kitty-shell-cwd://= scheme, which other terminals ignore), and =ghostel_cmd=
 becomes a no-op without ghostel on the other end.
 
 If you customize =ghostel-term= to something other than =xterm-ghostty=, the
-second clause will not match.  Drop it and rely on TRAMP-launched ghostel for
+=xterm-ghostty= clause will not match.  Drop it and rely on TRAMP-launched ghostel for
 remote integration, or replace it with a match against your customized =TERM=.
 
 The integration scripts provide directory tracking (OSC 7), prompt navigation
@@ -1379,6 +1384,13 @@ terminfo and ghostel's shell integration, without touching any rc file there:
 
 A plain =ssh REMOTE= afterwards is unchanged: the pushed files are inert until
 =ghostel ssh-install= hooks the login shell.
+
+The push reads ghostel's files from =EMACS_GHOSTEL_PATH=.  ghostel sets it in
+the shells it starts.  Where it names no ghostel install, as in a shell that
+sources the script from its rc file in tmux or a Rex terminal, the bash, zsh
+and fish scripts set it to the ghostel tree the script file lives in.  nushell
+needs it in the environment.  The push follows symlinks, so a tree of links
+that a package manager builds works too.
 
 When =ghostel-ssh-install-terminfo= is enabled, plain =ssh= is shadowed by
 =ghostel_ssh=; otherwise nothing happens unless you call it by name.

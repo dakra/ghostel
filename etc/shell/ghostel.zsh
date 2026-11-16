@@ -9,13 +9,23 @@
 #
 # Remote `~/.zshrc' (also gates on TERM, since ssh propagates it
 # natively and INSIDE_EMACS does not without server-side AcceptEnv):
-#   if [[ "${${INSIDE_EMACS-}%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' ]]; then
+#   if [[ "${${INSIDE_EMACS-}%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' || "$TERM" = 'xterm-rex' ]]; then
 #       source ~/.local/share/ghostel/etc/shell/ghostel.zsh
 #   fi
 # See the README "Manual setup" section for the full rationale.
 
 # Idempotency guard — skip if already loaded (e.g. auto-injected).
 (( $+functions[__ghostel_osc7] )) && return
+
+# `ghostel ssh' and `ghostel ssh-install' push the files of the ghostel
+# install in EMACS_GHOSTEL_PATH.  When it names none, as in a shell that
+# sources this file from its rc file outside ghostel (tmux, Rex), set it
+# to the install this file belongs to.
+if [[ ! -r ${EMACS_GHOSTEL_PATH-}/etc/shell/remote/login.sh ]]; then
+    __ghostel_root=${${(%):-%x}:A:h:h:h}
+    [[ -r $__ghostel_root/etc/shell/remote/login.sh ]] && EMACS_GHOSTEL_PATH=$__ghostel_root
+    builtin unset __ghostel_root
+fi
 
 # Capture gethostname(2) once for OSC 7, matching Emacs `(system-name)'.
 # zsh canonicalizes $HOST to the FQDN under a DNS search domain, which
@@ -247,14 +257,14 @@ preexec_functions=(__ghostel_preexec "${preexec_functions[@]}")
 function __ghostel_ssh_push {
     local _install_args=$1
     shift
-    COPYFILE_DISABLE=1 command tar c --format ustar -f - \
+    COPYFILE_DISABLE=1 command tar ch --format ustar -f - \
             -C "$EMACS_GHOSTEL_PATH" etc/shell etc/terminfo \
         | command ssh -o SendEnv=INSIDE_EMACS "$@" "sh -c 'mkdir -p ~/.local/share/ghostel && tar xf - -C ~/.local/share/ghostel && sh ~/.local/share/ghostel/etc/shell/remote/install.sh $_install_args'"
 }
 
 # Hash of everything __ghostel_ssh_push ships.
 function __ghostel_ssh_hash {
-    command find "$EMACS_GHOSTEL_PATH/etc/shell" "$EMACS_GHOSTEL_PATH/etc/terminfo" -type f -exec cksum {} + \
+    command find -L "$EMACS_GHOSTEL_PATH/etc/shell" "$EMACS_GHOSTEL_PATH/etc/terminfo" -type f -exec cksum {} + \
         | LC_ALL=C command sort | command cksum | command awk '{print $1}'
 }
 

@@ -6,13 +6,22 @@
 #
 # Remote `config.fish' (also gates on TERM, since ssh propagates it
 # natively and INSIDE_EMACS does not without server-side AcceptEnv):
-#   if string match -qr '^ghostel(,|$)' -- "$INSIDE_EMACS"; or test "$TERM" = 'xterm-ghostty'
+#   if string match -qr '^ghostel(,|$)' -- "$INSIDE_EMACS"; or test "$TERM" = 'xterm-ghostty'; or test "$TERM" = 'xterm-rex'
 #       source ~/.local/share/ghostel/etc/shell/ghostel.fish
 #   end
 # See the README "Manual setup" section for the full rationale.
 
 # Idempotency guard — skip if already loaded (e.g. auto-injected).
 functions -q __ghostel_osc7; and return
+
+# `ghostel ssh' and `ghostel ssh-install' push the files of the ghostel
+# install in EMACS_GHOSTEL_PATH.  When it names none, as in a shell that
+# sources this file from its rc file outside ghostel (tmux, Rex), set it
+# to the install this file belongs to.
+if not test -r "$EMACS_GHOSTEL_PATH/etc/shell/remote/login.sh"
+    set -l root (string replace -r '(/[^/]*){3}$' '' -- (builtin realpath (status filename)))
+    test -r "$root/etc/shell/remote/login.sh"; and set -g EMACS_GHOSTEL_PATH $root
+end
 
 # Report working directory to the terminal via OSC 7.
 # In fish 3.0+, $hostname is gethostname(2) verbatim, matching
@@ -104,14 +113,14 @@ end
 function __ghostel_ssh_push
     set -l _install_args $argv[1]
     set -e argv[1]
-    COPYFILE_DISABLE=1 command tar c --format ustar -f - \
+    COPYFILE_DISABLE=1 command tar ch --format ustar -f - \
             -C "$EMACS_GHOSTEL_PATH" etc/shell etc/terminfo \
         | command ssh -o SendEnv=INSIDE_EMACS $argv "sh -c 'mkdir -p ~/.local/share/ghostel && tar xf - -C ~/.local/share/ghostel && sh ~/.local/share/ghostel/etc/shell/remote/install.sh $_install_args'"
 end
 
 # Hash of everything __ghostel_ssh_push ships.
 function __ghostel_ssh_hash
-    command find "$EMACS_GHOSTEL_PATH/etc/shell" "$EMACS_GHOSTEL_PATH/etc/terminfo" -type f -exec cksum '{}' + \
+    command find -L "$EMACS_GHOSTEL_PATH/etc/shell" "$EMACS_GHOSTEL_PATH/etc/terminfo" -type f -exec cksum '{}' + \
         | LC_ALL=C command sort | command cksum | command awk '{print $1}'
 end
 
