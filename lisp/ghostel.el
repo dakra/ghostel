@@ -851,6 +851,9 @@ renderer when the terminal is created or a resize is committed.")
 Updated by the native renderer when the terminal is created or a
 resize is committed.")
 
+(defvar-local ghostel--given-cell-dims nil
+  "Last logical cell width, height and pixel scale sent to the renderer.")
+
 (defvar-local ghostel--given-size nil
   "The (COLS . ROWS) last given to the native terminal.
 `ghostel--term-rows' and `ghostel--term-cols' follow when a redraw
@@ -4908,6 +4911,7 @@ them during synchronized output or when BUFFER has no render window."
                  (ghostel--terminal-live-p)
                  (not (ghostel--maybe-defer-redraw buffer)))
         (when-let* ((render-win (ghostel--get-render-window buffer)))
+          (ghostel--refresh-cell-dims render-win)
           ;; Pause line mode if alt-screen just turned on.  This must run
           ;; before the snapshot so a pause can take ownership of its input.
           (ghostel--line-mode-pre-redraw)
@@ -5017,13 +5021,30 @@ by the buffer's font height, and truncates the result."
 (defun ghostel--set-size-with-cell-dims (term rows cols)
   "Resize TERM to ROWS×COLS with the render window's cell dimensions.
 Native code derives reported pixels and raster density from these metrics."
-  (let* ((buffer (current-buffer))
-         (window (or (ghostel--get-render-window buffer) (selected-window))))
-    (with-selected-window window
-      (with-current-buffer buffer
-        (ghostel--set-size term rows cols (default-font-width)
-                           (ghostel--cell-height) (ghostel--cell-pixel-scale)))))
-  (setq ghostel--given-size (cons cols rows)))
+  (let ((dims (ghostel--measure-cell-dims)))
+    (apply #'ghostel--set-size term rows cols dims)
+    (setq ghostel--given-size (cons cols rows)
+          ghostel--given-cell-dims dims)))
+
+(defun ghostel--measure-cell-dims (&optional window)
+  "Measure the current buffer's cells in WINDOW or the render window."
+  (let ((buffer (current-buffer)))
+    (save-excursion
+      (with-selected-window (or window (ghostel--get-render-window buffer)
+                                (selected-window))
+        (with-current-buffer buffer
+          (list (default-font-width) (ghostel--cell-height)
+                (ghostel--cell-pixel-scale)))))))
+
+(defun ghostel--refresh-cell-dims (window)
+  "Update pixel geometry for WINDOW without changing the terminal grid."
+  (when-let* ((ghostel--given-cell-dims)
+              (size (ghostel-terminal-size))
+              (dims (ghostel--measure-cell-dims window))
+              ((not (equal dims ghostel--given-cell-dims))))
+    (apply #'ghostel--set-size ghostel--term (cdr size) (car size) dims)
+    (setq ghostel--given-cell-dims dims)
+    t))
 
 (define-obsolete-function-alias 'ghostel--desired-size
   #'ghostel-window-size "0.64.0")
@@ -5203,7 +5224,10 @@ e.g. a later \"emacsclient -t\" session."
 
 (defun ghostel--pre-redisplay (_window)
   "Render pending terminal state before displaying this buffer."
-  (when ghostel--pending-redraw
+  (when (or ghostel--pending-redraw
+            (and ghostel--term (ghostel--terminal-live-p)
+                 (when-let* ((window (ghostel--get-render-window (current-buffer))))
+                   (ghostel--refresh-cell-dims window))))
     (ghostel--redraw-now (current-buffer))))
 
 (defun ghostel--window-buffer-change (window)
@@ -5547,6 +5571,7 @@ spawn after initialization.  With BRIDGED non-nil none will be, and
           ghostel--command-running nil
           ghostel--prompt-positions nil
           ghostel--given-size nil
+          ghostel--given-cell-dims nil
           ghostel--last-foreground nil
           ghostel--shell-comm nil
           ghostel--shell-pgid-cache nil

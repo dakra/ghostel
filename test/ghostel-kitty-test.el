@@ -103,8 +103,11 @@ DUMMY non-nil fakes the daemon's initial frame."
             (original (selected-window))
             (render (split-window-below))
             args)
+        (insert "0123456789")
         (setq major-mode 'ghostel-mode)
         (set-window-buffer render buffer)
+        (goto-char 7)
+        (set-window-point render 2)
         (cl-letf (((symbol-function 'default-font-width)
                    (lambda () (if (eq (selected-window) render) 16 8)))
                   ((symbol-function 'default-font-height) (lambda () 20))
@@ -116,7 +119,23 @@ DUMMY non-nil fakes the daemon's initial frame."
           (ghostel--set-size-with-cell-dims 'term 5 20))
         (should (equal args '(term 5 20 16 20 2)))
         (should (eq (selected-window) original))
-        (should (eq (current-buffer) buffer))))))
+        (should (eq (current-buffer) buffer))
+        (should (= (point) 7))
+        (should (= (window-point render) 2))))))
+
+(ert-deftest ghostel-test-refresh-cell-dims-without-resizing-grid ()
+  "Changing backing scale updates pixels even with identical rows and cols."
+  (with-temp-buffer
+    (let ((ghostel--term 'term)
+          (dims '(8 16 1))
+          calls)
+      (cl-letf (((symbol-function 'ghostel--measure-cell-dims) (lambda (&optional _) dims))
+                ((symbol-function 'ghostel--set-size) (lambda (&rest args) (push args calls))))
+        (ghostel--set-size-with-cell-dims ghostel--term 5 20)
+        (should-not (ghostel--refresh-cell-dims (selected-window)))
+        (setq dims '(8 16 2))
+        (should (ghostel--refresh-cell-dims (selected-window)))
+        (should (equal calls '((term 5 20 8 16 2) (term 5 20 8 16 1))))))))
 
 (ert-deftest ghostel-test-cell-height-includes-emacs-row-spacing ()
   "Cell height includes the frame-based, truncated gap used by redisplay."
