@@ -5015,10 +5015,14 @@ by the buffer's font height, and truncates the result."
         (t 0)))
 
 (defun ghostel--set-size-with-cell-dims (term rows cols)
-  "Resize TERM to ROWS×COLS with logical cell dimensions and pixel scale.
-Native code derives reported pixels and raster density from this package."
-  (ghostel--set-size term rows cols (default-font-width) (ghostel--cell-height)
-                     (ghostel--cell-pixel-scale))
+  "Resize TERM to ROWS×COLS with the render window's cell dimensions.
+Native code derives reported pixels and raster density from these metrics."
+  (let* ((buffer (current-buffer))
+         (window (or (ghostel--get-render-window buffer) (selected-window))))
+    (with-selected-window window
+      (with-current-buffer buffer
+        (ghostel--set-size term rows cols (default-font-width)
+                           (ghostel--cell-height) (ghostel--cell-pixel-scale)))))
   (setq ghostel--given-size (cons cols rows)))
 
 (define-obsolete-function-alias 'ghostel--desired-size
