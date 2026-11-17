@@ -95,6 +95,29 @@ DUMMY non-nil fakes the daemon's initial frame."
             (ghostel--set-size-with-cell-dims 'term 5 20)
             (should (equal args (list 'term 5 20 8 16 scale)))))))))
 
+(ert-deftest ghostel-test-set-size-measures-the-render-window ()
+  "A terminal shown in an unselected window uses that window's metrics."
+  (save-window-excursion
+    (with-temp-buffer
+      (let ((buffer (current-buffer))
+            (original (selected-window))
+            (render (split-window-below))
+            args)
+        (setq major-mode 'ghostel-mode)
+        (set-window-buffer render buffer)
+        (cl-letf (((symbol-function 'default-font-width)
+                   (lambda () (if (eq (selected-window) render) 16 8)))
+                  ((symbol-function 'default-font-height) (lambda () 20))
+                  ((symbol-function 'ghostel--line-spacing-pixels) (lambda () 0))
+                  ((symbol-function 'ghostel--cell-pixel-scale)
+                   (lambda () (if (eq (selected-window) render) 2 1)))
+                  ((symbol-function 'ghostel--set-size)
+                   (lambda (&rest values) (setq args values))))
+          (ghostel--set-size-with-cell-dims 'term 5 20))
+        (should (equal args '(term 5 20 16 20 2)))
+        (should (eq (selected-window) original))
+        (should (eq (current-buffer) buffer))))))
+
 (ert-deftest ghostel-test-cell-height-includes-emacs-row-spacing ()
   "Cell height includes the frame-based, truncated gap used by redisplay."
   (with-temp-buffer
