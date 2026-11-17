@@ -506,6 +506,14 @@ pub const SpanContent = struct {
         image: ?emacs.Value,
     };
 
+    const RowMetadata = struct {
+        offset: usize,
+        flags: packed struct {
+            wrap: bool = false,
+            prompt_continuation: bool = false,
+        },
+    };
+
     const CellInfo = struct {
         col: usize,
         char_start: usize,
@@ -554,8 +562,8 @@ pub const SpanContent = struct {
     /// UTF-8 text for the accumulated rows.
     text: std.ArrayList(u8) = .empty,
 
-    /// The positions of any line wraps
-    line_wraps: std.ArrayList(usize) = .empty,
+    /// Row flags and their newline character offsets, separate from cell runs.
+    row_metadata: std.ArrayList(RowMetadata) = .empty,
 
     /// Cells whose glyph metrics need display-property adjustment.
     adjust_cells: std.ArrayList(CellInfo) = .empty,
@@ -701,7 +709,15 @@ pub const SpanContent = struct {
         self.char_len = trim_char_len;
         self.runs.items[self.runs.items.len - 1].end_char = trim_char_len;
 
-        if (row.wrap) try self.line_wraps.append(self.alloc, self.char_len);
+        const metadata: RowMetadata = .{
+            .offset = self.char_len,
+            .flags = .{
+                .wrap = row.wrap,
+                .prompt_continuation = row.semantic_prompt == .prompt_continuation,
+            },
+        };
+        if (!std.meta.eql(metadata.flags, .{}))
+            try self.row_metadata.append(self.alloc, metadata);
         try self.appendCodepoints(&[1]u21{'\n'});
 
         return self.char_len - row_start;
@@ -724,7 +740,7 @@ pub const SpanContent = struct {
 
     pub fn clear(self: *SpanContent) void {
         self.text.clearRetainingCapacity();
-        self.line_wraps.clearRetainingCapacity();
+        self.row_metadata.clearRetainingCapacity();
         self.adjust_cells.clearRetainingCapacity();
         self.runs.clearRetainingCapacity();
         self.char_len = 0;
@@ -734,7 +750,7 @@ pub const SpanContent = struct {
 
     pub fn deinit(self: *SpanContent) void {
         self.text.deinit(self.alloc);
-        self.line_wraps.deinit(self.alloc);
+        self.row_metadata.deinit(self.alloc);
         self.adjust_cells.deinit(self.alloc);
         self.runs.deinit(self.alloc);
     }
@@ -989,14 +1005,24 @@ fn flushSpan(self: *Self, env: emacs.Env) !void {
 
     try self.adjustGlyphs(env, span_start);
 
-    for (self.span.line_wraps.items) |offset| {
-        // Mark newlines from soft-wrapped rows so copy mode can filter them
-        _ = env.f("put-text-property", .{
-            span_start + offset,
-            span_start + offset + 1,
-            emacs.sym.@"ghostel-wrap",
-            env.t(),
-        });
+    for (self.span.row_metadata.items) |metadata| {
+        const pos = span_start + metadata.offset;
+        if (metadata.flags.wrap) {
+            _ = env.f("put-text-property", .{
+                pos,
+                pos + 1,
+                emacs.sym.@"ghostel-wrap",
+                env.t(),
+            });
+        }
+        if (metadata.flags.prompt_continuation) {
+            _ = env.f("put-text-property", .{
+                pos,
+                pos + 1,
+                emacs.sym.@"ghostel-prompt-continuation",
+                env.t(),
+            });
+        }
     }
 
     if (self.span.cursor_char_pos) |pos| {

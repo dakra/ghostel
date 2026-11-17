@@ -16,6 +16,12 @@ All notable changes to this project will be documented in this file.
 - `consult-ghostel-project` run from `project-switch-project` lists the
   terminals of the chosen project instead of the current one.  Outside a
   project it prompts for one, like `consult-project-buffer`.
+- Prompt navigation (`ghostel-next-prompt`, `ghostel-previous-prompt`,
+  imenu) treats a multi-line or wrapped prompt as one prompt and lands
+  on its input line, not at the end of its first line.
+- In zsh with a theme that sets its prompt last in `precmd`, such as
+  powerlevel10k, a prompt redrawn after a resize or an asynchronous
+  update is still found by prompt navigation and imenu.
 
 ## [0.66.0] — 2026-11-16
 

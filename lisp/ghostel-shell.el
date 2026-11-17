@@ -595,29 +595,81 @@ what is recorded, run `ghostel-command-start-functions', or
 The value is opaque; one not `eq' to an earlier one was marked since."
   (car ghostel--prompt-positions))
 
+(defun ghostel--prompt-continuation-p ()
+  "Return non-nil if the current row can continue a prompt prefix.
+The renderer anchors `ghostel-prompt-continuation' on the current
+row's newline.  Reflow can leave wrapped rows without that flag,
+so also check `ghostel-wrap' on the preceding row's newline."
+  (or (get-text-property (line-end-position) 'ghostel-prompt-continuation)
+      (and (> (line-beginning-position) (point-min))
+           (get-text-property (1- (line-beginning-position)) 'ghostel-wrap))))
+
+(defun ghostel--prompt-end (pos)
+  "Return the logical prompt's end from a prompt cell at POS.
+Join cell-property runs across continuation rows, including empty
+rows, without treating their newlines as prompt content."
+  (save-excursion
+    (goto-char pos)
+    (let ((end (next-single-property-change pos 'ghostel-prompt nil (point-max))))
+      (goto-char end)
+      (while (and (eolp) (< (point) (point-max))
+                  (progn
+                    (forward-char 1)
+                    (and (ghostel--prompt-continuation-p)
+                         (or (get-text-property (point) 'ghostel-prompt)
+                             (get-text-property (point) 'ghostel-input)
+                             (eolp)))))
+        (setq end (if (get-text-property (point) 'ghostel-prompt)
+                      (next-single-property-change
+                       (point) 'ghostel-prompt nil (point-max))
+                    (point)))
+        (goto-char end))
+      end)))
+
+(defun ghostel--prompt-start (pos)
+  "Return the logical prompt's start from its prefix or input boundary POS."
+  (save-excursion
+    (goto-char pos)
+    (when (and (not (get-text-property (point) 'ghostel-prompt))
+               (> (point) (point-min))
+               (get-text-property (1- (point)) 'ghostel-prompt))
+      (backward-char 1))
+    (when (get-text-property (point) 'ghostel-prompt)
+      (goto-char (or (previous-single-property-change
+                      (1+ (point)) 'ghostel-prompt)
+                     (point-min))))
+    (let ((start (point)))
+      (while (and (bolp) (> (point) (point-min))
+                  (ghostel--prompt-continuation-p)
+                  (progn
+                    (backward-char 1)
+                    (cond
+                     ((and (> (point) (point-min))
+                           (get-text-property (1- (point)) 'ghostel-prompt))
+                      (setq start (or (previous-single-property-change
+                                       (point) 'ghostel-prompt)
+                                      (point-min)))
+                      (goto-char start)
+                      t)
+                     ;; Cross empty continuation rows to find earlier cells.
+                     ((bolp) t)))))
+      start)))
+
 (defun ghostel--prompt-input-start ()
-  "From the start of a `ghostel-prompt' region, move past the prefix.
-If `ghostel-input' begins on the same line, point lands at its
-start; otherwise point lands just past the prompt-prefix region -
-the natural position where the user would begin typing."
-  (goto-char (or (next-single-property-change
-                  (point) 'ghostel-prompt nil (line-end-position))
-                 (line-end-position))))
+  "From a prompt cell, move past all rows of the prompt prefix."
+  (when (get-text-property (point) 'ghostel-prompt)
+    (goto-char (ghostel--prompt-end (point)))))
 
 (defun ghostel--navigate-next-prompt (&optional n)
   "Move point to the start of the Nth next prompt region."
   (let ((pos (point)))
     (dotimes (_ (or n 1))
-      ;; First skip past the current prompt region if we're inside one.
-      (let ((next (next-single-property-change pos 'ghostel-prompt)))
+      (let* ((end (if (get-text-property pos 'ghostel-prompt)
+                      (ghostel--prompt-end pos)
+                    pos))
+             (next (text-property-any end (point-max) 'ghostel-prompt t)))
         (when next
-          (if (get-text-property next 'ghostel-prompt)
-              ;; Landed on the next prompt.
-              (setq pos next)
-            ;; In a gap — find the next prompt, or stay put.
-            (let ((found (next-single-property-change next 'ghostel-prompt)))
-              (when found
-                (setq pos found)))))))
+          (setq pos next))))
     (when (and pos (/= pos (point)))
       (goto-char pos)
       (ghostel--prompt-input-start))))
@@ -626,17 +678,19 @@ the natural position where the user would begin typing."
   "Move point to the start of the Nth previous prompt region."
   (let ((pos (point)))
     (dotimes (_ (or n 1))
-      ;; If inside or on a prompt, first skip backward past it.
-      (when (or (get-text-property pos 'ghostel-input)
-                (and (> pos (point-min))
-                     (get-text-property (1- pos) 'ghostel-input)))
+      ;; Skip backward past the input and prompt that POS is in or after.
+      (when (and (> pos (point-min))
+                 (get-text-property (1- pos) 'ghostel-input))
         (setq pos (or (previous-single-property-change pos 'ghostel-input)
                       (point-min))))
       (when (or (get-text-property pos 'ghostel-prompt)
                 (and (> pos (point-min))
-                     (get-text-property (1- pos) 'ghostel-prompt)))
-        (setq pos (or (previous-single-property-change pos 'ghostel-prompt)
-                      (point-min))))
+                     (get-text-property (1- pos) 'ghostel-prompt))
+                (save-excursion
+                  (goto-char pos)
+                  (and (bolp) (ghostel--prompt-continuation-p)
+                       (or (get-text-property pos 'ghostel-input) (eolp)))))
+        (setq pos (ghostel--prompt-start pos)))
       ;; Now search backward for the previous prompt.
       (let ((prev (previous-single-property-change pos 'ghostel-prompt)))
         (cond
@@ -644,8 +698,7 @@ the natural position where the user would begin typing."
           (setq pos prev)
           ;; If we landed at the end of a prompt, step to its start.
           (when (get-text-property (max (1- pos) (point-min)) 'ghostel-prompt)
-            (setq pos (or (previous-single-property-change pos 'ghostel-prompt)
-                          (point-min)))))
+            (setq pos (ghostel--prompt-start (max (1- pos) (point-min))))))
          ;; No property change before pos, but a prompt may start at point-min.
          ((and (> pos (point-min))
                (get-text-property (point-min) 'ghostel-prompt))
@@ -704,14 +757,13 @@ Hung off `ghostel-command-start-functions' (OSC 133 \\='C\\=')."
     (push default-directory ghostel--imenu-cwds)))
 
 (defun ghostel--imenu--collect-prompt-regions ()
-  "Return a list of (START . PREFIX-END) for every `ghostel-prompt' region.
-Ordered by buffer position (oldest first)."
+  "Return (START . PREFIX-END) for each logical prompt, oldest first.
+A prompt can contain several cell-property runs on continuation rows."
   (let ((regions nil)
         (pos (point-min))
         (end (point-max)))
     (while (setq pos (text-property-any pos end 'ghostel-prompt t))
-      (let ((rend (or (next-single-property-change pos 'ghostel-prompt nil end)
-                      end)))
+      (let ((rend (ghostel--prompt-end pos)))
         (push (cons pos rend) regions)
         (setq pos rend)))
     (nreverse regions)))

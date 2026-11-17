@@ -128,5 +128,40 @@ X is the horizontal slice offset in pixels; W is its width in terminal cells."
     (cl-every (lambda (re) (re-search-forward (concat "^" re "$") nil t))
               regexps)))
 
+;; Prompt navigation probes: where `ghostel-previous-prompt' /
+;; `ghostel-next-prompt' / imenu jumps leave point.
+
+(defun ghostel-elate--here ()
+  "Return \"COLUMN|LINE-TEXT\" for point."
+  (format "%d|%s" (current-column)
+          (buffer-substring-no-properties (line-beginning-position)
+                                          (line-end-position))))
+
+(defun ghostel-elate--prompt-landings (forward)
+  "Return the landing of each prompt stop, in visiting order.
+Walks with `ghostel-previous-prompt' from the buffer end until point stops;
+when FORWARD, then walks back with `ghostel-next-prompt' from that first
+prompt, so the first prompt itself is not a stop."
+  (save-excursion
+    (goto-char (point-max))
+    (let (stops last)
+      (dolist (step (if forward '(prev next) '(prev)))
+        (when (eq step 'next) (setq stops nil))
+        (while (progn (setq last (point))
+                      (if (eq step 'next)
+                          (ghostel-next-prompt 1)
+                        (ghostel-previous-prompt 1))
+                      (/= last (point)))
+          (push (ghostel-elate--here) stops)))
+      (nreverse stops))))
+
+(defun ghostel-elate--imenu-landing (regexp)
+  "Return the landing of the imenu entry whose label matches REGEXP."
+  (let ((entry (seq-find (lambda (e) (string-match-p regexp (car e)))
+                         (ghostel--imenu-create-index))))
+    (save-excursion
+      (ghostel--imenu-goto (car entry) (cdr entry))
+      (ghostel-elate--here))))
+
 (provide 'ghostel-setup)
 ;;; ghostel-setup.el ends here

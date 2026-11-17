@@ -47,6 +47,12 @@ the parallel bash/zsh/fish/python3 sessions from the evil-ghostel rewrite
 - `lib/prompt-tui.sh` — an inline (main-screen) TUI for the line-wrap suite, shaped like an
   agent prompt: output grows above an input row holding the cursor, with a rule and a
   status row below it.
+- `matrix/prompt-nav-ghostel.json` — previous/next-prompt and imenu landing with a two-line
+  prompt, consecutive empty prompts as separate stops; one variant per shell (`zsh`,
+  `zsh-theme` where the theme's precmd is always last, `bash`, `fish`):
+  `elate run --keep-going --variant zsh test/elate/matrix/prompt-nav-ghostel.json`.
+  The setup file resolves relative to the scenario, and shells resolve from `PATH`.
+  Missing shells skip the run; use `--set shell=/path/to/shell` to select another binary.
 - `matrix/input-start-ghostel.json` — where line mode starts its input without shell
   integration; see the input-start section below.
 - `matrix/line-suggestion-ghostel.json` / `matrix/line-suggestion-evil-ghostel.json` —

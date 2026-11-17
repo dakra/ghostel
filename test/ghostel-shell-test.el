@@ -46,8 +46,8 @@ newest-first list aligns with the buffer-order regions."
       (push cwd ghostel--imenu-cwds))))
 
 (defun ghostel-test--rendered-terminal-text ()
-  "Redraw the current ghostel terminal and return its text."
-  (ghostel-test--redraw ghostel--term t)
+  "Incrementally redraw the current ghostel terminal and return its text."
+  (ghostel-test--redraw ghostel--term)
   (ghostel-test--terminal-text))
 
 (ert-deftest ghostel-test-shell-integration ()
@@ -2311,6 +2311,252 @@ prefix only, `ghostel-input' on the user-typed command."
     (forward-char 2)                           ; inside the input
     (ghostel--navigate-previous-prompt 1)
     (should (looking-at "echo bb cc"))))
+
+(ert-deftest ghostel-test-prompt-navigation-discontinuous-prefix ()
+  "Logical prompts cross continuation rows, not arbitrary newlines."
+  (with-temp-buffer
+    (insert (propertize "info" 'ghostel-prompt t) "\n"
+            (propertize "\n" 'ghostel-prompt-continuation t)
+            (propertize "> " 'ghostel-prompt t)
+            (propertize "echo a" 'ghostel-input t)
+            (propertize "\n" 'ghostel-prompt-continuation t)
+            (propertize "$ " 'ghostel-prompt t) "\n"
+            (propertize "$ " 'ghostel-prompt t) "\n")
+    (should (equal (ghostel--imenu--collect-prompt-regions)
+                   '((1 . 9) (16 . 18) (19 . 21))))
+    (should (equal (mapcar #'car (ghostel--imenu-create-index)) '("echo a")))
+    (goto-char (point-min))
+    (ghostel--prompt-input-start)
+    (should (looking-at "echo a"))
+    (ghostel--navigate-next-prompt 2)
+    (should (= (point) 21))
+    (ghostel--navigate-previous-prompt 2)
+    (should (looking-at "echo a"))
+    ;; A point in the last prefix row still belongs to the first prompt.
+    (goto-char 7)
+    (ghostel--navigate-next-prompt 1)
+    (should (= (point) 18))))
+
+(ert-deftest ghostel-test-prompt-navigation-multiline-prompt ()
+  "Navigation and imenu treat a two-line prompt as one prompt."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buf term 12 30 100)
+    (let ((prompt "\e]133;A\a~/src main\r\n> \e]133;B\a"))
+      (ghostel--write-vt
+       term (concat prompt "echo a\r\n\e]133;C\aa\r\n\e]133;D;0\a"
+                    prompt "\r\n"
+                    prompt "echo b\r\n\e]133;C\ab\r\n\e]133;D;0\a"
+                    prompt)))
+    (ghostel-test--redraw term t)
+    (goto-char (point-max))
+    (ghostel--navigate-previous-prompt 1)
+    (should (looking-back "^> " (line-beginning-position)))
+    (ghostel--navigate-previous-prompt 1)
+    (should (looking-at "echo b$"))
+    (ghostel--navigate-previous-prompt 1)
+    (should (looking-back "^> " (line-beginning-position)))
+    (should (eolp))
+    (ghostel--navigate-previous-prompt 1)
+    (should (looking-at "echo a$"))
+    (ghostel--navigate-next-prompt 2)
+    (should (looking-at "echo b$"))
+    (let ((index (ghostel--imenu-create-index)))
+      (should (equal (mapcar #'car index) '("echo a" "echo b")))
+      (should (= (cdar index) (point-min))))))
+
+(ert-deftest ghostel-test-prompt-navigation-wrapped-prompt ()
+  "A soft-wrapped prompt is one prompt."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buf term 12 30 100)
+    (let ((prompt "\e]133;A\a/a/very/long/directory/name/that/wraps > \e]133;B\a"))
+      (ghostel--write-vt
+       term (concat prompt "echo a\r\n\e]133;C\aa\r\n\e]133;D;0\a" prompt)))
+    (ghostel-test--redraw term t)
+    (should (= (length (ghostel--imenu--collect-prompt-regions)) 2))
+    (goto-char (point-max))
+    (ghostel--navigate-previous-prompt 2)
+    (should (looking-at "echo a$"))))
+
+(ert-deftest ghostel-test-prompt-navigation-input-only-continuation ()
+  "Input-only rows after a newline or exact-width prompt remain navigable."
+  :tags '(native)
+  (dolist (prefix (list "info\r\n" "info\r\n\r\n" (make-string 30 ?x)))
+    (ghostel-test--with-terminal-buffer (buf term 20 30 100)
+      (let ((prompt (concat "\e]133;A\a" prefix "\e]133;B\a")))
+        (ghostel--write-vt
+         term (concat prompt "echo a\r\n\e]133;C\aa\r\n\e]133;D;0\a"
+                      prompt "\r\n"
+                      prompt "echo b\r\n\e]133;C\ab\r\n\e]133;D;0\a"
+                      prompt)))
+      (ghostel-test--redraw term)
+      (should (= (length (ghostel--imenu--collect-prompt-regions)) 4))
+      (goto-char (point-max))
+      (ghostel--navigate-previous-prompt 1)
+      (should (eolp))
+      (ghostel--navigate-previous-prompt 1)
+      (should (looking-at "echo b$"))
+      (ghostel--navigate-previous-prompt 1)
+      (should (eolp))
+      (ghostel--navigate-previous-prompt 1)
+      (should (looking-at "echo a$"))
+      (ghostel--navigate-next-prompt 2)
+      (should (looking-at "echo b$"))
+      (let ((index (ghostel--imenu-create-index))
+            (ghostel--input-mode 'copy))
+        (should (equal (mapcar #'car index) '("echo a" "echo b")))
+        (dolist (entry index)
+          (ghostel--imenu-goto (car entry) (cdr entry))
+          (should (looking-at (regexp-quote (car entry)))))))))
+
+(ert-deftest ghostel-test-prompt-region-survives-reflow ()
+  "A prompt line that wraps after a resize stays in its prompt's region."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buf term 12 30 100)
+    (let ((prompt "\e]133;A\a~/a/long/directory/name\r\n> \e]133;B\a"))
+      (ghostel--write-vt
+       term (concat prompt "echo a\r\n\e]133;C\aa\r\n\e]133;D;0\a" prompt)))
+    (ghostel--set-size term 12 15)
+    (ghostel-test--redraw term t)
+    (should (= (length (ghostel--imenu--collect-prompt-regions)) 2))))
+
+(ert-deftest ghostel-test-prompt-region-follows-row-below ()
+  "Prompt bounds follow incrementally rendered changes to a later row."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buf term 12 30 100)
+    (ghostel--write-vt term "\e]133;A\a~/src main\r\n")
+    (ghostel-test--redraw term)
+    (ghostel--write-vt term "> \e]133;B\a")
+    (ghostel-test--redraw term)
+    (should (equal (ghostel--imenu--collect-prompt-regions) '((1 . 14))))
+    (goto-char (point-min))
+    (ghostel--prompt-input-start)
+    (should (looking-back "^> " (line-beginning-position)))
+    (should (eolp))
+    (ghostel--write-vt term "\r\e[2K\e]133;C\aout")
+    (ghostel-test--redraw term)
+    (should (equal (ghostel--imenu--collect-prompt-regions) '((1 . 11))))
+    (goto-char (point-min))
+    (ghostel--prompt-input-start)
+    (should (looking-back "^~/src main" (line-beginning-position)))
+    (should (eolp))))
+
+(ert-deftest ghostel-test-prompt-navigation-blank-continuation-row ()
+  "Navigation and imenu handle blank rows inside a multiline prompt."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buf term 12 30 100)
+    (ghostel--write-vt term "\e]133;A\ainfo\r\n\r\n> \e]133;B\aecho a")
+    (ghostel-test--redraw term)
+    (should (equal (ghostel--imenu--collect-prompt-regions) '((1 . 9))))
+    (should (equal (mapcar #'car (ghostel--imenu-create-index)) '("echo a")))
+    (goto-char (point-min))
+    (ghostel--prompt-input-start)
+    (should (looking-at "echo a"))))
+
+(ert-deftest ghostel-test-prompt-navigation-empty-prompts-stay-separate ()
+  "Consecutive empty single-line prompts are separate prompts."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buf term 12 30 100)
+    (let ((prompt "\e]133;A\a$ \e]133;B\a"))
+      (ghostel--write-vt term (concat prompt "\r\n" prompt "\r\n" prompt)))
+    (ghostel-test--redraw term t)
+    (should (= (length (ghostel--imenu--collect-prompt-regions)) 3))))
+
+(ert-deftest ghostel-test-zsh-prompt-navigation-multiline-theme ()
+  "Navigation lands on the input line of a theme's two-line zsh prompt.
+The theme sets PROMPT last in every precmd, as powerlevel10k does."
+  :tags '(native)
+  (skip-unless (executable-find "zsh"))
+  (let* ((root (or (ghostel--resource-root)
+                   (file-name-directory (locate-library "ghostel"))))
+         (shell-zsh (expand-file-name "etc/shell/ghostel.zsh" root)))
+    (skip-unless (file-exists-p shell-zsh))
+    (ghostel-test--with-pty-matrix backend
+      (ghostel-test--with-terminal-buffer (buf term 20 80 200)
+        (setq-local ghostel-detect-password-prompts nil)
+        (let ((proc (ghostel--spawn-pty "/bin/zsh" '("-fi") nil nil)))
+          (ghostel-test--wait-until
+           (lambda ()
+             (not (string-empty-p (ghostel-test--rendered-terminal-text))))
+           proc 10)
+          (ghostel--write-pty
+           ghostel--term
+           (concat
+            "source " (shell-quote-argument shell-zsh) "\n"
+            "fake_theme() {\n"
+            "  PROMPT=$'top-line\\nfinal-> '\n"
+            "  precmd_functions=(${precmd_functions:#fake_theme})\n"
+            "  precmd_functions+=(fake_theme)\n"
+            "}\n"
+            "precmd_functions+=(fake_theme)\n"
+            "true\n"
+            "echo one\n"
+            "echo two\n"))
+          (ghostel-test--wait-until
+           (lambda ()
+             (string-match-p "^two\ntop-line\nfinal-> *\n*\\'"
+                             (ghostel-test--rendered-terminal-text)))
+           proc 15)
+          (goto-char (point-max))
+          (ghostel--navigate-previous-prompt 1)
+          (should (looking-back "^final-> " (line-beginning-position)))
+          (ghostel--navigate-previous-prompt 1)
+          (should (looking-at "echo two"))
+          (ghostel--navigate-previous-prompt 1)
+          (should (looking-at "echo one")))))))
+
+(ert-deftest ghostel-test-zsh-prompt-survives-reset-prompt ()
+  "A zsh prompt redrawn by `zle reset-prompt' is still a prompt.
+The theme sets PROMPT last in every precmd, as powerlevel10k does, and
+a hook reports a PROMPT that carries marks."
+  :tags '(native)
+  (skip-unless (executable-find "zsh"))
+  (let* ((root (or (ghostel--resource-root)
+                   (file-name-directory (locate-library "ghostel"))))
+         (shell-zsh (expand-file-name "etc/shell/ghostel.zsh" root)))
+    (skip-unless (file-exists-p shell-zsh))
+    (ghostel-test--with-pty-matrix backend
+      (ghostel-test--with-terminal-buffer (buf term 20 80 200)
+        (setq-local ghostel-detect-password-prompts nil)
+        (let ((proc (ghostel--spawn-pty "/bin/zsh" '("-fi") nil nil)))
+          (ghostel-test--wait-until
+           (lambda ()
+             (not (string-empty-p (ghostel-test--rendered-terminal-text))))
+           proc 10)
+          (ghostel--write-pty
+           ghostel--term
+           (concat
+            "source " (shell-quote-argument shell-zsh) "\n"
+            "fake_theme() {\n"
+            "  PROMPT=$'top-line\\nfinal-> '\n"
+            "  precmd_functions=(${precmd_functions:#fake_theme})\n"
+            "  precmd_functions+=(fake_theme)\n"
+            "}\n"
+            "precmd_functions+=(fake_theme)\n"
+            "redraw() { zle reset-prompt }\n"
+            "zle -N redraw\n"
+            "bindkey '^X^R' redraw\n"
+            "leak_check() { [[ $PROMPT == *133* ]] && print LEAK''ED }\n"
+            "preexec_functions+=(leak_check)\n"
+            "precmd_functions+=(leak_check)\n"
+            "true\n"
+            "\n"
+            "echo one\C-x\C-r\n"
+            "echo two\C-x\C-r\n"
+            "\C-x\C-r"))
+          (ghostel-test--wait-until
+           (lambda ()
+             (string-match-p "^two\ntop-line\nfinal-> *\n*\\'"
+                             (ghostel-test--rendered-terminal-text)))
+           proc 15)
+          (should-not (string-match-p
+                       "LEAKED" (ghostel-test--rendered-terminal-text)))
+          (goto-char (point-max))
+          (ghostel--navigate-previous-prompt 1)
+          (should (looking-back "^final-> " (line-beginning-position)))
+          (ghostel--navigate-previous-prompt 1)
+          (should (looking-at "echo two"))
+          (ghostel--navigate-previous-prompt 1)
+          (should (looking-at "echo one")))))))
 
 (ert-deftest ghostel-test-imenu-empty-buffer ()
   "Empty buffer yields an empty imenu index."

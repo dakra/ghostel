@@ -565,6 +565,7 @@ const interned_symbols = [_][:0]const u8{
     "ghostel-link-map",
     "ghostel-module",
     "ghostel-prompt",
+    "ghostel-prompt-continuation",
     "ghostel-wrap",
     "goto-char",
     "hash-table-count",
