@@ -822,8 +822,24 @@ it does not linger in the heap.
 Detection is extensible via =ghostel-password-prompt-functions= - a chain of
 =(ROW) -> string-or-nil= sources tried in order.  The default reads with
 =read-passwd=; users prepend their own (auth-source / KeePass / pass / etc.) and
-the default acts as the fallback.  The defcustom docstring includes a
-TRAMP-aware =auth-source-pick-first-password= example.
+the default acts as the fallback.  This one answers =sudo= from =auth-source=,
+on the local machine and on remote hosts:
+
+#+begin_src emacs-lisp
+  (defun my-ghostel-auth-source (row)
+    (when (and row (string-match-p "^[[]sudo[]:]" row))
+      (auth-source-pick-first-password
+       :host (or (file-remote-p default-directory 'host)
+                 (system-name))
+       :port "sudo")))
+
+  (add-hook 'ghostel-password-prompt-functions #'my-ghostel-auth-source)
+#+end_src
+
+It finds an entry such as =machine HOST port sudo password SECRET= in
+=~/.authinfo.gpg=.  A source should match the prompt it answers, as this one
+does with =[sudo=: a remote prompt is recognized by its text alone, so a source
+that answers every prompt hands the password to whatever asks.
 
 ** Shell integration features
 :properties:

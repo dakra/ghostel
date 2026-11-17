@@ -505,14 +505,11 @@ ghostel was spawned through TRAMP, so the same handler works for `sudo'
 on the local box and on a remote one:
 
   (defun my-ghostel-auth-source (row)
-    (let* ((user (and row
-                      (string-match
-                       \"\\\\[sudo\\\\] .+ for \\\\([^:]+\\\\):\" row)
-                      (match-string 1 row)))
-           (host (or (file-remote-p default-directory \\='host)
-                     (system-name))))
-      (and user
-           (auth-source-pick-first-password :host host :user user))))
+    (when (and row (string-match-p \"^[[]sudo[]:]\" row))
+      (auth-source-pick-first-password
+       :host (or (file-remote-p default-directory \\='host)
+                 (system-name))
+       :port \"sudo\")))
 
   (add-hook \\='ghostel-password-prompt-functions #\\='my-ghostel-auth-source)"
   :type 'hook)
