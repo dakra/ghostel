@@ -35,6 +35,17 @@
                        (encode-coding-string partial 'utf-8-unix)))
         (should (equal ghostel-serial--pending ""))))))
 
+(ert-deftest ghostel-test-serial-rejects-non-scalar-utf8-on-every-boundary ()
+  "Reject overlong, surrogate, and out-of-range encodings in any chunks."
+  (let ((ghostel-serial-invalid-byte-policy 'hex)
+        (bytes (unibyte-string #xc0 #xaf #xed #xa0 #x80 #xf4 #x90 #x80 #x80
+                               #xf5 #x80 #x80 #x80)))
+    (dotimes (offset (1+ (length bytes)))
+      (let ((ghostel-serial--pending ""))
+        (should (equal "<C0><AF><ED><A0><80><F4><90><80><80><F5><80><80><80>"
+                       (concat (ghostel-serial--decode (substring bytes 0 offset))
+                               (ghostel-serial--decode (substring bytes offset) t))))))))
+
 (ert-deftest ghostel-test-serial-reconnect-keeps-the-log ()
   "Reopen a serial bridge without losing output or changing outbound bytes."
   :tags '(native)
@@ -55,7 +66,8 @@
             (with-current-buffer buffer
               (let ((old ghostel-serial--process))
                 (should (eq (plist-get (car opens) :coding) 'no-conversion))
-                (ghostel-serial--filter old (concat "Boot: " (unibyte-string #xe2)))
+                (should-not desktop-save-buffer)
+                (ghostel-serial--filter old (concat "\e[?2004hBoot: \e[" (unibyte-string #xe2)))
                 (funcall ghostel--pty-out-function (unibyte-string 0 255))
                 (should (equal sent (list (unibyte-string 0 255))))
                 (ghostel-serial-disconnect)
@@ -66,7 +78,13 @@
                 (should (process-live-p ghostel-serial--process))
                 (should (eq (plist-get (car opens) :speed) 57600))
                 (should (string-match-p "Boot: <E2>" (ghostel-test--terminal-text)))
-                (should (= (length opens) 2))))))
+                (cl-letf (((symbol-function 'ghostel--on-user-input) #'ignore))
+                  (ghostel--paste-text "test"))
+                (should (equal (car sent) "test"))
+                (should (= (length opens) 2))
+                (let ((reopened ghostel-serial--process))
+                  (fundamental-mode)
+                  (should-not (process-live-p reopened)))))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 ;;; ghostel-serial-test.el ends here

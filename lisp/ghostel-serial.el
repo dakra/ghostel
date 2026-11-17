@@ -39,42 +39,51 @@ Emacs has no portable serial break primitive; nil disables the command."
 (defvar-local ghostel-serial--process nil)
 (defvar-local ghostel-serial--pending "")
 
-(defun ghostel-serial--utf8-prefix-end (bytes)
-  "Return the length of BYTES excluding a potentially incomplete UTF-8 tail."
-  (let* ((end (length bytes))
-         (start (1- end)))
-    (while (and (>= start 0) (< (- end start) 4)
-                (<= #x80 (aref bytes start) #xbf))
-      (cl-decf start))
-    (let* ((lead (and (>= start 0) (aref bytes start)))
-           (width (cond ((null lead) 0)
-                        ((<= #xc2 lead #xdf) 2)
-                        ((<= #xe0 lead #xef) 3)
-                        ((<= #xf0 lead #xf4) 4)
-                        (t 0))))
-      (if (< (- end start) width) start end))))
-
-(defconst ghostel-serial--raw-byte-regexp
-  (concat "[" (string (unibyte-char-to-multibyte #x80)) "-"
-          (string (unibyte-char-to-multibyte #xff)) "]"))
+(defun ghostel-serial--continuation-p (lead offset byte)
+  "Check BYTE at OFFSET after a UTF-8 LEAD byte."
+  (<= (if (= offset 1)
+          (pcase lead (#xe0 #xa0) (#xf0 #x90) (_ #x80))
+        #x80)
+      byte
+      (if (= offset 1)
+          (pcase lead (#xed #x9f) (#xf4 #x8f) (_ #xbf))
+        #xbf)))
 
 (defun ghostel-serial--decode (bytes &optional final)
-  "Decode BYTES and retain a split UTF-8 tail, or flush it if FINAL."
+  "Return valid UTF-8 from BYTES, retaining an incomplete tail unless FINAL."
   (let* ((bytes (concat ghostel-serial--pending bytes))
-         (end (if final (length bytes) (ghostel-serial--utf8-prefix-end bytes)))
-         (text (decode-coding-string (substring bytes 0 end) 'utf-8-unix)))
-    (setq ghostel-serial--pending (substring bytes end))
-    (encode-coding-string
-     (replace-regexp-in-string
-      ghostel-serial--raw-byte-regexp
-      (lambda (raw)
-        (let ((byte (multibyte-char-to-unibyte (aref raw 0))))
-          (pcase ghostel-serial-invalid-byte-policy
-            ('hex (format "<%02X>" byte))
-            ('latin-1 (string byte))
-            (_ "�"))))
-      text t t)
-     'utf-8-unix)))
+         (end (length bytes))
+         (at 0) (start 0) parts)
+    (setq ghostel-serial--pending "")
+    (while (< at end)
+      (let* ((lead (aref bytes at))
+             (width (cond ((< lead #x80) 1)
+                          ((<= #xc2 lead #xdf) 2)
+                          ((<= #xe0 lead #xef) 3)
+                          ((<= #xf0 lead #xf4) 4)
+                          (t 0)))
+             (offset 1))
+        (while (and (< offset width) (< (+ at offset) end)
+                    (ghostel-serial--continuation-p lead offset
+                                                    (aref bytes (+ at offset))))
+          (cl-incf offset))
+        (cond
+         ((= offset width) (cl-incf at width))
+         ((and (not final) (> width offset) (= (+ at offset) end))
+          (setq ghostel-serial--pending (substring bytes at)
+                end at))
+         (t
+          (when (< start at) (push (substring bytes start at) parts))
+          (push (encode-coding-string
+                 (pcase ghostel-serial-invalid-byte-policy
+                   ('hex (format "<%02X>" lead))
+                   ('latin-1 (string lead))
+                   (_ "�"))
+                 'utf-8-unix)
+                parts)
+          (setq start (cl-incf at))))))
+    (when (< start end) (push (substring bytes start end) parts))
+    (apply #'concat (nreverse parts))))
 
 (defun ghostel-serial--send (bytes)
   "Write BYTES unchanged to the connected serial port."
@@ -91,10 +100,15 @@ Emacs has no portable serial break primitive; nil disables the command."
 (defun ghostel-serial--end ()
   "Finish decoding and leave a read-only terminal snapshot."
   (setq ghostel-serial--process nil)
-  (ghostel-write-output (ghostel-serial--decode "" t))
-  ;; An incomplete escape sequence belongs to the old connection.
+  ;; Cancel the old sequence before displaying any trailing serial bytes.
   (ghostel-write-output (unibyte-string ?\C-x))
+  (ghostel-write-output (ghostel-serial--decode "" t))
+  (ghostel-write-output "\e[?2004l")
   (ghostel-end-terminal))
+
+(defun ghostel-serial--close-for-mode-change ()
+  "Release the port before mode changes discard the serial buffer locals."
+  (when ghostel-serial--port (ghostel-serial-disconnect)))
 
 (defun ghostel-serial--sentinel (process _event)
   "Finish the current serial PROCESS if it disconnected."
@@ -138,7 +152,10 @@ log if the port was already opened.  Return the terminal buffer."
             (ghostel-kitty-graphics-storage-limit 0))
         (setq buffer (ghostel-make-terminal (format "*ghostel serial %s*" port))))
       (with-current-buffer buffer
-        (setq ghostel-serial--port port ghostel-serial--speed speed)))
+        (setq ghostel-serial--port port ghostel-serial--speed speed)
+        ;; Desktop only knows how to restore shell terminals, not this log.
+        (setq-local desktop-save-buffer nil)
+        (add-hook 'change-major-mode-hook #'ghostel-serial--close-for-mode-change nil t)))
     (with-current-buffer buffer
       (if (process-live-p ghostel-serial--process)
           (unless (= speed ghostel-serial--speed)
