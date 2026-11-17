@@ -1634,6 +1634,18 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 These features live in separate files (or, for evil and consult, separate
 packages) so the core stays lean.  Load only what you use.
 
+** Serial consoles
+:properties:
+:custom_id: serial-consoles
+:end:
+
+=M-x ghostel-serial= opens a local serial device at a selected baud rate
+using Emacs's serial support, without a shell.  =ghostel-serial-disconnect=
+keeps the log read-only; =ghostel-serial-reconnect= resumes in the same
+buffer.  Choose how to display malformed UTF-8 with
+=ghostel-serial-invalid-byte-policy=.  =ghostel-serial-send-break= requires a
+platform-specific function in =ghostel-serial-break-function=.
+
 ** Evil-mode
 :properties:
 :custom_id: evil-mode
