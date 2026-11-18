@@ -254,13 +254,9 @@ Project membership is determined by `ghostel-project-buffer-scope'."
   (interactive "P")
   (if arg
       (ghostel-project arg)
-    ;; The source's `:enabled' guard is not enough: `consult--multi' with
-    ;; zero enabled sources still opens an (empty) picker and errors on
-    ;; submit, so refuse before entering the minibuffer.
-    (unless (consult--project-root)
-      (user-error "No current project"))
-    (consult-ghostel--switch consult-ghostel-project-sources
-                             "Project ghostel buffer: ")))
+    (consult--with-project
+      (consult-ghostel--switch consult-ghostel-project-sources
+                               "Project ghostel buffer: "))))
 
 ;;; Shell command history
 

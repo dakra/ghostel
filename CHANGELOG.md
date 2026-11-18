@@ -7,6 +7,9 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - `ghostel-project` called from a terminal of another project starts
   a terminal in the chosen project instead of staying in the current one.
+- `consult-ghostel-project` run from `project-switch-project` lists the
+  terminals of the chosen project instead of the current one.  Outside a
+  project it prompts for one, like `consult-project-buffer`.
 
 ## [0.66.0] — 2026-11-16
 

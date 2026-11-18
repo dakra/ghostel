@@ -177,14 +177,60 @@ candidate collection (e.g. under a projectile-only root)."
     (should-not (funcall (plist-get consult-ghostel-project-source :enabled)))
     (should-not (funcall (plist-get consult-ghostel-project-source :items)))))
 
-(ert-deftest consult-ghostel-test-project-command-no-project-errors ()
-  "`consult-ghostel-project' refuses cleanly outside a project.
-Without the guard, `consult--multi' with zero enabled sources opens an
-empty picker and crashes on submit."
+(ert-deftest consult-ghostel-test-project-command-no-project-prompts ()
+  "`consult-ghostel-project' prompts for a project outside of one.
+The picker then lists the chosen project's terminals."
+  (let* ((root "/consult-ghostel-chosen/")
+         (consult-project-function (lambda (may-prompt) (and may-prompt root)))
+         got)
+    (cl-letf (((symbol-function 'consult--multi)
+               (lambda (&rest _)
+                 (setq got (funcall (plist-get consult-ghostel-project-source
+                                               :enabled))))))
+      (consult-ghostel-project))
+    (should (equal got root))))
+
+(ert-deftest consult-ghostel-test-project-from-project-switch-project ()
+  "The picker lists the target project's terminals from `project-switch-project'.
+The override is buffer-local to the calling buffer, so items collected in
+the minibuffer would otherwise resolve the minibuffer's own project."
   (require 'project)
-  (let ((project-find-functions nil)
-        (default-directory temporary-file-directory))
-    (should-error (consult-ghostel-project) :type 'user-error)))
+  (let* ((base (file-name-as-directory (make-temp-file "cg-switch" t)))
+         (pa (file-name-as-directory (expand-file-name "pa" base)))
+         (pb (file-name-as-directory (expand-file-name "pb" base)))
+         (project-list-file (expand-file-name "projects.eld" base))
+         (project-find-functions
+          (list (lambda (dir)
+                  (let ((dir (expand-file-name dir)))
+                    (cl-some (lambda (r) (and (string-prefix-p r dir)
+                                              (cons 'transient r)))
+                             (list pa pb))))))
+         (ghostel-project-buffer-scope 'default-directory)
+         (term-a (consult-ghostel-test--fake-buffer "*pa-term*"))
+         (term-b (consult-ghostel-test--fake-buffer "*pb-term*"))
+         got)
+    (make-directory pa) (make-directory pb)
+    (with-current-buffer term-a (setq default-directory pa))
+    (with-current-buffer term-b (setq default-directory pb))
+    (unwind-protect
+        (cl-letf (((symbol-function 'consult--multi)
+                   (lambda (&rest _)
+                     ;; Stand-in for the minibuffer, which inherits the
+                     ;; calling buffer's `default-directory'.
+                     (let ((dir default-directory))
+                       (with-temp-buffer
+                         (setq default-directory dir)
+                         (setq got (mapcar #'car
+                                           (funcall (plist-get
+                                                     consult-ghostel-project-source
+                                                     :items)))))))))
+          (with-current-buffer term-a
+            (let ((project-switch-commands #'consult-ghostel-project))
+              (project-switch-project pb))))
+      (kill-buffer term-a)
+      (kill-buffer term-b)
+      (delete-directory base t))
+    (should (equal got '("*pb-term*")))))
 
 (ert-deftest consult-ghostel-test-prefix-delegates-to-ghostel ()
   "A prefix argument bypasses the picker and calls `ghostel' with it."
