@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- `ghostel-project` called from a terminal of another project starts
+  a terminal in the chosen project instead of staying in the current one.
+
 ## [0.66.0] — 2026-11-16
 
 ### Added

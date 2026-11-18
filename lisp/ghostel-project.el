@@ -65,7 +65,7 @@ To add this to `project-switch-commands':
 Returns the buffer."
   (interactive "P")
   (let* ((proj (project-current t))
-         (default-directory (project-root proj))
+         (root (project-root proj))
          (bufs (and (not arg) (ghostel-project-buffer-list proj)))
          (recent (seq-find (lambda (b)
                              (and (memq b bufs)
@@ -76,11 +76,11 @@ Returns the buffer."
     (if recent
         (pop-to-buffer recent (append display-buffer--same-window-action
                                       '((category . comint))))
-      (ghostel--start `((kind . term)
-                        (project-root . ,(ghostel--normalize-root
-                                          default-directory)))
-                      (ghostel--project-buffer-name default-directory)
-                      arg))))
+      (let ((default-directory root))
+        (ghostel--start `((kind . term)
+                          (project-root . ,(ghostel--normalize-root root)))
+                        (ghostel--project-buffer-name root)
+                        arg)))))
 
 ;;;###autoload
 (defun ghostel-project-new ()
