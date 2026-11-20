@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Releases ship `x86_64-linux-musl` and `aarch64-linux-musl` modules, and
+  the native module installer selects them on musl-based Linux such as
+  Alpine and Chimera, where the glibc module fails to load.  They require
+  musl 1.2.5 or newer.
+
 ### Fixed
 - `ghostel-project` called from a terminal of another project starts
   a terminal in the chosen project instead of staying in the current one.

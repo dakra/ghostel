@@ -93,6 +93,10 @@ Returns nil if the platform is not recognized."
               ((and (eq system-type 'berkeley-unix)
                     (string-match-p "freebsd" system-configuration))
                "freebsd")
+              ;; musl cannot load glibc modules.
+              ((and (eq system-type 'gnu/linux)
+                    (string-match-p "-musl" system-configuration))
+               "linux-musl")
               ((eq system-type 'gnu/linux) "linux")
               ((eq system-type 'windows-nt) "windows")
               (t nil))))

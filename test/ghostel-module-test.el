@@ -1098,6 +1098,15 @@ both the .so/.dylib and ghostel-module.version next to it."
         (system-type 'gnu/linux))
     (should (equal (ghostel--module-platform-tag) "aarch64-linux"))))
 
+(ert-deftest ghostel-test-platform-tag-detects-musl ()
+  "Test that musl Linux builds get a `linux-musl' tag."
+  (let ((system-configuration "x86_64-chimera-linux-musl")
+        (system-type 'gnu/linux))
+    (should (equal (ghostel--module-platform-tag) "x86_64-linux-musl")))
+  (let ((system-configuration "aarch64-alpine-linux-musl")
+        (system-type 'gnu/linux))
+    (should (equal (ghostel--module-platform-tag) "aarch64-linux-musl"))))
+
 (ert-deftest ghostel-test-platform-tag-detects-freebsd ()
   "Test that FreeBSD builds get a `freebsd' tag."
   (let ((system-configuration "amd64-portbld-freebsd15.0")
