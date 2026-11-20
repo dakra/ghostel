@@ -1620,6 +1620,9 @@ DATA is a unibyte string in the format of ghostel's libghostty version.
 Call this before the terminal has seen any output."
   (let ((inhibit-read-only t)
         (inhibit-modification-hooks t))
+    ;; The renderer no longer clears a host buffer, so a restore replaces
+    ;; the standalone terminal's text itself.
+    (erase-buffer)
     (ghostel--restore-snapshot ghostel--term data))
   ;; The snapshot's size stays; this reapplies the cell size in pixels.
   (ghostel--set-size-with-cell-dims ghostel--term
@@ -1627,7 +1630,8 @@ Call this before the terminal has seen any output."
   (ghostel--apply-palette ghostel--term)
   (ghostel--apply-bold-config ghostel--term)
   (setq ghostel--force-next-redraw t)
-  (ghostel--invalidate))
+  (ghostel--invalidate)
+  (setq ghostel--repair-pending nil))
 
 
 ;;; Key sending
@@ -1764,7 +1768,10 @@ Returns the sequence string, or nil for unknown keys."
   (when (and ghostel--readonly-fast-exit
              (memq ghostel--input-mode '(copy emacs)))
     (ghostel-readonly-exit))
-  (when (and ghostel-scroll-on-input ghostel--term)
+  (when (and ghostel-scroll-on-input ghostel--term
+             ;; Embedded terminals do not anchor ghostel-style windows:
+             ;; the host buffer owns the display around the region.
+             (not (bound-and-true-p ghostel--embedded-session)))
     (ghostel--anchor-window nil t)))
 
 (defun ghostel--self-insert ()
@@ -3660,6 +3667,22 @@ For a name function that reads more than the title and the directory."
     (ghostel--rename-managed
      (funcall ghostel-buffer-name-function ghostel-title))))
 
+(defvar-local ghostel--resize-request-function nil
+  "Function handling a program's text-area resize request in this buffer.
+It is called with (ROWS COLS); ROWS or COLS zero keeps the current
+value for that dimension.  An embedded terminal installs one in its
+host buffer; a whole-buffer terminal leaves it nil because its size
+follows the Emacs window.")
+
+(defun ghostel--resize-request (rows cols)
+  "Handle a program's request to resize the terminal text area.
+ROWS or COLS zero keeps the current value for that dimension.  The
+request is delegated to `ghostel--resize-request-function'; an embedded
+terminal honours it within its host window, while a whole-buffer
+terminal has no handler because its size follows the Emacs window."
+  (when ghostel--resize-request-function
+    (funcall ghostel--resize-request-function rows cols)))
+
 (defun ghostel--set-title (title)
   "Record TITLE from OSC 0/2 and update the buffer title.
 A nil or empty TITLE clears it."
@@ -4051,7 +4074,9 @@ incomplete trailing input is kept on PIPE until more data arrives.
 A bare numeric event is the native child's exit status; it is stored on
 PIPE, which is then closed so its sentinel runs the normal exit cleanup.
 Any event batch invalidates the buffer for redraw while the buffer is
-still live."
+still live.  The pipe's `ghostel--invalidate-function' property, when
+present, replaces the whole-buffer redraw; embedded terminals use it to
+invalidate only their region."
   (let* ((buffer (process-buffer pipe))
          (str (concat (process-get pipe 'ghostel--event-buf) output))
          (len (length str))
@@ -4081,7 +4106,8 @@ still live."
         (setq offset next)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        (ghostel--invalidate)))))
+        (funcall (or (process-get pipe 'ghostel--invalidate-function)
+                     #'ghostel--invalidate))))))
 
 (defun ghostel--sentinel (process event)
   "Clean up after the terminal process or event pipe changes state.
@@ -4406,23 +4432,39 @@ returned process owns the PTY and receives `ghostel--filter' and
      (0 "finished\n")
      (code (format "exited abnormally with code %d\n" code)))))
 
+(defun ghostel--spawn-native-pipe (term command filter sentinel &optional name)
+  "Create the event pipe for TERM running COMMAND.
+FILTER receives the native reader's Lisp event stream and SENTINEL is
+called when the pipe closes.  NAME names the pipe process for
+`list-processes' and diagnostics, and defaults to
+\"ghostel-native-process\".  Spawns the child, records its handle and
+pid on the pipe, and returns the pipe.  The caller owns teardown and
+buffer-local bookkeeping."
+  (let* ((pipe (make-pipe-process
+                :name (or name "ghostel-native-process")
+                :buffer (current-buffer)
+                :coding 'utf-8-unix
+                :filter filter
+                :sentinel sentinel
+                :noquery t))
+         child)
+    (unwind-protect
+        (setq child (ghostel--spawn-native-process term command pipe))
+      (unless child (delete-process pipe)))
+    (when child
+      (process-put pipe 'ghostel--native-child child)
+      (process-put pipe 'ghostel--native-pid
+                   (ghostel--native-child-pid child)))
+    pipe))
+
 (defun ghostel--spawn-via-native (command)
   "Spawn COMMAND through the native PTY implementation.
 COMMAND is an argv list.  Return the event pipe process, which retains
 the child handle even after the terminal buffer is killed."
-  (let ((pipe (make-pipe-process
-               :name "ghostel-native-process"
-               :buffer (current-buffer)
-               :coding 'utf-8-unix
-               :filter #'ghostel--events-filter
-               :noquery t))
-        child)
-    (unwind-protect
-        (setq child (ghostel--spawn-native-process ghostel--term command pipe))
-      (unless child (delete-process pipe)))
-    (process-put pipe 'ghostel--native-child child)
-    (setq ghostel--pid (ghostel--native-child-pid child))
-    (set-process-sentinel pipe #'ghostel--native-process-sentinel)
+  (let ((pipe (ghostel--spawn-native-pipe
+               ghostel--term command #'ghostel--events-filter
+               #'ghostel--native-process-sentinel)))
+    (setq ghostel--pid (process-get pipe 'ghostel--native-pid))
     (add-hook 'kill-buffer-hook #'ghostel--kill-native-process-hook nil t)
     pipe))
 
