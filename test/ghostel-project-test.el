@@ -297,6 +297,27 @@ A plain terminal cd'd into the project counts; non-terminal kinds do not."
           (should (eq (ghostel-project) 'started)))
       (mapc #'kill-buffer (list older cd-term exec outside)))))
 
+(ert-deftest ghostel-test-project-from-terminal-of-other-project ()
+  "`ghostel-project' called from a terminal of another project starts one.
+The terminal it is called from does not count as the project's."
+  (let* ((other (ghostel-test--project-buffer
+                 "*ghostel*"
+                 '((kind . term) (name . "*ghostel*") (instance . 1))
+                 "/tmp/other/"))
+         (ghostel-project-buffer-scope 'both))
+    (unwind-protect
+        (cl-letf (((symbol-function 'project-current)
+                   (lambda (&optional _prompt dir)
+                     (cond ((null dir) '(transient . "/tmp/myproj/"))
+                           ((string-prefix-p "/tmp/myproj/" dir)
+                            '(transient . "/tmp/myproj/")))))
+                  ((symbol-function 'project-root) #'cdr)
+                  ((symbol-function 'ghostel--start) (lambda (&rest _) 'started))
+                  ((symbol-function 'pop-to-buffer) #'ignore))
+          (with-current-buffer other
+            (should (eq (ghostel-project) 'started))))
+      (kill-buffer other))))
+
 (ert-deftest ghostel-test-project-prompts-once ()
   "`ghostel-project' prompts for the project at most once."
   (let ((prompts 0))

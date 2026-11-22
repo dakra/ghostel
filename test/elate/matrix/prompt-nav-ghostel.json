@@ -1,0 +1,70 @@
+{
+  "name": "prompt-nav-ghostel",
+  "comment": "Prompt navigation and imenu with a two-line prompt (info line, then `> ' input line): previous/next prompt and imenu jumps land on the first input character of the LAST prompt line, each prompt is visited once, and consecutive empty prompts stay separate stops. The zsh-theme variant re-appends its precmd to precmd_functions on every prompt, so ghostel's hook is never last. Run one variant per shell.",
+  "variants": {
+    "zsh": {
+      "shell": "zsh",
+      "setup": "PROMPT=$'%~ info\\n> '"
+    },
+    "zsh-theme": {
+      "shell": "zsh",
+      "setup": "theme_precmd() { PROMPT=$'%~ info\\n> '; precmd_functions=(${precmd_functions:#theme_precmd} theme_precmd); }; precmd_functions+=theme_precmd"
+    },
+    "bash": {
+      "shell": "bash",
+      "setup": "PS1='\\w info\\n> '"
+    },
+    "fish": {
+      "shell": "fish",
+      "setup": "function fish_prompt; echo (prompt_pwd) info; echo -n '> '; end; function fish_right_prompt; end"
+    }
+  },
+  "requires": {
+    "executable": "{{shell}}"
+  },
+  "defaults": {
+    "timeout": 15
+  },
+  "session": {
+    "ui": "tty",
+    "size": "80x40",
+    "config": "minimal",
+    "load": ["../lib/ghostel-setup.el"],
+    "eval": [
+      "(setq ghostel-shell (executable-find \"{{shell}}\"))"
+    ]
+  },
+  "steps": [
+    {"eval": "(ghostel)"},
+    {"wait": "idle", "min_idle": 1.5, "timeout": 20},
+    {"type": "{{setup}}"},
+    {"keys": "RET"},
+    {"wait": "idle", "min_idle": 0.8},
+    {"type": "echo one"},
+    {"keys": "RET"},
+    {"wait": "text", "pattern": "^one$"},
+    {"wait": "idle", "min_idle": 0.5},
+    {"keys": "RET"},
+    {"wait": "idle", "min_idle": 0.5},
+    {"keys": "RET"},
+    {"wait": "idle", "min_idle": 0.5},
+    {"type": "echo two"},
+    {"keys": "RET"},
+    {"wait": "text", "pattern": "^two$"},
+    {"wait": "idle", "min_idle": 0.8},
+
+    {"group": "previous", "comment": "from the end: live prompt, echo two, two empty prompts, echo one; each at column 2 of the `> ' line"},
+    {"assert": {"eval": "(equal (seq-take (ghostel-elate--prompt-landings nil) 5) '(\"2|> \" \"2|> echo two\" \"2|> \" \"2|> \" \"2|> echo one\"))"}},
+
+    {"group": "next", "comment": "the same prompts forward from the first one: five stops"},
+    {"assert": {"eval": "(let ((l (ghostel-elate--prompt-landings t))) (and (= (length l) 5) (equal l '(\"2|> echo one\" \"2|> \" \"2|> \" \"2|> echo two\" \"2|> \"))))"}},
+
+    {"group": "empty-prompts", "comment": "the live prompt and the two empty ones are three separate stops"},
+    {"assert": {"eval": "(= (cl-count \"2|> \" (ghostel-elate--prompt-landings nil) :test #'equal) 3)"}},
+
+    {"group": "imenu", "comment": "one entry per non-empty command; jumping lands on the input start"},
+    {"assert": {"eval": "(= (length (ghostel--imenu-create-index)) 3)"}},
+    {"assert": {"eval": "(equal (ghostel-elate--imenu-landing \"echo one\\\\'\") \"2|> echo one\")"}},
+    {"assert": {"eval": "(equal (ghostel-elate--imenu-landing \"echo two\\\\'\") \"2|> echo two\")"}}
+  ]
+}

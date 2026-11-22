@@ -27,6 +27,14 @@ jobs:
             suffix: .so
             target: aarch64-linux-gnu.2.35
           - os: ubuntu-latest
+            platform: x86_64-linux-musl
+            suffix: .so
+            target: x86_64-linux-musl
+          - os: ubuntu-latest
+            platform: aarch64-linux-musl
+            suffix: .so
+            target: aarch64-linux-musl
+          - os: ubuntu-latest
             platform: x86_64-freebsd
             suffix: .so
             target: x86_64-freebsd

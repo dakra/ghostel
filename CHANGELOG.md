@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- Releases ship `x86_64-linux-musl` and `aarch64-linux-musl` modules, and
+  the native module installer selects them on musl-based Linux such as
+  Alpine and Chimera, where the glibc module fails to load.  They require
+  musl 1.2.5 or newer.
 - Block elements (U+2580–U+259F: halves, eighths and quadrants such as
   `▀ ▄ █ ▌ ▐ ▛`) are drawn to fill their cells to the pixel, as a
   terminal's own renderer does, instead of taken from the font, whose
@@ -12,11 +16,39 @@ All notable changes to this project will be documented in this file.
   cell's colors.  The shades `░ ▒ ▓` stay with the font.
   `ghostel-draw-block-elements` turns this off.
 
+### Fixed
+- `ghostel-project` called from a terminal of another project starts
+  a terminal in the chosen project instead of staying in the current one.
+- `consult-ghostel-project` run from `project-switch-project` lists the
+  terminals of the chosen project instead of the current one.  Outside a
+  project it prompts for one, like `consult-project-buffer`.
+- Prompt navigation (`ghostel-next-prompt`, `ghostel-previous-prompt`,
+  imenu) treats a multi-line or wrapped prompt as one prompt and lands
+  on its input line, not at the end of its first line.
+- In zsh with a theme that sets its prompt last in `precmd`, such as
+  powerlevel10k, a prompt redrawn after a resize or an asynchronous
+  update is still found by prompt navigation and imenu.
+
+## [0.66.0] — 2026-11-16
+
+### Added
+- `ghostel-update-buffer-name` renames a buffer by
+  `ghostel-buffer-name-function` on request, for a name function that
+  reads more than the title and the directory.
+
 ### Changed
+- Kitty graphics are rendered by the native row renderer, with support
+  for layered images, transparency, Unicode placeholders, cropping, and
+  scrollback.
+- `ghostel-cell-pixel-scale` accepts `auto` or a positive integer.
+  Automatic detection rounds the frame's backing scale up to an integer;
+  images use the same pixel multiplier as terminal size reports.
 - `ghostel-set-password-pid` returns the tty it found, or nil, so a
   caller can call it again until the process has one.
 
 ### Fixed
+- `ghostel ssh` works from shells Ghostel did not start.
+- Kitty graphics work with Emacs builds that support PPM but not PNG.
 - With the native PTY, a terminal kept after its process exited no
   longer asks for a password when another program's prompt appears on
   the tty it used.

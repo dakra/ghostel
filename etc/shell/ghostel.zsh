@@ -9,13 +9,23 @@
 #
 # Remote `~/.zshrc' (also gates on TERM, since ssh propagates it
 # natively and INSIDE_EMACS does not without server-side AcceptEnv):
-#   if [[ "${${INSIDE_EMACS-}%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' ]]; then
+#   if [[ "${${INSIDE_EMACS-}%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' || "$TERM" = 'xterm-rex' ]]; then
 #       source ~/.local/share/ghostel/etc/shell/ghostel.zsh
 #   fi
 # See the README "Manual setup" section for the full rationale.
 
 # Idempotency guard — skip if already loaded (e.g. auto-injected).
 (( $+functions[__ghostel_osc7] )) && return
+
+# `ghostel ssh' and `ghostel ssh-install' push the files of the ghostel
+# install in EMACS_GHOSTEL_PATH.  When it names none, as in a shell that
+# sources this file from its rc file outside ghostel (tmux, Rex), set it
+# to the install this file belongs to.
+if [[ ! -r ${EMACS_GHOSTEL_PATH-}/etc/shell/remote/login.sh ]]; then
+    __ghostel_root=${${(%):-%x}:A:h:h:h}
+    [[ -r $__ghostel_root/etc/shell/remote/login.sh ]] && EMACS_GHOSTEL_PATH=$__ghostel_root
+    builtin unset __ghostel_root
+fi
 
 # Capture gethostname(2) once for OSC 7, matching Emacs `(system-name)'.
 # zsh canonicalizes $HOST to the FQDN under a DNS search domain, which
@@ -59,19 +69,24 @@ __ghostel_prompt_start() {
         builtin printf '\e]133;D;%s\a' "$__ghostel_last_status"
     fi
     __ghostel_prompt_shown=1
+    # No preexec ran after an empty or aborted line.
+    __ghostel_restore_prompt
 }
 
 # Restore the unmarked PROMPT/PROMPT2 if nothing else has modified them
-# since our precmd added marks.  This ensures other preexec hooks see
-# a clean PROMPT without our marks; if PROMPT was modified (e.g. by an
-# async theme update), leave it alone.  Then emit "command output
-# start" (C).
-__ghostel_preexec() {
-    builtin emulate -L zsh -o no_warn_create_global -o no_aliases
+# since we added marks, so other hooks see a clean PROMPT.  If PROMPT
+# was modified (e.g. by an async theme update), leave it alone.
+__ghostel_restore_prompt() {
     if [[ -n ${__ghostel_marked_prompt+x} && "$PROMPT" == "$__ghostel_marked_prompt" ]]; then
         PROMPT=$__ghostel_saved_prompt
         PROMPT2=$__ghostel_saved_prompt2
     fi
+}
+
+# Emit "command output start" (C).
+__ghostel_preexec() {
+    builtin emulate -L zsh -o no_warn_create_global -o no_aliases
+    __ghostel_restore_prompt
     builtin printf '\e]133;C\a'
 }
 
@@ -137,12 +152,14 @@ __ghostel_ensure_prompt_wrap() {
             precmd_functions=(${precmd_functions:#__ghostel_ensure_prompt_wrap} __ghostel_ensure_prompt_wrap)
             if ! builtin zle; then
                 builtin printf '%s' $mark1[3,-3]
+                __ghostel_prompt_start_sent=1
             fi
         fi
     elif ! builtin zle; then
         # Without prompt_percent we cannot patch PROMPT.  Emit mark1
         # directly when not invoked from zle.
         builtin printf '%s' $mark1[3,-3]
+        __ghostel_prompt_start_sent=1
     fi
 }
 
@@ -154,10 +171,28 @@ __ghostel_ensure_prompt_wrap() {
 # col 0, pushing the input cursor onto a blank line below the prompt
 # char.  133;P is the side-effect-free prompt-start marker.  Also
 # emit 133;B to mark the input area.
+#
+# 133;P;k=i marks the cursor row as the first row of a prompt, which on
+# the last row of a multi-line prompt splits that prompt in two.  Skip
+# it when precmd already sent 133;A for this prompt.
+#
+# Then add the marks to PROMPT, which every hook has finished setting,
+# so a later redraw of this prompt (`zle reset-prompt', SIGWINCH)
+# writes them again.  `__ghostel_preexec' takes them back out.
 __ghostel_zle_line_init_hook() {
     builtin emulate -L zsh -o no_warn_create_global -o no_aliases
-    [[ "$PROMPT" != *$'%{\e]133;A'* ]] && \
-        builtin printf '\e]133;P;k=i\a\e]133;B\a'
+    if [[ "$PROMPT" != *$'%{\e]133;A'* ]]; then
+        [[ -n ${__ghostel_prompt_start_sent-} ]] || builtin printf '\e]133;P;k=i\a'
+        builtin printf '\e]133;B\a'
+        if [[ -o prompt_percent ]]; then
+            __ghostel_saved_prompt=$PROMPT
+            __ghostel_saved_prompt2=$PROMPT2
+            [[ $PROMPT == *[^%]% || $PROMPT == % ]] && PROMPT=$PROMPT%
+            PROMPT=$'%{\e]133;A;cl=line\a%}'${PROMPT}$'%{\e]133;B\a%}'
+            __ghostel_marked_prompt=$PROMPT
+        fi
+    fi
+    __ghostel_prompt_start_sent=
 }
 
 # One-shot installer: registered as a precmd, runs once on the first
@@ -247,14 +282,14 @@ preexec_functions=(__ghostel_preexec "${preexec_functions[@]}")
 function __ghostel_ssh_push {
     local _install_args=$1
     shift
-    COPYFILE_DISABLE=1 command tar c --format ustar -f - \
+    COPYFILE_DISABLE=1 command tar ch --format ustar -f - \
             -C "$EMACS_GHOSTEL_PATH" etc/shell etc/terminfo \
         | command ssh -o SendEnv=INSIDE_EMACS "$@" "sh -c 'mkdir -p ~/.local/share/ghostel && tar xf - -C ~/.local/share/ghostel && sh ~/.local/share/ghostel/etc/shell/remote/install.sh $_install_args'"
 }
 
 # Hash of everything __ghostel_ssh_push ships.
 function __ghostel_ssh_hash {
-    command find "$EMACS_GHOSTEL_PATH/etc/shell" "$EMACS_GHOSTEL_PATH/etc/terminfo" -type f -exec cksum {} + \
+    command find -L "$EMACS_GHOSTEL_PATH/etc/shell" "$EMACS_GHOSTEL_PATH/etc/terminfo" -type f -exec cksum {} + \
         | LC_ALL=C command sort | command cksum | command awk '{print $1}'
 }
 

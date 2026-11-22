@@ -70,7 +70,7 @@ def ghostel_cmd [...args] {
 # stream, so this is never the interactive connection.
 def __ghostel_ssh_push [install_args: string, ...args] {
     with-env {COPYFILE_DISABLE: "1"} {
-        ^tar c --format ustar -f - -C $env.EMACS_GHOSTEL_PATH etc/shell etc/terminfo
+        ^tar ch --format ustar -f - -C $env.EMACS_GHOSTEL_PATH etc/shell etc/terminfo
             | ^ssh -o SendEnv=INSIDE_EMACS ...$args $"sh -c 'mkdir -p ~/.local/share/ghostel && tar xf - -C ~/.local/share/ghostel && sh ~/.local/share/ghostel/etc/shell/remote/install.sh ($install_args)'"
     }
 }
@@ -79,7 +79,7 @@ def __ghostel_ssh_push [install_args: string, ...args] {
 def __ghostel_ssh_hash [] {
     let etc = $"($env.EMACS_GHOSTEL_PATH)/etc"
     with-env {LC_ALL: "C"} {
-        (do { ^find $"($etc)/shell" $"($etc)/terminfo" -type f -exec cksum '{}' + | ^sort | ^cksum } | complete).stdout
+        (do { ^find -L $"($etc)/shell" $"($etc)/terminfo" -type f -exec cksum '{}' + | ^sort | ^cksum } | complete).stdout
             | split row " " | first | str trim
     }
 }

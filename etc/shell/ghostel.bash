@@ -6,13 +6,26 @@
 #
 # Remote `~/.bashrc' (also gates on TERM, since ssh propagates it
 # natively and INSIDE_EMACS does not without server-side AcceptEnv):
-#   if [[ "${INSIDE_EMACS%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' ]]; then
+#   if [[ "${INSIDE_EMACS%%,*}" = 'ghostel' || "$TERM" = 'xterm-ghostty' || "$TERM" = 'xterm-rex' ]]; then
 #       source ~/.local/share/ghostel/etc/shell/ghostel.bash
 #   fi
 # See the README "Manual setup" section for the full rationale.
 
 # Idempotency guard — skip if already loaded (e.g. auto-injected).
 [[ "$(builtin type -t __ghostel_osc7)" = "function" ]] && return
+
+# `ghostel ssh' and `ghostel ssh-install' push the files of the ghostel
+# install in EMACS_GHOSTEL_PATH.  When it names none, as in a shell that
+# sources this file from its rc file outside ghostel (tmux, Rex), set it
+# to the install this file belongs to.
+if [[ ! -r "${EMACS_GHOSTEL_PATH:-}/etc/shell/remote/login.sh" ]]; then
+    __ghostel_root=$(builtin command readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null) ||
+        __ghostel_root=${BASH_SOURCE[0]}
+    [[ $__ghostel_root = */* ]] || __ghostel_root=./$__ghostel_root
+    __ghostel_root=$(CDPATH='' builtin cd -P -- "${__ghostel_root%/*}/../.." 2>/dev/null && builtin pwd)
+    [[ -r "$__ghostel_root/etc/shell/remote/login.sh" ]] && EMACS_GHOSTEL_PATH=$__ghostel_root
+    builtin unset __ghostel_root
+fi
 
 # Old bash (e.g. macOS system bash 3.2) rejects process substitution `<(...)`
 # at parse time under POSIX mode; the `ssh` wrapper below uses it.
@@ -283,14 +296,14 @@ __ghostel_installed_ps0=""
 function __ghostel_ssh_push {
     local _install_args=$1
     shift
-    COPYFILE_DISABLE=1 builtin command tar c --format ustar -f - \
+    COPYFILE_DISABLE=1 builtin command tar ch --format ustar -f - \
             -C "$EMACS_GHOSTEL_PATH" etc/shell etc/terminfo \
         | builtin command ssh -o SendEnv=INSIDE_EMACS "$@" "sh -c 'mkdir -p ~/.local/share/ghostel && tar xf - -C ~/.local/share/ghostel && sh ~/.local/share/ghostel/etc/shell/remote/install.sh $_install_args'"
 }
 
 # Hash of everything __ghostel_ssh_push ships.
 function __ghostel_ssh_hash {
-    builtin command find "$EMACS_GHOSTEL_PATH/etc/shell" "$EMACS_GHOSTEL_PATH/etc/terminfo" -type f -exec cksum {} + \
+    builtin command find -L "$EMACS_GHOSTEL_PATH/etc/shell" "$EMACS_GHOSTEL_PATH/etc/terminfo" -type f -exec cksum {} + \
         | LC_ALL=C builtin command sort | builtin command cksum | builtin command awk '{print $1}'
 }
 

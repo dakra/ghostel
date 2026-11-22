@@ -47,6 +47,12 @@ the parallel bash/zsh/fish/python3 sessions from the evil-ghostel rewrite
 - `lib/prompt-tui.sh` — an inline (main-screen) TUI for the line-wrap suite, shaped like an
   agent prompt: output grows above an input row holding the cursor, with a rule and a
   status row below it.
+- `matrix/prompt-nav-ghostel.json` — previous/next-prompt and imenu landing with a two-line
+  prompt, consecutive empty prompts as separate stops; one variant per shell (`zsh`,
+  `zsh-theme` where the theme's precmd is always last, `bash`, `fish`):
+  `elate run --keep-going --variant zsh test/elate/matrix/prompt-nav-ghostel.json`.
+  The setup file resolves relative to the scenario, and shells resolve from `PATH`.
+  Missing shells skip the run; use `--set shell=/path/to/shell` to select another binary.
 - `matrix/input-start-ghostel.json` — where line mode starts its input without shell
   integration; see the input-start section below.
 - `matrix/line-suggestion-ghostel.json` / `matrix/line-suggestion-evil-ghostel.json` —
@@ -222,22 +228,21 @@ elate run --keep-going --format json test/elate/matrix/readonly-ghostel.json
 the probes these scenarios assert on: `ghostel-elate--vt` feeds raw escape bytes to the
 terminal through a file the shell cats (typing ESC at a readline prompt turns it into
 meta keys), `ghostel-elate--kitty-cells` / `ghostel-elate--kitty-slices` list every
-kitty image slice in the buffer (text-property and overlay paths) with its cell
-geometry, and `ghostel-elate--has-line` is a whole-line regexp search.
+row-image span in the buffer with its cell geometry, and `ghostel-elate--has-line` is a whole-line regexp search.
 
 - `matrix/kitty-ghostel.json` -- **GUI session** (image display is gated on
   `display-graphic-p`; assertions are structural, no screenshot). Groups: `pin-relative`
   (a pinned 4x2 root, a relative child at H=1/V=2, a child at H=-2 clipped to two
-  visible columns with slice x=2, children at H=200 and V=100 not drawn), `delete`
-  (`d=a`), `overlay` (rows shorter than the placement use the before-string overlay),
+  visible columns, children at H=200 and V=100 not drawn), `delete`
+  (`d=a`), `blank-row-padding` (short rows get spaces carrying image properties),
   `virtual` (U=1 on a U+10EEEE placeholder run; `d=i` removes it),
   `evict` (a placement whose rows left the scrollback limit does not reappear at the
   top of the viewport), `virtual-flood` (a 3-row virtual placement pushed into
   scrollback by 40 trailing lines in one feed stays fully tagged), `virtual-two-images`
   (two placeholder runs on one line resolve to their own image each), `source-rect`
   (a scale-to-fit placement naming its full size as the source rect renders every
-  pixel; a sub-rect placement hands Emacs only the cropped pixels, checked on the
-  slice's PPM `:data`).
+  pixel; a sub-rect placement produces correctly sized PNG row images). Exact
+  crop pixels and alpha blending are also checked by the native ERT suite.
 - `matrix/scrollback-ghostel.json` -- TTY, 60x24. Retention is floored at ~2 standard
   pages regardless of `ghostel-max-scrollback` (ghostty clamps the byte limit up).
   Groups: `evict` (5000 rows: oldest gone, newest kept, buffer bounded),
@@ -247,7 +252,7 @@ geometry, and `ghostel-elate--has-line` is a whole-line regexp search.
   count). Never runs `clear(1)`: it sends `CSI 3 J`, which erases scrollback.
 
 ```sh
-elate run --keep-going --format json test/elate/matrix/kitty-ghostel.json
+elate run --keep-going --format json --set repo="$PWD" test/elate/matrix/kitty-ghostel.json
 elate run --keep-going --format json test/elate/matrix/scrollback-ghostel.json
 ```
 

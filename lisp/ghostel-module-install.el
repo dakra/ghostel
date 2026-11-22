@@ -68,7 +68,7 @@ Customize this when downloading pre-built modules from a fork or mirror."
 
 ;;; Native module download, compilation, and loading
 
-(defconst ghostel--minimum-module-version "0.65.0"
+(defconst ghostel--minimum-module-version "0.66.0"
   "Minimum native module version required by this Elisp version.
 Bump this only when the Elisp code requires a newer native module
 \(e.g. new Zig-exported function or changed calling convention).")
@@ -93,6 +93,10 @@ Returns nil if the platform is not recognized."
               ((and (eq system-type 'berkeley-unix)
                     (string-match-p "freebsd" system-configuration))
                "freebsd")
+              ;; musl cannot load glibc modules.
+              ((and (eq system-type 'gnu/linux)
+                    (string-match-p "-musl" system-configuration))
+               "linux-musl")
               ((eq system-type 'gnu/linux) "linux")
               ((eq system-type 'windows-nt) "windows")
               (t nil))))
