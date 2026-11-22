@@ -354,7 +354,8 @@ never fewer than one press."
           (kill-local-variable var))))))
 
 (ert-deftest ghostel-test-posn-cell-uses-event-window-metrics ()
-  "Columns use the event window's font; rows come from the buffer line."
+  "Columns use the event window's font and skip its line numbers.
+Rows come from the buffer line."
   (with-temp-buffer
     (let ((buf (current-buffer)))
       ;; Two scrollback lines above a three-row viewport.
@@ -382,7 +383,17 @@ never fewer than one press."
             ;; A position on the frame resolves through its selected window.
             (should (equal '(10 . 6)
                            (ghostel--posn-cell
-                            `(,(selected-frame) nil (70 . 84) 0))))))))))
+                            `(,(selected-frame) nil (70 . 84) 0)))))
+          ;; Line numbers take the left of the text area: X past them
+          ;; starts at column 0, X on them clamps to it.
+          (cl-letf (((symbol-function 'default-font-width) (lambda () 10))
+                    ((symbol-function 'line-number-display-width)
+                     (lambda (&optional pixelwise)
+                       (if (eq pixelwise t) 50 3))))
+            (should (equal 0 (car (ghostel--posn-cell `(,win 13 (50 . 0) 0)))))
+            (should (equal 2 (car (ghostel--posn-cell `(,win 13 (75 . 0) 0)))))
+            (should (equal 0 (car (ghostel--posn-cell
+                                   `(,win 13 (20 . 0) 0)))))))))))
 
 (ert-deftest ghostel-test-scroll-intercept-frame-posn ()
   "A wheel event positioned on the frame re-dispatches instead of erroring."

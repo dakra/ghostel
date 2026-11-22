@@ -22,6 +22,9 @@ All notable changes to this project will be documented in this file.
 - In zsh with a theme that sets its prompt last in `precmd`, such as
   powerlevel10k, a prompt redrawn after a resize or an asynchronous
   update is still found by prompt navigation and imenu.
+- With `display-line-numbers-mode` on, mouse events reach a program
+  that tracks the mouse at the cell under the pointer, not as many
+  cells to the right as the line numbers are wide.
 
 ## [0.66.0] — 2026-11-16
 

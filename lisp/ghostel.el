@@ -2223,14 +2223,16 @@ running program receives a live motion stream during the drag.")
 
 (defun ghostel--posn-cell (posn)
   "Return (COL . ROW) of POSN in the terminal grid of its window.
-Unlike `posn-col-row', honors buffer-local text scaling.  ROW is the
-viewport row of POSN's buffer line, 0 in scrollback; without a buffer
-position (mode line, header line, frame) it is Y divided by the line height."
+Unlike `posn-col-row', honors buffer-local text scaling and
+`display-line-numbers'.  ROW is the viewport row of POSN's buffer line,
+0 in scrollback; without a buffer position (mode line, header line,
+frame) it is Y divided by the line height."
   (let ((xy (posn-x-y posn))
         (win (posn-window posn))
         (pos (posn-point posn)))
     (with-selected-window (if (framep win) (frame-selected-window win) win)
-      (cons (/ (car xy) (default-font-width))
+      (cons (max 0 (/ (- (car xy) (line-number-display-width t))
+                      (default-font-width)))
             (if pos
                 (or (ghostel--viewport-row-at pos) 0)
               (/ (cdr xy) (default-line-height)))))))
