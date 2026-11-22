@@ -481,11 +481,13 @@ etc. themselves.  =M-RET= (or =C-M-m=) is the sole escape hatch.
 
 Entered with =C-c C-e=.  *The terminal keeps running*, the buffer is read-only,
 and standard Emacs bindings fall through to the global map.  =isearch-forward=,
-=occur=, =M-x=, =C-SPC= + =M-w=, arrow keys, wheel scroll - all work unmodified.  The
-terminal keeps producing output and the buffer keeps growing.  While point sits
-on the live terminal cursor the window follows the new output; the moment you
-navigate away (or start a selection) the following stops and point stays where
-you put it, resuming once point returns to the cursor (=M->= jumps back to it).
+=occur=, =M-x=, =C-SPC= + =M-w=, arrow keys - all work unmodified.  The wheel scrolls
+the buffer, except over a fullscreen program that tracks the mouse, which receives
+it as in semi-char mode.  The terminal keeps producing output and the buffer keeps
+growing.  While point sits on the live terminal cursor the window follows the new
+output; the moment you navigate away (or start a selection) the following stops and
+point stays where you put it, resuming once point returns to the cursor (=M->= jumps
+back to it).
 
 With =ghostel-readonly-fast-exit= (the default), typing a character exits Emacs
 mode and sends it to the shell.  With it off, Emacs mode is a "look but don't
@@ -570,7 +572,8 @@ point like in any Emacs buffer.)  When ghostel is in a terminal-input mode and a
 TUI has DEC mouse-tracking enabled (1000/1002/1003 - htop, lazygit, etc.), the
 click is forwarded to the program and none of the above applies.  Copy, Emacs,
 and line modes keep normal Emacs mouse behavior even if terminal mouse tracking
-is active.
+is active, except that in Emacs mode the wheel goes to a fullscreen program that
+tracks the mouse.
 
 Double- and triple-click select the word and line under the cursor respectively,
 and protect that region the same way a drag does (from any window, focused or not).

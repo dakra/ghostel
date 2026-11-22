@@ -11,6 +11,8 @@ All notable changes to this project will be documented in this file.
   musl 1.2.5 or newer.
 
 ### Changed
+- In Emacs mode the mouse wheel goes to a fullscreen program that tracks
+  the mouse, as in semi-char mode.
 - `ghostel-status-auto-acknowledge` defaults to `seen`: `done` and `error`
   records are dropped as soon as the terminal is the buffer you look at,
   not only when you send it input.  Set it to `input` for the previous

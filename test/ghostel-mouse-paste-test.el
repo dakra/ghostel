@@ -288,6 +288,67 @@ first real focus event."
         (kill-local-variable 'ghostel--scroll-pending)
         (kill-local-variable 'pre-command-hook)))))
 
+(ert-deftest ghostel-test-scroll-intercept-forwards-in-emacs-mode ()
+  "In Emacs mode the wheel goes to a program on the alternate screen."
+  (let ((ghostel--term 'fake)
+        (ghostel--process 'fake)
+        (ghostel--input-mode 'emacs)
+        (ghostel--scroll-intercept-active t)
+        (mouse-event-args nil)
+        (unread-command-events nil)
+        (fake-event `(wheel-up (,(selected-window) nil (10 . 5) 0))))
+    (cl-letf (((symbol-function 'ghostel--mouse-tracking-p) (lambda (_term) t))
+              ((symbol-function 'ghostel--alt-screen-p) (lambda (_term) t))
+              ((symbol-function 'ghostel--mouse-event)
+               (lambda (_term action button row col mods)
+                 (setq mouse-event-args (list action button row col mods))
+                 t))
+              ((symbol-function 'process-live-p) (lambda (_p) t)))
+      (ghostel--scroll-intercept-up fake-event)
+      ;; Press of button 4 at row 5, col 10, no modifiers.
+      (should (equal '(0 4 5 10 0) mouse-event-args))
+      (should-not unread-command-events))))
+
+(defun ghostel-test--should-redispatch-wheel (mode alt-screen)
+  "Assert that the wheel scrolls the buffer in input MODE.
+The program tracks the mouse, on the alternate screen if ALT-SCREEN."
+  (let* ((event-buf (window-buffer (selected-window)))
+         (fake-event `(wheel-up (,(selected-window) 1 (10 . 5) 0)))
+         (forwarded nil)
+         (unread-command-events nil))
+    (with-current-buffer event-buf
+      (setq-local ghostel--term 'fake)
+      (setq-local ghostel--process 'fake)
+      (setq-local ghostel--input-mode mode)
+      (setq-local ghostel--scroll-intercept-active t)
+      (setq-local pre-command-hook nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel--mouse-tracking-p)
+                   (lambda (_term) t))
+                  ((symbol-function 'ghostel--alt-screen-p)
+                   (lambda (_term) alt-screen))
+                  ((symbol-function 'ghostel--mouse-event)
+                   (lambda (&rest _) (setq forwarded t)))
+                  ((symbol-function 'process-live-p) (lambda (_p) t)))
+          (ghostel--scroll-intercept-up fake-event)
+          (should-not forwarded)
+          (should (equal fake-event (car unread-command-events))))
+      (with-current-buffer event-buf
+        (kill-local-variable 'ghostel--term)
+        (kill-local-variable 'ghostel--process)
+        (kill-local-variable 'ghostel--input-mode)
+        (kill-local-variable 'ghostel--scroll-intercept-active)
+        (kill-local-variable 'ghostel--scroll-pending)
+        (kill-local-variable 'pre-command-hook)))))
+
+(ert-deftest ghostel-test-scroll-intercept-emacs-mode-primary-screen ()
+  "In Emacs mode the wheel scrolls the buffer on the primary screen."
+  (ghostel-test--should-redispatch-wheel 'emacs nil))
+
+(ert-deftest ghostel-test-scroll-intercept-copy-mode-scrolls-buffer ()
+  "Copy mode freezes the terminal, so the wheel scrolls the buffer."
+  (ghostel-test--should-redispatch-wheel 'copy t))
+
 (ert-deftest ghostel-test-scroll-intercept-accumulates-pixel-deltas ()
   "Uncoalesced wheel events send one press per full row of travel.
 A mouse notch, reported as a line count or from a mouse device, is
