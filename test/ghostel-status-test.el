@@ -78,6 +78,7 @@
 (ert-deftest ghostel-status-test-input-acknowledges-finished ()
   "User input drops done and error records unless the option is nil."
   (ghostel-status-test--with-log log
+    (setq-local ghostel-status-auto-acknowledge 'input)
     (ghostel-status-test--report "done" "c")
     (ghostel-status-test--report "working" "a")
     (let ((ghostel-status-auto-acknowledge nil))

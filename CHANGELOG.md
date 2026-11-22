@@ -10,6 +10,12 @@ All notable changes to this project will be documented in this file.
   Alpine and Chimera, where the glibc module fails to load.  They require
   musl 1.2.5 or newer.
 
+### Changed
+- `ghostel-status-auto-acknowledge` defaults to `seen`: `done` and `error`
+  records are dropped as soon as the terminal is the buffer you look at,
+  not only when you send it input.  Set it to `input` for the previous
+  behavior.
+
 ### Fixed
 - `ghostel-project` called from a terminal of another project starts
   a terminal in the chosen project instead of staying in the current one.

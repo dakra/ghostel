@@ -88,13 +88,13 @@ and `ghostel-status-next'."
               (const working) (const idle))
   :group 'ghostel)
 
-(defcustom ghostel-status-auto-acknowledge 'input
+(defcustom ghostel-status-auto-acknowledge 'seen
   "When a terminal's `done' and `error' records are dropped.
-`input' when you send input to the terminal, `seen' as soon as it is
-the buffer you are looking at, nil only by the command
-`ghostel-status-acknowledge' or the program itself."
-  :type '(choice (const :tag "On input" input)
-                 (const :tag "When seen" seen)
+`seen' as soon as it is the buffer you are looking at or you send it
+input, `input' only when you send input to the terminal, nil only by
+the command `ghostel-status-acknowledge' or the program itself."
+  :type '(choice (const :tag "When seen" seen)
+                 (const :tag "On input" input)
                  (const :tag "Never" nil))
   :group 'ghostel)
 
