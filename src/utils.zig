@@ -28,6 +28,10 @@ pub fn cellCharCount(page: *gt.Page, cell: *gt.Cell) usize {
 pub fn rowCharOffset(pin: gt.Pin) usize {
     var char_count: usize = 0;
     var cells = pin.cells(.left);
+    // A pin with no cells before it (an empty row, or a pin that no longer
+    // resolves to a cell) has no offset.  Without this guard `len -= 1`
+    // wraps to SIZE_MAX and the loop below reads past the page.
+    if (cells.len == 0) return 0;
     cells.len -= 1;
     for (cells) |*cell| char_count += cellCharCount(pin.node.page(), cell);
     return char_count;
