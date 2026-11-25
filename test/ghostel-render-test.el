@@ -670,6 +670,18 @@ are retained — only unwritten padding cells are trimmed."
               (should-not (string-match-p "\n" (substring filtered 0 26)))))) ; filtered has no wrapped newline
       (kill-buffer buf))))
 
+(ert-deftest ghostel-test-soft-wrap-survives-delete-line ()
+  "A wrapped line that Delete Line moves as a whole stays soft-wrapped."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buf term 6 10 100)
+    (ghostel--write-vt term "\e[2;1Hhttp://abcdefgh")
+    (ghostel-test--redraw term)
+    (ghostel--write-vt term "\e[1;1H\e[M")
+    (ghostel-test--redraw term)
+    (goto-char (point-min))
+    (should (looking-at "http://abc\ndefgh"))
+    (should (get-text-property (line-end-position) 'ghostel-wrap))))
+
 (ert-deftest ghostel-test-filter-soft-wraps ()
   "Test the soft-wrap filter on synthetic propertized strings."
   ;; String with a wrapped newline

@@ -2414,10 +2414,27 @@ prefix only, `ghostel-input' on the user-typed command."
   (ghostel-test--with-terminal-buffer (buf term 12 30 100)
     (let ((prompt "\e]133;A\a~/a/long/directory/name\r\n> \e]133;B\a"))
       (ghostel--write-vt
-       term (concat prompt "echo a\r\n\e]133;C\aa\r\n\e]133;D;0\a" prompt)))
+       term (concat prompt "echo a\r\n\e]133;C\aa\r\n\e]133;D;0\a"
+                    prompt "cat\r\n\e]133;C\a")))
     (ghostel--set-size term 12 15)
     (ghostel-test--redraw term t)
     (should (= (length (ghostel--imenu--collect-prompt-regions)) 2))))
+
+(ert-deftest ghostel-test-prompt-redraw-after-resize-leaves-no-stale-row ()
+  "A wrapped prompt the shell redraws after a resize appears once."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buf term 12 30 100)
+    (let ((prompt "\e]133;A\a~/a/long/directory/name\r\n> \e]133;B\a"))
+      (ghostel--write-vt term prompt)
+      (ghostel--set-size term 12 15)
+      (ghostel-test--redraw term t)
+      ;; The shell moves up by the rows its prompt had before the resize.
+      (ghostel--write-vt term (concat "\e[A\r\e[J" prompt)))
+    (ghostel-test--redraw term t)
+    (should (equal (string-trim-right
+                    (buffer-substring-no-properties (point-min) (point-max)))
+                   "~/a/long/direct\nory/name\n>"))
+    (should (= (length (ghostel--imenu--collect-prompt-regions)) 1))))
 
 (ert-deftest ghostel-test-prompt-region-follows-row-below ()
   "Prompt bounds follow incrementally rendered changes to a later row."

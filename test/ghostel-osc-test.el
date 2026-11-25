@@ -709,6 +709,15 @@ fresh."
         (ghostel--write-vt term "\e[>q")
         (should (equal (list (format "\eP>|%s\e\\" (cdr case))) sent))))))
 
+(ert-deftest ghostel-test-osc72-drag-and-drop-unanswered ()
+  "The OSC 72 support query gets no reply, as drops are not delivered."
+  :tags '(native)
+  (ghostel-test--with-terminal-buffer (buffer term 25 80 1000)
+    (let (sent)
+      (setq ghostel--pty-out-function (lambda (data) (push data sent)))
+      (ghostel--write-vt term "\e]72;t=q:i=3\e\\")
+      (should-not sent))))
+
 (ert-deftest ghostel-test-csi996-reports-light-and-dark ()
   "A child's CSI ? 996 n gets 997;1 for a dark default background, 997;2 for light."
   :tags '(native)
