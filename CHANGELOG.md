@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- Acknowledging a `done` or `error` program status keeps the root record of
+  a program still reporting its status with OSC 7501 as `idle`, with its app
+  and title, instead of dropping it, so `(ghostel-status-app "")` names an
+  agent waiting at its prompt.  `ghostel-program-status-functions` gets that
+  `idle` record as NEW where it got nil.
+- A new prompt or the process exit drops `idle` program status records too.
+
 ## [0.67.0] — 2026-11-25
 
 ### Added

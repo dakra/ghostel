@@ -66,12 +66,13 @@
     (should (member '("r0" (:state idle) nil) log))))
 
 (ert-deftest ghostel-status-test-drop-running-keeps-finished ()
-  "A new prompt or exit drops working and blocked records, keeps done and error."
+  "A new prompt or exit drops every record but done and error."
   (ghostel-status-test--with-log log
     (ghostel-status-test--report "working" "a")
     (ghostel-status-test--report "blocked" "b")
     (ghostel-status-test--report "done" "c")
     (ghostel-status-test--report "error" "d")
+    (ghostel-status-test--report "idle" "e")
     (ghostel-status--drop-running)
     (should (equal '("d" "c") (mapcar #'car ghostel-program-status)))))
 
@@ -97,6 +98,40 @@
     (ghostel-status-acknowledge)
     (should (equal '("a" "b") (mapcar #'car ghostel-program-status)))
     (should (member '("c" (:state done) nil) log))))
+
+(ert-deftest ghostel-status-test-acknowledge-keeps-running-root-idle ()
+  "Acknowledging a reporting program leaves its root idle with app and title."
+  (dolist (state '("done" "error"))
+    (ghostel-status-test--with-log log
+      (ghostel-status-test--report state "child" nil nil "sub")
+      (ghostel-status-test--report state nil nil nil "claude-code" "T" "Finished")
+      (setq log nil)
+      (ghostel-status-acknowledge)
+      (should (equal '(("" :state idle :app "claude-code" :title "T"))
+                     ghostel-program-status))
+      (should (equal "claude-code" (ghostel-status-app "")))
+      (should (equal `(("child" (:state ,(intern state) :app "sub") nil)
+                       ("" (:state ,(intern state) :app "claude-code"
+                                   :title "T" :msg "Finished")
+                        (:state idle :app "claude-code" :title "T")))
+                     log))
+      (ghostel-status-acknowledge)
+      (should (= 2 (length log)))
+      (ghostel-status--drop-running)
+      (should-not ghostel-program-status))))
+
+(ert-deftest ghostel-status-test-acknowledge-drops-exited-root ()
+  "Acknowledging a program gone since the last prompt drops its root."
+  (ghostel-status-test--with-log log
+    (ghostel-status-test--report "done" nil nil nil "brew")
+    (ghostel-status--drop-running)
+    (should (equal "brew" (ghostel-status-app "")))
+    (ghostel-status-acknowledge)
+    (should-not ghostel-program-status)
+    ;; OSC 9;4 does not tell whether the program still runs.
+    (ghostel--osc-progress "error" nil)
+    (ghostel-status-acknowledge)
+    (should-not ghostel-program-status)))
 
 (ert-deftest ghostel-status-test-seen-acknowledges-when-looked-at ()
   "With `seen', finished records go once the buffer is looked at."
@@ -675,14 +710,17 @@ A record without text inherits its app from an ancestor in RECORDS only."
       (should (equal "shell" ghostel-title)))))
 
 (ert-deftest ghostel-status-test-set-acknowledges-when-seen ()
-  "With `seen', finished records set into the buffer looked at go at once."
+  "With `seen', finished records set into the buffer looked at are acknowledged."
   (let ((ghostel-status-auto-acknowledge 'seen))
     (cl-letf (((symbol-function 'ghostel-buffer-focused-p) (lambda (_) t)))
       (ghostel-status-test--with-log log
         (ghostel-set-program-status
          '(("a" :state working) ("b" :state done) ("c" :state error)))
         (should (equal '(("a" :state working)) ghostel-program-status))
-        (should (member '("b" (:state done) nil) log))))))
+        (should (member '("b" (:state done) nil) log))
+        (ghostel-set-program-status '(("" :state done :app "claude-code")))
+        (should (equal '(("" :state idle :app "claude-code"))
+                       ghostel-program-status))))))
 
 (ert-deftest ghostel-status-test-osc7501-report-reaches-store ()
   "An OSC 7501 report from the PTY becomes a record with decoded text."

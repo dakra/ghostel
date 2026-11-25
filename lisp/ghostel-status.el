@@ -89,7 +89,7 @@ and `ghostel-status-next'."
   :group 'ghostel)
 
 (defcustom ghostel-status-auto-acknowledge 'seen
-  "When a terminal's `done' and `error' records are dropped.
+  "When a terminal's `done' and `error' records are acknowledged.
 `seen' as soon as it is the buffer you are looking at or you send it
 input, `input' only when you send input to the terminal, nil only by
 the command `ghostel-status-acknowledge' or the program itself."
@@ -249,14 +249,23 @@ Each element is (ID . RECORD); see `ghostel-program-status-functions'.")
            (string-prefix-p prefix (car entry)))))))
 
 (defun ghostel-status--drop-running ()
-  "Remove `working' and `blocked' records, at a new prompt or process exit."
+  "Remove all but `done' and `error' records, at a new prompt or process exit."
   (setq ghostel-status--osc7501-seen nil)
   (ghostel-status--remove-if
-   (lambda (entry) (memq (plist-get (cdr entry) :state) '(working blocked)))))
+   (lambda (entry) (not (memq (plist-get (cdr entry) :state) '(done error))))))
 
 (defun ghostel-status-acknowledge ()
-  "Drop the `done' and `error' records of the current terminal."
+  "Drop the `done' and `error' records of the current terminal.
+The root record of a program still reporting its status (OSC 7501)
+becomes `idle' instead, with its app and title."
   (interactive)
+  (let ((root (cdr (assoc "" ghostel-program-status))))
+    (when (and ghostel-status--osc7501-seen
+               (memq (plist-get root :state) '(done error)))
+      (ghostel-status--set "" (ghostel-status--record
+                               'idle
+                               :app (plist-get root :app)
+                               :title (plist-get root :title)))))
   (ghostel-status--remove-if
    (lambda (entry) (memq (plist-get (cdr entry) :state) '(done error)))))
 
@@ -307,6 +316,7 @@ dropped by `ghostel-status-acknowledge' leaves the walk."
 
 (defun ghostel-status-app (id &optional records)
   "Return the app of record ID, inherited from the nearest ancestor that has one.
+With ID \"\", the app of the terminal's program.
 RECORDS is the (ID . RECORD) list to search, default `ghostel-program-status'."
   (let ((records (or records ghostel-program-status)))
     (or (plist-get (cdr (assoc id records)) :app)

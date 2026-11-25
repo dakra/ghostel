@@ -1035,11 +1035,18 @@ program uses OSC 7501.
 
 Each terminal keeps one record per report id in =ghostel-program-status=, the
 program itself under the root id.  A new prompt or the process exit drops
-=working= and =blocked= records.  =done= and =error= stay until the terminal is the
-buffer you are looking at (=ghostel-status-auto-acknowledge=, default =seen=), so
-a buffer you were not looking at still shows how its command ended.  Set it to
-=input= to keep them until you send input to that terminal, or to nil to keep
-them until =M-x ghostel-status-acknowledge= or the program itself clears them.
+=working=, =blocked= and =idle= records.  =done= and =error= stay until the terminal
+is the buffer you are looking at (=ghostel-status-auto-acknowledge=, default
+=seen=), so a buffer you were not looking at still shows how its command ended.
+Set it to =input= to keep them until you send input to that terminal, or to nil
+to keep them until =M-x ghostel-status-acknowledge= or the program itself clears
+them.  Acknowledging drops them, but the root record of a program still reporting
+its status with OSC 7501 becomes =idle=, with its app and title.  So
+=(ghostel-status-app "")= names an agent also while it waits at its prompt.  It
+also names a program that exited and left a =done= or =error= record you have not
+acknowledged.  Without shell integration, the app and title of a program that
+exits without =clear= can stay until another program reports its status or the
+shell exits.
 
 Every change runs =ghostel-program-status-functions= with =(ID OLD NEW)=.  The
 default members:
@@ -1611,7 +1618,7 @@ tables below group them by area; defaults shown are the out-of-the-box values.
 | =ghostel-program-status-functions=    | mode line and notify members | Hook for OSC 7501 / OSC 9;4 status records, =(ID OLD NEW)=.       |
 | =ghostel-status-notify-states=        | =(blocked done error)=         | Attention states: notify, =ghostel-status-next= and pickers.      |
 | =ghostel-status-indicator-states=     | =(blocked done error working)= | States =ghostel-status-indicator-mode= counts terminals in.       |
-| =ghostel-status-auto-acknowledge=     | =seen=                         | Drop done and error records when =seen=, on =input=, or never.      |
+| =ghostel-status-auto-acknowledge=     | =seen=                         | Acknowledge done and error when =seen=, on =input=, or never.       |
 | =ghostel-status-mode-line-labels=     | =emoji=                        | =emoji=, =words= or an alist of =format-spec= labels.                 |
 | =ghostel-spinner-type=                | =progress-bar=                 | Spinner while working without a percentage; nil for plain text. |
 
@@ -2278,7 +2285,7 @@ to your config.
 | =M-x ghostel-shell-command=            | =async-shell-command= in a ghostel terminal (see [[#shell-commands][Shell commands]]).     |
 | =M-x ghostel-status-next=              | Switch to the next terminal needing attention, most urgent first.         |
 | =M-x ghostel-status-indicator-mode=    | Count terminals by program status in every mode line.                     |
-| =M-x ghostel-status-acknowledge=       | Drop the done and error records of the current terminal.                  |
+| =M-x ghostel-status-acknowledge=       | Drop done and error records; a program still reporting becomes idle.      |
 | =M-x ghostel-clear=                    | Clear the visible screen, keeping scrollback.                             |
 | =M-x ghostel-clear-scrollback=         | Clear screen and scrollback.                                              |
 | =M-x ghostel-semi-char-mode=           | Switch to semi-char input mode (default).                                 |
