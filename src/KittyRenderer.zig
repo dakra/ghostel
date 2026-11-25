@@ -39,6 +39,7 @@ pub const Options = struct {
     /// from the row bitmap and visibility testing because Emacs adds the gap
     /// when displaying each row.
     line_spacing: u32 = 0,
+    image_ascent_percent: ?u8 = null,
     format: Format = .none,
 };
 
@@ -199,6 +200,7 @@ pub fn prepare(
     logical_cell_width: u32,
     logical_cell_height: u32,
     pixel_scale: u32,
+    font_ascent: ?u32,
 ) !void {
     const has_images = term.screens.active.kitty_images.placements.count() > 0;
     self.options = .{
@@ -216,6 +218,9 @@ pub fn prepare(
             const spacing = std.math.cast(u32, env.cast(i64, env.f("ghostel--line-spacing-pixels", .{}))) orelse
                 return error.OutOfRange;
             self.options.line_spacing = try std.math.mul(u32, spacing, pixel_scale);
+            if (font_ascent) |ascent| {
+                self.options.image_ascent_percent = imageAscentPercent(self.imageHeight() / pixel_scale, ascent);
+            }
         }
     }
     try env.checkNonLocalExit();
@@ -294,6 +299,22 @@ fn getPlan(self: *Self, term: *gt.Terminal, pin: gt.Pin) !?*Plan {
 
 fn imageHeight(self: *const Self) u32 {
     return @max(self.options.pixel_scale, self.options.cell_height -| self.options.line_spacing);
+}
+
+fn imageAscentPercent(height: u32, ascent: u32) ?u8 {
+    if (height == 0 or ascent > height) return null;
+
+    // W32 Emacs can round `center` a pixel away from the text baseline,
+    // growing the row. Use an exact integer percentage if Emacs can represent
+    // it, testing the next percentage too in case floating-point rounding
+    // makes its truncation undershoot.
+    const first: u32 = @intCast((@as(u64, ascent) * 100 + height - 1) / height);
+    for (first..@min(first + 2, 101)) |percent| {
+        const pixels_up: u32 = @intFromFloat(@as(f64, @floatFromInt(height)) *
+            (@as(f64, @floatFromInt(percent)) / 100.0));
+        if (pixels_up == ascent) return @intCast(percent);
+    }
+    return null;
 }
 
 fn scaleDimension(value: u32, numerator: u32, denominator: u32) i64 {
@@ -586,6 +607,10 @@ fn createImage(self: *Self, env: emacs.Env, canvas: []u8, width: u32, height: u3
     };
     defer self.alloc.free(data);
     const bytes = env.makeUnibyteString(data);
+    const ascent = if (self.options.image_ascent_percent) |percent|
+        env.makeValue(percent)
+    else
+        env.makeValue(emacs.sym.center);
     const image = env.f("create-image", .{
         bytes,
         switch (self.options.format) {
@@ -597,7 +622,7 @@ fn createImage(self: *Self, env: emacs.Env, canvas: []u8, width: u32, height: u3
         emacs.sym.@":scale",
         1.0 / @as(f64, @floatFromInt(self.options.pixel_scale)),
         emacs.sym.@":ascent",
-        emacs.sym.center,
+        ascent,
     });
     try env.checkNonLocalExit();
     if (env.isNil(image)) return error.ImageCreationFailed;
@@ -714,6 +739,16 @@ const PlaceholderIterator = struct {
     }
 };
 
+test "image ascent reproduces the text baseline when representable" {
+    const expectEqual = std.testing.expectEqual;
+    try expectEqual(@as(?u8, 80), imageAscentPercent(25, 20));
+    try expectEqual(@as(?u8, 79), imageAscentPercent(33, 26));
+    try expectEqual(@as(?u8, 59), imageAscentPercent(50, 29));
+    try expectEqual(@as(?u8, 100), imageAscentPercent(25, 25));
+    try expectEqual(null, imageAscentPercent(200, 151));
+    try expectEqual(null, imageAscentPercent(25, 26));
+}
+
 test "raster keys distinguish output options, image changes, geometry, and clipping" {
     const testing = std.testing;
     const alloc = testing.allocator;
@@ -751,7 +786,7 @@ test "raster keys distinguish output options, image changes, geometry, and clipp
     try baseline.slices.appendSlice(arena, &.{ original.slice, overlap });
     try renderer.finishPlan(arena, pin, &baseline);
 
-    var variants: [13]Input = @splat(original);
+    var variants: [14]Input = @splat(original);
     variants[0].slice.image_id += 1;
     variants[1].slice.generation += 1;
     // Move past the other layer to change compositing order.
@@ -766,6 +801,7 @@ test "raster keys distinguish output options, image changes, geometry, and clipp
     variants[10].options.format = .png;
     variants[11].options.format.ppm.b += 1;
     variants[12].options.line_spacing += 1;
+    variants[13].options.image_ascent_percent = 75;
     for (variants) |variant| {
         renderer.options = variant.options;
         var plan: Plan = .{};
