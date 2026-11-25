@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.67.0] — 2026-11-25
+
 ### Added
 - Releases ship `x86_64-linux-musl` and `aarch64-linux-musl` modules, and
   the native module installer selects them on musl-based Linux such as
@@ -34,6 +36,12 @@ All notable changes to this project will be documented in this file.
 - With `display-line-numbers-mode` on, mouse events reach a program
   that tracks the mouse at the cell under the pointer, not as many
   cells to the right as the line numbers are wide.
+- A terminal resized while a window with another font size or display
+  scale is selected, such as on another frame, gets the cell dimensions
+  of the window it is shown in.
+- Growing a terminal's columns without reflow no longer crashes Emacs.
+- Resizing a terminal's columns no longer leaves stale rows of a wrapped
+  prompt behind when the shell redraws it.
 
 ## [0.66.0] — 2026-11-16
 
