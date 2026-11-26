@@ -1059,7 +1059,14 @@ fn render(
     env: emacs.Env,
     start_pin: gt.Pin,
 ) !void {
-    try self.kitty.prepare(env, self.term, self.size.cell_w, self.size.cell_h, self.size.pixel_scale);
+    try self.kitty.prepare(
+        env,
+        self.term,
+        self.size.cell_w,
+        self.size.cell_h,
+        self.size.pixel_scale,
+        if (self.font_info) |font| font.ascent else null,
+    );
 
     var eob = false;
     var current_span: ?struct {
