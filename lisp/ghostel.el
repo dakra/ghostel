@@ -281,6 +281,16 @@ natural size, potentially making rows slightly taller and cells slightly wider."
   :type '(float 0.0 1.0)
   :local t)
 
+(defcustom ghostel-draw-block-elements t
+  "When non-nil, draw block elements instead of taking them from the font.
+Covers the Block Elements range U+2580..U+259F -- halves, eighths and
+quadrants such as ▀ ▄ █ ▌ ▐ ▛ -- except the shades ░ ▒ ▓.  Each is drawn
+as an image that fills its cell to the pixel, as a terminal's own
+renderer does.  A font's glyph rarely matches the cell that exactly, and
+the gaps show as seams across pictures built of blocks.  The image takes
+the colors of the cell.  nil leaves these characters to the font."
+  :type 'boolean)
+
 (defcustom ghostel-line-spacing 0
   "Additional vertical space below each terminal row.
 An integer is extra pixels; a float is a fraction of the default line height.
@@ -4532,6 +4542,100 @@ terminal windows."
     (or (cl-find-if (lambda (w) (display-graphic-p (window-frame w)))
                     wins)
         (car wins))))
+
+(defun ghostel--block-element-rects (char width height)
+  "Return the rectangles block element CHAR fills in a WIDTH x HEIGHT cell.
+Each rectangle is (X0 Y0 X1 Y1) in pixels, X1 and Y1 exclusive.
+Fractions of the cell round as in Ghostty's own sprites, so a half or an
+eighth lands on the same pixel as it does there.  Return nil for CHAR
+outside the set `ghostel-draw-block-elements' covers."
+  (cl-flet* ((part (size eighths)       ; SIZE * EIGHTHS/8, rounded half up
+               (/ (+ (* size eighths) 4) 8))
+             (left (eighths) (list 0 0 (part width eighths) height))
+             (right (eighths)
+               (list (- width (part width eighths)) 0 width height))
+             (upper (eighths) (list 0 0 width (part height eighths)))
+             (lower (eighths)
+               (list 0 (- height (part height eighths)) width height)))
+    ;; A quadrant's far half is measured from the far edge, so on an odd
+    ;; size the two halves share the middle pixel instead of both missing it.
+    (let* ((mid-x (part width 4))
+           (mid-y (part height 4))
+           (tl (list 0 0 mid-x mid-y))
+           (tr (list (- width mid-x) 0 width mid-y))
+           (bl (list 0 (- height mid-y) mid-x height))
+           (br (list (- width mid-x) (- height mid-y) width height)))
+      (cond
+       ((= char #x2580) (list (upper 4)))
+       ((<= #x2581 char #x2587) (list (lower (- char #x2580))))
+       ((= char #x2588) (list (list 0 0 width height)))
+       ((<= #x2589 char #x258F) (list (left (- #x2590 char))))
+       ((= char #x2590) (list (right 4)))
+       ((= char #x2594) (list (upper 1)))
+       ((= char #x2595) (list (right 1)))
+       (t (pcase char
+            (#x2596 (list bl))
+            (#x2597 (list br))
+            (#x2598 (list tl))
+            (#x2599 (list tl bl br))
+            (#x259A (list tl br))
+            (#x259B (list tl tr bl))
+            (#x259C (list tl tr br))
+            (#x259D (list tr))
+            (#x259E (list tr bl))
+            (#x259F (list tr bl br))))))))
+
+(defvar ghostel--block-element-images (make-hash-table :test #'equal)
+  "Image specs built by `ghostel--block-element-image'.
+Keyed by (CHAR WIDTH ASCENT DESCENT).  Handing out the same spec for
+the same key also lets Emacs find the image in its image cache.")
+
+(defun ghostel--block-element-image (char width ascent descent)
+  "Return an image spec drawing block element CHAR to fill its cell.
+WIDTH is the cell width in pixels, ASCENT and DESCENT its height above
+and below the baseline.  Return nil for CHAR outside the set
+`ghostel-draw-block-elements' covers.
+
+The image is a two-color XBM bitmap.  Emacs draws such an image in the
+foreground and background of the face it is displayed with, so it takes
+the colors of its cell, inverse video and the region included."
+  (let ((key (list char width ascent descent)))
+    (or (gethash key ghostel--block-element-images)
+        (let* ((height (+ ascent descent))
+               (rects (ghostel--block-element-rects char width height)))
+          (when rects
+            ;; One bool vector per row: Emacs refuses a single bool vector
+            ;; holding the whole bitmap, whatever its padding.
+            (let ((rows (make-vector height nil)))
+              (dotimes (y height)
+                (aset rows y (make-bool-vector width nil)))
+              (pcase-dolist (`(,x0 ,y0 ,x1 ,y1) rects)
+                (cl-loop for y from y0 below y1
+                         do (cl-loop for x from x0 below x1
+                                     do (aset (aref rows y) x t))))
+              (puthash key
+                       `(image :type xbm :data ,rows
+                               ,@(if (< emacs-major-version 29)
+                                     (list :width width :height height)
+                                   (list :data-width width
+                                         :data-height height))
+                               ;; As tall as the line, a centered image
+                               ;; has its top on the line's top.
+                               :ascent center
+                               :scale 1)
+                       ghostel--block-element-images)))))))
+
+(defun ghostel--block-element-display (char width ascent descent)
+  "Return the `display' value for a cell holding block element CHAR.
+The renderer calls this for each cell `ghostel-draw-block-elements'
+covers, with the cell's WIDTH, ASCENT and DESCENT in pixels; see
+`ghostel--block-element-image'.  nil for CHAR outside that set.
+
+The value is a fresh list around the image spec, a new one for every
+cell: Emacs shows a single image for a run of characters whose `display'
+values are `eq', which would fold a row of identical blocks into one."
+  (when-let* ((image (ghostel--block-element-image char width ascent descent)))
+    (list image)))
 
 (defun ghostel--invalidate ()
   "Trigger a redraw for pending terminal output.

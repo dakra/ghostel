@@ -772,5 +772,121 @@ Sets floor to 1.0 and feeds a glyph larger than the cell.  With floor
       (kill-buffer ghostel-buf)
       (kill-buffer other-buf))))
 
+;;; Block elements drawn by ghostel
+
+(ert-deftest ghostel-test-block-element-rects-quadrants ()
+  "Quadrants split the cell at its middle, halves sharing it on odd sizes."
+  (should (equal (ghostel--block-element-rects #x259B 10 20)
+                 '((0 0 5 10) (5 0 10 10) (0 10 5 20))))
+  (should (equal (ghostel--block-element-rects #x259E 10 20)
+                 '((5 0 10 10) (0 10 5 20))))
+  ;; Width 7: the left half is 4 pixels and so is the right one.
+  (should (equal (ghostel--block-element-rects #x258C 7 20) '((0 0 4 20))))
+  (should (equal (ghostel--block-element-rects #x2590 7 20) '((3 0 7 20)))))
+
+(ert-deftest ghostel-test-block-element-rects-eighths ()
+  "Eighths round half up and hug their edge."
+  (should (equal (ghostel--block-element-rects #x2588 10 20) '((0 0 10 20))))
+  (should (equal (ghostel--block-element-rects #x2580 10 20) '((0 0 10 10))))
+  ;; 20 * 1/8 = 2.5 rounds to 3.
+  (should (equal (ghostel--block-element-rects #x2581 10 20) '((0 17 10 20))))
+  (should (equal (ghostel--block-element-rects #x2587 10 20) '((0 2 10 20))))
+  (should (equal (ghostel--block-element-rects #x2589 10 20) '((0 0 9 20))))
+  (should (equal (ghostel--block-element-rects #x258F 10 20) '((0 0 1 20))))
+  (should (equal (ghostel--block-element-rects #x2594 10 20) '((0 0 10 3))))
+  (should (equal (ghostel--block-element-rects #x2595 10 20) '((9 0 10 20)))))
+
+(ert-deftest ghostel-test-block-element-rects-leave-shades-to-font ()
+  "Shades and characters outside the block range are not drawn."
+  (dolist (char '(#x2591 #x2592 #x2593 #x257F #x25A0 ?a))
+    (should-not (ghostel--block-element-rects char 10 20))
+    (should-not (ghostel--block-element-display char 10 15 5))))
+
+(ert-deftest ghostel-test-block-element-image-bitmap ()
+  "The image is a cell-sized XBM whose set bits are the filled pixels."
+  (let* ((spec (ghostel--block-element-image #x2598 3 1 1))
+         (props (cdr spec))
+         (rows (plist-get props :data)))
+    (should (eq (car spec) 'image))
+    (should (eq (plist-get props :type) 'xbm))
+    (should (eq (plist-get props :ascent) 'center))
+    (should (equal (plist-get props :scale) 1))
+    (if (< emacs-major-version 29)
+        (should (equal (list (plist-get props :width) (plist-get props :height))
+                       '(3 2)))
+      (should (equal (list (plist-get props :data-width)
+                           (plist-get props :data-height))
+                     '(3 2))))
+    ;; One bool vector per row; the upper-left quadrant of a 3x2 cell is
+    ;; the first two pixels of the first row.
+    (should (equal rows (vector (bool-vector t t nil) (bool-vector nil nil nil))))
+    ;; The same cell asks for the same spec.
+    (should (eq spec (ghostel--block-element-image #x2598 3 1 1)))))
+
+(ert-deftest ghostel-test-block-element-display-fresh-per-cell ()
+  "Each cell gets its own display value around the shared image.
+Emacs folds a run of characters with `eq' display values into one image."
+  (let ((a (ghostel--block-element-display #x2588 10 15 5))
+        (b (ghostel--block-element-display #x2588 10 15 5)))
+    (should-not (eq a b))
+    (should (eq (car a) (car b)))
+    (should (eq (car a) (ghostel--block-element-image #x2588 10 15 5)))))
+
+(defun ghostel-test--block-image-at-point ()
+  "Return the block element image displayed at point, or nil."
+  (let ((display (get-text-property (point) 'display)))
+    (and (consp (car-safe display))
+         (eq (caar display) 'image)
+         (car display))))
+
+(defmacro ghostel-test--with-block-elements-rendered (input &rest body)
+  "Render INPUT in a 10x20 mock cell, then run BODY at the first row."
+  (declare (indent 1))
+  `(let ((buf (generate-new-buffer " *ghostel-test-block-elements*")))
+     (unwind-protect
+         (save-window-excursion
+           (with-selected-window (display-buffer buf)
+             (ghostel-mode)
+             (let* ((term (ghostel--new 5 80 1000))
+                    (ghostel--term term)
+                    (ghostel--term-rows 5)
+                    (inhibit-read-only t)
+                    (df (ghostel-test--make-font
+                         ghostel-test--default-font-info)))
+               (ghostel--write-vt term ,input)
+               (ghostel-test--with-glyph-mocks
+                (:default-font df)
+                (ghostel--redraw term t)
+                (goto-char (point-min))
+                ,@body))))
+       (kill-buffer buf))))
+
+(ert-deftest ghostel-test-block-elements-drawn-as-images ()
+  "Each block element cell displays the image for the default cell size."
+  :tags '(native)
+  (ghostel-test--with-block-elements-rendered "\e[31m▐▛██\e[0m▒"
+    (let (displays)
+      (dolist (char '(?▐ ?▛ ?█ ?█))
+        (should (equal (char-after) char))
+        (should (eq (ghostel-test--block-image-at-point)
+                    (ghostel--block-element-image char 10 10 10)))
+        ;; The face stays on the cell; the image draws in its colors.
+        (should (get-text-property (point) 'face))
+        (push (get-text-property (point) 'display) displays)
+        (forward-char 1))
+      ;; Two identical blocks side by side still show two images.
+      (should-not (eq (car displays) (cadr displays))))
+    ;; A shade stays with the font.
+    (should (equal (char-after) ?▒))
+    (should-not (ghostel-test--block-image-at-point))))
+
+(ert-deftest ghostel-test-block-elements-left-to-font-when-disabled ()
+  "With `ghostel-draw-block-elements' nil the font draws block elements."
+  :tags '(native)
+  (let ((ghostel-draw-block-elements nil))
+    (ghostel-test--with-block-elements-rendered "▛"
+      (should (equal (char-after) ?▛))
+      (should-not (ghostel-test--block-image-at-point)))))
+
 (provide 'ghostel-glyph-test)
 ;;; ghostel-glyph-test.el ends here

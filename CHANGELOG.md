@@ -19,6 +19,12 @@ All notable changes to this project will be documented in this file.
   the native module installer selects them on musl-based Linux such as
   Alpine and Chimera, where the glibc module fails to load.  They require
   musl 1.2.5 or newer.
+- Block elements (U+2580–U+259F: halves, eighths and quadrants such as
+  `▀ ▄ █ ▌ ▐ ▛`) are drawn to fill their cells to the pixel, as a
+  terminal's own renderer does, instead of taken from the font, whose
+  glyphs leave seams across pictures built of blocks.  They keep the
+  cell's colors.  The shades `░ ▒ ▓` stay with the font.
+  `ghostel-draw-block-elements` turns this off.
 
 ### Changed
 - libghostty bumped to libghostty-vt 1.0.2 (2026-11-24).
