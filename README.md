@@ -100,7 +100,32 @@ program that is blocked, done or failed (reported via
 These ship with the Ghostel package, no separate install necessary.
 Just enable what you want:
 
-Make `eshell-visual-commands` run in a Ghostel buffer.
+Run interactive external Eshell commands in a terminal region *inside* the
+Eshell buffer, with the final screen frozen into normal buffer text.  This
+supersedes `ghostel-eshell-visual-command-mode` while enabled.  On
+MS-Windows (and with `ghostel-eshell-use-native-pty` set to `t`) the terminal
+uses ghostel's native ConPTY/PTY instead of Emacs's, so no `stty` is needed.
+
+Visual commands (`eshell-visual-commands`) get the whole window and fill it
+from the start, as do programs that enter the alternate screen or ask the
+terminal to resize its text area; other commands use the space below the
+prompt.  A full-window terminal keeps its view fixed while its cursor moves.
+When the buffer is shown in several windows or frames, the terminal sizes to
+the selected window (or a window on a visible frame); differently sized views
+share one grid.
+
+One Eshell setting affects the prompt: `eshell-scroll-show-maximum-output`
+(default `t`) recenters the last line to the window bottom after every
+command, so once the buffer has filled the prompt jumps to the bottom row on
+each RET.  Set it to `nil` (buffer-locally with `setq-local`, or globally) for
+a stable prompt.
+
+```emacs-lisp
+(use-package ghostel-eshell
+  :hook (eshell-load . ghostel-eshell-mode))
+```
+
+Make `eshell-visual-commands` run in a separate Ghostel buffer.
 ```emacs-lisp
 (use-package ghostel-eshell
   :hook (eshell-load . ghostel-eshell-visual-command-mode))
@@ -267,6 +292,7 @@ Emacs selection even if the terminal app enabled mouse tracking.
   - [Shell commands](https://dakra.github.io/ghostel/#shell-commands)
   - [Compilation mode](https://dakra.github.io/ghostel/#compilation-mode)
   - [Eshell integration](https://dakra.github.io/ghostel/#eshell-integration)
+  - [In-buffer Eshell terminals](https://dakra.github.io/ghostel/#eshell-in-buffer)
   - [Comint integration](https://dakra.github.io/ghostel/#comint-integration)
   - [Consult integration](https://dakra.github.io/ghostel/#consult-integration)
   - [Emacs Lisp input methods](https://dakra.github.io/ghostel/#emacs-lisp-input-methods)
